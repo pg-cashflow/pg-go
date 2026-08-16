@@ -315,6 +315,14 @@ func (h *Handlers) RejectPaymentReport(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
+	if rep.Status != domain.ReportPendingReview {
+		if rep.Status == domain.ReportConfirmed {
+			c.JSON(http.StatusConflict, gin.H{"error": "already recorded"})
+			return
+		}
+		c.JSON(http.StatusOK, rep)
+		return
+	}
 	var body struct {
 		Note string `json:"note"`
 	}

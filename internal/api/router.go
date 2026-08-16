@@ -46,6 +46,8 @@ type Deps struct {
 	MagicLinkBaseURL   string
 	VAPIDPublicKey     string
 	CORSAllowedOrigins []string
+	FrontendURL        string
+	AppEnv             string
 }
 
 // NewRouter wires all Rev 6 routes.
@@ -71,34 +73,44 @@ func NewRouter(d Deps) *gin.Engine {
 
 	h := &Handlers{Deps: d}
 
+	serveEmbeddedApp := !strings.EqualFold(d.AppEnv, "production") || strings.TrimSpace(d.FrontendURL) == ""
 	r.GET("/", func(c *gin.Context) {
+		if !serveEmbeddedApp {
+			c.Redirect(http.StatusFound, d.FrontendURL)
+			return
+		}
 		c.Redirect(http.StatusFound, "/app/")
 	})
-	if sub, err := fs.Sub(web.FS, "."); err == nil {
+	if serveEmbeddedApp {
 		r.GET("/app", func(c *gin.Context) { c.Redirect(http.StatusFound, "/app/") })
-		r.GET("/app/*filepath", func(c *gin.Context) {
-			p := strings.TrimPrefix(c.Param("filepath"), "/")
-			if p == "" {
-				p = "index.html"
-			}
-			data, err := fs.ReadFile(sub, p)
-			if err != nil {
-				c.Status(http.StatusNotFound)
-				return
-			}
-			switch {
-			case strings.HasSuffix(p, ".js"):
-				c.Data(http.StatusOK, "text/javascript; charset=utf-8", data)
-			case strings.HasSuffix(p, ".css"):
-				c.Data(http.StatusOK, "text/css; charset=utf-8", data)
-			case strings.HasSuffix(p, ".json"):
-				c.Data(http.StatusOK, "application/json", data)
-			case strings.HasSuffix(p, ".webmanifest"):
-				c.Data(http.StatusOK, "application/manifest+json", data)
-			default:
-				c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-			}
-		})
+		if sub, err := fs.Sub(web.FS, "."); err == nil {
+			r.GET("/app/*filepath", func(c *gin.Context) {
+				p := strings.TrimPrefix(c.Param("filepath"), "/")
+				if p == "" {
+					p = "index.html"
+				}
+				data, err := fs.ReadFile(sub, p)
+				if err != nil {
+					c.Status(http.StatusNotFound)
+					return
+				}
+				switch {
+				case strings.HasSuffix(p, ".js"):
+					c.Data(http.StatusOK, "text/javascript; charset=utf-8", data)
+				case strings.HasSuffix(p, ".css"):
+					c.Data(http.StatusOK, "text/css; charset=utf-8", data)
+				case strings.HasSuffix(p, ".json"):
+					c.Data(http.StatusOK, "application/json", data)
+				case strings.HasSuffix(p, ".webmanifest"):
+					c.Data(http.StatusOK, "application/manifest+json", data)
+				default:
+					c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+				}
+			})
+		}
+	} else {
+		r.GET("/app", func(c *gin.Context) { c.Redirect(http.StatusFound, d.FrontendURL) })
+		r.GET("/app/*filepath", func(c *gin.Context) { c.Redirect(http.StatusFound, d.FrontendURL) })
 	}
 
 	// Unauthenticated

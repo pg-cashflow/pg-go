@@ -9,6 +9,9 @@
     { "key": "token", "value": "" },
     { "key": "phone", "value": "+919876543210" },
     { "key": "id_token", "value": "" },
+    { "key": "invite_code", "value": "DEVINV01" },
+    { "key": "join_id", "value": "" },
+    { "key": "report_id", "value": "" },
     { "key": "tenant_id", "value": "" },
     { "key": "due_id", "value": "" },
     { "key": "payment_token", "value": "" }
@@ -60,7 +63,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"id_token\": \"{{id_token}}\"\n}"
+              "raw": "{\n  \"id_token\": \"{{id_token}}\",\n  \"invite_code\": \"{{invite_code}}\"\n}"
             },
             "url": "{{base_url}}/auth/firebase"
           }
@@ -76,11 +79,97 @@
       ]
     },
     {
+      "name": "Join",
+      "item": [
+        {
+          "name": "Lookup Invite",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{base_url}}/join/invite/{{invite_code}}"
+          }
+        },
+        {
+          "name": "Join Me",
+          "request": { "method": "GET", "url": "{{base_url}}/join/me" }
+        },
+        {
+          "name": "Join Profile",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rahul\",\n  \"consent\": true,\n  \"uid_last4\": \"1234\",\n  \"confirm\": true\n}"
+            },
+            "url": "{{base_url}}/join"
+          }
+        }
+      ]
+    },
+    {
       "name": "Owner",
       "item": [
         {
           "name": "List Properties",
           "request": { "method": "GET", "url": "{{base_url}}/owner/properties" }
+        },
+        {
+          "name": "Owner Invite",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/invite" }
+        },
+        {
+          "name": "Rotate Invite",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/invite/rotate"
+          }
+        },
+        {
+          "name": "List Join Requests",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/join-requests?status=pending" }
+        },
+        {
+          "name": "Activate Join",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"room_number\": \"101\",\n  \"rent_amount\": 1500000,\n  \"due_day\": 5,\n  \"deposit_amount\": 1500000\n}"
+            },
+            "url": "{{base_url}}/owner/join-requests/{{join_id}}/activate"
+          }
+        },
+        {
+          "name": "Reject Join",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/join-requests/{{join_id}}/reject"
+          }
+        },
+        {
+          "name": "List Payment Reports",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/payment-reports?status=pending_review" }
+        },
+        {
+          "name": "Confirm Payment Report",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/payment-reports/{{report_id}}/confirm"
+          }
+        },
+        {
+          "name": "Reject Payment Report",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"note\": \"UTR mismatch\"\n}" },
+            "url": "{{base_url}}/owner/payment-reports/{{report_id}}/reject"
+          }
         },
         {
           "name": "List Tenants",
@@ -208,6 +297,10 @@
           }
         },
         {
+          "name": "Due Pay JSON",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/dues/{{due_id}}/pay" }
+        },
+        {
           "name": "Due QR (PNG)",
           "request": { "method": "GET", "url": "{{base_url}}/owner/dues/{{due_id}}/qr" }
         },
@@ -279,9 +372,11 @@
           "request": { "method": "GET", "url": "{{base_url}}/tenant/dues" }
         },
         {
-          "name": "Due QR (PNG)",
-          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues/{{due_id}}/qr" }
+          "name": "Due Pay JSON",
+          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues/{{due_id}}/pay" }
         },
+        {
+          "name": "Due QR (PNG)",
         {
           "name": "My Payments",
           "request": { "method": "GET", "url": "{{base_url}}/tenant/payments" }

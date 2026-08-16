@@ -166,6 +166,8 @@ func main() {
 		MagicLinkBaseURL:   cfg.MagicLinkBaseURL,
 		VAPIDPublicKey:     cfg.VAPIDPublicKey,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		FrontendURL:        cfg.FrontendURL,
+		AppEnv:             cfg.AppEnv,
 	})
 
 	srv := &http.Server{

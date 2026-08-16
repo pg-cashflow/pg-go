@@ -43,7 +43,9 @@ Phase 2 PWA lives in a separate repo. To connect locally:
 
 1. Set `CORS_ALLOWED_ORIGINS=http://localhost:5173` in `.env`
 2. Run `go run ./cmd/server/`
-3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080`
+3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080` and `VITE_CASHFREE_ENV` to match `CASHFREE_ENV`
+
+The in-repo `/app/` PWA is a frozen fallback for local `APP_ENV=development`. Production should set `FRONTEND_URL` to the Cloudflare Pages origin so `/` and `/app/` redirect to pg-react.
 
 Login: Firebase Phone (test numbers on Spark) or Google + linked phone → `POST /auth/firebase` → app JWT.
 

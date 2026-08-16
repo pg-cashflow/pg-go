@@ -10,7 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -248,15 +247,6 @@ func (h *Handlers) TenantAttachPhone(c *gin.Context) {
 	}
 	if err := h.Tenants.AttachPhone(c.Request.Context(), id, body.Phone); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	// Trigger first OTP so tenant can log in.
-	if err := h.Auth.RequestOTP(c.Request.Context(), body.Phone); err != nil {
-		status := http.StatusBadGateway
-		if errors.Is(err, auth.ErrRateLimited) {
-			status = http.StatusTooManyRequests
-		}
-		c.JSON(status, gin.H{"phone_attached": true, "error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

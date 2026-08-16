@@ -43,8 +43,13 @@ func (h *Handlers) JoinMe(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"join":    j,
-		"user":    gin.H{"id": claims.UserID, "role": claims.Role, "phone": "", "property_id": claims.PropertyID},
+		"join": j,
+		"user": gin.H{
+			"id":          claims.UserID,
+			"role":        claims.Role,
+			"phone":       j.Phone,
+			"property_id": claims.PropertyID,
+		},
 		"message": "Owner will assign your room and rent.",
 	})
 }
@@ -184,6 +189,10 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 	var body activateJoinBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "room/rent/due_day required from owner — tenant cannot set rent"})
+		return
+	}
+	if body.DueDay < 1 || body.DueDay > 28 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "due_day must be 1–28"})
 		return
 	}
 	t, err := h.Joins.Activate(c.Request.Context(), pid, id, joinsvc.ActivateInput{

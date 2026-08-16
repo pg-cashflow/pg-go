@@ -133,8 +133,8 @@ CSV import, owner `match`, and `mark-cash-paid` remain fallbacks after a Cashfre
 
 ## Cashfree webhook and poll (dormant)
 
-| Method | Path                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| ------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Method | Path                 | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/webhooks/cashfree` | Raw body HMAC (`x-webhook-signature` = Base64(HMAC-SHA256(timestamp+rawBody, webhook secret)), `x-webhook-timestamp`). `CASHFREE_WEBHOOK_SECRET` defaults to `CASHFREE_SECRET_KEY`. Production with Cashfree enabled fails closed if the secret is still empty. Settles `PAYMENT_SUCCESS_WEBHOOK` only when `payment_amount` matches `payment_intents.amount_paise`, via `settleMatched` with `matched_by=cashfree`. Idempotent on `cf_payment_id` and `payments.upi_txn_id`. `MarkPaid` only after settle or duplicate UTR. Unknown order → 200; DB errors → 500. Failed/dropped types return 200 and do not change the due. Do not call Cashfree from this handler. |
 
 Missed-webhook poll: `go run ./cmd/cashfree-poll/` — intents `created` older than 10 minutes whose due is still `pending`/`partial`. No-op without `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY`.
@@ -151,21 +151,22 @@ Events: `PaymentReportSubmitted`, `PaymentReportRejected`.
 
 ## Public
 
-| Method | Path                       | Notes                                                |
-| ------ | -------------------------- | ---------------------------------------------------- |
-| GET    | `/healthz`                 | `{ "status": "ok" }`                                 |
-| GET    | `/push/vapid-public-key`   | `{ "public_key": "..." }`                            |
-| GET    | `/app/`                    | In-repo PWA (invite → wait / owner queue / pay)      |
-| GET    | `/p/:token`                | HTML payment page (save QR, copy VPA/note, open UPI) |
-| POST   | `/p/:token/push/subscribe` | Push from payment page                               |
+| Method | Path                       | Notes                                                                                           |
+| ------ | -------------------------- | ----------------------------------------------------------------------------------------------- |
+| GET    | `/healthz`                 | `{ "status": "ok" }`                                                                            |
+| GET    | `/push/vapid-public-key`   | `{ "public_key": "..." }`                                                                       |
+| GET    | `/app/`                    | Dev-only in-repo PWA. Production (`APP_ENV=production` + `FRONTEND_URL`) redirects to pg-react. |
+| GET    | `/p/:token`                | HTML payment page (save QR, copy VPA/note, open UPI)                                            |
+| POST   | `/p/:token/push/subscribe` | Push from payment page                                                                          |
 
 ## Postman
 
 Import `postman/pg-go.postman_collection.json` and `postman/pg-go.postman_environment.json`.
 
-1. Set `phone` to a seeded owner/tenant phone
-2. Run **OTP Request**, then **OTP Verify** (enter OTP from SMS/logs)
-3. `token`, `tenant_id` auto-populate for subsequent requests
+1. Sign in with Firebase (Phone OTP or Google + linked phone) and copy the ID token
+2. Set `id_token` (and `invite_code` for a new tenant phone)
+3. Run **Firebase Exchange** — `token` and `tenant_id` auto-populate
+4. Owners skip invite; pending tenants call Join endpoints until activate, then exchange again so the JWT includes `tenant_id`
 
 ## CORS
 
