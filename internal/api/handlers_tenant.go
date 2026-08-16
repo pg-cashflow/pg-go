@@ -105,6 +105,7 @@ type aadhaarBody struct {
 	UIDLast4  string `json:"uid_last4"`
 	Consent   bool   `json:"consent" binding:"required"`
 	Channel   string `json:"channel"`
+	Confirm   bool   `json:"confirm"`
 }
 
 // TenantAadhaar handles POST /tenant/aadhaar.
@@ -130,33 +131,45 @@ func (h *Handlers) TenantAadhaar(c *gin.Context) {
 		UIDLast4: body.UIDLast4,
 	}
 	partial := true
-	if body.QRPayload != "" {
+	fromQR := body.QRPayload != ""
+	if fromQR {
 		decoded, p, err := aadhaar.DecodeAadhaarQR(body.QRPayload)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "qr decode failed"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "qr decode failed — use manual last-4 if the card has no Secure QR"})
 			return
 		}
 		partial = p
-		if decoded.Name != "" {
-			data.Name = decoded.Name
+		data = decoded
+		if !body.Confirm {
+			c.JSON(http.StatusOK, gin.H{
+				"partial":       partial,
+				"needs_confirm": true,
+				"name":          data.Name,
+				"dob":           data.DOB,
+				"yob":           data.YOB,
+				"gender":        data.Gender,
+				"uid_last4":     data.UIDLast4,
+				"verified":      data.Verified,
+			})
+			return
 		}
-		if decoded.DOB != "" {
-			data.DOB = decoded.DOB
-		}
-		if decoded.Gender != "" {
-			data.Gender = decoded.Gender
-		}
-		if decoded.UIDLast4 != "" {
-			data.UIDLast4 = decoded.UIDLast4
+		if body.Name != "" {
+			data.Name = body.Name
 		}
 	}
 
-	if data.UIDLast4 != "" {
-		last4 := data.UIDLast4
-		t.AadhaarLast4 = &last4
-		if err := h.TenantStore.Update(c.Request.Context(), t); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
+	last4 := aadhaar.PersistableLast4(fromQR, data.Verified, data.UIDLast4, body.UIDLast4)
+	if last4 != "" {
+		if err := aadhaar.GuardOverwrite(t.AadhaarLast4, last4); err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "aadhaar last-4 already set"})
 			return
+		}
+		if t.AadhaarLast4 == nil || *t.AadhaarLast4 != last4 {
+			t.AadhaarLast4 = &last4
+			if err := h.TenantStore.Update(c.Request.Context(), t); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
+				return
+			}
 		}
 	}
 
@@ -168,8 +181,10 @@ func (h *Handlers) TenantAadhaar(c *gin.Context) {
 		"partial":       partial,
 		"name":          data.Name,
 		"dob":           data.DOB,
+		"yob":           data.YOB,
 		"gender":        data.Gender,
 		"uid_last4":     data.UIDLast4,
+		"verified":      data.Verified,
 		"aadhaar_last4": t.AadhaarLast4,
 	})
 }

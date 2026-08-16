@@ -46,6 +46,7 @@ type NewTenantInput struct {
 	Name             string
 	Phone            *string
 	RoomNumber       *string
+	AadhaarLast4     *string
 	RentAmount       int
 	DueDay           int16
 	NoticePeriodDays int16

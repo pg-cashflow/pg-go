@@ -65,17 +65,15 @@ func NewServiceWithPool(
 	return s
 }
 
-// CreateTenant validates due_day, creates the tenant, deposit due, and onboarding events.
-// If depositPaise <= 0, deposit defaults to rent_amount.
-func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+func normalizeNewTenant(in domain.NewTenantInput, depositPaise int) (domain.NewTenantInput, int, error) {
 	if in.DueDay < 1 || in.DueDay > 28 {
-		return nil, ErrInvalidDueDay
+		return in, 0, ErrInvalidDueDay
 	}
 	if in.Name == "" {
-		return nil, fmt.Errorf("tenant: name is required")
+		return in, 0, fmt.Errorf("tenant: name is required")
 	}
 	if in.RentAmount <= 0 {
-		return nil, fmt.Errorf("tenant: rent_amount must be positive")
+		return in, 0, fmt.Errorf("tenant: rent_amount must be positive")
 	}
 	if in.NoticePeriodDays <= 0 {
 		in.NoticePeriodDays = 30
@@ -83,15 +81,21 @@ func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, de
 	if depositPaise <= 0 {
 		depositPaise = in.RentAmount
 	}
+	return in, depositPaise, nil
+}
+
+// CreateTenant validates due_day, creates the tenant, deposit due, and onboarding events.
+// If depositPaise <= 0, deposit defaults to rent_amount.
+func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+	in, depositPaise, err := normalizeNewTenant(in, depositPaise)
+	if err != nil {
+		return nil, err
+	}
 
 	if s.pool != nil && s.tenantDB != nil && s.dueDB != nil && s.eventDB != nil {
 		var out *domain.Tenant
 		err := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
-			tenants := s.tenantDB.WithTx(tx)
-			dues := s.dueDB.WithTx(tx)
-			pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
-			bill := billing.NewService(dues, tenants, pub)
-			t, err := createTenantCore(ctx, tenants, bill, pub, s.now(), in, depositPaise)
+			t, err := s.createTenantOnTx(ctx, tx, in, depositPaise)
 			if err != nil {
 				return err
 			}
@@ -102,6 +106,27 @@ func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, de
 	}
 
 	return createTenantCore(ctx, s.tenants, s.billing, s.pub, s.now(), in, depositPaise)
+}
+
+// CreateTenantTx creates tenant + deposit + events on an already-open transaction.
+// Callers that wrap Activate (or similar) must use this instead of CreateTenant to avoid a nested Begin.
+func (s *Service) CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+	in, depositPaise, err := normalizeNewTenant(in, depositPaise)
+	if err != nil {
+		return nil, err
+	}
+	if s.tenantDB == nil || s.dueDB == nil || s.eventDB == nil {
+		return nil, fmt.Errorf("tenant: tx create requires pool wiring")
+	}
+	return s.createTenantOnTx(ctx, tx, in, depositPaise)
+}
+
+func (s *Service) createTenantOnTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+	tenants := s.tenantDB.WithTx(tx)
+	dues := s.dueDB.WithTx(tx)
+	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+	bill := billing.NewService(dues, tenants, pub)
+	return createTenantCore(ctx, tenants, bill, pub, s.now(), in, depositPaise)
 }
 
 func createTenantCore(
@@ -118,6 +143,7 @@ func createTenantCore(
 		Name:             in.Name,
 		Phone:            in.Phone,
 		RoomNumber:       in.RoomNumber,
+		AadhaarLast4:     in.AadhaarLast4,
 		RentAmount:       in.RentAmount,
 		DueDay:           in.DueDay,
 		NoticePeriodDays: in.NoticePeriodDays,

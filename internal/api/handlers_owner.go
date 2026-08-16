@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
@@ -499,9 +500,39 @@ func (h *Handlers) serveDueQR(c *gin.Context, ownerScoped bool) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "property"})
 		return
 	}
-	room := ""
-	if t, err := h.TenantStore.GetByID(c.Request.Context(), due.TenantID); err == nil && t.RoomNumber != nil {
-		room = *t.RoomNumber
+	room, phone := "", ""
+	if t, err := h.TenantStore.GetByID(c.Request.Context(), due.TenantID); err == nil {
+		if t.RoomNumber != nil {
+			room = *t.RoomNumber
+		}
+		if t.Phone != nil {
+			phone = *t.Phone
+		}
+	}
+	role := "tenant"
+	if ownerScoped {
+		role = "owner"
+	}
+	if h.Collector != nil {
+		intent, png, err := h.Collector.PayIntent(c.Request.Context(), due, prop, room, collector.PNGURL(role, due.ID), phone)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "qr"})
+			return
+		}
+		if intent.Mode == domain.PaymentModeCashfree {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":              "personal UPI QR replaced by Cashfree checkout",
+				"mode":               intent.Mode,
+				"payment_session_id": intent.PaymentSessionID,
+			})
+			return
+		}
+		if len(png) == 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "not payable"})
+			return
+		}
+		c.Data(http.StatusOK, "image/png", png)
+		return
 	}
 	upi := qr.GenerateUPILink(prop.UPIVPA, prop.OwnerName, int64(due.Amount), due.DueCode, room)
 	png, err := qr.GenerateQR(upi)

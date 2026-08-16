@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,7 @@ var (
 	ErrDuplicateTxn          = errors.New("payment: duplicate upi txn id")
 	ErrDueNotOpen            = errors.New("payment: due is not open for payment")
 	ErrNoDepositDue          = errors.New("payment: no deposit due for tenant")
+	ErrEmptyTxnID            = errors.New("payment: upi txn id is required")
 )
 
 // txFn runs work with optionally transactional repos.
@@ -126,6 +128,19 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 		txnPtr = &txnID
 	}
 	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByManual, txnPtr, &recordedBy, nil)
+}
+
+// GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id.
+func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error) {
+	if strings.TrimSpace(txnID) == "" {
+		return nil, ErrEmptyTxnID
+	}
+	if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
+		return existing, nil
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByCashfree, &txnID, nil, nil)
 }
 
 // MarkCashPaid records a full cash settlement of the remaining due amount.

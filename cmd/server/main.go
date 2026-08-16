@@ -12,11 +12,15 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/billing"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/payment"
@@ -64,6 +68,15 @@ func main() {
 	tokenRepo := postgres.NewTokenRepo(pool)
 	pushRepo := postgres.NewPushRepo(pool)
 	importRepo := postgres.NewImportRepo(pool)
+	joinRepo := postgres.NewJoinRepo(pool)
+	reportRepo := postgres.NewPaymentReportRepo(pool)
+	intentRepo := postgres.NewPaymentIntentRepo(pool)
+
+	if cfg.AadhaarQRPublicKeyPEM != "" {
+		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {
+			log.Fatal("aadhaar public key: ", err)
+		}
+	}
 
 	pub := events.NewPostgresPublisher(eventRepo)
 
@@ -117,6 +130,16 @@ func main() {
 		Subject:         cfg.VAPIDSubject,
 	}, logger)
 
+	joinSvc := joinsvc.NewServiceWithPool(pool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
+
+	var cfOrders collector.CashfreeOrders
+	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
+	if cfCfg.Enabled() {
+		cfOrders = cashfree.NewClient(cfCfg)
+		logger.Info("cashfree orders enabled", "env", cfg.CashfreeEnv)
+	}
+	collectorSvc := collector.New(intentRepo, cfOrders)
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -131,6 +154,13 @@ func main() {
 		PaymentStore:       paymentRepo,
 		EventStore:         eventRepo,
 		ImportStore:        importRepo,
+		Joins:              joinSvc,
+		ReportStore:        reportRepo,
+		IntentStore:        intentRepo,
+		PaymentLookup:      paymentRepo,
+		Collector:          collectorSvc,
+		CashfreeSecret:     cfg.CashfreeWebhookSecret,
+		CashfreeEnv:        cfg.CashfreeEnv,
 		AuthTenantRepo:     tenantRepo,
 		Events:             pub,
 		MagicLinkBaseURL:   cfg.MagicLinkBaseURL,

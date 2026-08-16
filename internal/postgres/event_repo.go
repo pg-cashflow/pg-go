@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -98,9 +97,11 @@ func itoa(n int) string {
 	return itoa(n/10) + string(digits[n%10])
 }
 
-type UserRepo struct{ pool *pgxpool.Pool }
+type UserRepo struct{ db DBTX }
 
-func NewUserRepo(pool *pgxpool.Pool) *UserRepo { return &UserRepo{pool: pool} }
+func NewUserRepo(db DBTX) *UserRepo { return &UserRepo{db: db} }
+
+func (r *UserRepo) WithTx(tx pgx.Tx) *UserRepo { return &UserRepo{db: tx} }
 
 const userCols = `id, phone, role, tenant_id, property_id, firebase_uid, created_at, last_login_at`
 
@@ -115,7 +116,7 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 
 func (r *UserRepo) Create(ctx context.Context, u *domain.User) error {
 	u.CreatedAt = time.Now().UTC()
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO users (phone, role, tenant_id, property_id, firebase_uid, created_at, last_login_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
 		u.Phone, u.Role, u.TenantID, u.PropertyID, u.FirebaseUID, u.CreatedAt, u.LastLoginAt,
@@ -123,19 +124,19 @@ func (r *UserRepo) Create(ctx context.Context, u *domain.User) error {
 }
 
 func (r *UserRepo) GetByPhone(ctx context.Context, phone string) (*domain.User, error) {
-	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE phone=$1`, phone))
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE phone=$1`, phone))
 }
 
 func (r *UserRepo) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error) {
-	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE firebase_uid=$1`, firebaseUID))
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE firebase_uid=$1`, firebaseUID))
 }
 
 func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error) {
-	return scanUser(r.pool.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id=$1`, id))
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id=$1`, id))
 }
 
 func (r *UserRepo) LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error {
-	tag, err := r.pool.Exec(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE users SET firebase_uid=$2
 		WHERE id=$1 AND (firebase_uid IS NULL OR firebase_uid=$2)`,
 		userID, firebaseUID)
@@ -149,6 +150,11 @@ func (r *UserRepo) LinkFirebaseUID(ctx context.Context, userID uuid.UUID, fireba
 }
 
 func (r *UserRepo) TouchLogin(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `UPDATE users SET last_login_at=NOW() WHERE id=$1`, id)
+	_, err := r.db.Exec(ctx, `UPDATE users SET last_login_at=NOW() WHERE id=$1`, id)
+	return err
+}
+
+func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET tenant_id=$2 WHERE id=$1`, userID, tenantID)
 	return err
 }

@@ -10,27 +10,32 @@ import (
 type EventType string
 
 const (
-	EvtDueCreated           EventType = "DueCreated"
-	EvtDuePaidOnTime        EventType = "DuePaidOnTime"
-	EvtDuePaidLate          EventType = "DuePaidLate"
-	EvtDueWaived            EventType = "DueWaived"
-	EvtDueProrated          EventType = "DueProrated"
-	EvtTenantCreated        EventType = "TenantCreated"
-	EvtTenantVacated        EventType = "TenantVacated"
-	EvtNoticeGiven          EventType = "NoticeGiven"
-	EvtPhoneAttached        EventType = "PhoneAttached"
-	EvtRentAmountChanged    EventType = "RentAmountChanged"
-	EvtPaymentMatched       EventType = "PaymentMatched"
-	EvtPaymentMatchFailed   EventType = "PaymentMatchFailed"
-	EvtCashPaymentRecorded  EventType = "CashPaymentRecorded"
-	EvtCreditApplied        EventType = "CreditApplied"
-	EvtQRViewed             EventType = "QRViewed"
-	EvtConsentGiven         EventType = "ConsentGiven"
-	EvtDepositTermsAccepted EventType = "DepositTermsAccepted"
-	EvtDepositSettled       EventType = "DepositSettled"
-	EvtReminderSent         EventType = "ReminderSent"
-	EvtReminderFailed       EventType = "ReminderFailed"
-	EvtFinancialSummarySent EventType = "FinancialSummarySent"
+	EvtDueCreated             EventType = "DueCreated"
+	EvtDuePaidOnTime          EventType = "DuePaidOnTime"
+	EvtDuePaidLate            EventType = "DuePaidLate"
+	EvtDueWaived              EventType = "DueWaived"
+	EvtDueProrated            EventType = "DueProrated"
+	EvtTenantCreated          EventType = "TenantCreated"
+	EvtTenantVacated          EventType = "TenantVacated"
+	EvtNoticeGiven            EventType = "NoticeGiven"
+	EvtPhoneAttached          EventType = "PhoneAttached"
+	EvtRentAmountChanged      EventType = "RentAmountChanged"
+	EvtPaymentMatched         EventType = "PaymentMatched"
+	EvtPaymentMatchFailed     EventType = "PaymentMatchFailed"
+	EvtCashPaymentRecorded    EventType = "CashPaymentRecorded"
+	EvtCreditApplied          EventType = "CreditApplied"
+	EvtQRViewed               EventType = "QRViewed"
+	EvtConsentGiven           EventType = "ConsentGiven"
+	EvtDepositTermsAccepted   EventType = "DepositTermsAccepted"
+	EvtDepositSettled         EventType = "DepositSettled"
+	EvtReminderSent           EventType = "ReminderSent"
+	EvtReminderFailed         EventType = "ReminderFailed"
+	EvtFinancialSummarySent   EventType = "FinancialSummarySent"
+	EvtJoinRequested          EventType = "JoinRequested"
+	EvtJoinApproved           EventType = "JoinApproved"
+	EvtJoinRejected           EventType = "JoinRejected"
+	EvtPaymentReportSubmitted EventType = "PaymentReportSubmitted"
+	EvtPaymentReportRejected  EventType = "PaymentReportRejected"
 )
 
 type Event struct {
@@ -124,10 +129,10 @@ type DueCreatedPayload struct {
 }
 
 type ReminderPayload struct {
-	DueID         string `json:"due_id"`
-	ReminderType  string `json:"reminder_type"`
-	Channel       string `json:"channel"`
-	Error         string `json:"error,omitempty"`
+	DueID        string `json:"due_id"`
+	ReminderType string `json:"reminder_type"`
+	Channel      string `json:"channel"`
+	Error        string `json:"error,omitempty"`
 }
 
 type PaymentMatchedPayload struct {

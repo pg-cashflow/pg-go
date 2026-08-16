@@ -19,15 +19,17 @@ var (
 // DueView is the payment-page payload for GET /p/:token.
 // Magic links stay valid after vacate — tenant status is never checked here.
 type DueView struct {
-	TokenID      uuid.UUID   `json:"token_id"`
-	Due          domain.Due  `json:"due"`
-	AmountPaise  int         `json:"amount_paise"`
-	OwnerName    string      `json:"owner_name"`
-	PropertyName string      `json:"property_name"`
-	UPIVPA       string      `json:"-"` // for QR generation; not always exposed
-	TenantName   string      `json:"tenant_name"`
-	RoomNumber   *string     `json:"room_number,omitempty"`
-	ExpiresAt    time.Time   `json:"expires_at"`
+	TokenID      uuid.UUID  `json:"token_id"`
+	Due          domain.Due `json:"due"`
+	AmountPaise  int        `json:"amount_paise"`
+	OwnerName    string     `json:"owner_name"`
+	PropertyName string     `json:"property_name"`
+	UPIVPA       string     `json:"-"` // for QR generation; not always exposed
+	PaymentMode  string     `json:"-"`
+	TenantName   string     `json:"tenant_name"`
+	TenantPhone  string     `json:"-"`
+	RoomNumber   *string    `json:"room_number,omitempty"`
+	ExpiresAt    time.Time  `json:"expires_at"`
 }
 
 // Service creates and resolves payment magic links.
@@ -108,6 +110,7 @@ func (s *Service) ResolveToken(ctx context.Context, raw string) (*DueView, error
 		OwnerName:    prop.OwnerName,
 		PropertyName: prop.Name,
 		UPIVPA:       prop.UPIVPA,
+		PaymentMode:  prop.PaymentMode,
 		ExpiresAt:    tok.ExpiresAt,
 	}
 
@@ -116,6 +119,9 @@ func (s *Service) ResolveToken(ctx context.Context, raw string) (*DueView, error
 		if tenant, err := s.tenants.GetByID(ctx, due.TenantID); err == nil {
 			view.TenantName = tenant.Name
 			view.RoomNumber = tenant.RoomNumber
+			if tenant.Phone != nil {
+				view.TenantPhone = *tenant.Phone
+			}
 		}
 	}
 	return view, nil

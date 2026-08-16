@@ -126,6 +126,10 @@ func (stubProps) GetByOwnerPhone(context.Context, string) (*domain.Property, err
 	return nil, pgx.ErrNoRows
 }
 
+func (stubProps) GetByInviteCode(context.Context, string) (*domain.Property, error) {
+	return nil, pgx.ErrNoRows
+}
+
 func TestVerifyOTPVacatedExistingUser(t *testing.T) {
 	secret := "otp-secret"
 	code := "123456"

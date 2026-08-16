@@ -13,6 +13,7 @@ const (
 	MatchedByAmountDateWindow  MatchedBy = "amount_date_window"
 	MatchedByManual            MatchedBy = "manual"
 	MatchedByCash              MatchedBy = "cash"
+	MatchedByCashfree          MatchedBy = "cashfree"
 )
 
 type Payment struct {

@@ -37,4 +37,5 @@ type OTPRepository interface {
 // PropertyRepository looks up properties by owner phone for first-login user creation.
 type PropertyRepository interface {
 	GetByOwnerPhone(ctx context.Context, phone string) (*domain.Property, error)
+	GetByInviteCode(ctx context.Context, code string) (*domain.Property, error)
 }

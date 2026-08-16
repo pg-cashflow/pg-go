@@ -132,8 +132,8 @@ func (j *BillingCycle) processTenant(ctx context.Context, t domain.Tenant) error
 		}
 	}
 	if j.Push != nil {
-		payload := []byte(fmt.Sprintf(`{"title":"Rent due","body":%q,"url":%q}`,
-			fmt.Sprintf("Rent ₹%.0f due today", rupees), payURL))
+		payload := fmt.Appendf(nil, `{"title":"Rent due","body":%q,"url":%q}`,
+			fmt.Sprintf("Rent ₹%.0f due today", rupees), payURL)
 		_ = j.Push.Send(ctx, t.ID, payload)
 	}
 	return nil

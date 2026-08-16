@@ -53,7 +53,7 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository) gin.HandlerFun
 			return
 		}
 		if claims.TenantID == nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "access revoked"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "waiting for owner to assign room and rent"})
 			return
 		}
 		tenant, err := tenantRepo.GetByID(c.Request.Context(), *claims.TenantID)
@@ -63,6 +63,30 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository) gin.HandlerFun
 		}
 		c.Set(ContextClaimsKey, claims)
 		c.Set(ContextTenantKey, tenant)
+		c.Next()
+	}
+}
+
+// RequirePendingJoin allows a tenant JWT that is not yet linked to a tenant row (invite wait).
+func RequirePendingJoin(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticate(c, jwtSecret)
+		if !ok {
+			return
+		}
+		if claims.Role != domain.RoleTenant {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		if claims.TenantID != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "already activated"})
+			return
+		}
+		if claims.PropertyID == nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.Set(ContextClaimsKey, claims)
 		c.Next()
 	}
 }

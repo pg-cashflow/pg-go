@@ -79,6 +79,8 @@ func main() {
 		Properties: propertyRepo,
 		Reminders:  reminderRepo,
 		Imports:    importRepo,
+		Intents:    postgres.NewPaymentIntentRepo(pool),
+		Reports:    postgres.NewPaymentReportRepo(pool),
 		MagicLink:  magicSvc,
 		SMS:        gateway,
 		Push:       pushSvc,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,7 @@ var (
 	ErrOTPExpired            = errors.New("otp expired")
 	ErrOTPLocked             = errors.New("otp locked")
 	ErrNoAccount             = errors.New("no account for phone")
+	ErrInvalidInvite         = errors.New("invalid invite code")
 	ErrTenantVacated         = errors.New("tenant vacated")
 	ErrInvalidFirebaseToken  = errors.New("invalid firebase token")
 	ErrFirebaseNotConfigured = errors.New("firebase auth not configured")
@@ -138,7 +140,8 @@ func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string)
 }
 
 // VerifyFirebaseAndIssueToken validates a Firebase ID token and returns an app JWT.
-func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken string) (string, *domain.User, error) {
+// inviteCode, when set, lets an unknown phone create a pending tenant user for that property.
+func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (string, *domain.User, error) {
 	if s.firebase == nil {
 		return "", nil, ErrFirebaseNotConfigured
 	}
@@ -163,7 +166,7 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken strin
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, fmt.Errorf("get user: %w", err)
 		}
-		user, err = s.createUserForPhone(ctx, ident.Phone, ident.UID)
+		user, err = s.createUserForPhone(ctx, ident.Phone, ident.UID, inviteCode)
 		if err != nil {
 			return "", nil, err
 		}
@@ -185,7 +188,7 @@ func (s *Service) IssueTokenForVerifiedPhone(ctx context.Context, phone string) 
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, fmt.Errorf("get user: %w", err)
 		}
-		user, err = s.createUserForPhone(ctx, phone, "")
+		user, err = s.createUserForPhone(ctx, phone, "", "")
 		if err != nil {
 			return "", nil, err
 		}
@@ -217,7 +220,7 @@ func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *
 	return token, user, nil
 }
 
-func (s *Service) createUserForPhone(ctx context.Context, phone, firebaseUID string) (*domain.User, error) {
+func (s *Service) createUserForPhone(ctx context.Context, phone, firebaseUID, inviteCode string) (*domain.User, error) {
 	tenant, err := s.tenants.GetByPhone(ctx, phone)
 	if err == nil {
 		if tenant.Status != domain.TenantStatusActive {
@@ -242,21 +245,43 @@ func (s *Service) createUserForPhone(ctx context.Context, phone, firebaseUID str
 	}
 
 	prop, err := s.properties.GetByOwnerPhone(ctx, phone)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNoAccount
+	if err == nil {
+		pid := prop.ID
+		u := &domain.User{
+			Phone:      phone,
+			Role:       domain.RoleOwner,
+			PropertyID: &pid,
 		}
+		setFirebaseUID(u, firebaseUID)
+		if err := s.users.Create(ctx, u); err != nil {
+			return nil, fmt.Errorf("create owner user: %w", err)
+		}
+		return u, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("get property by owner phone: %w", err)
 	}
-	pid := prop.ID
+
+	code := strings.ToUpper(strings.TrimSpace(inviteCode))
+	if code == "" {
+		return nil, ErrNoAccount
+	}
+	invited, err := s.properties.GetByInviteCode(ctx, code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrInvalidInvite
+		}
+		return nil, fmt.Errorf("get property by invite: %w", err)
+	}
+	pid := invited.ID
 	u := &domain.User{
 		Phone:      phone,
-		Role:       domain.RoleOwner,
+		Role:       domain.RoleTenant,
 		PropertyID: &pid,
 	}
 	setFirebaseUID(u, firebaseUID)
 	if err := s.users.Create(ctx, u); err != nil {
-		return nil, fmt.Errorf("create owner user: %w", err)
+		return nil, fmt.Errorf("create pending tenant user: %w", err)
 	}
 	return u, nil
 }

@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
+	"math/big"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,44 +18,51 @@ func NewPropertyRepo(db DBTX) *PropertyRepo { return &PropertyRepo{db: db} }
 func (r *PropertyRepo) WithTx(tx pgx.Tx) *PropertyRepo { return &PropertyRepo{db: tx} }
 
 func (r *PropertyRepo) Create(ctx context.Context, p *domain.Property) error {
+	if p.PaymentMode == "" {
+		p.PaymentMode = domain.PaymentModeManual
+	}
+	if p.InviteCode == "" {
+		code, err := randomInviteCode()
+		if err != nil {
+			return err
+		}
+		p.InviteCode = code
+	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO properties (name, address, owner_phone, upi_vpa, owner_name, owner_email)
-		VALUES ($1,$2,$3,$4,$5,$6)
+		INSERT INTO properties (name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		RETURNING id, created_at`,
-		p.Name, p.Address, p.OwnerPhone, p.UPIVPA, p.OwnerName, p.OwnerEmail,
+		p.Name, p.Address, p.OwnerPhone, p.UPIVPA, p.OwnerName, p.OwnerEmail, p.InviteCode, p.PaymentMode,
 	).Scan(&p.ID, &p.CreatedAt)
 }
 
 func (r *PropertyRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error) {
-	var p domain.Property
-	err := r.db.QueryRow(ctx, `
-		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, created_at
-		FROM properties WHERE id=$1`, id).Scan(
-		&p.ID, &p.Name, &p.Address, &p.OwnerPhone, &p.UPIVPA, &p.OwnerName, &p.OwnerEmail, &p.CreatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return scanProperty(r.db.QueryRow(ctx, `
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
+		FROM properties WHERE id=$1`, id))
 }
 
 func (r *PropertyRepo) GetByOwnerPhone(ctx context.Context, phone string) (*domain.Property, error) {
-	var p domain.Property
-	err := r.db.QueryRow(ctx, `
-		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, created_at
+	return scanProperty(r.db.QueryRow(ctx, `
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
 		FROM properties WHERE owner_phone=$1
-		ORDER BY created_at ASC LIMIT 1`, phone).Scan(
-		&p.ID, &p.Name, &p.Address, &p.OwnerPhone, &p.UPIVPA, &p.OwnerName, &p.OwnerEmail, &p.CreatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
+		ORDER BY created_at ASC LIMIT 1`, phone))
+}
+
+func (r *PropertyRepo) GetByInviteCode(ctx context.Context, code string) (*domain.Property, error) {
+	return scanProperty(r.db.QueryRow(ctx, `
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
+		FROM properties WHERE invite_code=$1`, code))
+}
+
+func (r *PropertyRepo) SetInviteCode(ctx context.Context, id uuid.UUID, code string) error {
+	_, err := r.db.Exec(ctx, `UPDATE properties SET invite_code=$2 WHERE id=$1`, id, code)
+	return err
 }
 
 func (r *PropertyRepo) List(ctx context.Context) ([]domain.Property, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, created_at
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
 		FROM properties ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -61,13 +70,39 @@ func (r *PropertyRepo) List(ctx context.Context) ([]domain.Property, error) {
 	defer rows.Close()
 	var out []domain.Property
 	for rows.Next() {
-		var p domain.Property
-		if err := rows.Scan(&p.ID, &p.Name, &p.Address, &p.OwnerPhone, &p.UPIVPA, &p.OwnerName, &p.OwnerEmail, &p.CreatedAt); err != nil {
+		p, err := scanProperty(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, *p)
 	}
 	return out, rows.Err()
+}
+
+func scanProperty(row pgx.Row) (*domain.Property, error) {
+	var p domain.Property
+	err := row.Scan(&p.ID, &p.Name, &p.Address, &p.OwnerPhone, &p.UPIVPA, &p.OwnerName, &p.OwnerEmail, &p.InviteCode, &p.PaymentMode, &p.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if p.PaymentMode == "" {
+		p.PaymentMode = domain.PaymentModeManual
+	}
+	return &p, nil
+}
+
+func randomInviteCode() (string, error) {
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	out := make([]byte, 8)
+	max := big.NewInt(int64(len(alphabet)))
+	for i := range out {
+		v, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		out[i] = alphabet[v.Int64()]
+	}
+	return string(out), nil
 }
 
 type TenantRepo struct{ db DBTX }

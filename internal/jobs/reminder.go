@@ -48,6 +48,16 @@ type ImportRecency interface {
 	LatestImportedAt(ctx context.Context, propertyID uuid.UUID) (*time.Time, error)
 }
 
+// IntentRecency reports payment-intent activity for a due (Cashfree poll/settle freshness).
+type IntentRecency interface {
+	RecencyForDue(ctx context.Context, dueID uuid.UUID) (count int, latest *time.Time, err error)
+}
+
+// ImagePurger drops expired payment-report screenshots.
+type ImagePurger interface {
+	PurgeExpiredImages(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
 // ReminderJob sends D-3 / D-0 / D+1 / D+7 reminders in IST.
 type ReminderJob struct {
 	Dues       DueLister
@@ -55,6 +65,8 @@ type ReminderJob struct {
 	Properties PropertyGetter
 	Reminders  ReminderLogger
 	Imports    ImportRecency
+	Intents    IntentRecency
+	Reports    ImagePurger
 	MagicLink  MagicLinkCreator
 	SMS        SMSSender
 	Push       PushSender
@@ -75,6 +87,12 @@ func (j *ReminderJob) Run(ctx context.Context) error {
 		return fmt.Errorf("reminder: load IST: %w", err)
 	}
 	today := dateOnly(time.Now().In(loc))
+
+	if j.Reports != nil {
+		if _, err := j.Reports.PurgeExpiredImages(ctx, 30*24*time.Hour); err != nil {
+			log.Error("reminder: purge report images", "err", err)
+		}
+	}
 
 	dues, err := j.Dues.ActivePendingRentDues(ctx)
 	if err != nil {
@@ -123,7 +141,16 @@ func (j *ReminderJob) processDue(ctx context.Context, due domain.Due, today time
 	}
 
 	if remType == ReminderDPlus1 || remType == ReminderDPlus7 {
-		ok, err := j.importFresh(ctx, due.PropertyID)
+		prop, err := j.Properties.GetByID(ctx, due.PropertyID)
+		if err != nil {
+			return err
+		}
+		var ok bool
+		if prop.PaymentMode == domain.PaymentModeCashfree {
+			ok, err = j.cashfreeFresh(ctx, due.ID)
+		} else {
+			ok, err = j.importFresh(ctx, due.PropertyID)
+		}
 		if err != nil {
 			return err
 		}
@@ -172,6 +199,23 @@ func (j *ReminderJob) importFresh(ctx context.Context, propertyID uuid.UUID) (bo
 	return time.Since(*at) <= 24*time.Hour, nil
 }
 
+func (j *ReminderJob) cashfreeFresh(ctx context.Context, dueID uuid.UUID) (bool, error) {
+	if j.Intents == nil {
+		return true, nil
+	}
+	n, latest, err := j.Intents.RecencyForDue(ctx, dueID)
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return true, nil
+	}
+	if latest == nil {
+		return false, nil
+	}
+	return time.Since(*latest) <= 24*time.Hour, nil
+}
+
 func (j *ReminderJob) sendSMS(ctx context.Context, due domain.Due, tenant *domain.Tenant, prop *domain.Property, remType, msg string) bool {
 	if j.SMS == nil || tenant.Phone == nil {
 		return false
@@ -210,7 +254,7 @@ func (j *ReminderJob) sendPush(ctx context.Context, due domain.Due, remType, msg
 			return false
 		}
 	}
-	payload := []byte(fmt.Sprintf(`{"title":"Rent reminder","body":%q,"url":%q}`, msg, payURL))
+	payload := fmt.Appendf(nil, `{"title":"Rent reminder","body":%q,"url":%q}`, msg, payURL)
 	err := j.Push.Send(ctx, due.TenantID, payload)
 	if err != nil {
 		j.publishReminder(ctx, due, remType, "push", err)

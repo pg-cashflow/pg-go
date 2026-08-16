@@ -4,10 +4,12 @@ import (
 	"errors"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 )
@@ -26,6 +28,10 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
     .warn{background:#fff3cd;border:1px solid #ffecb5;padding:.75rem;border-radius:6px;margin:1rem 0;font-size:.9rem}
     img{display:block;width:256px;height:256px;margin:1rem auto;background:#fff;padding:.5rem;border-radius:8px}
     .meta{color:#555;font-size:.9rem}
+    .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
+    button,a.btn{appearance:none;border:0;background:#1a1a1a;color:#fff;padding:.6rem .9rem;border-radius:8px;font-size:.9rem;text-decoration:none;display:inline-block}
+    button.secondary{background:#fff;color:#1a1a1a;border:1px solid #ccc}
+    .done{background:#e8f5e9;border:1px solid #c8e6c9;padding:.75rem;border-radius:6px}
   </style>
 </head>
 <body>
@@ -34,23 +40,68 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
   <p class="meta">Pay {{.OwnerName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}</p>
   <p class="amt">₹{{printf "%.2f" .AmountRupees}}</p>
   <p class="meta">Due code: {{.DueCode}} · expires {{.ExpiresAt}}</p>
+  {{if .Payable}}
+  {{if eq .Mode "cashfree"}}
+  <p class="meta">UPI checkout — payment is confirmed automatically. Do not use a personal UPI QR.</p>
+  <div class="row"><button type="button" id="cfpay">Pay with UPI</button></div>
+  <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+  <script>
+  (function(){
+    var btn=document.getElementById('cfpay');
+    if(!btn) return;
+    btn.addEventListener('click', function(){
+      var cashfree=Cashfree({mode: {{printf "%q" .CashfreeEnv}}});
+      cashfree.checkout({paymentSessionId: {{printf "%q" .PaymentSessionID}}, redirectTarget:'_self'});
+    });
+  })();
+  </script>
+  {{else}}
   <div class="warn"><strong>Important:</strong> When you scan this QR, your UPI app may let you edit the amount.
     Please pay the exact amount shown above so we can match your payment automatically.</div>
-  {{if .QRDataURI}}<img src="{{.QRDataURI}}" alt="UPI QR">{{end}}
-  <p class="meta"><a href="{{.UPILink}}">Open in UPI app</a></p>
+  {{if .QRDataURI}}<img id="qr" src="{{.QRDataURI}}" alt="UPI QR">{{end}}
+  <div class="row">
+    <a class="btn" href="{{.UPILink}}">Open in UPI app</a>
+    <a class="btn" id="save" download="rent-{{.DueCode}}.png">Save QR</a>
+    <button type="button" class="secondary" data-copy="{{.VPA}}">Copy UPI ID</button>
+    <button type="button" class="secondary" data-copy="{{.Note}}">Copy note</button>
+  </div>
+  <p class="meta">UPI ID: {{.VPA}} · Note: {{.Note}}</p>
+  {{end}}
+  {{else}}
+  <p class="done">This due is already paid or waived. Do not reuse an old QR.</p>
+  {{end}}
 </main>
+<script>
+(function(){
+  var img=document.getElementById('qr');
+  var save=document.getElementById('save');
+  if(img&&save) save.href=img.src;
+  document.querySelectorAll('[data-copy]').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var t=btn.getAttribute('data-copy')||'';
+      if(navigator.clipboard) navigator.clipboard.writeText(t);
+    });
+  });
+})();
+</script>
 </body>
 </html>`))
 
 type paymentPageData struct {
-	PropertyName string
-	OwnerName    string
-	RoomNumber   *string
-	AmountRupees float64
-	DueCode      string
-	ExpiresAt    string
-	UPILink      string
-	QRDataURI    template.URL
+	PropertyName     string
+	OwnerName        string
+	RoomNumber       *string
+	AmountRupees     float64
+	DueCode          string
+	ExpiresAt        string
+	UPILink          string
+	QRDataURI        template.URL
+	VPA              string
+	Note             string
+	Payable          bool
+	Mode             string
+	PaymentSessionID string
+	CashfreeEnv      string
 }
 
 // PaymentPage serves GET /p/:token HTML.
@@ -72,24 +123,49 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 	if view.RoomNumber != nil {
 		room = *view.RoomNumber
 	}
-	upi := qr.GenerateUPILink(view.UPIVPA, view.OwnerName, int64(view.AmountPaise), view.Due.DueCode, room)
-	png, err := qr.GenerateQR(upi)
-	qrURI := template.URL("")
-	if err == nil {
-		qrURI = template.URL("data:image/png;base64," + b64(png))
-	}
-
-	c.Header("Content-Type", "text/html; charset=utf-8")
-	_ = paymentPageTmpl.Execute(c.Writer, paymentPageData{
+	payable := view.Due.Status == domain.DueStatusPending || view.Due.Status == domain.DueStatusPartial
+	data := paymentPageData{
 		PropertyName: view.PropertyName,
 		OwnerName:    view.OwnerName,
 		RoomNumber:   view.RoomNumber,
 		AmountRupees: float64(view.AmountPaise) / 100.0,
 		DueCode:      view.Due.DueCode,
 		ExpiresAt:    view.ExpiresAt.Format("02 Jan 2006 15:04 MST"),
-		UPILink:      upi,
-		QRDataURI:    qrURI,
-	})
+		Note:         domain.UPINote(view.Due.DueCode),
+		Payable:      payable,
+		Mode:         domain.PaymentModeManual,
+		CashfreeEnv:  h.CashfreeEnv,
+	}
+	if strings.EqualFold(data.CashfreeEnv, "production") {
+		data.CashfreeEnv = "production"
+	} else {
+		data.CashfreeEnv = "sandbox"
+	}
+
+	if payable && h.Collector != nil && h.PropertyStore != nil {
+		if prop, err := h.PropertyStore.GetByID(c.Request.Context(), view.Due.PropertyID); err == nil {
+			intent, png, err := h.Collector.PayIntent(c.Request.Context(), &view.Due, prop, room, "", view.TenantPhone)
+			if err == nil && intent != nil {
+				data.Mode = intent.Mode
+				data.PaymentSessionID = intent.PaymentSessionID
+				data.VPA = intent.VPA
+				data.UPILink = intent.UPILink
+				if len(png) > 0 {
+					data.QRDataURI = template.URL("data:image/png;base64," + b64(png))
+				}
+			}
+		}
+	}
+	if data.Mode != domain.PaymentModeCashfree && payable && data.UPILink == "" {
+		data.UPILink = qr.GenerateUPILink(view.UPIVPA, view.OwnerName, int64(view.AmountPaise), view.Due.DueCode, room)
+		data.VPA = view.UPIVPA
+		if png, err := qr.GenerateQR(data.UPILink); err == nil {
+			data.QRDataURI = template.URL("data:image/png;base64," + b64(png))
+		}
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	_ = paymentPageTmpl.Execute(c.Writer, data)
 }
 
 type pushSubBody struct {
@@ -172,7 +248,8 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 }
 
 type firebaseAuthBody struct {
-	IDToken string `json:"id_token" binding:"required"`
+	IDToken    string `json:"id_token" binding:"required"`
+	InviteCode string `json:"invite_code"`
 }
 
 // FirebaseAuth handles POST /auth/firebase — exchange Firebase ID token for app JWT.
@@ -182,19 +259,27 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id_token required"})
 		return
 	}
-	token, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken)
+	token, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken, body.InviteCode)
 	if err != nil {
 		status := http.StatusUnauthorized
+		msg := err.Error()
 		switch {
 		case errors.Is(err, auth.ErrFirebaseNotConfigured):
 			status = http.StatusServiceUnavailable
-		case errors.Is(err, auth.ErrNoAccount):
+		case errors.Is(err, auth.ErrNoAccount), errors.Is(err, auth.ErrInvalidInvite):
 			status = http.StatusNotFound
+			msg = "Get the PG invite code from your owner."
 		case errors.Is(err, auth.ErrTenantVacated):
 			status = http.StatusForbidden
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		c.JSON(status, gin.H{"error": msg})
 		return
+	}
+	if user != nil && user.Role == domain.RoleTenant && user.TenantID == nil && user.PropertyID != nil && h.Joins != nil {
+		if _, err := h.Joins.EnsurePending(c.Request.Context(), user, *user.PropertyID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "join queue failed"})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
 }

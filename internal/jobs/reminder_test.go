@@ -27,9 +27,9 @@ func (s stubPropertyGetter) GetByID(ctx context.Context, id uuid.UUID) (*domain.
 }
 
 type stubReminderLogger struct {
-	calls   int
-	logged  int
-	exists  bool
+	calls  int
+	logged int
+	exists bool
 }
 
 func (s *stubReminderLogger) Exists(ctx context.Context, dueID uuid.UUID, reminderType, channel string) (bool, error) {
@@ -176,6 +176,91 @@ func TestReminder_ImportRecencyGate(t *testing.T) {
 	if sms2.n != 1 {
 		t.Fatalf("expected fresh import to allow D+1 SMS, got %d sends", sms2.n)
 	}
+}
+
+func TestReminder_CashfreeSkipsCSVGate(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	stale := time.Now().Add(-48 * time.Hour)
+	sms := &countingSMS{}
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive,
+		}},
+		Properties: stubPropertyGetter{p: &domain.Property{
+			ID: propID, OwnerEmail: "o@example.com", PaymentMode: domain.PaymentModeCashfree,
+		}},
+		Reminders: &stubReminderLogger{},
+		Imports:   stubImportRecency{at: &stale},
+		SMS:       sms,
+		BaseURL:   "https://pay.example.com",
+	}
+	due := domain.Due{
+		ID: uuid.New(), TenantID: tenantID, PropertyID: propID,
+		DueDate: today.AddDate(0, 0, -1), Amount: 10000, DueCode: "CF1234",
+	}
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 1 {
+		t.Fatalf("cashfree overdue must not wait on CSV, got %d sends", sms.n)
+	}
+}
+
+func TestReminder_CashfreeStaleIntentBlocks(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	stale := time.Now().Add(-48 * time.Hour)
+	sms := &countingSMS{}
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive,
+		}},
+		Properties: stubPropertyGetter{p: &domain.Property{
+			ID: propID, PaymentMode: domain.PaymentModeCashfree,
+		}},
+		Reminders: &stubReminderLogger{},
+		Intents:   stubIntentRecency{n: 1, at: &stale},
+		SMS:       sms,
+		BaseURL:   "https://pay.example.com",
+	}
+	due := domain.Due{
+		ID: uuid.New(), TenantID: tenantID, PropertyID: propID,
+		DueDate: today.AddDate(0, 0, -1), Amount: 10000, DueCode: "CF1234",
+	}
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 0 {
+		t.Fatalf("stale cashfree intent must block D+1, got %d sends", sms.n)
+	}
+
+	fresh := time.Now().Add(-1 * time.Hour)
+	sms2 := &countingSMS{}
+	job.Intents = stubIntentRecency{n: 1, at: &fresh}
+	job.SMS = sms2
+	job.Reminders = &stubReminderLogger{}
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatal(err)
+	}
+	if sms2.n != 1 {
+		t.Fatalf("recent cashfree intent must allow D+1, got %d", sms2.n)
+	}
+}
+
+type stubIntentRecency struct {
+	n  int
+	at *time.Time
+}
+
+func (s stubIntentRecency) RecencyForDue(context.Context, uuid.UUID) (int, *time.Time, error) {
+	return s.n, s.at, nil
 }
 
 func TestImportFresh_NilImports(t *testing.T) {

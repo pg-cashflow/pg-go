@@ -1,0 +1,9 @@
+{
+  "name": "PG / Hostel",
+  "short_name": "PG",
+  "start_url": "/app/",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#1a1a1a",
+  "icons": []
+}

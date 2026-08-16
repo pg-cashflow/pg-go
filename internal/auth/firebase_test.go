@@ -35,6 +35,16 @@ func (m stubPropsByOwnerPhone) GetByOwnerPhone(_ context.Context, phone string) 
 	return &cp, nil
 }
 
+func (m stubPropsByOwnerPhone) GetByInviteCode(_ context.Context, code string) (*domain.Property, error) {
+	for _, p := range m {
+		if p.InviteCode == code && code != "" {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
 type stubTenantsNone struct{}
 
 func (stubTenantsNone) GetByID(context.Context, uuid.UUID) (*domain.Tenant, error) {
@@ -57,7 +67,7 @@ func TestVerifyFirebaseAndIssueTokenOwner(t *testing.T) {
 	svc := NewService(&stubOTP{}, users, tenants, props, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: uid, phone: phone})
 
-	token, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "fake-firebase-token")
+	token, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "fake-firebase-token", "")
 	if err != nil {
 		t.Fatalf("VerifyFirebaseAndIssueToken: %v", err)
 	}
@@ -74,7 +84,7 @@ func TestVerifyFirebaseAndIssueTokenOwner(t *testing.T) {
 
 func TestVerifyFirebaseNotConfigured(t *testing.T) {
 	svc := NewService(&stubOTP{}, &stubUsers{}, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
-	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
 	if err != ErrFirebaseNotConfigured {
 		t.Fatalf("expected ErrFirebaseNotConfigured, got %v", err)
 	}
@@ -83,7 +93,7 @@ func TestVerifyFirebaseNotConfigured(t *testing.T) {
 func TestVerifyFirebaseRejectsNoPhone(t *testing.T) {
 	svc := NewService(&stubOTP{}, &stubUsers{}, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "google-only", phone: ""})
-	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
 	if !errors.Is(err, ErrInvalidFirebaseToken) {
 		t.Fatalf("expected ErrInvalidFirebaseToken, got %v", err)
 	}
@@ -97,7 +107,7 @@ func TestVerifyFirebaseLinksExistingUser(t *testing.T) {
 	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: uid, phone: phone})
 
-	_, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token")
+	_, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
 	if err != nil {
 		t.Fatalf("VerifyFirebaseAndIssueToken: %v", err)
 	}
@@ -120,7 +130,7 @@ func TestVerifyFirebaseFindsByUID(t *testing.T) {
 	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: uid, phone: phone})
 
-	_, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token")
+	_, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
 	if err != nil {
 		t.Fatalf("VerifyFirebaseAndIssueToken: %v", err)
 	}
@@ -132,8 +142,39 @@ func TestVerifyFirebaseFindsByUID(t *testing.T) {
 func TestVerifyFirebaseNoAccount(t *testing.T) {
 	svc := NewService(&stubOTP{}, &stubUsers{}, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "firebase-unknown", phone: "+919999000099"})
-	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
 	if !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("expected ErrNoAccount, got %v", err)
+	}
+}
+
+func TestVerifyFirebaseInviteCreatesPendingTenant(t *testing.T) {
+	phone := "+919999000088"
+	pid := uuid.New()
+	props := stubPropsByOwnerPhone{
+		"owner-not-this": {ID: pid, InviteCode: "ABCD1234"},
+	}
+	users := &stubUsers{byPhone: map[string]*domain.User{}}
+	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, props, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "firebase-join", phone: phone})
+
+	_, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "abcd1234")
+	if err != nil {
+		t.Fatalf("invite join: %v", err)
+	}
+	if user.Role != domain.RoleTenant || user.TenantID != nil {
+		t.Fatalf("expected pending tenant, got %+v", user)
+	}
+	if user.PropertyID == nil || *user.PropertyID != pid {
+		t.Fatalf("expected property %s, got %+v", pid, user.PropertyID)
+	}
+}
+
+func TestVerifyFirebaseBadInvite(t *testing.T) {
+	svc := NewService(&stubOTP{}, &stubUsers{}, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "firebase-bad", phone: "+919999000077"})
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "NOPE0000")
+	if !errors.Is(err, ErrInvalidInvite) {
+		t.Fatalf("expected ErrInvalidInvite, got %v", err)
 	}
 }

@@ -23,6 +23,7 @@ go run ./cmd/server/
 | `cmd/migrate`           | Apply `migrations/*.sql`                             |
 | `cmd/billing-cycle`     | Daily anniversary rent dues (00:05 IST)              |
 | `cmd/reminder`          | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST)          |
+| `cmd/cashfree-poll`     | Missed Cashfree webhook settle (no-op if keys unset) |
 | `cmd/financial-summary` | `--cadence=monthly\|yearly` collections digest email |
 
 ## Locked Phase 1 decisions

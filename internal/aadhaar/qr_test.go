@@ -1,6 +1,9 @@
 package aadhaar
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDecodeAadhaarQRXML(t *testing.T) {
 	raw := `<PrintLetterBarcodeData uid="123456789012" name="Ram Kumar" gender="M" dob="01-01-1990"/>`
@@ -43,9 +46,11 @@ func TestDecodeAadhaarQRUnreadable(t *testing.T) {
 	}
 }
 
-func TestDecodeAadhaarQREmpty(t *testing.T) {
-	_, partial, err := DecodeAadhaarQR("")
-	if err != nil || !partial {
-		t.Fatalf("empty: partial=%v err=%v", partial, err)
+func TestDecodeSecureQRNoKeyFailClosed(t *testing.T) {
+	_ = SetSecureQRPublicKeyPEM("")
+	raw := strings.Repeat("1", 80)
+	_, _, err := DecodeAadhaarQR(raw)
+	if err == nil {
+		t.Fatal("numeric Secure QR without UIDAI key must fail closed")
 	}
 }

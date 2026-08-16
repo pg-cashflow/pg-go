@@ -9,11 +9,12 @@ import (
 // AadhaarData holds fields extracted from a UIDAI QR payload.
 // Only last-4 of UID is retained for storage; full UID is never persisted by callers.
 type AadhaarData struct {
-	Name       string `json:"name,omitempty"`
-	DOB        string `json:"dob,omitempty"`
-	Gender     string `json:"gender,omitempty"`
-	UIDLast4   string `json:"uid_last4,omitempty"`
-	YOB        string `json:"yob,omitempty"`
+	Name     string `json:"name,omitempty"`
+	DOB      string `json:"dob,omitempty"`
+	YOB      string `json:"yob,omitempty"`
+	Gender   string `json:"gender,omitempty"`
+	UIDLast4 string `json:"uid_last4,omitempty"`
+	Verified bool   `json:"verified,omitempty"`
 }
 
 var (
@@ -38,8 +39,13 @@ func DecodeAadhaarQR(raw string) (AadhaarData, bool, error) {
 	looksLikeAttrs := attrName.MatchString(raw) || attrUID.MatchString(raw) || attrGender.MatchString(raw)
 	if strings.Contains(strings.ToLower(raw), "printletterbarcodedata") || strings.Contains(raw, "<") || looksLikeAttrs {
 		data = decodeXMLLike(raw)
+	} else if looksLikeSecureQR(raw) {
+		decoded, err := decodeSecureQR(raw)
+		if err != nil {
+			return AadhaarData{}, true, err
+		}
+		return decoded, decoded.Name == "" || decoded.UIDLast4 == "", nil
 	} else {
-		// Secure QR / binary / opaque — try light heuristics only.
 		data = decodeOpaque(raw)
 	}
 

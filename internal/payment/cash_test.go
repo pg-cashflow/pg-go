@@ -199,3 +199,41 @@ func TestDualPayPartialThenCashCloses(t *testing.T) {
 		t.Fatalf("want fully paid, got %#v", final)
 	}
 }
+
+func TestGatewaySettleCashfree(t *testing.T) {
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	due := &domain.Due{
+		ID: dueID, TenantID: tenantID, PropertyID: propID,
+		DueCode: "CF001A", Amount: 5000, OriginalAmount: 5000,
+		Status: domain.DueStatusPending, DueDate: time.Now().UTC(),
+	}
+	dues := &stubDues{byID: map[uuid.UUID]*domain.Due{dueID: due}}
+	pays := &stubPayments{}
+	svc := NewService(dues, pays, &stubTenants{byID: map[uuid.UUID]*domain.Tenant{
+		tenantID: {ID: tenantID, PropertyID: propID},
+	}}, nil, &recordingPublisher{})
+
+	p, err := svc.GatewaySettle(context.Background(), dueID, 5000, "UTR-CF-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MatchedBy != domain.MatchedByCashfree {
+		t.Fatalf("matched_by=%s", p.MatchedBy)
+	}
+	again, err := svc.GatewaySettle(context.Background(), dueID, 5000, "UTR-CF-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != p.ID {
+		t.Fatal("duplicate UTR must be idempotent")
+	}
+}
+
+func TestGatewaySettleRequiresTxnID(t *testing.T) {
+	svc := NewService(&stubDues{}, &stubPayments{}, &stubTenants{}, nil, &recordingPublisher{})
+	if _, err := svc.GatewaySettle(context.Background(), uuid.New(), 5000, ""); err != ErrEmptyTxnID {
+		t.Fatalf("got %v", err)
+	}
+}

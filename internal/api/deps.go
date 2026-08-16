@@ -9,6 +9,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -18,7 +19,7 @@ import (
 type AuthService interface {
 	RequestOTP(ctx context.Context, phone string) error
 	VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error)
-	VerifyFirebaseAndIssueToken(ctx context.Context, idToken string) (token string, user *domain.User, err error)
+	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)
 }
 
 // MagicLinkService resolves and creates payment tokens.
@@ -54,6 +55,7 @@ type PaymentService interface {
 	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int, recordedBy uuid.UUID, note string) (*domain.Payment, error)
 	SettleDeposit(ctx context.Context, tenantID uuid.UUID, refundedPaise int64, reason string) error
 	BuildSummary(ctx context.Context, propertyID uuid.UUID, period string) (*payment.ReconciliationSummary, error)
+	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error)
 }
 
 // PropertyStore reads properties.
@@ -61,6 +63,7 @@ type PropertyStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error)
 	List(ctx context.Context) ([]domain.Property, error)
 	GetByOwnerPhone(ctx context.Context, phone string) (*domain.Property, error)
+	GetByInviteCode(ctx context.Context, code string) (*domain.Property, error)
 }
 
 // TenantStore reads tenants.
@@ -98,3 +101,32 @@ type AadhaarDecoder func(raw string) (aadhaar.AadhaarData, bool, error)
 
 // CSVParser is optional override for tests.
 type CSVParser func(r io.Reader) ([]csv.Row, error)
+
+type JoinService interface {
+	LookupInvite(ctx context.Context, code string) (*domain.Property, error)
+	RotateInvite(ctx context.Context, propertyID uuid.UUID) (string, error)
+	EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID) (*domain.JoinRequest, error)
+	SetProfile(ctx context.Context, userID uuid.UUID, name string, aadhaarLast4 *string) (*domain.JoinRequest, error)
+	Me(ctx context.Context, userID uuid.UUID) (*domain.JoinRequest, error)
+	List(ctx context.Context, propertyID uuid.UUID, status *domain.JoinStatus) ([]domain.JoinRequest, error)
+	Activate(ctx context.Context, propertyID, joinID uuid.UUID, in joinsvc.ActivateInput) (*domain.Tenant, error)
+	Reject(ctx context.Context, propertyID, joinID uuid.UUID) error
+}
+
+type ReportStore interface {
+	Create(ctx context.Context, p *domain.PaymentReport) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentReport, error)
+	GetByUPITxnID(ctx context.Context, txnID string) (*domain.PaymentReport, error)
+	ListByProperty(ctx context.Context, propertyID uuid.UUID, status *domain.PaymentReportStatus) ([]domain.PaymentReport, error)
+	UpdateReview(ctx context.Context, p *domain.PaymentReport) error
+}
+
+type IntentStore interface {
+	GetByOrderID(ctx context.Context, orderID string) (*domain.PaymentIntent, error)
+	GetByCFPaymentID(ctx context.Context, cfID string) (*domain.PaymentIntent, error)
+	MarkPaid(ctx context.Context, id uuid.UUID, cfPaymentID string) error
+}
+
+type PaymentLookup interface {
+	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
+}
