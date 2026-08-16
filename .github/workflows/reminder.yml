@@ -1,0 +1,43 @@
+# Daily 09:00 IST = 03:30 UTC
+name: Rent reminders
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run reminder
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          OTP_HMAC_SECRET: ${{ secrets.OTP_HMAC_SECRET }}
+          MAGIC_LINK_HMAC_SECRET: ${{ secrets.MAGIC_LINK_HMAC_SECRET }}
+          MAGIC_LINK_BASE_URL: ${{ secrets.MAGIC_LINK_BASE_URL }}
+          SMS_PRIMARY_URL: ${{ secrets.SMS_PRIMARY_URL }}
+          SMS_PRIMARY_API_KEY: ${{ secrets.SMS_PRIMARY_API_KEY }}
+          SMS_FALLBACK_URL: ${{ secrets.SMS_FALLBACK_URL }}
+          SMS_FALLBACK_API_KEY: ${{ secrets.SMS_FALLBACK_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+        run: go run ./cmd/reminder/

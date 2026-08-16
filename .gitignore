@@ -24,8 +24,14 @@ profile.cov
 go.work
 go.work.sum
 
+# Local Go build cache (do not commit)
+.gocache/
+
 # env file
 .env
+
+# Firebase service account (never commit)
+secrets/
 
 # Editor/IDE
 # .idea/

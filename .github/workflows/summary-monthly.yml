@@ -1,0 +1,32 @@
+# 1st of month 08:00 IST = 02:30 UTC
+name: Monthly financial summary
+
+on:
+  schedule:
+    - cron: "30 2 1 * *"
+  workflow_dispatch:
+
+jobs:
+  summary-monthly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run financial-summary (monthly)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        run: go run ./cmd/financial-summary/ --cadence=monthly

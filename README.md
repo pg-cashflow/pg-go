@@ -1,2 +1,61 @@
 # pg-go
-Automated rent-due tracking and UPI payment matching for a PG/hostel — per-tenant anniversary billing, per-Due QR collection, and reminder/escalation automation. Go API + React PWA.
+
+Automated rent-due tracking and UPI payment matching for a PG/hostel — per-tenant anniversary billing, per-Due QR collection, and reminder/escalation automation.
+
+Phase 1 is a standalone Go API + Neon Postgres service (React PWA is Phase 2).
+
+## Quick start
+
+```bash
+cp .env.example .env
+# set DATABASE_URL, JWT_SECRET, OTP_HMAC_SECRET, MAGIC_LINK_HMAC_SECRET,
+# FIREBASE_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS (Admin service-account JSON).
+
+go run ./cmd/migrate/
+go run ./cmd/server/
+```
+
+## Commands
+
+| Cmd                     | Purpose                                              |
+| ----------------------- | ---------------------------------------------------- |
+| `cmd/server`            | HTTP API                                             |
+| `cmd/migrate`           | Apply `migrations/*.sql`                             |
+| `cmd/billing-cycle`     | Daily anniversary rent dues (00:05 IST)              |
+| `cmd/reminder`          | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST)          |
+| `cmd/financial-summary` | `--cadence=monthly\|yearly` collections digest email |
+
+## Locked Phase 1 decisions
+
+- **D2** Cash is all-or-nothing against remaining `due.amount` (no cash partial).
+- **D3** Phone-less tenants are rare; no `cash_notes` column; use `mark-cash-paid` + `attach-phone`.
+
+## Tests
+
+```bash
+go test ./...
+```
+
+## Frontend integration (pg-react)
+
+Phase 2 PWA lives in a separate repo. To connect locally:
+
+1. Set `CORS_ALLOWED_ORIGINS=http://localhost:5173` in `.env`
+2. Run `go run ./cmd/server/`
+3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080`
+
+Login: Firebase Phone (test numbers on Spark) or Google + linked phone → `POST /auth/firebase` → app JWT.
+
+Place the Firebase Admin service account at `./secrets/firebase-sa.json`. Without it, `POST /auth/firebase` returns 503 in development.
+
+### Production Firebase (after test-number login works)
+
+1. Upgrade Firebase project `pg-cashflow-prod` to Blaze
+2. Auth → Settings → Authorized domains: production host only (no `https://`, no port)
+3. Phone provider: allow India SMS region
+4. Set billing alerts on the linked Google Cloud billing account
+5. Keep test numbers for local/dev; try one real +91 last
+
+Firebase Hosting is not required. Reminder SMS stays on `SMS_*` (Android gateway).
+
+See [CONTRACT.md](CONTRACT.md) for the full API contract and [postman/](postman/) for a Postman collection.

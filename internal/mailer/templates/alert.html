@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SMS delivery failure</title>
+</head>
+<body style="font-family: system-ui, sans-serif; color: #1a1a1a; line-height: 1.5;">
+  <h1>SMS delivery failed</h1>
+  <p>Both primary and fallback Android SMS gateways failed to send a message.</p>
+  <p><strong>Phone:</strong> {{.Phone}}</p>
+  <p><strong>Message:</strong> {{.Message}}</p>
+  <p><strong>Primary error:</strong> {{.PrimaryError}}</p>
+  <p><strong>Fallback error:</strong> {{.FallbackError}}</p>
+  <p>Please check Device A and Device B health (power, SIM, network, relay app).</p>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Monthly collections digest</title>
+</head>
+<body style="font-family: system-ui, sans-serif; color: #1a1a1a; line-height: 1.5;">
+  <h1>Monthly collections — {{.Period}}</h1>
+  <p>Property: {{.PropertyName}}</p>
+  <table cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
+    <tr><td>Rent collected</td><td align="right">{{.RentCollected}}</td></tr>
+    <tr><td>Outstanding rent</td><td align="right">{{.OutstandingRent}}</td></tr>
+    <tr><td>Credits held</td><td align="right">{{.CreditsHeld}}</td></tr>
+    <tr><td>Deposits held</td><td align="right">{{.DepositsHeld}}</td></tr>
+    <tr><td>Deposits refunded</td><td align="right">{{.DepositsRefunded}}</td></tr>
+  </table>
+  <h2>By channel</h2>
+  <ul>
+    {{range $channel, $amount := .CollectedByChannel}}
+    <li>{{$channel}}: {{$amount}}</li>
+    {{end}}
+  </ul>
+</body>
+</html>

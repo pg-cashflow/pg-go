@@ -1,0 +1,316 @@
+{
+  "info": {
+    "name": "PG Go API",
+    "description": "pg-go REST API — source of truth for pg-react integration.\n\nImport with pg-go.postman_environment.json. Run Auth → Firebase Exchange first; token auto-saves.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "token", "value": "" },
+    { "key": "phone", "value": "+919876543210" },
+    { "key": "id_token", "value": "" },
+    { "key": "tenant_id", "value": "" },
+    { "key": "due_id", "value": "" },
+    { "key": "payment_token", "value": "" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Public",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/healthz"
+          }
+        },
+        {
+          "name": "VAPID Public Key",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{base_url}}/push/vapid-public-key"
+          }
+        },
+        {
+          "name": "Firebase Exchange",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.token) pm.collectionVariables.set('token', json.token);",
+                  "if (json.user && json.user.role) pm.collectionVariables.set('role', json.user.role);",
+                  "if (json.user && json.user.tenant_id) pm.collectionVariables.set('tenant_id', json.user.tenant_id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id_token\": \"{{id_token}}\"\n}"
+            },
+            "url": "{{base_url}}/auth/firebase"
+          }
+        },
+        {
+          "name": "Payment Page (HTML)",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{base_url}}/p/{{payment_token}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Owner",
+      "item": [
+        {
+          "name": "List Properties",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/properties" }
+        },
+        {
+          "name": "List Tenants",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/tenants" }
+        },
+        {
+          "name": "Create Tenant",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.id) pm.collectionVariables.set('tenant_id', json.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rahul Sharma\",\n  \"phone\": \"+919876543210\",\n  \"room_number\": \"101\",\n  \"rent_amount\": 1500000,\n  \"due_day\": 5,\n  \"notice_period_days\": 30\n}"
+            },
+            "url": "{{base_url}}/owner/tenants"
+          }
+        },
+        {
+          "name": "Update Tenant",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"room_number\": \"102\"\n}"
+            },
+            "url": "{{base_url}}/owner/tenants/{{tenant_id}}"
+          }
+        },
+        {
+          "name": "Tenant Notice",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/notice"
+          }
+        },
+        {
+          "name": "Tenant Vacate",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/vacate"
+          }
+        },
+        {
+          "name": "Attach Phone",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"+919876543210\"\n}"
+            },
+            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/attach-phone"
+          }
+        },
+        {
+          "name": "List Dues",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.dues && json.dues.length) pm.collectionVariables.set('due_id', json.dues[0].id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/owner/dues?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["owner", "dues"],
+              "query": [{ "key": "status", "value": "pending" }]
+            }
+          }
+        },
+        {
+          "name": "Waive Due",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/dues/{{due_id}}/waive"
+          }
+        },
+        {
+          "name": "Mark Cash Paid",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 1500000,\n  \"note\": \"Collected in cash\"\n}"
+            },
+            "url": "{{base_url}}/owner/dues/{{due_id}}/mark-cash-paid"
+          }
+        },
+        {
+          "name": "Manual Match",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 1500000,\n  \"upi_txn_id\": \"UPI123456789\"\n}"
+            },
+            "url": "{{base_url}}/owner/dues/{{due_id}}/match"
+          }
+        },
+        {
+          "name": "Due QR (PNG)",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/dues/{{due_id}}/qr" }
+        },
+        {
+          "name": "Create Payment Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.path) {",
+                  "  const token = json.path.replace('/p/', '');",
+                  "  pm.collectionVariables.set('payment_token', token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{base_url}}/owner/dues/{{due_id}}/token"
+          }
+        },
+        {
+          "name": "List Payments",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/payments" }
+        },
+        {
+          "name": "Import Statements (CSV)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": "" }]
+            },
+            "url": "{{base_url}}/owner/statements/import"
+          }
+        },
+        {
+          "name": "Reconciliation Summary",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/owner/reconciliation?period=2026-08",
+              "host": ["{{base_url}}"],
+              "path": ["owner", "reconciliation"],
+              "query": [{ "key": "period", "value": "2026-08" }]
+            }
+          }
+        },
+        {
+          "name": "List Events",
+          "request": { "method": "GET", "url": "{{base_url}}/owner/events" }
+        }
+      ]
+    },
+    {
+      "name": "Tenant",
+      "item": [
+        {
+          "name": "Me",
+          "request": { "method": "GET", "url": "{{base_url}}/tenant/me" }
+        },
+        {
+          "name": "My Dues",
+          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues" }
+        },
+        {
+          "name": "Due QR (PNG)",
+          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues/{{due_id}}/qr" }
+        },
+        {
+          "name": "My Payments",
+          "request": { "method": "GET", "url": "{{base_url}}/tenant/payments" }
+        },
+        {
+          "name": "Push Subscribe",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpoint\": \"https://example.com/push\",\n  \"keys\": {\n    \"p256dh\": \"test\",\n    \"auth\": \"test\"\n  }\n}"
+            },
+            "url": "{{base_url}}/tenant/push/subscribe"
+          }
+        },
+        {
+          "name": "Aadhaar KYC",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"consent\": true,\n  \"channel\": \"tenant_app\",\n  \"uid_last4\": \"1234\"\n}"
+            },
+            "url": "{{base_url}}/tenant/aadhaar"
+          }
+        }
+      ]
+    }
+  ]
+}
