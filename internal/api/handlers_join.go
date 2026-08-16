@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -161,6 +162,7 @@ func (h *Handlers) ListJoinRequests(c *gin.Context) {
 	}
 	list, err := h.Joins.List(c.Request.Context(), pid, st)
 	if err != nil {
+		slog.Error("list join requests failed", "property_id", pid, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}

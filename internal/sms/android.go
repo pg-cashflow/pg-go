@@ -16,12 +16,12 @@ type AlertFunc func(ctx context.Context, phone, message string, primaryErr, fall
 // AndroidGateway POSTs JSON {phone, message} to an Android SMS relay.
 // Tries PrimaryURL first, then FallbackURL; on both failures calls Alert.
 type AndroidGateway struct {
-	PrimaryURL      string
-	PrimaryAPIKey   string
-	FallbackURL     string
-	FallbackAPIKey  string
-	HTTPClient      *http.Client
-	Alert           AlertFunc
+	PrimaryURL     string
+	PrimaryAPIKey  string
+	FallbackURL    string
+	FallbackAPIKey string
+	HTTPClient     *http.Client
+	Alert          AlertFunc
 }
 
 func (g *AndroidGateway) client() *http.Client {

@@ -12,7 +12,7 @@ import (
 
 // ReconciliationSummary is the Tier-1 collections digest (Rev 6).
 type ReconciliationSummary struct {
-	Period             string           `json:"period"`                  // "2026-08" or "2026"
+	Period             string           `json:"period"` // "2026-08" or "2026"
 	RentCollected      int64            `json:"rent_collected_paise"`
 	CollectedByChannel map[string]int64 `json:"by_channel"`              // due_code | amount_date_window | cash | manual
 	OutstandingRent    int64            `json:"outstanding_paise"`       // pending + partial rent dues

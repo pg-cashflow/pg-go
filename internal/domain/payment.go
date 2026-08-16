@@ -9,11 +9,11 @@ import (
 type MatchedBy string
 
 const (
-	MatchedByDueCode           MatchedBy = "due_code"
-	MatchedByAmountDateWindow  MatchedBy = "amount_date_window"
-	MatchedByManual            MatchedBy = "manual"
-	MatchedByCash              MatchedBy = "cash"
-	MatchedByCashfree          MatchedBy = "cashfree"
+	MatchedByDueCode          MatchedBy = "due_code"
+	MatchedByAmountDateWindow MatchedBy = "amount_date_window"
+	MatchedByManual           MatchedBy = "manual"
+	MatchedByCash             MatchedBy = "cash"
+	MatchedByCashfree         MatchedBy = "cashfree"
 )
 
 type Payment struct {
