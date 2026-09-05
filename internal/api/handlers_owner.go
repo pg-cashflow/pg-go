@@ -85,7 +85,7 @@ func (h *Handlers) CreateTenant(c *gin.Context) {
 	}
 	t, err := h.Tenants.CreateTenant(c.Request.Context(), in, deposit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, tenantResponse(t))
@@ -156,13 +156,13 @@ func (h *Handlers) UpdateTenant(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "due_day must be 1–28"})
 			return
 		}
-		t.DueDay = *body.DueDay
+		t.DueDay = body.DueDay
 	}
 	if body.NoticePeriodDays != nil {
 		t.NoticePeriodDays = *body.NoticePeriodDays
 	}
 	if err := h.Tenants.UpdateTenant(c.Request.Context(), t); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, tenantResponse(t))
@@ -193,7 +193,7 @@ func (h *Handlers) TenantNotice(c *gin.Context) {
 		at = *body.NoticeGivenAt
 	}
 	if err := h.Tenants.LogNotice(c.Request.Context(), id, at); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -216,7 +216,7 @@ func (h *Handlers) TenantVacate(c *gin.Context) {
 		return
 	}
 	if err := h.Tenants.Vacate(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -246,7 +246,7 @@ func (h *Handlers) TenantAttachPhone(c *gin.Context) {
 		return
 	}
 	if err := h.Tenants.AttachPhone(c.Request.Context(), id, body.Phone); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -277,7 +277,7 @@ func (h *Handlers) TenantProrate(c *gin.Context) {
 	}
 	due, err := h.Billing.Prorate(c.Request.Context(), id, body.VacateDate)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, due)
@@ -308,14 +308,14 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 		return
 	}
 	if err := h.Payments.SettleDeposit(c.Request.Context(), id, body.RefundedPaise, body.Reason); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func tenantResponse(t *domain.Tenant) gin.H {
-	return gin.H{
+	resp := gin.H{
 		"id":                   t.ID,
 		"property_id":          t.PropertyID,
 		"name":                 t.Name,
@@ -329,9 +329,41 @@ func tenantResponse(t *domain.Tenant) gin.H {
 		"credit_balance_paise": t.CreditBalancePaise,
 		"status":               t.Status,
 		"contact_mode":         t.ContactMode(),
+		"permanent_address":    t.PermanentAddress,
+		"current_address":      t.CurrentAddress,
+		"parent_name":          t.ParentName,
+		"emergency_phone":      t.EmergencyPhone,
+		"joined_on":            t.JoinedOn,
+		"has_id_photo":         t.HasIDPhoto,
 		"created_at":           t.CreatedAt,
 		"updated_at":           t.UpdatedAt,
 	}
+	return resp
+}
+
+// TenantIDPhoto handles GET /owner/tenants/:id/id-photo.
+func (h *Handlers) TenantIDPhoto(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
+	if err != nil || t.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	b, err := h.TenantStore.GetIDPhoto(c.Request.Context(), id)
+	if err != nil || len(b) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no id photo"})
+		return
+	}
+	ct := http.DetectContentType(b)
+	c.Data(http.StatusOK, ct, b)
 }
 
 // ListDues handles GET /owner/dues.
@@ -381,7 +413,7 @@ func (h *Handlers) WaiveDue(c *gin.Context) {
 	}
 	due, err = h.Billing.WaiveDue(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, due)
@@ -417,7 +449,7 @@ func (h *Handlers) ManualMatch(c *gin.Context) {
 	}
 	p, err := h.Payments.ManualMatch(c.Request.Context(), id, body.AmountPaise, body.TxnID, uid)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -453,7 +485,7 @@ func (h *Handlers) MarkCashPaid(c *gin.Context) {
 	}
 	p, err := h.Payments.MarkCashPaid(c.Request.Context(), id, body.AmountPaise, uid, body.Note)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -551,7 +583,7 @@ func (h *Handlers) DueToken(c *gin.Context) {
 	}
 	path, err := h.MagicLink.CreatePaymentToken(c.Request.Context(), id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	url := h.MagicLinkBaseURL + path
@@ -594,7 +626,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown CSV schema — required columns: txn_id, amount, date, note"})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "csv parse error: unsupported format"})
 		return
 	}
 
@@ -696,7 +728,7 @@ func (h *Handlers) Reconciliation(c *gin.Context) {
 	}
 	sum, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, sum)

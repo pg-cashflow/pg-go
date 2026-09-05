@@ -35,3 +35,72 @@ nav.tabs { display: flex; gap: .35rem; margin: .75rem 0 1rem; flex-wrap: wrap; }
 nav.tabs button { background: #fff; color: var(--ink); border: 1px solid var(--line); }
 nav.tabs button.on { background: var(--ink); color: #fff; }
 .hidden { display: none !important; }
+
+/* Gamification & Perks styling */
+.points-banner {
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  color: #fff;
+  border-radius: 12px;
+  padding: 1.1rem;
+  margin: .75rem 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.points-banner .pts { font-size: 1.7rem; font-weight: 800; color: #facc15; }
+.streak-pill {
+  background: rgba(255,255,255,0.15);
+  padding: .35rem .65rem;
+  border-radius: 9999px;
+  font-size: .85rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+}
+.badge {
+  display: inline-block;
+  padding: .2rem .5rem;
+  border-radius: 6px;
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.badge.ok { background: #dcfce7; color: #166534; }
+.badge.warn { background: #fef9c3; color: #854d0e; }
+.badge.danger { background: #fee2e2; color: #991b1b; }
+.reward-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: .75rem 0;
+}
+.reward-card:last-child { border-bottom: 0; }
+.checklist-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .5rem 0;
+  border-bottom: 1px dashed var(--line);
+}
+.checklist-item label { margin: 0; font-size: .95rem; }
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+  background-color: #ccc; transition: .3s; border-radius: 24px;
+}
+.slider:before {
+  position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px;
+  background-color: white; transition: .3s; border-radius: 50%;
+}
+input:checked + .slider { background-color: #16a34a; }
+input:checked + .slider:before { transform: translateX(20px); }
+.thumb-img { width: 60px; height: 60px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.photo-fail-box { background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; padding: .6rem; margin-top: .4rem; }

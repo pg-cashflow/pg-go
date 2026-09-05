@@ -71,6 +71,7 @@ type TenantStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.Tenant, error)
 	Update(ctx context.Context, t *domain.Tenant) error
+	GetIDPhoto(ctx context.Context, id uuid.UUID) ([]byte, error)
 }
 
 // DueStore reads dues.
@@ -96,6 +97,12 @@ type ImportStore interface {
 	Create(ctx context.Context, l *postgres.ImportLog) error
 }
 
+// UserStore manages users.
+type UserStore interface {
+	Create(ctx context.Context, u *domain.User) error
+	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
+}
+
 // AadhaarDecoder is optional override for tests.
 type AadhaarDecoder func(raw string) (aadhaar.AadhaarData, bool, error)
 
@@ -107,6 +114,7 @@ type JoinService interface {
 	RotateInvite(ctx context.Context, propertyID uuid.UUID) (string, error)
 	EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID) (*domain.JoinRequest, error)
 	SetProfile(ctx context.Context, userID uuid.UUID, name string, aadhaarLast4 *string) (*domain.JoinRequest, error)
+	CompleteOnboarding(ctx context.Context, userID uuid.UUID, in joinsvc.ProfileInput) (*domain.JoinRequest, *domain.Tenant, error)
 	Me(ctx context.Context, userID uuid.UUID) (*domain.JoinRequest, error)
 	List(ctx context.Context, propertyID uuid.UUID, status *domain.JoinStatus) ([]domain.JoinRequest, error)
 	Activate(ctx context.Context, propertyID, joinID uuid.UUID, in joinsvc.ActivateInput) (*domain.Tenant, error)

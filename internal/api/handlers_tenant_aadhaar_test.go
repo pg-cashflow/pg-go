@@ -30,6 +30,9 @@ func (s *stubTenantStore) Update(_ context.Context, t *domain.Tenant) error {
 	s.t = t
 	return nil
 }
+func (s *stubTenantStore) GetIDPhoto(context.Context, uuid.UUID) ([]byte, error) {
+	return nil, nil
+}
 
 func TestTenantAadhaarUnverifiedXMLDoesNotPersist(t *testing.T) {
 	gin.SetMode(gin.TestMode)

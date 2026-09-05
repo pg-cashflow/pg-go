@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
@@ -20,6 +21,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
@@ -35,6 +37,17 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
+	}
+	// ADR-2 Batch 1: credential-presence validation (not APP_ENV-keyed).
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatal(err)
+	}
+	for _, w := range cfg.ValidateWarnings() {
+		slog.Warn(w)
+	}
+	// ADR-2 M4: suppress header logging in production.
+	if cfg.AppEnv == "production" {
+		gin.SetMode(gin.ReleaseMode)
 	}
 	ctx := context.Background()
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -78,7 +91,11 @@ func main() {
 		}
 	}
 
-	pub := events.NewPostgresPublisher(eventRepo)
+	gamificationRepo := postgres.NewGamificationRepo(pool)
+
+	innerPub := events.NewPostgresPublisher(eventRepo)
+	dispatchPub := events.NewDispatchPublisher(innerPub)
+	pub := dispatchPub
 
 	var mail mailer.Mailer = mailer.NoopMailer{}
 	if cfg.SMTPHost != "" {
@@ -140,6 +157,10 @@ func main() {
 	}
 	collectorSvc := collector.New(intentRepo, cfOrders)
 
+	gamificationSvc := gamification.NewService(gamificationRepo, tenantRepo, dueRepo, dispatchPub, gamification.NewBlobStore())
+	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
+	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -148,6 +169,9 @@ func main() {
 		Tenants:            tenantSvc,
 		Billing:            billingSvc,
 		Payments:           paySvc,
+		Gamification:       gamificationSvc,
+		GamificationStore:  gamificationRepo,
+		UserStore:          userRepo,
 		PropertyStore:      propertyRepo,
 		TenantStore:        tenantRepo,
 		DueStore:           dueRepo,

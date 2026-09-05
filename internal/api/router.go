@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/web"
 )
 
@@ -31,6 +33,7 @@ type Deps struct {
 	PaymentStore  PaymentStore
 	EventStore    EventStore
 	ImportStore   ImportStore
+	UserStore     UserStore
 
 	Joins          JoinService
 	ReportStore    ReportStore
@@ -39,6 +42,9 @@ type Deps struct {
 	Collector      *collector.Service
 	CashfreeSecret string
 	CashfreeEnv    string
+
+	Gamification      *gamification.Service
+	GamificationStore gamification.Store
 
 	AuthTenantRepo auth.TenantRepository // for RequireTenant live check
 
@@ -50,10 +56,28 @@ type Deps struct {
 	AppEnv             string
 }
 
+// redactingLogFormatter is a gin log formatter that replaces /p/<token> paths
+// with /p/[REDACTED] to prevent 72-hour magic-link credentials appearing in
+// server logs or any downstream log aggregator. (ADR-2, M3)
+var redactingLogFormatter = func(p gin.LogFormatterParams) string {
+	path := p.Path
+	if len(path) > 3 && path[:3] == "/p/" {
+		path = "/p/[REDACTED]"
+	}
+	return fmt.Sprintf("[GIN] %s | %3d | %13v | %s\n",
+		p.TimeStamp.Format("2006/01/02 - 15:04:05"),
+		p.StatusCode,
+		p.Latency,
+		path,
+	)
+}
+
 // NewRouter wires all Rev 6 routes.
 func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), gin.Logger())
+	r.Use(gin.Recovery(), gin.LoggerWithConfig(gin.LoggerConfig{
+		Formatter: redactingLogFormatter,
+	}))
 	if len(d.CORSAllowedOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
@@ -116,7 +140,10 @@ func NewRouter(d Deps) *gin.Engine {
 	// Unauthenticated
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
-	r.POST("/auth/firebase", h.FirebaseAuth)
+	// Per-IP rate limits (ADR-2, M2): 3/min OTP, 10/min Firebase (burst headroom for login retries)
+	r.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
+	r.POST("/auth/otp/verify", h.OTPVerify)
+	r.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
 	r.GET("/join/invite/:code", h.LookupInvite)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 
@@ -143,6 +170,7 @@ func NewRouter(d Deps) *gin.Engine {
 		owner.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
 		owner.POST("/tenants/:id/prorate", h.TenantProrate)
 		owner.POST("/tenants/:id/deposit/settle", h.TenantDepositSettle)
+		owner.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
 
 		owner.GET("/dues", h.ListDues)
 		owner.POST("/dues/:id/waive", h.WaiveDue)
@@ -160,6 +188,28 @@ func NewRouter(d Deps) *gin.Engine {
 		owner.GET("/payments", h.ListPayments)
 		owner.GET("/events", h.ListEvents)
 		owner.GET("/reconciliation", h.Reconciliation)
+
+		// Gamification settings & management
+		owner.GET("/gamification/settings", h.OwnerGetGamificationSettings)
+		owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
+		owner.GET("/floors", h.OwnerListFloors)
+		owner.POST("/floors", h.OwnerCreateFloor)
+		owner.GET("/rooms", h.OwnerListRooms)
+		owner.POST("/rooms", h.OwnerCreateRoom)
+		owner.POST("/managers", h.OwnerCreateManager)
+	}
+
+	manager := r.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret))
+	{
+		manager.POST("/inspections", h.ManagerSubmitInspection)
+		manager.GET("/inspections", h.ManagerListInspections)
+		manager.POST("/inspections/items/:id/resolve", h.ManagerResolveInspectionItem)
+		manager.POST("/violations", h.ManagerLogViolation)
+		manager.POST("/meter-readings", h.ManagerRecordMeterReading)
+		manager.GET("/kitchen/headcount", h.ManagerKitchenHeadcount)
+		manager.GET("/hazards", h.ManagerListHazards)
+		manager.POST("/hazards/:id/resolve", h.ManagerResolveHazard)
+		manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
 	}
 
 	tenant := r.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo))
@@ -172,6 +222,22 @@ func NewRouter(d Deps) *gin.Engine {
 		tenant.GET("/payments", h.TenantPayments)
 		tenant.POST("/push/subscribe", h.TenantPushSubscribe)
 		tenant.POST("/aadhaar", h.TenantAadhaar)
+
+		// Gamification routes
+		tenant.GET("/points", h.TenantPoints)
+		tenant.GET("/rewards", h.TenantRewards)
+		tenant.POST("/rewards/:id/redeem", h.TenantRedeem)
+		tenant.GET("/inspections", h.TenantInspections)
+		tenant.POST("/inspections/items/:id/dispute", h.TenantDisputeInspectionItem)
+		tenant.GET("/meal-rsvp", h.TenantGetMealRSVP)
+		tenant.POST("/meal-rsvp", h.TenantSubmitMealRSVP)
+		tenant.GET("/menu-poll", h.TenantGetMenuPoll)
+		tenant.POST("/menu-poll/vote", h.TenantVoteMenuPoll)
+		tenant.POST("/hazards", h.TenantReportHazard)
+		tenant.GET("/violations", h.TenantViolations)
+		tenant.GET("/leaderboard", h.TenantLeaderboard)
+		tenant.GET("/referrals", h.TenantReferrals)
+		tenant.POST("/referrals", h.TenantReferrals)
 	}
 
 	return r

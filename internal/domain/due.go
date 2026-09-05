@@ -21,8 +21,10 @@ const (
 type DueKind string
 
 const (
-	DueKindRent    DueKind = "rent"
-	DueKindDeposit DueKind = "deposit"
+	DueKindRent        DueKind = "rent"
+	DueKindDeposit     DueKind = "deposit"
+	DueKindElectricity DueKind = "electricity"
+	DueKindWater       DueKind = "water"
 )
 
 type Due struct {

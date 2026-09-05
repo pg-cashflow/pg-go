@@ -15,16 +15,21 @@ const (
 )
 
 type JoinRequest struct {
-	ID           uuid.UUID  `json:"id"`
-	PropertyID   uuid.UUID  `json:"property_id"`
-	UserID       uuid.UUID  `json:"user_id"`
-	Phone        string     `json:"phone"`
-	Name         string     `json:"name"`
-	AadhaarLast4 *string    `json:"aadhaar_last4,omitempty"`
-	Status       JoinStatus `json:"status"`
-	TenantID     *uuid.UUID `json:"tenant_id,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	ID               uuid.UUID  `json:"id"`
+	PropertyID       uuid.UUID  `json:"property_id"`
+	UserID           uuid.UUID  `json:"user_id"`
+	Phone            string     `json:"phone"`
+	Name             string     `json:"name"`
+	AadhaarLast4     *string    `json:"aadhaar_last4,omitempty"`
+	PermanentAddress string     `json:"permanent_address,omitempty"`
+	CurrentAddress   string     `json:"current_address,omitempty"`
+	ParentName       string     `json:"parent_name,omitempty"`
+	EmergencyPhone   string     `json:"emergency_phone,omitempty"`
+	JoinedOn         *time.Time `json:"joined_on,omitempty"`
+	Status           JoinStatus `json:"status"`
+	TenantID         *uuid.UUID `json:"tenant_id,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type PaymentReportStatus string

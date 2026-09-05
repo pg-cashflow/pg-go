@@ -16,48 +16,64 @@ Source of truth for [pg-react](https://github.com/your-org/pg-react) integration
 
 ## Auth
 
-Login is Firebase Phone OTP or Google (Google must have a linked phone). There is **no Owner vs Tenant role picker**. Invite code is how a new phone becomes a pending tenant. Owner phones stay seeded.
+Login is Firebase Phone OTP or Google (Gmail). There is **no Owner vs Tenant role picker**. Owners match via seeded `owner_phone` or `owner_email`. Invite code is how a new phone or Google login becomes a pending tenant.
 
-| Method | Path             | Body                             | Response                                                             |
-| ------ | ---------------- | -------------------------------- | -------------------------------------------------------------------- |
-| POST   | `/auth/firebase` | `{ "id_token", "invite_code"? }` | `{ "token", "user": { id, phone, role, tenant_id?, property_id? } }` |
+| Method | Path             | Body                             | Response                                                                    |
+| ------ | ---------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| POST   | `/auth/firebase` | `{ "id_token", "invite_code"? }` | `{ "token", "user": { id, phone?, email?, role, tenant_id?, property_id? } }` |
 
-| Status | When                                                                               |
-| ------ | ---------------------------------------------------------------------------------- |
-| 401    | Invalid or phone-less Firebase token                                               |
-| 403    | Tenant vacated                                                                     |
-| 404    | Unknown phone without a valid invite — `"Get the PG invite code from your owner."` |
-| 503    | Firebase Admin not configured                                                      |
+| Status | When                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| 401    | Invalid or claims-less Firebase token                                                                                   |
+| 403    | Tenant vacated, or Google email not verified                                                                            |
+| 404    | Unknown account without a valid invite — `"Account not found. If you are an owner, verify your registered phone/email."` |
+| 503    | Firebase Admin not configured                                                                                           |
 
-Unknown phone + **valid invite** creates `users.role=tenant` with `tenant_id` null and a `join_requests` row. Pending tenants calling `/tenant/*` get 403 `"waiting for owner to assign room and rent"`.
+Unknown phone + **valid invite** creates `users.role=tenant` with `tenant_id` null and a `join_requests` row. Until `POST /join` completes, `/tenant/*` returns 403 `"complete your profile to continue"`. After onboarding, the tenant is `pending_allocation` (dashboard allowed; pay disabled) until the owner assigns room/rent.
 
 Rent-reminder SMS still uses `SMS_*` / `internal/sms`. Login OTP is not sent by this API.
 
-## Join (tenant-first)
+> **Security Note on Multi-Provider Firebase UIDs and Session Lifetimes:**
+> `users.firebase_uid` tracks the user's most-recently authenticated Firebase identity (Phone OTP or Google).
+> Revoking a Firebase UID via the Firebase Admin SDK (`auth.RevokeRefreshTokens`) only invalidates Firebase refresh tokens, preventing that identity from minting new Firebase ID tokens to exchange at `POST /auth/firebase`.
+> - **Tenants:** Revocation is enforced per-request via live database checks in `RequireTenant` (`tenants.status` must be `active` or `pending_allocation`). Marking a tenant `vacated` immediately revokes access on the next API call, regardless of JWT expiry.
+> - **Owners:** There is currently no session-revocation mechanism for Owner accounts. A compromised Owner JWT remains valid until natural expiry (30 days), regardless of Firebase-side UID revocation. Immediate invalidation of Owner sessions currently requires rotating the global `JWTSecret` or adding a dedicated per-request `revoked_at` / token-blacklist mechanism.
+>
+> **Security Note on Email Verification (Google / Gmail):**
+> `POST /auth/firebase` strictly enforces `email_verified: true` in the cryptographically verified Firebase ID token claims for Google logins (returning HTTP 403 `ErrEmailNotVerified` if unverified or absent). In Google OIDC federation, this provides cryptographic proof of mailbox possession equivalent in trust to SMS Phone OTP, preventing client-asserted or spoofed email addresses from accessing Owner accounts.
 
-| Method | Path                                | Auth               | Notes                                                                                                                                             |
-| ------ | ----------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/join/invite/:code`                | public             | `{ property_id, property_name, owner_name }` — never VPA                                                                                          |
-| GET    | `/join/me`                          | pending tenant JWT | `{ join, message }` waiting screen                                                                                                                |
-| POST   | `/join`                             | pending tenant JWT | `{ name, qr_payload?, uid_last4?, consent, confirm? }` — tenant never sends rent. QR without `confirm` returns `{ aadhaar, needs_confirm: true }` |
-| GET    | `/owner/invite`                     | owner              | `{ invite_code, payment_mode }`                                                                                                                   |
-| POST   | `/owner/invite/rotate`              | owner              | `{ invite_code }`                                                                                                                                 |
-| GET    | `/owner/join-requests`              | owner              | Query `status` → `{ join_requests }`                                                                                                              |
-| POST   | `/owner/join-requests/:id/activate` | owner              | `{ room_number?, rent_amount, due_day, deposit_amount? }` — owner sets money terms; calls existing CreateTenant                                   |
-| POST   | `/owner/join-requests/:id/reject`   | owner              | `{ ok: true }`                                                                                                                                    |
+
+## Join (invite-in, dashboard-now)
+
+The invite code **is** authorization. There is no second owner identity review. Owner only assigns room/rent later.
+
+| Method | Path                                | Auth               | Notes |
+| ------ | ----------------------------------- | ------------------ | ----- |
+| GET    | `/join/invite/:code`                | public             | `{ property_id, property_name, owner_name }` — never VPA |
+| GET    | `/join/me`                          | pending tenant JWT | `{ join, message }` — only while profile not yet submitted (`tenant_id` null) |
+| POST   | `/join`                             | pending tenant JWT | **multipart** preferred: `name`, `permanent_address`, `current_address`, `parent_name`, `emergency_phone`, `consent=true`, file `image` (ID photo ≤2MB, no OCR). Creates `pending_allocation` tenant, links `users.tenant_id`, marks join `approved`. Response `{ join, tenant, message }`. Client must re-exchange Firebase token for JWT with `tenant_id`. |
+| GET    | `/owner/invite`                     | owner              | `{ invite_code, payment_mode }` |
+| POST   | `/owner/invite/rotate`              | owner              | `{ invite_code }` |
+| GET    | `/owner/join-requests`              | owner              | Query `status` → `{ join_requests }`. Use `approved` for awaiting room/rent; `pending` for incomplete profiles (rejectable). |
+| POST   | `/owner/join-requests/:id/activate` | owner              | **Assign terms**: `{ room_number?, rent_amount, due_day, deposit_amount? }` — flips tenant to `active`, creates deposit due |
+| POST   | `/owner/join-requests/:id/reject`   | owner              | Only while join `status=pending` (never finished form). `{ ok: true }` |
+| GET    | `/owner/tenants/:id/id-photo`       | owner              | Raw image bytes. Never in list JSON (`has_id_photo` flag only). |
+
+Tenant profile fields: `permanent_address`, `current_address`, `parent_name`, `emergency_phone`, `joined_on` (server date of submit). Personal phone is the login phone.
 
 Walk-in `POST /owner/tenants` remains for phone-less / cash-only people. Do not use it as the default onboarding path.
 
-Events: `JoinRequested`, `JoinApproved`, `JoinRejected`.
+Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` (pending_allocation), `ConsentGiven` (id photo), `DepositTermsAccepted` on assign-terms.
 
 ## Owner (role=owner)
 
 | Method | Path                                 | Notes                                                                                        |
 | ------ | ------------------------------------ | -------------------------------------------------------------------------------------------- |
 | GET    | `/owner/properties`                  | `{ properties: [...] }` — UPI VPA **never** returned                                         |
-| GET    | `/owner/tenants`                     | `{ tenants: [...] }`                                                                         |
+| GET    | `/owner/tenants`                     | `{ tenants: [...] }` — includes profile fields + `has_id_photo`                              |
 | POST   | `/owner/tenants`                     | `{ name, phone?, room_number?, rent_amount, due_day, notice_period_days?, deposit_amount? }` |
 | PATCH  | `/owner/tenants/:id`                 | Partial update                                                                               |
+| GET    | `/owner/tenants/:id/id-photo`        | Raw ID photo bytes                                                                           |
 | POST   | `/owner/tenants/:id/notice`          | Optional `{ notice_given_at }`                                                               |
 | POST   | `/owner/tenants/:id/vacate`          |                                                                                              |
 | POST   | `/owner/tenants/:id/attach-phone`    | `{ phone }`                                                                                  |

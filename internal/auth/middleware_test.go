@@ -106,6 +106,38 @@ func TestRequireTenant_ActivePasses(t *testing.T) {
 	}
 }
 
+func TestRequireTenant_PendingAllocationPasses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "middleware-test-secret"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	user := &domain.User{
+		ID:         uuid.New(),
+		Phone:      "9999999999",
+		Role:       domain.RoleTenant,
+		TenantID:   &tenantID,
+		PropertyID: &propID,
+	}
+	token, err := IssueToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	repo := &mockTenantRepo{
+		tenant: &domain.Tenant{ID: tenantID, Status: domain.TenantStatusPendingAllocation},
+	}
+	r := gin.New()
+	r.GET("/me", RequireTenant(secret, repo), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	req := httptest.NewRequest(http.MethodGet, "/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestRequireTenant_PendingJoinForbidden(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const secret = "middleware-test-secret"
@@ -131,7 +163,7 @@ func TestRequireTenant_PendingJoinForbidden(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "waiting for owner") {
+	if !strings.Contains(w.Body.String(), "complete your profile") {
 		t.Fatalf("body=%s", w.Body.String())
 	}
 }

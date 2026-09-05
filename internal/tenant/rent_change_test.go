@@ -72,7 +72,7 @@ func TestUpdateTenantRentChangeDoesNotTouchDues(t *testing.T) {
 	id := uuid.New()
 	prop := uuid.New()
 	repo := &memTenants{byID: map[uuid.UUID]*domain.Tenant{
-		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: 5, Status: domain.TenantStatusActive},
+		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: domain.Int16Ptr(5), Status: domain.TenantStatusActive},
 	}}
 	pub := &recPub{}
 	// Snapshot of an "existing due" that must remain untouched by UpdateTenant.
@@ -80,7 +80,7 @@ func TestUpdateTenantRentChangeDoesNotTouchDues(t *testing.T) {
 	svc := NewService(repo, &memPush{}, noopBilling{}, pub)
 
 	updated := &domain.Tenant{
-		ID: id, PropertyID: prop, Name: "A", RentAmount: 12000, DueDay: 5, Status: domain.TenantStatusActive,
+		ID: id, PropertyID: prop, Name: "A", RentAmount: 12000, DueDay: domain.Int16Ptr(5), Status: domain.TenantStatusActive,
 	}
 	if err := svc.UpdateTenant(context.Background(), updated); err != nil {
 		t.Fatal(err)
@@ -114,12 +114,12 @@ func TestUpdateTenantNoEventWhenRentUnchanged(t *testing.T) {
 	id := uuid.New()
 	prop := uuid.New()
 	repo := &memTenants{byID: map[uuid.UUID]*domain.Tenant{
-		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: 5},
+		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: domain.Int16Ptr(5)},
 	}}
 	pub := &recPub{}
 	svc := NewService(repo, nil, nil, pub)
 	if err := svc.UpdateTenant(context.Background(), &domain.Tenant{
-		ID: id, PropertyID: prop, Name: "B", RentAmount: 10000, DueDay: 5,
+		ID: id, PropertyID: prop, Name: "B", RentAmount: 10000, DueDay: domain.Int16Ptr(5),
 	}); err != nil {
 		t.Fatal(err)
 	}

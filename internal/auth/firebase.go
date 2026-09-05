@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	firebase "firebase.google.com/go/v4"
 	fbauth "firebase.google.com/go/v4/auth"
@@ -11,11 +12,13 @@ import (
 
 // FirebaseIdentity is the verified Firebase Auth identity extracted from an ID token.
 type FirebaseIdentity struct {
-	UID   string
-	Phone string
+	UID           string
+	Phone         string
+	Email         string
+	EmailVerified bool
 }
 
-// FirebaseVerifier validates Firebase ID tokens and extracts UID + phone.
+// FirebaseVerifier validates Firebase ID tokens and extracts UID + phone/email.
 type FirebaseVerifier struct {
 	client *fbauth.Client
 }
@@ -40,15 +43,26 @@ func NewFirebaseVerifier(ctx context.Context, projectID, credentialsPath string)
 	return &FirebaseVerifier{client: client}, nil
 }
 
-// IdentityFromIDToken verifies a Firebase ID token and returns UID plus E.164 phone.
+// IdentityFromIDToken verifies a Firebase ID token and returns UID plus normalized phone and/or email.
 func (v *FirebaseVerifier) IdentityFromIDToken(ctx context.Context, idToken string) (FirebaseIdentity, error) {
 	token, err := v.client.VerifyIDToken(ctx, idToken)
 	if err != nil {
 		return FirebaseIdentity{}, fmt.Errorf("%w: %v", ErrInvalidFirebaseToken, err)
 	}
 	phone, _ := token.Claims["phone_number"].(string)
-	if token.UID == "" || phone == "" {
+	email, _ := token.Claims["email"].(string)
+	emailVerified, _ := token.Claims["email_verified"].(bool)
+
+	phone = NormalizePhone(phone)
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	if token.UID == "" || (phone == "" && email == "") {
 		return FirebaseIdentity{}, ErrInvalidFirebaseToken
 	}
-	return FirebaseIdentity{UID: token.UID, Phone: phone}, nil
+	return FirebaseIdentity{
+		UID:           token.UID,
+		Phone:         phone,
+		Email:         email,
+		EmailVerified: emailVerified,
+	}, nil
 }

@@ -19,6 +19,7 @@ type TenantRepository interface {
 type UserRepository interface {
 	Create(ctx context.Context, u *domain.User) error
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
+	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error
@@ -34,8 +35,9 @@ type OTPRepository interface {
 	CountRecent(ctx context.Context, phone string, since time.Time) (int, error)
 }
 
-// PropertyRepository looks up properties by owner phone for first-login user creation.
+// PropertyRepository looks up properties by owner phone or email for first-login user creation.
 type PropertyRepository interface {
 	GetByOwnerPhone(ctx context.Context, phone string) (*domain.Property, error)
+	GetByOwnerEmail(ctx context.Context, email string) (*domain.Property, error)
 	GetByInviteCode(ctx context.Context, code string) (*domain.Property, error)
 }

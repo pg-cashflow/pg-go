@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,12 +33,16 @@ func (s *stubOTP) CountRecent(context.Context, string, time.Time) (int, error) {
 
 type stubUsers struct {
 	byPhone    map[string]*domain.User
+	byEmail    map[string]*domain.User
 	byFirebase map[string]*domain.User
 }
 
 func (s *stubUsers) Create(_ context.Context, u *domain.User) error {
 	if s.byPhone == nil {
 		s.byPhone = map[string]*domain.User{}
+	}
+	if s.byEmail == nil {
+		s.byEmail = map[string]*domain.User{}
 	}
 	if s.byFirebase == nil {
 		s.byFirebase = map[string]*domain.User{}
@@ -51,12 +56,31 @@ func (s *stubUsers) Create(_ context.Context, u *domain.User) error {
 		cp.FirebaseUID = &uid
 		s.byFirebase[uid] = &cp
 	}
-	s.byPhone[u.Phone] = &cp
+	if u.Phone != "" {
+		s.byPhone[u.Phone] = &cp
+	}
+	if u.Email != "" {
+		s.byEmail[strings.ToLower(u.Email)] = &cp
+	}
 	return nil
 }
 
 func (s *stubUsers) GetByPhone(_ context.Context, phone string) (*domain.User, error) {
-	u, ok := s.byPhone[phone]
+	norm := NormalizePhone(phone)
+	for k, u := range s.byPhone {
+		if k == phone || NormalizePhone(k) == norm {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func (s *stubUsers) GetByEmail(_ context.Context, email string) (*domain.User, error) {
+	if s.byEmail == nil {
+		return nil, pgx.ErrNoRows
+	}
+	u, ok := s.byEmail[strings.ToLower(email)]
 	if !ok {
 		return nil, pgx.ErrNoRows
 	}
@@ -88,9 +112,6 @@ func (s *stubUsers) LinkFirebaseUID(_ context.Context, userID uuid.UUID, firebas
 		if u.ID != userID {
 			continue
 		}
-		if u.FirebaseUID != nil && *u.FirebaseUID != firebaseUID {
-			return errors.New("firebase uid conflict")
-		}
 		uid := firebaseUID
 		u.FirebaseUID = &uid
 		if s.byFirebase == nil {
@@ -120,15 +141,7 @@ func (s *stubTenantsAuth) GetByPhone(context.Context, string) (*domain.Tenant, e
 	return nil, pgx.ErrNoRows
 }
 
-type stubProps struct{}
 
-func (stubProps) GetByOwnerPhone(context.Context, string) (*domain.Property, error) {
-	return nil, pgx.ErrNoRows
-}
-
-func (stubProps) GetByInviteCode(context.Context, string) (*domain.Property, error) {
-	return nil, pgx.ErrNoRows
-}
 
 func TestVerifyOTPVacatedExistingUser(t *testing.T) {
 	secret := "otp-secret"

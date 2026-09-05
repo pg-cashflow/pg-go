@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +48,14 @@ func (r *PropertyRepo) GetByOwnerPhone(ctx context.Context, phone string) (*doma
 		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
 		FROM properties WHERE owner_phone=$1
 		ORDER BY created_at ASC LIMIT 1`, phone))
+}
+
+func (r *PropertyRepo) GetByOwnerEmail(ctx context.Context, email string) (*domain.Property, error) {
+	clean := strings.ToLower(strings.TrimSpace(email))
+	return scanProperty(r.db.QueryRow(ctx, `
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
+		FROM properties WHERE LOWER(owner_email)=$1
+		ORDER BY created_at ASC LIMIT 1`, clean))
 }
 
 func (r *PropertyRepo) GetByInviteCode(ctx context.Context, code string) (*domain.Property, error) {
@@ -111,32 +120,18 @@ func NewTenantRepo(db DBTX) *TenantRepo { return &TenantRepo{db: db} }
 
 func (r *TenantRepo) WithTx(tx pgx.Tx) *TenantRepo { return &TenantRepo{db: tx} }
 
-func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
-	now := time.Now().UTC()
-	t.CreatedAt = now
-	t.UpdatedAt = now
-	if t.Status == "" {
-		t.Status = domain.TenantStatusActive
-	}
-	return r.db.QueryRow(ctx, `
-		INSERT INTO tenants (
-			property_id, name, phone, room_number, aadhaar_last4, rent_amount, due_day,
-			notice_period_days, notice_given_at, credit_balance_paise, status, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		RETURNING id`,
-		t.PropertyID, t.Name, t.Phone, t.RoomNumber, t.AadhaarLast4, t.RentAmount, t.DueDay,
-		t.NoticePeriodDays, t.NoticeGivenAt, t.CreditBalancePaise, t.Status, t.CreatedAt, t.UpdatedAt,
-	).Scan(&t.ID)
-}
+const tenantCols = `id, property_id, name, phone, room_number, room_id, aadhaar_last4, rent_amount, due_day,
+	notice_period_days, notice_given_at, credit_balance_paise, status,
+	permanent_address, current_address, parent_name, emergency_phone, joined_on, has_id_photo,
+	created_at, updated_at`
 
-func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	var t domain.Tenant
-	err := r.db.QueryRow(ctx, `
-		SELECT id, property_id, name, phone, room_number, aadhaar_last4, rent_amount, due_day,
-			notice_period_days, notice_given_at, credit_balance_paise, status, created_at, updated_at
-		FROM tenants WHERE id=$1`, id).Scan(
-		&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
-		&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status, &t.CreatedAt, &t.UpdatedAt,
+	err := row.Scan(
+		&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.RoomID, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
+		&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status,
+		&t.PermanentAddress, &t.CurrentAddress, &t.ParentName, &t.EmergencyPhone, &t.JoinedOn, &t.HasIDPhoto,
+		&t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -144,25 +139,63 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 	return &t, nil
 }
 
+func nullIfEmptyBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	return b
+}
+
+func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
+	now := time.Now().UTC()
+	t.CreatedAt = now
+	t.UpdatedAt = now
+	if t.Status == "" {
+		t.Status = domain.TenantStatusActive
+	}
+	t.HasIDPhoto = len(t.IDPhotoBytes) > 0
+	return r.db.QueryRow(ctx, `
+		INSERT INTO tenants (
+			property_id, name, phone, room_number, room_id, aadhaar_last4, rent_amount, due_day,
+			notice_period_days, notice_given_at, credit_balance_paise, status,
+			permanent_address, current_address, parent_name, emergency_phone, joined_on,
+			id_photo_bytes, has_id_photo, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		RETURNING id`,
+		t.PropertyID, t.Name, t.Phone, t.RoomNumber, t.RoomID, t.AadhaarLast4, t.RentAmount, t.DueDay,
+		t.NoticePeriodDays, t.NoticeGivenAt, t.CreditBalancePaise, t.Status,
+		t.PermanentAddress, t.CurrentAddress, t.ParentName, t.EmergencyPhone, t.JoinedOn,
+		nullIfEmptyBytes(t.IDPhotoBytes), t.HasIDPhoto, t.CreatedAt, t.UpdatedAt,
+	).Scan(&t.ID)
+}
+
+func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1`, id))
+}
+
+func (r *TenantRepo) GetIDPhoto(ctx context.Context, id uuid.UUID) ([]byte, error) {
+	var b []byte
+	err := r.db.QueryRow(ctx, `SELECT id_photo_bytes FROM tenants WHERE id=$1`, id).Scan(&b)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 func (r *TenantRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.Tenant, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, property_id, name, phone, room_number, aadhaar_last4, rent_amount, due_day,
-			notice_period_days, notice_given_at, credit_balance_paise, status, created_at, updated_at
-		FROM tenants WHERE property_id=$1 ORDER BY created_at DESC`, propertyID)
+		SELECT `+tenantCols+` FROM tenants WHERE property_id=$1 ORDER BY created_at DESC`, propertyID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []domain.Tenant
 	for rows.Next() {
-		var t domain.Tenant
-		if err := rows.Scan(
-			&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
-			&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status, &t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, t)
+		out = append(out, *t)
 	}
 	return out, rows.Err()
 }
@@ -170,22 +203,21 @@ func (r *TenantRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID) (
 func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 	t.UpdatedAt = time.Now().UTC()
 	_, err := r.db.Exec(ctx, `
-		UPDATE tenants SET name=$2, phone=$3, room_number=$4, aadhaar_last4=$5, rent_amount=$6,
-			due_day=$7, notice_period_days=$8, notice_given_at=$9, credit_balance_paise=$10,
-			status=$11, updated_at=$12
+		UPDATE tenants SET name=$2, phone=$3, room_number=$4, room_id=$5, aadhaar_last4=$6, rent_amount=$7,
+			due_day=$8, notice_period_days=$9, notice_given_at=$10, credit_balance_paise=$11,
+			status=$12, permanent_address=$13, current_address=$14, parent_name=$15,
+			emergency_phone=$16, joined_on=$17, updated_at=$18
 		WHERE id=$1`,
-		t.ID, t.Name, t.Phone, t.RoomNumber, t.AadhaarLast4, t.RentAmount,
+		t.ID, t.Name, t.Phone, t.RoomNumber, t.RoomID, t.AadhaarLast4, t.RentAmount,
 		t.DueDay, t.NoticePeriodDays, t.NoticeGivenAt, t.CreditBalancePaise,
-		t.Status, t.UpdatedAt,
+		t.Status, t.PermanentAddress, t.CurrentAddress, t.ParentName,
+		t.EmergencyPhone, t.JoinedOn, t.UpdatedAt,
 	)
 	return err
 }
 
 func (r *TenantRepo) ListActiveByDueDay(ctx context.Context, dueDay int, propertyID *uuid.UUID) ([]domain.Tenant, error) {
-	q := `
-		SELECT id, property_id, name, phone, room_number, aadhaar_last4, rent_amount, due_day,
-			notice_period_days, notice_given_at, credit_balance_paise, status, created_at, updated_at
-		FROM tenants WHERE status='active' AND due_day=$1`
+	q := `SELECT ` + tenantCols + ` FROM tenants WHERE status='active' AND due_day=$1`
 	args := []any{dueDay}
 	if propertyID != nil {
 		q += ` AND property_id=$2`
@@ -198,29 +230,15 @@ func (r *TenantRepo) ListActiveByDueDay(ctx context.Context, dueDay int, propert
 	defer rows.Close()
 	var out []domain.Tenant
 	for rows.Next() {
-		var t domain.Tenant
-		if err := rows.Scan(
-			&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
-			&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status, &t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, t)
+		out = append(out, *t)
 	}
 	return out, rows.Err()
 }
 
 func (r *TenantRepo) GetByPhone(ctx context.Context, phone string) (*domain.Tenant, error) {
-	var t domain.Tenant
-	err := r.db.QueryRow(ctx, `
-		SELECT id, property_id, name, phone, room_number, aadhaar_last4, rent_amount, due_day,
-			notice_period_days, notice_given_at, credit_balance_paise, status, created_at, updated_at
-		FROM tenants WHERE phone=$1`, phone).Scan(
-		&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
-		&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status, &t.CreatedAt, &t.UpdatedAt,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
+	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE phone=$1`, phone))
 }

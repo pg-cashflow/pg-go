@@ -12,7 +12,7 @@ func TestVacateDeletesPushPreservesTokens(t *testing.T) {
 	id := uuid.New()
 	prop := uuid.New()
 	repo := &memTenants{byID: map[uuid.UUID]*domain.Tenant{
-		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: 1, Status: domain.TenantStatusActive},
+		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 10000, DueDay: domain.Int16Ptr(1), Status: domain.TenantStatusActive},
 	}}
 	push := &memPush{}
 	pub := &recPub{}
@@ -59,7 +59,7 @@ func TestAttachPhone(t *testing.T) {
 	id := uuid.New()
 	prop := uuid.New()
 	repo := &memTenants{byID: map[uuid.UUID]*domain.Tenant{
-		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 1, DueDay: 1},
+		id: {ID: id, PropertyID: prop, Name: "A", RentAmount: 1, DueDay: domain.Int16Ptr(1)},
 	}}
 	pub := &recPub{}
 	svc := NewService(repo, nil, nil, pub)

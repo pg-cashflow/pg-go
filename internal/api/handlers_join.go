@@ -2,13 +2,13 @@ package api
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
@@ -32,7 +32,7 @@ func (h *Handlers) LookupInvite(c *gin.Context) {
 	})
 }
 
-// JoinMe handles GET /join/me (pending tenant).
+// JoinMe handles GET /join/me (pending tenant — profile not yet submitted).
 func (h *Handlers) JoinMe(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
@@ -40,7 +40,7 @@ func (h *Handlers) JoinMe(c *gin.Context) {
 	}
 	j, err := h.Joins.Me(c.Request.Context(), claims.UserID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "waiting for owner to assign room and rent"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "complete your profile to continue"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -51,74 +51,106 @@ func (h *Handlers) JoinMe(c *gin.Context) {
 			"phone":       j.Phone,
 			"property_id": claims.PropertyID,
 		},
-		"message": "Owner will assign your room and rent.",
+		"message": "Fill your details to enter the tenant portal.",
 	})
 }
 
-type joinProfileBody struct {
-	Name        string `json:"name"`
-	QRPayload   string `json:"qr_payload"`
-	UIDLast4    string `json:"uid_last4"`
-	Consent     bool   `json:"consent"`
-	Confirm     bool   `json:"confirm"`
-	AadhaarName string `json:"aadhaar_name"`
-}
+const maxJoinIDPhoto = 2 << 20
 
-// JoinProfile handles POST /join (set name / optional KYC on pending request).
+// JoinProfile handles POST /join (multipart: profile fields + id photo).
+// Completes onboarding: creates pending_allocation tenant and links the user.
 func (h *Handlers) JoinProfile(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
 		return
 	}
-	var body joinProfileBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
-		return
+
+	ct := c.GetHeader("Content-Type")
+	var name, permanent, current, parent, emergency string
+	var consent bool
+	var photo []byte
+
+	if strings.HasPrefix(ct, "multipart/") {
+		if err := c.Request.ParseMultipartForm(maxJoinIDPhoto + (1 << 20)); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid multipart body"})
+			return
+		}
+		name = c.PostForm("name")
+		permanent = c.PostForm("permanent_address")
+		current = c.PostForm("current_address")
+		parent = c.PostForm("parent_name")
+		emergency = c.PostForm("emergency_phone")
+		consent = c.PostForm("consent") == "true" || c.PostForm("consent") == "1"
+		if f, err := c.FormFile("image"); err == nil && f != nil {
+			if f.Size > maxJoinIDPhoto {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				return
+			}
+			src, err := f.Open()
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "image read failed"})
+				return
+			}
+			defer src.Close()
+			photo, err = io.ReadAll(io.LimitReader(src, maxJoinIDPhoto+1))
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "image read failed"})
+				return
+			}
+			if len(photo) > maxJoinIDPhoto {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				return
+			}
+		}
+	} else {
+		var body struct {
+			Name             string `json:"name"`
+			PermanentAddress string `json:"permanent_address"`
+			CurrentAddress   string `json:"current_address"`
+			ParentName       string `json:"parent_name"`
+			EmergencyPhone   string `json:"emergency_phone"`
+			Consent          bool   `json:"consent"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		name = body.Name
+		permanent = body.PermanentAddress
+		current = body.CurrentAddress
+		parent = body.ParentName
+		emergency = body.EmergencyPhone
+		consent = body.Consent
 	}
-	var decoded aadhaar.AadhaarData
-	var last4 *string
-	if body.QRPayload != "" {
-		if !body.Consent {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "consent required"})
-			return
-		}
-		d, _, err := aadhaar.DecodeAadhaarQR(body.QRPayload)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "qr decode failed — use manual last-4 if the card has no Secure QR"})
-			return
-		}
-		decoded = d
-		if !body.Confirm {
-			c.JSON(http.StatusOK, gin.H{"aadhaar": decoded, "needs_confirm": true})
-			return
-		}
-		if decoded.UIDLast4 != "" && decoded.Verified {
-			last4 = &decoded.UIDLast4
-		}
-		if body.Name == "" && decoded.Name != "" {
-			body.Name = decoded.Name
-		}
-		if h.Events != nil && claims.PropertyID != nil {
-			_ = aadhaar.RecordConsent(c.Request.Context(), h.Events, uuid.Nil, *claims.PropertyID, "join_app", "aadhaar_kyc")
-		}
-	} else if strings.TrimSpace(body.UIDLast4) != "" {
-		if !body.Consent {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "consent required"})
-			return
-		}
-		v := strings.TrimSpace(body.UIDLast4)
-		last4 = &v
-	}
-	if strings.TrimSpace(body.Name) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name required"})
-		return
-	}
-	j, err := h.Joins.SetProfile(c.Request.Context(), claims.UserID, body.Name, last4)
+
+	j, t, err := h.Joins.CompleteOnboarding(c.Request.Context(), claims.UserID, joinsvc.ProfileInput{
+		Name:             name,
+		PermanentAddress: permanent,
+		CurrentAddress:   current,
+		ParentName:       parent,
+		EmergencyPhone:   emergency,
+		Consent:          consent,
+		IDPhotoBytes:     photo,
+	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// ADR-2 H2 gap case: CompleteOnboarding can wrap DB constraint errors
+		// through a 4xx path. Use typed error matching via clientErr rather
+		// than err.Error() pass-through.
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, joinsvc.ErrNotPending):
+			status = http.StatusNotFound
+		case errors.Is(err, joinsvc.ErrAlreadyOnboarded):
+			status = http.StatusConflict
+		}
+		respondErr(c, clientErr(status, err.Error()))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"join": j, "aadhaar": decoded})
+	c.JSON(http.StatusOK, gin.H{
+		"join":   j,
+		"tenant": tenantResponse(t),
+		"message": "Profile saved. Re-exchange your Firebase token to enter the tenant portal.",
+	})
 }
 
 // OwnerInvite handles GET /owner/invite.
@@ -143,7 +175,7 @@ func (h *Handlers) OwnerRotateInvite(c *gin.Context) {
 	}
 	code, err := h.Joins.RotateInvite(c.Request.Context(), pid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"invite_code": code})
@@ -177,7 +209,7 @@ type activateJoinBody struct {
 	NoticePeriodDays int16   `json:"notice_period_days"`
 }
 
-// ActivateJoin handles POST /owner/join-requests/:id/activate.
+// ActivateJoin handles POST /owner/join-requests/:id/activate (assign room/rent).
 func (h *Handlers) ActivateJoin(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
@@ -209,13 +241,13 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 		if errors.Is(err, joinsvc.ErrNotFound) {
 			status = http.StatusNotFound
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(status, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, tenantResponse(t))
 }
 
-// RejectJoin handles POST /owner/join-requests/:id/reject.
+// RejectJoin handles POST /owner/join-requests/:id/reject (incomplete profile only).
 func (h *Handlers) RejectJoin(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
@@ -227,7 +259,7 @@ func (h *Handlers) RejectJoin(c *gin.Context) {
 		return
 	}
 	if err := h.Joins.Reject(c.Request.Context(), pid, id); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

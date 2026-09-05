@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -138,16 +139,23 @@ func createTenantCore(
 	in domain.NewTenantInput,
 	depositPaise int,
 ) (*domain.Tenant, error) {
+	dueDay := in.DueDay
 	t := &domain.Tenant{
-		PropertyID:       in.PropertyID,
-		Name:             in.Name,
-		Phone:            in.Phone,
-		RoomNumber:       in.RoomNumber,
-		AadhaarLast4:     in.AadhaarLast4,
-		RentAmount:       in.RentAmount,
-		DueDay:           in.DueDay,
-		NoticePeriodDays: in.NoticePeriodDays,
-		Status:           domain.TenantStatusActive,
+		PropertyID:         in.PropertyID,
+		Name:               in.Name,
+		Phone:              in.Phone,
+		RoomNumber:         in.RoomNumber,
+		AadhaarLast4:       in.AadhaarLast4,
+		RentAmount:         in.RentAmount,
+		DueDay:             &dueDay,
+		NoticePeriodDays:   in.NoticePeriodDays,
+		Status:             domain.TenantStatusActive,
+		PermanentAddress:   in.PermanentAddress,
+		CurrentAddress:     in.CurrentAddress,
+		ParentName:         in.ParentName,
+		EmergencyPhone:     in.EmergencyPhone,
+		JoinedOn:           in.JoinedOn,
+		IDPhotoBytes:       in.IDPhotoBytes,
 	}
 	if err := tenants.Create(ctx, t); err != nil {
 		return nil, err
@@ -185,9 +193,240 @@ func createTenantCore(
 	return t, nil
 }
 
+// CreatePendingFromOnboarding creates a tenant with pending_allocation and no deposit due.
+func (s *Service) CreatePendingFromOnboarding(ctx context.Context, in domain.NewTenantInput) (*domain.Tenant, error) {
+	if strings.TrimSpace(in.Name) == "" {
+		return nil, fmt.Errorf("tenant: name is required")
+	}
+	if in.NoticePeriodDays <= 0 {
+		in.NoticePeriodDays = 30
+	}
+	t := &domain.Tenant{
+		PropertyID:       in.PropertyID,
+		Name:             strings.TrimSpace(in.Name),
+		Phone:            in.Phone,
+		RentAmount:       0,
+		DueDay:           nil,
+		NoticePeriodDays: in.NoticePeriodDays,
+		Status:           domain.TenantStatusPendingAllocation,
+		PermanentAddress: strings.TrimSpace(in.PermanentAddress),
+		CurrentAddress:   strings.TrimSpace(in.CurrentAddress),
+		ParentName:       strings.TrimSpace(in.ParentName),
+		EmergencyPhone:   strings.TrimSpace(in.EmergencyPhone),
+		JoinedOn:         in.JoinedOn,
+		IDPhotoBytes:     in.IDPhotoBytes,
+		HasIDPhoto:       len(in.IDPhotoBytes) > 0,
+	}
+
+	create := func(tenants Repository, pub events.Publisher, at time.Time) (*domain.Tenant, error) {
+		if err := tenants.Create(ctx, t); err != nil {
+			return nil, err
+		}
+		if err := pub.Publish(ctx, domain.Event{
+			TenantID:   domain.Ptr(t.ID),
+			PropertyID: t.PropertyID,
+			EventType:  domain.EvtTenantCreated,
+			OccurredAt: at,
+			Payload:    json.RawMessage(`{"status":"pending_allocation"}`),
+		}); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+
+	if s.pool != nil && s.tenantDB != nil && s.eventDB != nil {
+		var out *domain.Tenant
+		err := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
+			tenants := s.tenantDB.WithTx(tx)
+			pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+			got, err := create(tenants, pub, s.now())
+			if err != nil {
+				return err
+			}
+			out = got
+			return nil
+		})
+		return out, err
+	}
+	return create(s.tenants, s.pub, s.now())
+}
+
+// CreatePendingFromOnboardingTx creates pending_allocation tenant on an open transaction.
+func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput) (*domain.Tenant, error) {
+	if strings.TrimSpace(in.Name) == "" {
+		return nil, fmt.Errorf("tenant: name is required")
+	}
+	if in.NoticePeriodDays <= 0 {
+		in.NoticePeriodDays = 30
+	}
+	if s.tenantDB == nil || s.eventDB == nil {
+		return nil, fmt.Errorf("tenant: tx create requires pool wiring")
+	}
+	t := &domain.Tenant{
+		PropertyID:       in.PropertyID,
+		Name:             strings.TrimSpace(in.Name),
+		Phone:            in.Phone,
+		RentAmount:       0,
+		DueDay:           nil,
+		NoticePeriodDays: in.NoticePeriodDays,
+		Status:           domain.TenantStatusPendingAllocation,
+		PermanentAddress: strings.TrimSpace(in.PermanentAddress),
+		CurrentAddress:   strings.TrimSpace(in.CurrentAddress),
+		ParentName:       strings.TrimSpace(in.ParentName),
+		EmergencyPhone:   strings.TrimSpace(in.EmergencyPhone),
+		JoinedOn:         in.JoinedOn,
+		IDPhotoBytes:     in.IDPhotoBytes,
+		HasIDPhoto:       len(in.IDPhotoBytes) > 0,
+	}
+	tenants := s.tenantDB.WithTx(tx)
+	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+	if err := tenants.Create(ctx, t); err != nil {
+		return nil, err
+	}
+	if err := pub.Publish(ctx, domain.Event{
+		TenantID:   domain.Ptr(t.ID),
+		PropertyID: t.PropertyID,
+		EventType:  domain.EvtTenantCreated,
+		OccurredAt: s.now(),
+		Payload:    json.RawMessage(`{"status":"pending_allocation"}`),
+	}); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// AssignTerms flips pending_allocation → active and creates the deposit due.
+func (s *Service) AssignTerms(ctx context.Context, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error) {
+	if dueDay < 1 || dueDay > 28 {
+		return nil, ErrInvalidDueDay
+	}
+	if rentAmount <= 0 {
+		return nil, fmt.Errorf("tenant: rent_amount must be positive")
+	}
+	if noticePeriodDays <= 0 {
+		noticePeriodDays = 30
+	}
+	if depositPaise <= 0 {
+		depositPaise = rentAmount
+	}
+
+	assign := func(tenants Repository, bill DepositDueCreator, pub events.Publisher, at time.Time) (*domain.Tenant, error) {
+		t, err := tenants.GetByID(ctx, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		if t.Status != domain.TenantStatusPendingAllocation {
+			return nil, fmt.Errorf("tenant: not awaiting room/rent assignment")
+		}
+		t.RoomNumber = room
+		t.RentAmount = rentAmount
+		t.DueDay = &dueDay
+		t.NoticePeriodDays = noticePeriodDays
+		t.Status = domain.TenantStatusActive
+		if err := tenants.Update(ctx, t); err != nil {
+			return nil, err
+		}
+		termsPayload, _ := json.Marshal(domain.DepositTermsAcceptedPayload{
+			Channel:          "assign_terms",
+			NoticePeriodDays: int(t.NoticePeriodDays),
+		})
+		if err := pub.Publish(ctx, domain.Event{
+			TenantID:   domain.Ptr(t.ID),
+			PropertyID: t.PropertyID,
+			EventType:  domain.EvtDepositTermsAccepted,
+			OccurredAt: at,
+			Payload:    termsPayload,
+		}); err != nil {
+			return nil, err
+		}
+		if bill != nil {
+			if _, err := bill.CreateDepositDue(ctx, t, depositPaise); err != nil {
+				return nil, fmt.Errorf("tenant: create deposit due: %w", err)
+			}
+		}
+		return t, nil
+	}
+
+	if s.pool != nil && s.tenantDB != nil && s.dueDB != nil && s.eventDB != nil {
+		var out *domain.Tenant
+		err := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
+			tenants := s.tenantDB.WithTx(tx)
+			dues := s.dueDB.WithTx(tx)
+			pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+			bill := billing.NewService(dues, tenants, pub)
+			got, err := assign(tenants, bill, pub, s.now())
+			if err != nil {
+				return err
+			}
+			out = got
+			return nil
+		})
+		return out, err
+	}
+	return assign(s.tenants, s.billing, s.pub, s.now())
+}
+
+// AssignTermsTx assigns room/rent on an open transaction.
+func (s *Service) AssignTermsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error) {
+	if dueDay < 1 || dueDay > 28 {
+		return nil, ErrInvalidDueDay
+	}
+	if rentAmount <= 0 {
+		return nil, fmt.Errorf("tenant: rent_amount must be positive")
+	}
+	if noticePeriodDays <= 0 {
+		noticePeriodDays = 30
+	}
+	if depositPaise <= 0 {
+		depositPaise = rentAmount
+	}
+	if s.tenantDB == nil || s.dueDB == nil || s.eventDB == nil {
+		return nil, fmt.Errorf("tenant: tx assign requires pool wiring")
+	}
+	tenants := s.tenantDB.WithTx(tx)
+	dues := s.dueDB.WithTx(tx)
+	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+	bill := billing.NewService(dues, tenants, pub)
+	t, err := tenants.GetByID(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != domain.TenantStatusPendingAllocation {
+		return nil, fmt.Errorf("tenant: not awaiting room/rent assignment")
+	}
+	t.RoomNumber = room
+	t.RentAmount = rentAmount
+	t.DueDay = &dueDay
+	t.NoticePeriodDays = noticePeriodDays
+	t.Status = domain.TenantStatusActive
+	if err := tenants.Update(ctx, t); err != nil {
+		return nil, err
+	}
+	termsPayload, _ := json.Marshal(domain.DepositTermsAcceptedPayload{
+		Channel:          "assign_terms",
+		NoticePeriodDays: int(t.NoticePeriodDays),
+	})
+	if err := pub.Publish(ctx, domain.Event{
+		TenantID:   domain.Ptr(t.ID),
+		PropertyID: t.PropertyID,
+		EventType:  domain.EvtDepositTermsAccepted,
+		OccurredAt: s.now(),
+		Payload:    termsPayload,
+	}); err != nil {
+		return nil, err
+	}
+	if _, err := bill.CreateDepositDue(ctx, t, depositPaise); err != nil {
+		return nil, fmt.Errorf("tenant: create deposit due: %w", err)
+	}
+	return t, nil
+}
+
 // UpdateTenant updates mutable fields. Rent changes publish RentAmountChanged and never touch dues.
 func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) error {
-	if t.DueDay < 1 || t.DueDay > 28 {
+	if t.Status == domain.TenantStatusPendingAllocation {
+		return fmt.Errorf("tenant: assign room and rent before editing")
+	}
+	if t.DueDay == nil || *t.DueDay < 1 || *t.DueDay > 28 {
 		return ErrInvalidDueDay
 	}
 	if t.RentAmount <= 0 {

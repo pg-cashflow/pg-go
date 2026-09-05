@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,28 +105,54 @@ func NewUserRepo(db DBTX) *UserRepo { return &UserRepo{db: db} }
 
 func (r *UserRepo) WithTx(tx pgx.Tx) *UserRepo { return &UserRepo{db: tx} }
 
-const userCols = `id, phone, role, tenant_id, property_id, firebase_uid, created_at, last_login_at`
+const userCols = `id, phone, email, role, tenant_id, property_id, firebase_uid, created_at, last_login_at`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
-	err := row.Scan(&u.ID, &u.Phone, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.CreatedAt, &u.LastLoginAt)
+	var phone, email sql.NullString
+	err := row.Scan(&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.CreatedAt, &u.LastLoginAt)
 	if err != nil {
 		return nil, err
+	}
+	if phone.Valid {
+		u.Phone = phone.String
+	}
+	if email.Valid {
+		u.Email = email.String
 	}
 	return &u, nil
 }
 
+func nullIfEmptyStr(s string) *string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 func (r *UserRepo) Create(ctx context.Context, u *domain.User) error {
 	u.CreatedAt = time.Now().UTC()
+	var email *string
+	if strings.TrimSpace(u.Email) != "" {
+		lower := strings.ToLower(strings.TrimSpace(u.Email))
+		email = &lower
+	}
+	phone := nullIfEmptyStr(u.Phone)
 	return r.db.QueryRow(ctx, `
-		INSERT INTO users (phone, role, tenant_id, property_id, firebase_uid, created_at, last_login_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		u.Phone, u.Role, u.TenantID, u.PropertyID, u.FirebaseUID, u.CreatedAt, u.LastLoginAt,
+		INSERT INTO users (phone, email, role, tenant_id, property_id, firebase_uid, created_at, last_login_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		phone, email, u.Role, u.TenantID, u.PropertyID, u.FirebaseUID, u.CreatedAt, u.LastLoginAt,
 	).Scan(&u.ID)
 }
 
 func (r *UserRepo) GetByPhone(ctx context.Context, phone string) (*domain.User, error) {
-	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE phone=$1`, phone))
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE phone=$1`, strings.TrimSpace(phone)))
+}
+
+func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, error) {
+	clean := strings.ToLower(strings.TrimSpace(email))
+	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE LOWER(email)=$1`, clean))
 }
 
 func (r *UserRepo) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error) {
@@ -138,13 +166,13 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, err
 func (r *UserRepo) LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE users SET firebase_uid=$2
-		WHERE id=$1 AND (firebase_uid IS NULL OR firebase_uid=$2)`,
+		WHERE id=$1`,
 		userID, firebaseUID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("firebase uid conflict for user %s", userID)
+		return fmt.Errorf("user not found %s", userID)
 	}
 	return nil
 }

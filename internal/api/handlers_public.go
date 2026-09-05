@@ -241,7 +241,7 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 		case errors.Is(err, auth.ErrTenantVacated):
 			status = http.StatusForbidden
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(status, err.Error()))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
@@ -262,17 +262,25 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 	token, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken, body.InviteCode)
 	if err != nil {
 		status := http.StatusUnauthorized
-		msg := err.Error()
+		msg := "authentication failed"
 		switch {
 		case errors.Is(err, auth.ErrFirebaseNotConfigured):
 			status = http.StatusServiceUnavailable
-		case errors.Is(err, auth.ErrNoAccount), errors.Is(err, auth.ErrInvalidInvite):
+			msg = "firebase auth not configured"
+		case errors.Is(err, auth.ErrEmailNotVerified):
+			status = http.StatusForbidden
+			msg = "email is not verified with Google — please verify your email or use phone OTP"
+		case errors.Is(err, auth.ErrNoAccount):
 			status = http.StatusNotFound
-			msg = "Get the PG invite code from your owner."
+			msg = "account not found — if you are an owner, verify your registered phone/email; if you are a tenant, get the invite code from your owner"
+		case errors.Is(err, auth.ErrInvalidInvite):
+			status = http.StatusNotFound
+			msg = "get the PG invite code from your owner"
 		case errors.Is(err, auth.ErrTenantVacated):
 			status = http.StatusForbidden
+			msg = "access revoked"
 		}
-		c.JSON(status, gin.H{"error": msg})
+		respondErr(c, clientErr(status, msg))
 		return
 	}
 	if user != nil && user.Role == domain.RoleTenant && user.TenantID == nil && user.PropertyID != nil && h.Joins != nil {

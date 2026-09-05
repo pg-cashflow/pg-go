@@ -1,0 +1,21 @@
+name: Security Lint
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  security-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: No raw err.Error() in HTTP responses (ADR-2 H2)
+        run: |
+          if grep -rn 'gin\.H{"error": err\.Error()}' internal/api; then
+            echo "FAIL: raw err.Error() in HTTP response found — use respondErr() instead"
+            exit 1
+          fi
+          echo "PASS: No raw err.Error() responses in internal/api"

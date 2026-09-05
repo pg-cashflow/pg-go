@@ -39,9 +39,26 @@ func RequireOwner(jwtSecret string) gin.HandlerFunc {
 	}
 }
 
+// RequireManagerOrOwner validates the Bearer JWT and requires role=owner or role=manager.
+func RequireManagerOrOwner(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticate(c, jwtSecret)
+		if !ok {
+			return
+		}
+		if claims.Role != domain.RoleOwner && claims.Role != domain.RoleManager {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		c.Set(ContextClaimsKey, claims)
+		c.Next()
+	}
+}
+
+
 // RequireTenant validates the Bearer JWT, requires role=tenant, and checks live
-// tenant.status == active via TenantRepo.GetByID. Vacated tenants get 403
-// "access revoked" — a 30-day JWT alone is not enough to stay logged in.
+// tenant.status is active or pending_allocation via TenantRepo.GetByID.
+// Vacated tenants get 403 "access revoked" — a 30-day JWT alone is not enough.
 func RequireTenant(jwtSecret string, tenantRepo TenantRepository) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := authenticate(c, jwtSecret)
@@ -53,17 +70,22 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository) gin.HandlerFun
 			return
 		}
 		if claims.TenantID == nil {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "waiting for owner to assign room and rent"})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "complete your profile to continue"})
 			return
 		}
 		tenant, err := tenantRepo.GetByID(c.Request.Context(), *claims.TenantID)
-		if err != nil || tenant.Status != domain.TenantStatusActive {
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "access revoked"})
 			return
 		}
-		c.Set(ContextClaimsKey, claims)
-		c.Set(ContextTenantKey, tenant)
-		c.Next()
+		switch tenant.Status {
+		case domain.TenantStatusActive, domain.TenantStatusPendingAllocation:
+			c.Set(ContextClaimsKey, claims)
+			c.Set(ContextTenantKey, tenant)
+			c.Next()
+		default:
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "access revoked"})
+		}
 	}
 }
 

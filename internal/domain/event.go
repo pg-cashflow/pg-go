@@ -36,6 +36,20 @@ const (
 	EvtJoinRejected           EventType = "JoinRejected"
 	EvtPaymentReportSubmitted EventType = "PaymentReportSubmitted"
 	EvtPaymentReportRejected  EventType = "PaymentReportRejected"
+
+	// Gamification events
+	EvtPointsAwarded          EventType = "PointsAwarded"
+	EvtPointsDeducted         EventType = "PointsDeducted"
+	EvtRewardRedeemed         EventType = "RewardRedeemed"
+	EvtInspectionCompleted    EventType = "InspectionCompleted"
+	EvtInspectionDisputed     EventType = "InspectionDisputed"
+	EvtInspectionResolved     EventType = "InspectionResolved"
+	EvtViolationIssued        EventType = "ViolationIssued"
+	EvtHazardReported         EventType = "HazardReported"
+	EvtHazardResolved         EventType = "HazardResolved"
+	EvtMealRSVPConfirmed      EventType = "MealRSVPConfirmed"
+	EvtMeterReadingRecorded   EventType = "MeterReadingRecorded"
+	EvtReferralRewarded       EventType = "ReferralRewarded"
 )
 
 type Event struct {

@@ -30,6 +30,7 @@ var (
 	ErrTenantVacated         = errors.New("tenant vacated")
 	ErrInvalidFirebaseToken  = errors.New("invalid firebase token")
 	ErrFirebaseNotConfigured = errors.New("firebase auth not configured")
+	ErrEmailNotVerified      = errors.New("firebase email not verified")
 )
 
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
@@ -140,7 +141,7 @@ func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string)
 }
 
 // VerifyFirebaseAndIssueToken validates a Firebase ID token and returns an app JWT.
-// inviteCode, when set, lets an unknown phone create a pending tenant user for that property.
+// inviteCode, when set, lets an unknown phone or email create a pending tenant user for that property.
 func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (string, *domain.User, error) {
 	if s.firebase == nil {
 		return "", nil, ErrFirebaseNotConfigured
@@ -149,10 +150,14 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 	if err != nil {
 		return "", nil, err
 	}
-	if ident.UID == "" || ident.Phone == "" {
+	ident.Phone = NormalizePhone(ident.Phone)
+	ident.Email = strings.ToLower(strings.TrimSpace(ident.Email))
+
+	if ident.UID == "" || (ident.Phone == "" && ident.Email == "") {
 		return "", nil, ErrInvalidFirebaseToken
 	}
 
+	// 1. Matched existing user by Firebase UID?
 	user, err := s.users.GetByFirebaseUID(ctx, ident.UID)
 	if err == nil {
 		return s.finishLogin(ctx, user)
@@ -161,34 +166,58 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		return "", nil, fmt.Errorf("get user by firebase uid: %w", err)
 	}
 
-	user, err = s.users.GetByPhone(ctx, ident.Phone)
-	if err != nil {
+	// 2. Matched existing user by phone?
+	if ident.Phone != "" {
+		user, err = s.users.GetByPhone(ctx, ident.Phone)
+		if err == nil {
+			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
+				return "", nil, fmt.Errorf("link firebase uid: %w", err)
+			}
+			uid := ident.UID
+			user.FirebaseUID = &uid
+			return s.finishLogin(ctx, user)
+		}
 		if !errors.Is(err, pgx.ErrNoRows) {
-			return "", nil, fmt.Errorf("get user: %w", err)
+			return "", nil, fmt.Errorf("get user by phone: %w", err)
 		}
-		user, err = s.createUserForPhone(ctx, ident.Phone, ident.UID, inviteCode)
-		if err != nil {
-			return "", nil, err
-		}
-		return s.finishLogin(ctx, user)
 	}
 
-	if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
-		return "", nil, fmt.Errorf("link firebase uid: %w", err)
+	// 3. Matched existing user by email (only if email is verified)?
+	if ident.Email != "" {
+		if !ident.EmailVerified {
+			return "", nil, ErrEmailNotVerified
+		}
+		user, err = s.users.GetByEmail(ctx, ident.Email)
+		if err == nil {
+			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
+				return "", nil, fmt.Errorf("link firebase uid: %w", err)
+			}
+			uid := ident.UID
+			user.FirebaseUID = &uid
+			return s.finishLogin(ctx, user)
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", nil, fmt.Errorf("get user by email: %w", err)
+		}
 	}
-	uid := ident.UID
-	user.FirebaseUID = &uid
+
+	// 4. Provisioning fallback for new users
+	user, err = s.createUserForIdentity(ctx, ident, inviteCode)
+	if err != nil {
+		return "", nil, err
+	}
 	return s.finishLogin(ctx, user)
 }
 
 // IssueTokenForVerifiedPhone loads or creates the user for a verified phone and issues a JWT.
 func (s *Service) IssueTokenForVerifiedPhone(ctx context.Context, phone string) (string, *domain.User, error) {
-	user, err := s.users.GetByPhone(ctx, phone)
+	normPhone := NormalizePhone(phone)
+	user, err := s.users.GetByPhone(ctx, normPhone)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, fmt.Errorf("get user: %w", err)
 		}
-		user, err = s.createUserForPhone(ctx, phone, "", "")
+		user, err = s.createUserForIdentity(ctx, FirebaseIdentity{Phone: normPhone}, "")
 		if err != nil {
 			return "", nil, err
 		}
@@ -220,48 +249,77 @@ func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *
 	return token, user, nil
 }
 
-func (s *Service) createUserForPhone(ctx context.Context, phone, firebaseUID, inviteCode string) (*domain.User, error) {
-	tenant, err := s.tenants.GetByPhone(ctx, phone)
-	if err == nil {
-		if tenant.Status != domain.TenantStatusActive {
-			return nil, ErrTenantVacated
+func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdentity, inviteCode string) (*domain.User, error) {
+	// A. Owner match by verified email (with phone backfill for anti-divergence)
+	if ident.Email != "" && ident.EmailVerified {
+		prop, err := s.properties.GetByOwnerEmail(ctx, ident.Email)
+		if err == nil {
+			pid := prop.ID
+			u := &domain.User{
+				Phone:      NormalizePhone(prop.OwnerPhone),
+				Email:      ident.Email,
+				Role:       domain.RoleOwner,
+				PropertyID: &pid,
+			}
+			setFirebaseUID(u, ident.UID)
+			if err := s.safeCreateUser(ctx, u); err != nil {
+				return nil, err
+			}
+			return u, nil
 		}
-		tid := tenant.ID
-		pid := tenant.PropertyID
-		u := &domain.User{
-			Phone:      phone,
-			Role:       domain.RoleTenant,
-			TenantID:   &tid,
-			PropertyID: &pid,
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("get property by owner email: %w", err)
 		}
-		setFirebaseUID(u, firebaseUID)
-		if err := s.users.Create(ctx, u); err != nil {
-			return nil, fmt.Errorf("create tenant user: %w", err)
-		}
-		return u, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("get tenant: %w", err)
-	}
-
-	prop, err := s.properties.GetByOwnerPhone(ctx, phone)
-	if err == nil {
-		pid := prop.ID
-		u := &domain.User{
-			Phone:      phone,
-			Role:       domain.RoleOwner,
-			PropertyID: &pid,
-		}
-		setFirebaseUID(u, firebaseUID)
-		if err := s.users.Create(ctx, u); err != nil {
-			return nil, fmt.Errorf("create owner user: %w", err)
-		}
-		return u, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("get property by owner phone: %w", err)
 	}
 
+	// B. Owner match by phone (with email backfill for anti-divergence)
+	if ident.Phone != "" {
+		prop, err := s.properties.GetByOwnerPhone(ctx, ident.Phone)
+		if err == nil {
+			pid := prop.ID
+			u := &domain.User{
+				Phone:      ident.Phone,
+				Email:      strings.ToLower(strings.TrimSpace(prop.OwnerEmail)),
+				Role:       domain.RoleOwner,
+				PropertyID: &pid,
+			}
+			setFirebaseUID(u, ident.UID)
+			if err := s.safeCreateUser(ctx, u); err != nil {
+				return nil, err
+			}
+			return u, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("get property by owner phone: %w", err)
+		}
+
+		// C. Tenant match by phone
+		tenant, err := s.tenants.GetByPhone(ctx, ident.Phone)
+		if err == nil {
+			if tenant.Status != domain.TenantStatusActive {
+				return nil, ErrTenantVacated
+			}
+			tid := tenant.ID
+			pid := tenant.PropertyID
+			u := &domain.User{
+				Phone:      ident.Phone,
+				Email:      ident.Email,
+				Role:       domain.RoleTenant,
+				TenantID:   &tid,
+				PropertyID: &pid,
+			}
+			setFirebaseUID(u, ident.UID)
+			if err := s.safeCreateUser(ctx, u); err != nil {
+				return nil, err
+			}
+			return u, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("get tenant by phone: %w", err)
+		}
+	}
+
+	// D. Pending tenant onboarding via invite code
 	code := strings.ToUpper(strings.TrimSpace(inviteCode))
 	if code == "" {
 		return nil, ErrNoAccount
@@ -275,15 +333,46 @@ func (s *Service) createUserForPhone(ctx context.Context, phone, firebaseUID, in
 	}
 	pid := invited.ID
 	u := &domain.User{
-		Phone:      phone,
+		Phone:      ident.Phone,
+		Email:      ident.Email,
 		Role:       domain.RoleTenant,
 		PropertyID: &pid,
 	}
-	setFirebaseUID(u, firebaseUID)
-	if err := s.users.Create(ctx, u); err != nil {
+	setFirebaseUID(u, ident.UID)
+	if err := s.safeCreateUser(ctx, u); err != nil {
 		return nil, fmt.Errorf("create pending tenant user: %w", err)
 	}
 	return u, nil
+}
+
+func (s *Service) safeCreateUser(ctx context.Context, u *domain.User) error {
+	err := s.users.Create(ctx, u)
+	if err == nil {
+		return nil
+	}
+
+	// On insert conflict (e.g. concurrent double-click provisioning race),
+	// attempt to fetch the existing user record rather than failing.
+	if u.FirebaseUID != nil && *u.FirebaseUID != "" {
+		if existing, ferr := s.users.GetByFirebaseUID(ctx, *u.FirebaseUID); ferr == nil {
+			*u = *existing
+			return nil
+		}
+	}
+	if u.Email != "" {
+		if existing, ferr := s.users.GetByEmail(ctx, u.Email); ferr == nil {
+			*u = *existing
+			return nil
+		}
+	}
+	if u.Phone != "" {
+		if existing, ferr := s.users.GetByPhone(ctx, u.Phone); ferr == nil {
+			*u = *existing
+			return nil
+		}
+	}
+
+	return fmt.Errorf("create user: %w", err)
 }
 
 func setFirebaseUID(u *domain.User, firebaseUID string) {

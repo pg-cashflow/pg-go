@@ -81,6 +81,13 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	if !t.IsPayable() {
+		c.JSON(http.StatusOK, domain.PayIntent{
+			Mode:    domain.PaymentModeManual,
+			Payable: false,
+		})
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
@@ -200,7 +207,7 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 		rep.Note = &note
 	}
 	if err := h.ReportStore.Create(c.Request.Context(), rep); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	rep.HasImage = len(img) > 0
@@ -284,7 +291,7 @@ func (h *Handlers) ConfirmPaymentReport(c *gin.Context) {
 	}
 	p, err := h.Payments.ManualMatch(c.Request.Context(), rep.DueID, rep.Amount, rep.UPITxnID, uid)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 	now := p.MatchedAt
@@ -364,7 +371,14 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		return
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	// ADR-2 H1 defense-in-depth: when no secret is configured but IntentStore
+	// is wired, Cashfree is partially configured — refuse rather than silently
+	// accepting unauthenticated webhooks. Only skip when Cashfree is fully absent.
 	if h.CashfreeSecret == "" {
+		if h.IntentStore != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payment gateway not configured"})
+			return
+		}
 		c.Status(http.StatusOK)
 		return
 	}
