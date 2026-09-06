@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"time"
@@ -142,6 +143,20 @@ func (h *Handlers) TenantDisputeInspectionItem(c *gin.Context) {
 		return
 	}
 
+	if h.OutboxEvents != nil {
+		payload, _ := json.Marshal(map[string]string{
+			"item_id": itemID.String(),
+		})
+		tid := tenant.ID
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtInspectionDisputed),
+			PropertyID: tenant.PropertyID,
+			TenantID:   &tid,
+			ActorRole:  string(domain.RoleTenant),
+			Payload:    payload,
+		})
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "disputed"})
 }
 
@@ -263,6 +278,17 @@ func (h *Handlers) TenantReportHazard(c *gin.Context) {
 				respondErr(c, gamificationClientErr(http.StatusBadRequest, err))
 				return
 			}
+			if h.OutboxEvents != nil && hz != nil {
+				payload, _ := json.Marshal(map[string]string{"hazard_id": hz.ID.String()})
+				tid := tenant.ID
+				_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+					EventType:  string(domain.EvtHazardReported),
+					PropertyID: hz.PropertyID,
+					TenantID:   &tid,
+					ActorRole:  string(domain.RoleTenant),
+					Payload:    payload,
+				})
+			}
 			c.JSON(http.StatusOK, gin.H{"hazard": hz})
 			return
 		}
@@ -281,6 +307,18 @@ func (h *Handlers) TenantReportHazard(c *gin.Context) {
 	if err != nil {
 		respondErr(c, gamificationClientErr(http.StatusBadRequest, err))
 		return
+	}
+
+	if h.OutboxEvents != nil && hz != nil {
+		payload, _ := json.Marshal(map[string]string{"hazard_id": hz.ID.String()})
+		tid := tenant.ID
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtHazardReported),
+			PropertyID: hz.PropertyID,
+			TenantID:   &tid,
+			ActorRole:  string(domain.RoleTenant),
+			Payload:    payload,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"hazard": hz})

@@ -48,6 +48,9 @@ type Deps struct {
 
 	AuthTenantRepo auth.TenantRepository // for RequireTenant live check
 
+	OutboxEvents    OutboxStore         // notification outbox (best-effort from handlers)
+	NotificationSvc NotificationService // in-app notification read-side
+
 	Events             events.Publisher
 	MagicLinkBaseURL   string
 	VAPIDPublicKey     string
@@ -238,6 +241,15 @@ func NewRouter(d Deps) *gin.Engine {
 		tenant.GET("/leaderboard", h.TenantLeaderboard)
 		tenant.GET("/referrals", h.TenantReferrals)
 		tenant.POST("/referrals", h.TenantReferrals)
+	}
+
+	// Notifications — scoped to claims.UserID at the repo layer.
+	// All roles (owner, manager, tenant) share the same endpoints.
+	notifs := r.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret))
+	{
+		notifs.GET("", h.ListNotifications)
+		notifs.PATCH("/:id/read", h.MarkNotificationRead)
+		notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
 	}
 
 	return r

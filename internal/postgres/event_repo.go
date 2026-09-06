@@ -186,3 +186,32 @@ func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) 
 	_, err := r.db.Exec(ctx, `UPDATE users SET tenant_id=$2 WHERE id=$1`, userID, tenantID)
 	return err
 }
+
+// GetByPropertyAndRole returns all users with a given role scoped to a property.
+// Used by the notification resolver to find owner(s) or manager(s) for a property.
+// An empty result (len == 0) is not an error — a property may have no manager yet.
+func (r *UserRepo) GetByPropertyAndRole(ctx context.Context, propertyID uuid.UUID, role domain.Role) ([]domain.User, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+userCols+` FROM users WHERE property_id=$1 AND role=$2`,
+		propertyID, role)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *u)
+	}
+	return out, rows.Err()
+}
+
+// GetByTenantID returns the user account linked to a tenant record.
+// Returns pgx.ErrNoRows if the tenant has no linked user account yet.
+func (r *UserRepo) GetByTenantID(ctx context.Context, tenantID uuid.UUID) (*domain.User, error) {
+	return scanUser(r.db.QueryRow(ctx,
+		`SELECT `+userCols+` FROM users WHERE tenant_id=$1`, tenantID))
+}

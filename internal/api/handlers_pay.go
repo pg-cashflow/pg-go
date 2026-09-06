@@ -223,6 +223,17 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 			Payload:    payload,
 		})
 	}
+	if h.OutboxEvents != nil {
+		tid := t.ID
+		payload, _ := json.Marshal(map[string]string{"report_id": rep.ID.String()})
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtPaymentReportSubmitted),
+			PropertyID: due.PropertyID,
+			TenantID:   &tid,
+			ActorRole:  string(domain.RoleTenant),
+			Payload:    payload,
+		})
+	}
 	c.JSON(http.StatusCreated, rep)
 }
 
@@ -351,6 +362,17 @@ func (h *Handlers) RejectPaymentReport(c *gin.Context) {
 			EventType:  domain.EvtPaymentReportRejected,
 			DueID:      &did,
 			OccurredAt: now,
+			Payload:    payload,
+		})
+	}
+	if h.OutboxEvents != nil {
+		tid := rep.TenantID
+		payload, _ := json.Marshal(map[string]string{"report_id": rep.ID.String()})
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtPaymentReportRejected),
+			PropertyID: pid,
+			TenantID:   &tid,
+			ActorRole:  string(domain.RoleOwner),
 			Payload:    payload,
 		})
 	}

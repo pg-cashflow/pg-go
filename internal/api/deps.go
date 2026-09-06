@@ -97,6 +97,12 @@ type ImportStore interface {
 	Create(ctx context.Context, l *postgres.ImportLog) error
 }
 
+// OutboxStore writes notification outbox events from handler code that does
+// not have an open transaction (best-effort, same as Events.Publish pattern).
+type OutboxStore interface {
+	InsertEvent(ctx context.Context, evt *domain.OutboxEvent) error
+}
+
 // UserStore manages users.
 type UserStore interface {
 	Create(ctx context.Context, u *domain.User) error

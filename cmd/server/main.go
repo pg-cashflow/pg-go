@@ -25,6 +25,7 @@ import (
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
+	notificationsvc "github.com/pg-cashflow/pg-go/internal/notification"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
@@ -161,6 +162,19 @@ func main() {
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
 	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
 
+	// Notification subsystem.
+	outboxRepo := postgres.NewOutboxRepo(pool)
+	notifRepo := postgres.NewNotificationRepo(pool)
+	notifSvc := notificationsvc.NewService(notifRepo)
+	resolver := notificationsvc.NewResolver(userRepo)
+	dispatcher := notificationsvc.NewDispatcher(
+		pool,
+		&notificationsvc.CompositeRepo{OutboxRepo: outboxRepo, NotifRepo: notifRepo},
+		resolver,
+		notificationsvc.DefaultConfig(),
+		logger,
+	)
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -186,6 +200,8 @@ func main() {
 		CashfreeSecret:     cfg.CashfreeWebhookSecret,
 		CashfreeEnv:        cfg.CashfreeEnv,
 		AuthTenantRepo:     tenantRepo,
+		OutboxEvents:       outboxRepo,
+		NotificationSvc:    notifSvc,
 		Events:             pub,
 		MagicLinkBaseURL:   cfg.MagicLinkBaseURL,
 		VAPIDPublicKey:     cfg.VAPIDPublicKey,
@@ -207,9 +223,33 @@ func main() {
 		}
 	}()
 
+	// Notification dispatcher: polls outbox in the background.
+	dispatchCtx, stopDispatcher := context.WithCancel(ctx)
+	go dispatcher.Run(dispatchCtx)
+
+	// Daily cleanup: prune dispatched events >30 days, dead-letter >90 days.
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dispatchCtx.Done():
+				return
+			case <-ticker.C:
+				n, err := outboxRepo.CleanupEvents(dispatchCtx, 30*24*time.Hour, 90*24*time.Hour)
+				if err != nil {
+					logger.Error("outbox cleanup failed", "err", err)
+				} else {
+					logger.Info("outbox cleanup complete", "deleted", n)
+				}
+			}
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	stopDispatcher() // graceful dispatcher shutdown before HTTP drain
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)

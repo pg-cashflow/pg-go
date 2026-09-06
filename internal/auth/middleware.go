@@ -55,6 +55,20 @@ func RequireManagerOrOwner(jwtSecret string) gin.HandlerFunc {
 	}
 }
 
+// RequireOwnerOrManagerOrTenant validates the Bearer JWT and accepts any
+// authenticated role. Used for endpoints that are role-agnostic but still
+// require a valid session (e.g. /notifications, which scopes data by user_id).
+func RequireOwnerOrManagerOrTenant(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticate(c, jwtSecret)
+		if !ok {
+			return
+		}
+		c.Set(ContextClaimsKey, claims)
+		c.Next()
+	}
+}
+
 
 // RequireTenant validates the Bearer JWT, requires role=tenant, and checks live
 // tenant.status is active or pending_allocation via TenantRepo.GetByID.

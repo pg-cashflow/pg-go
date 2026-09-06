@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -146,6 +147,23 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		respondErr(c, clientErr(status, err.Error()))
 		return
 	}
+	if h.OutboxEvents != nil && j != nil {
+		payload, _ := json.Marshal(map[string]string{
+			"join_request_id": j.ID.String(),
+			"name":            j.Name,
+		})
+		var tid *uuid.UUID
+		if t != nil {
+			tid = &t.ID
+		}
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtJoinRequested),
+			PropertyID: j.PropertyID,
+			TenantID:   tid,
+			ActorRole:  string(domain.RoleTenant),
+			Payload:    payload,
+		})
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"join":   j,
 		"tenant": tenantResponse(t),
@@ -243,6 +261,17 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 		}
 		respondErr(c, clientErr(status, err.Error()))
 		return
+	}
+	// Notify tenant that their join was approved.
+	if h.OutboxEvents != nil {
+		payload, _ := json.Marshal(map[string]string{"tenant_id": t.ID.String()})
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  string(domain.EvtJoinApproved),
+			PropertyID: pid,
+			TenantID:   &t.ID,
+			ActorRole:  string(domain.RoleOwner),
+			Payload:    payload,
+		})
 	}
 	c.JSON(http.StatusOK, tenantResponse(t))
 }
