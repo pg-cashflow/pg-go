@@ -1,0 +1,25 @@
+[Unit]
+Description=pg-app server (pg-go backend with embedded pg-react PWA)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pgapp
+Group=pgapp
+WorkingDirectory=/opt/pg-app
+EnvironmentFile=/opt/pg-app/.env
+ExecStart=/opt/pg-app/server
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pg-app
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

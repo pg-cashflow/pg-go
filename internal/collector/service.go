@@ -100,7 +100,7 @@ func isNoRows(err error) bool {
 
 func PNGURL(role string, dueID uuid.UUID) string {
 	if role == "owner" {
-		return "/owner/dues/" + dueID.String() + "/qr"
+		return "/api/owner/dues/" + dueID.String() + "/qr"
 	}
-	return "/tenant/dues/" + dueID.String() + "/qr"
+	return "/api/tenant/dues/" + dueID.String() + "/qr"
 }

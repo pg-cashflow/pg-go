@@ -4,8 +4,8 @@ Source of truth for [pg-react](https://github.com/your-org/pg-react) integration
 
 ## Base URL
 
-- Local: `http://localhost:8080`
-- Frontend env: `VITE_API_BASE_URL`
+- Local development: `http://localhost:8080/api` (`VITE_API_BASE_URL=http://localhost:8080/api` in pg-react `.env.local`)
+- Production embedded PWA: `/api` (same origin; `VITE_API_BASE_URL=/api`)
 
 ## Conventions
 
@@ -18,9 +18,9 @@ Source of truth for [pg-react](https://github.com/your-org/pg-react) integration
 
 Login is Firebase Phone OTP or Google (Gmail). There is **no Owner vs Tenant role picker**. Owners match via seeded `owner_phone` or `owner_email`. Invite code is how a new phone or Google login becomes a pending tenant.
 
-| Method | Path             | Body                             | Response                                                                    |
-| ------ | ---------------- | -------------------------------- | --------------------------------------------------------------------------- |
-| POST   | `/auth/firebase` | `{ "id_token", "invite_code"? }` | `{ "token", "user": { id, phone?, email?, role, tenant_id?, property_id? } }` |
+| Method | Path                 | Body                             | Response                                                                    |
+| ------ | -------------------- | -------------------------------- | --------------------------------------------------------------------------- |
+| POST   | `/api/auth/firebase` | `{ "id_token", "invite_code"? }` | `{ "token", "user": { id, phone?, email?, role, tenant_id?, property_id? } }` |
 
 | Status | When                                                                                                                    |
 | ------ | ----------------------------------------------------------------------------------------------------------------------- |
@@ -47,17 +47,17 @@ Rent-reminder SMS still uses `SMS_*` / `internal/sms`. Login OTP is not sent by 
 
 The invite code **is** authorization. There is no second owner identity review. Owner only assigns room/rent later.
 
-| Method | Path                                | Auth               | Notes |
-| ------ | ----------------------------------- | ------------------ | ----- |
-| GET    | `/join/invite/:code`                | public             | `{ property_id, property_name, owner_name }` — never VPA |
-| GET    | `/join/me`                          | pending tenant JWT | `{ join, message }` — only while profile not yet submitted (`tenant_id` null) |
-| POST   | `/join`                             | pending tenant JWT | **multipart** preferred: `name`, `permanent_address`, `current_address`, `parent_name`, `emergency_phone`, `consent=true`, file `image` (ID photo ≤2MB, no OCR). Creates `pending_allocation` tenant, links `users.tenant_id`, marks join `approved`. Response `{ join, tenant, message }`. Client must re-exchange Firebase token for JWT with `tenant_id`. |
-| GET    | `/owner/invite`                     | owner              | `{ invite_code, payment_mode }` |
-| POST   | `/owner/invite/rotate`              | owner              | `{ invite_code }` |
-| GET    | `/owner/join-requests`              | owner              | Query `status` → `{ join_requests }`. Use `approved` for awaiting room/rent; `pending` for incomplete profiles (rejectable). |
-| POST   | `/owner/join-requests/:id/activate` | owner              | **Assign terms**: `{ room_number?, rent_amount, due_day, deposit_amount? }` — flips tenant to `active`, creates deposit due |
-| POST   | `/owner/join-requests/:id/reject`   | owner              | Only while join `status=pending` (never finished form). `{ ok: true }` |
-| GET    | `/owner/tenants/:id/id-photo`       | owner              | Raw image bytes. Never in list JSON (`has_id_photo` flag only). |
+| Method | Path                                    | Auth               | Notes |
+| ------ | --------------------------------------- | ------------------ | ----- |
+| GET    | `/api/join/invite/:code`                | public             | `{ property_id, property_name, owner_name }` — never VPA |
+| GET    | `/api/join/me`                          | pending tenant JWT | `{ join, message }` — only while profile not yet submitted (`tenant_id` null) |
+| POST   | `/api/join`                             | pending tenant JWT | **multipart** preferred: `name`, `permanent_address`, `current_address`, `parent_name`, `emergency_phone`, `consent=true`, file `image` (ID photo ≤2MB, no OCR). Creates `pending_allocation` tenant, links `users.tenant_id`, marks join `approved`. Response `{ join, tenant, message }`. Client must re-exchange Firebase token for JWT with `tenant_id`. |
+| GET    | `/api/owner/invite`                     | owner              | `{ invite_code, payment_mode }` |
+| POST   | `/api/owner/invite/rotate`              | owner              | `{ invite_code }` |
+| GET    | `/api/owner/join-requests`              | owner              | Query `status` → `{ join_requests }`. Use `approved` for awaiting room/rent; `pending` for incomplete profiles (rejectable). |
+| POST   | `/api/owner/join-requests/:id/activate` | owner              | **Assign terms**: `{ room_number?, rent_amount, due_day, deposit_amount? }` — flips tenant to `active`, creates deposit due |
+| POST   | `/api/owner/join-requests/:id/reject`   | owner              | Only while join `status=pending` (never finished form). `{ ok: true }` |
+| GET    | `/api/owner/tenants/:id/id-photo`       | owner              | Raw image bytes. Never in list JSON (`has_id_photo` flag only). |
 
 Tenant profile fields: `permanent_address`, `current_address`, `parent_name`, `emergency_phone`, `joined_on` (server date of submit). Personal phone is the login phone.
 
@@ -67,32 +67,32 @@ Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` (pendin
 
 ## Owner (role=owner)
 
-| Method | Path                                 | Notes                                                                                        |
-| ------ | ------------------------------------ | -------------------------------------------------------------------------------------------- |
-| GET    | `/owner/properties`                  | `{ properties: [...] }` — UPI VPA **never** returned                                         |
-| GET    | `/owner/tenants`                     | `{ tenants: [...] }` — includes profile fields + `has_id_photo`                              |
-| POST   | `/owner/tenants`                     | `{ name, phone?, room_number?, rent_amount, due_day, notice_period_days?, deposit_amount? }` |
-| PATCH  | `/owner/tenants/:id`                 | Partial update                                                                               |
-| GET    | `/owner/tenants/:id/id-photo`        | Raw ID photo bytes                                                                           |
-| POST   | `/owner/tenants/:id/notice`          | Optional `{ notice_given_at }`                                                               |
-| POST   | `/owner/tenants/:id/vacate`          |                                                                                              |
-| POST   | `/owner/tenants/:id/attach-phone`    | `{ phone }`                                                                                  |
-| POST   | `/owner/tenants/:id/prorate`         | `{ vacate_date }`                                                                            |
-| POST   | `/owner/tenants/:id/deposit/settle`  | `{ refunded_amount_paise, reason? }`                                                         |
-| GET    | `/owner/dues`                        | Query: `tenant_id`, `kind`, `status` → `{ dues: [...] }`                                     |
-| POST   | `/owner/dues/:id/waive`              | Returns updated due                                                                          |
-| POST   | `/owner/dues/:id/match`              | `{ amount, upi_txn_id }`                                                                     |
-| POST   | `/owner/dues/:id/mark-cash-paid`     | `{ amount, note? }` — all-or-nothing                                                         |
-| GET    | `/owner/dues/:id/qr`                 | PNG image                                                                                    |
-| GET    | `/owner/dues/:id/pay`                | JSON pay payload (see below)                                                                 |
-| POST   | `/owner/dues/:id/token`              | `{ path, url, wa_me? }`                                                                      |
-| GET    | `/owner/payment-reports`             | Query `status` → `{ payment_reports }`                                                       |
-| POST   | `/owner/payment-reports/:id/confirm` | Owner confirm → existing ManualMatch                                                         |
-| POST   | `/owner/payment-reports/:id/reject`  | Optional `{ note }`                                                                          |
-| GET    | `/owner/payments`                    | Query: `matched_by` → `{ payments: [...] }`                                                  |
-| POST   | `/owner/statements/import`           | multipart `file` (CSV)                                                                       |
-| GET    | `/owner/reconciliation`              | Query: `period=YYYY-MM` → summary object                                                     |
-| GET    | `/owner/events`                      | Query filters → `{ events: [...] }`                                                          |
+| Method | Path                                     | Notes                                                                                        |
+| ------ | ---------------------------------------- | -------------------------------------------------------------------------------------------- |
+| GET    | `/api/owner/properties`                  | `{ properties: [...] }` — UPI VPA **never** returned                                         |
+| GET    | `/api/owner/tenants`                     | `{ tenants: [...] }` — includes profile fields + `has_id_photo`                              |
+| POST   | `/api/owner/tenants`                     | `{ name, phone?, room_number?, rent_amount, due_day, notice_period_days?, deposit_amount? }` |
+| PATCH  | `/api/owner/tenants/:id`                 | Partial update                                                                               |
+| GET    | `/api/owner/tenants/:id/id-photo`        | Raw ID photo bytes                                                                           |
+| POST   | `/api/owner/tenants/:id/notice`          | Optional `{ notice_given_at }`                                                               |
+| POST   | `/api/owner/tenants/:id/vacate`          |                                                                                              |
+| POST   | `/api/owner/tenants/:id/attach-phone`    | `{ phone }`                                                                                  |
+| POST   | `/api/owner/tenants/:id/prorate`         | `{ vacate_date }`                                                                            |
+| POST   | `/api/owner/tenants/:id/deposit/settle`  | `{ refunded_amount_paise, reason? }`                                                         |
+| GET    | `/api/owner/dues`                        | Query: `tenant_id`, `kind`, `status` → `{ dues: [...] }`                                     |
+| POST   | `/api/owner/dues/:id/waive`              | Returns updated due                                                                          |
+| POST   | `/api/owner/dues/:id/match`              | `{ amount, upi_txn_id }`                                                                     |
+| POST   | `/api/owner/dues/:id/mark-cash-paid`     | `{ amount, note? }` — all-or-nothing                                                         |
+| GET    | `/api/owner/dues/:id/qr`                 | PNG image                                                                                    |
+| GET    | `/api/owner/dues/:id/pay`                | JSON pay payload (see below)                                                                 |
+| POST   | `/api/owner/dues/:id/token`              | `{ path, url, wa_me? }`                                                                      |
+| GET    | `/api/owner/payment-reports`             | Query `status` → `{ payment_reports }`                                                       |
+| POST   | `/api/owner/payment-reports/:id/confirm` | Owner confirm → existing ManualMatch                                                         |
+| POST   | `/api/owner/payment-reports/:id/reject`  | Optional `{ note }`                                                                          |
+| GET    | `/api/owner/payments`                    | Query: `matched_by` → `{ payments: [...] }`                                                  |
+| POST   | `/api/owner/statements/import`           | multipart `file` (CSV)                                                                       |
+| GET    | `/api/owner/reconciliation`              | Query: `period=YYYY-MM` → summary object                                                     |
+| GET    | `/api/owner/events`                      | Query filters → `{ events: [...] }`                                                          |
 
 ### ReconciliationSummary
 
@@ -110,20 +110,20 @@ Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` (pendin
 
 ## Tenant (role=tenant, active)
 
-| Method | Path                       | Notes                                                                                                                                              |
-| ------ | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/tenant/me`               | Tenant object + `active_dues[]`                                                                                                                    |
-| GET    | `/tenant/dues`             | `{ dues: [...] }`                                                                                                                                  |
-| GET    | `/tenant/dues/:id/qr`      | PNG (own due only)                                                                                                                                 |
-| GET    | `/tenant/dues/:id/pay`     | JSON pay payload (see below)                                                                                                                       |
-| POST   | `/tenant/dues/:id/reports` | `{ upi_txn_id, amount?, note? }` or multipart (`image` ≤2MB)                                                                                       |
-| GET    | `/tenant/payments`         | `{ payments: [...] }`                                                                                                                              |
-| POST   | `/tenant/push/subscribe`   | `{ endpoint, keys: { p256dh, auth } }`                                                                                                             |
-| POST   | `/tenant/aadhaar`          | `{ consent: true, qr_payload?, uid_last4?, confirm? }` — Secure QR verify; last-4 only. Without `confirm`, returns decoded fields for user review. |
+| Method | Path                           | Notes                                                                                                                                              |
+| ------ | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/tenant/me`               | Tenant object + `active_dues[]`                                                                                                                    |
+| GET    | `/api/tenant/dues`             | `{ dues: [...] }`                                                                                                                                  |
+| GET    | `/api/tenant/dues/:id/qr`      | PNG (own due only)                                                                                                                                 |
+| GET    | `/api/tenant/dues/:id/pay`     | JSON pay payload (see below)                                                                                                                       |
+| POST   | `/api/tenant/dues/:id/reports` | `{ upi_txn_id, amount?, note? }` or multipart (`image` ≤2MB)                                                                                       |
+| GET    | `/api/tenant/payments`         | `{ payments: [...] }`                                                                                                                              |
+| POST   | `/api/tenant/push/subscribe`   | `{ endpoint, keys: { p256dh, auth } }`                                                                                                             |
+| POST   | `/api/tenant/aadhaar`          | `{ consent: true, qr_payload?, uid_last4?, confirm? }` — Secure QR verify; last-4 only. Without `confirm`, returns decoded fields for user review. |
 
 ## Pay JSON
 
-`GET /{owner|tenant}/dues/:id/pay` (VPA is **only** on this payload, never on `GET /owner/properties`):
+`GET /api/{owner|tenant}/dues/:id/pay` (VPA is **only** on this payload, never on `GET /api/owner/properties`):
 
 ```json
 {
@@ -133,7 +133,7 @@ Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` (pendin
   "note": "PG-XXXXXX",
   "due_code": "XXXXXX",
   "amount_paise": 1500000,
-  "qr_png_url": "/tenant/dues/<id>/qr",
+  "qr_png_url": "/api/tenant/dues/<id>/qr",
   "payable": true,
   "payment_session_id": null
 }
@@ -165,15 +165,24 @@ Unique `upi_txn_id` on `payment_reports` and `payments`. Duplicate UTR → 409. 
 
 Events: `PaymentReportSubmitted`, `PaymentReportRejected`.
 
+## Notifications
+
+Scoped to claims.UserID at the repo layer. All roles (owner, manager, tenant) share the same endpoints.
+
+| Method | Path                           | Auth    | Notes |
+| ------ | ------------------------------ | ------- | ----- |
+| GET    | `/api/notifications`           | any     | List notifications for current user |
+| PATCH  | `/api/notifications/:id/read`  | any     | Mark single notification as read |
+| PATCH  | `/api/notifications/read-all`  | any     | Mark all notifications as read |
+
 ## Public
 
-| Method | Path                       | Notes                                                                                           |
-| ------ | -------------------------- | ----------------------------------------------------------------------------------------------- |
-| GET    | `/healthz`                 | `{ "status": "ok" }`                                                                            |
-| GET    | `/push/vapid-public-key`   | `{ "public_key": "..." }`                                                                       |
-| GET    | `/app/`                    | Dev-only in-repo PWA. Production (`APP_ENV=production` + `FRONTEND_URL`) redirects to pg-react. |
-| GET    | `/p/:token`                | HTML payment page (save QR, copy VPA/note, open UPI)                                            |
-| POST   | `/p/:token/push/subscribe` | Push from payment page                                                                          |
+| Method | Path                       | Notes                                                |
+| ------ | -------------------------- | ---------------------------------------------------- |
+| GET    | `/healthz`                 | `{ "status": "ok" }`                                 |
+| GET    | `/api/push/vapid-public-key` | `{ "public_key": "..." }`                           |
+| GET    | `/p/:token`                | HTML payment page (save QR, copy VPA/note, open UPI) |
+| POST   | `/p/:token/push/subscribe` | Push from payment page                               |
 
 ## Postman
 
@@ -189,7 +198,8 @@ Import `postman/pg-go.postman_collection.json` and `postman/pg-go.postman_enviro
 Set in `.env`:
 
 ```env
-CORS_ALLOWED_ORIGINS=http://localhost:5173,https://your-app.pages.dev
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-Required for pg-react dev (`localhost:5173`).
+Required for pg-react local dev (`localhost:5173`). Production embedded PWA is served same-origin by pg-go and does not require CORS.
+

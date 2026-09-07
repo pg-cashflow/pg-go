@@ -1,0 +1,4 @@
+# /etc/sudoers.d/pg-app-deploy
+# Install: sudo cp pg-app-deploy-sudoers /etc/sudoers.d/pg-app-deploy
+# Validate: sudo visudo -c -f /etc/sudoers.d/pg-app-deploy
+pgapp ALL=(root) NOPASSWD: /usr/bin/systemctl restart pg-app

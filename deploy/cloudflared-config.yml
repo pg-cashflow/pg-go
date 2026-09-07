@@ -1,0 +1,21 @@
+# /etc/cloudflared/config.yml
+#
+# Setup:
+#   cloudflared tunnel login
+#   cloudflared tunnel create pg-app
+#   cloudflared tunnel route dns pg-app pg.yourdomain.com
+#   sudo cp cloudflared-config.yml /etc/cloudflared/config.yml
+#   # Replace <TUNNEL-UUID> below with the tunnel ID from create command
+#   sudo cloudflared service install
+#   sudo systemctl enable --now cloudflared
+
+tunnel: <TUNNEL-UUID>
+credentials-file: /etc/cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  - hostname: pg.yourdomain.com
+    service: http://127.0.0.1:8080
+    originRequest:
+      noTLSVerify: true
+      connectTimeout: 10s
+  - service: http_status:404

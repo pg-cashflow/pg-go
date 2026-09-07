@@ -1,0 +1,90 @@
+name: Deploy pg-app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, pg-app-server]
+    steps:
+      - name: Checkout pg-go
+        uses: actions/checkout@v4
+        with:
+          path: pg-go
+
+      - name: Checkout pg-react
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/pg-react
+          path: pg-react
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: pg-react/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pg-go/go.mod
+
+      - name: Build pg-react PWA
+        working-directory: pg-react
+        env:
+          VITE_API_BASE_URL: /api
+        run: |
+          npm ci
+          npm run build
+
+      - name: Copy frontend build into pg-go
+        run: |
+          rm -rf pg-go/internal/web/dist/*
+          cp -r pg-react/dist/* pg-go/internal/web/dist/
+
+      - name: Test pg-go
+        working-directory: pg-go
+        run: go test ./...
+
+      - name: Build binary
+        working-directory: pg-go
+        env:
+          CGO_ENABLED: 0
+        run: go build -trimpath -ldflags="-s -w" -o server ./cmd/server
+
+      - name: Run migrations
+        working-directory: pg-go
+        env:
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: go run ./cmd/migrate
+
+      - name: Atomic deploy with rollback
+        working-directory: pg-go
+        run: |
+          set -euo pipefail
+          test -f /opt/pg-app/server && cp /opt/pg-app/server /opt/pg-app/server.bak || true
+          cp server /opt/pg-app/server.new
+          chmod +x /opt/pg-app/server.new
+          mv /opt/pg-app/server.new /opt/pg-app/server
+
+          if sudo /usr/bin/systemctl restart pg-app && sleep 2 && /usr/bin/systemctl is-active --quiet pg-app; then
+            echo "Deployment successful: pg-app is active."
+          else
+            echo "Deployment failed! Reverting to server.bak..."
+            if test -f /opt/pg-app/server.bak; then
+              mv /opt/pg-app/server.bak /opt/pg-app/server || true
+              sudo /usr/bin/systemctl restart pg-app && sleep 2 || true
+              if /usr/bin/systemctl is-active --quiet pg-app; then
+                echo "Rollback successful: previous version restored and active."
+              else
+                echo "CRITICAL: Rollback failed! Service is inactive."
+                /usr/bin/systemctl status pg-app --no-pager || true
+              fi
+            else
+              echo "No backup binary found (first deployment?). Leaving in failed state."
+              /usr/bin/systemctl status pg-app --no-pager || true
+            fi
+            exit 1
+          fi

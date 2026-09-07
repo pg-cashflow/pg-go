@@ -2,9 +2,7 @@ package api
 
 import (
 	"fmt"
-	"io/fs"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -13,7 +11,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
-	"github.com/pg-cashflow/pg-go/web"
+	"github.com/pg-cashflow/pg-go/internal/web"
 )
 
 // Deps aggregates services and stores for HTTP handlers.
@@ -91,168 +89,140 @@ func NewRouter(d Deps) *gin.Engine {
 		}))
 	}
 
+	h := &Handlers{Deps: d}
+
+	// Root / Unauthenticated / Standalone HTML
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
-	r.GET("/push/vapid-public-key", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
-	})
-
-	h := &Handlers{Deps: d}
-
-	serveEmbeddedApp := !strings.EqualFold(d.AppEnv, "production") || strings.TrimSpace(d.FrontendURL) == ""
-	r.GET("/", func(c *gin.Context) {
-		if !serveEmbeddedApp {
-			c.Redirect(http.StatusFound, d.FrontendURL)
-			return
-		}
-		c.Redirect(http.StatusFound, "/app/")
-	})
-	if serveEmbeddedApp {
-		r.GET("/app", func(c *gin.Context) { c.Redirect(http.StatusFound, "/app/") })
-		if sub, err := fs.Sub(web.FS, "."); err == nil {
-			r.GET("/app/*filepath", func(c *gin.Context) {
-				p := strings.TrimPrefix(c.Param("filepath"), "/")
-				if p == "" {
-					p = "index.html"
-				}
-				data, err := fs.ReadFile(sub, p)
-				if err != nil {
-					c.Status(http.StatusNotFound)
-					return
-				}
-				switch {
-				case strings.HasSuffix(p, ".js"):
-					c.Data(http.StatusOK, "text/javascript; charset=utf-8", data)
-				case strings.HasSuffix(p, ".css"):
-					c.Data(http.StatusOK, "text/css; charset=utf-8", data)
-				case strings.HasSuffix(p, ".json"):
-					c.Data(http.StatusOK, "application/json", data)
-				case strings.HasSuffix(p, ".webmanifest"):
-					c.Data(http.StatusOK, "application/manifest+json", data)
-				default:
-					c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-				}
-			})
-		}
-	} else {
-		r.GET("/app", func(c *gin.Context) { c.Redirect(http.StatusFound, d.FrontendURL) })
-		r.GET("/app/*filepath", func(c *gin.Context) { c.Redirect(http.StatusFound, d.FrontendURL) })
-	}
-
-	// Unauthenticated
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
-	// Per-IP rate limits (ADR-2, M2): 3/min OTP, 10/min Firebase (burst headroom for login retries)
-	r.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
-	r.POST("/auth/otp/verify", h.OTPVerify)
-	r.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
-	r.GET("/join/invite/:code", h.LookupInvite)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 
-	pending := r.Group("/join", auth.RequirePendingJoin(d.JWTSecret))
+	// Data API routes (Namespaced under /api to avoid SPA collisions)
+	api := r.Group("/api")
 	{
-		pending.GET("/me", h.JoinMe)
-		pending.POST("", h.JoinProfile)
+		api.GET("/healthz", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		})
+		api.GET("/push/vapid-public-key", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
+		})
+		api.GET("/join/invite/:code", h.LookupInvite)
+
+		// Per-IP rate limits (ADR-2, M2): 3/min OTP, 10/min Firebase (burst headroom for login retries)
+		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
+		api.POST("/auth/otp/verify", h.OTPVerify)
+		api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
+
+		pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret))
+		{
+			pending.GET("/me", h.JoinMe)
+			pending.POST("", h.JoinProfile)
+		}
+
+		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret))
+		{
+			owner.GET("/properties", h.ListProperties)
+			owner.GET("/invite", h.OwnerInvite)
+			owner.POST("/invite/rotate", h.OwnerRotateInvite)
+			owner.GET("/join-requests", h.ListJoinRequests)
+			owner.POST("/join-requests/:id/activate", h.ActivateJoin)
+			owner.POST("/join-requests/:id/reject", h.RejectJoin)
+
+			owner.POST("/tenants", h.CreateTenant)
+			owner.GET("/tenants", h.ListTenants)
+			owner.PATCH("/tenants/:id", h.UpdateTenant)
+			owner.POST("/tenants/:id/notice", h.TenantNotice)
+			owner.POST("/tenants/:id/vacate", h.TenantVacate)
+			owner.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
+			owner.POST("/tenants/:id/prorate", h.TenantProrate)
+			owner.POST("/tenants/:id/deposit/settle", h.TenantDepositSettle)
+			owner.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
+
+			owner.GET("/dues", h.ListDues)
+			owner.POST("/dues/:id/waive", h.WaiveDue)
+			owner.POST("/dues/:id/match", h.ManualMatch)
+			owner.POST("/dues/:id/mark-cash-paid", h.MarkCashPaid)
+			owner.GET("/dues/:id/qr", h.DueQR)
+			owner.GET("/dues/:id/pay", h.OwnerDuePay)
+			owner.POST("/dues/:id/token", h.DueToken)
+
+			owner.GET("/payment-reports", h.ListPaymentReports)
+			owner.POST("/payment-reports/:id/confirm", h.ConfirmPaymentReport)
+			owner.POST("/payment-reports/:id/reject", h.RejectPaymentReport)
+
+			owner.POST("/statements/import", h.ImportStatements)
+			owner.GET("/payments", h.ListPayments)
+			owner.GET("/events", h.ListEvents)
+			owner.GET("/reconciliation", h.Reconciliation)
+
+			// Gamification settings & management
+			owner.GET("/gamification/settings", h.OwnerGetGamificationSettings)
+			owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
+			owner.GET("/floors", h.OwnerListFloors)
+			owner.POST("/floors", h.OwnerCreateFloor)
+			owner.GET("/rooms", h.OwnerListRooms)
+			owner.POST("/rooms", h.OwnerCreateRoom)
+			owner.POST("/managers", h.OwnerCreateManager)
+		}
+
+		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret))
+		{
+			manager.POST("/inspections", h.ManagerSubmitInspection)
+			manager.GET("/inspections", h.ManagerListInspections)
+			manager.POST("/inspections/items/:id/resolve", h.ManagerResolveInspectionItem)
+			manager.POST("/violations", h.ManagerLogViolation)
+			manager.POST("/meter-readings", h.ManagerRecordMeterReading)
+			manager.GET("/kitchen/headcount", h.ManagerKitchenHeadcount)
+			manager.GET("/hazards", h.ManagerListHazards)
+			manager.POST("/hazards/:id/resolve", h.ManagerResolveHazard)
+			manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
+		}
+
+		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo))
+		{
+			tenant.GET("/me", h.TenantMe)
+			tenant.GET("/dues", h.TenantDues)
+			tenant.GET("/dues/:id/qr", h.TenantDueQR)
+			tenant.GET("/dues/:id/pay", h.TenantDuePay)
+			tenant.POST("/dues/:id/reports", h.TenantSubmitReport)
+			tenant.GET("/payments", h.TenantPayments)
+			tenant.POST("/push/subscribe", h.TenantPushSubscribe)
+			tenant.POST("/aadhaar", h.TenantAadhaar)
+
+			// Gamification routes
+			tenant.GET("/points", h.TenantPoints)
+			tenant.GET("/rewards", h.TenantRewards)
+			tenant.POST("/rewards/:id/redeem", h.TenantRedeem)
+			tenant.GET("/inspections", h.TenantInspections)
+			tenant.POST("/inspections/items/:id/dispute", h.TenantDisputeInspectionItem)
+			tenant.GET("/meal-rsvp", h.TenantGetMealRSVP)
+			tenant.POST("/meal-rsvp", h.TenantSubmitMealRSVP)
+			tenant.GET("/menu-poll", h.TenantGetMenuPoll)
+			tenant.POST("/menu-poll/vote", h.TenantVoteMenuPoll)
+			tenant.POST("/hazards", h.TenantReportHazard)
+			tenant.GET("/violations", h.TenantViolations)
+			tenant.GET("/leaderboard", h.TenantLeaderboard)
+			tenant.GET("/referrals", h.TenantReferrals)
+			tenant.POST("/referrals", h.TenantReferrals)
+		}
+
+		// Notifications — scoped to claims.UserID at the repo layer.
+		// All roles (owner, manager, tenant) share the same endpoints.
+		notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret))
+		{
+			notifs.GET("", h.ListNotifications)
+			notifs.PATCH("/:id/read", h.MarkNotificationRead)
+			notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
+		}
 	}
 
-	owner := r.Group("/owner", auth.RequireOwner(d.JWTSecret))
-	{
-		owner.GET("/properties", h.ListProperties)
-		owner.GET("/invite", h.OwnerInvite)
-		owner.POST("/invite/rotate", h.OwnerRotateInvite)
-		owner.GET("/join-requests", h.ListJoinRequests)
-		owner.POST("/join-requests/:id/activate", h.ActivateJoin)
-		owner.POST("/join-requests/:id/reject", h.RejectJoin)
-
-		owner.POST("/tenants", h.CreateTenant)
-		owner.GET("/tenants", h.ListTenants)
-		owner.PATCH("/tenants/:id", h.UpdateTenant)
-		owner.POST("/tenants/:id/notice", h.TenantNotice)
-		owner.POST("/tenants/:id/vacate", h.TenantVacate)
-		owner.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
-		owner.POST("/tenants/:id/prorate", h.TenantProrate)
-		owner.POST("/tenants/:id/deposit/settle", h.TenantDepositSettle)
-		owner.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
-
-		owner.GET("/dues", h.ListDues)
-		owner.POST("/dues/:id/waive", h.WaiveDue)
-		owner.POST("/dues/:id/match", h.ManualMatch)
-		owner.POST("/dues/:id/mark-cash-paid", h.MarkCashPaid)
-		owner.GET("/dues/:id/qr", h.DueQR)
-		owner.GET("/dues/:id/pay", h.OwnerDuePay)
-		owner.POST("/dues/:id/token", h.DueToken)
-
-		owner.GET("/payment-reports", h.ListPaymentReports)
-		owner.POST("/payment-reports/:id/confirm", h.ConfirmPaymentReport)
-		owner.POST("/payment-reports/:id/reject", h.RejectPaymentReport)
-
-		owner.POST("/statements/import", h.ImportStatements)
-		owner.GET("/payments", h.ListPayments)
-		owner.GET("/events", h.ListEvents)
-		owner.GET("/reconciliation", h.Reconciliation)
-
-		// Gamification settings & management
-		owner.GET("/gamification/settings", h.OwnerGetGamificationSettings)
-		owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
-		owner.GET("/floors", h.OwnerListFloors)
-		owner.POST("/floors", h.OwnerCreateFloor)
-		owner.GET("/rooms", h.OwnerListRooms)
-		owner.POST("/rooms", h.OwnerCreateRoom)
-		owner.POST("/managers", h.OwnerCreateManager)
-	}
-
-	manager := r.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret))
-	{
-		manager.POST("/inspections", h.ManagerSubmitInspection)
-		manager.GET("/inspections", h.ManagerListInspections)
-		manager.POST("/inspections/items/:id/resolve", h.ManagerResolveInspectionItem)
-		manager.POST("/violations", h.ManagerLogViolation)
-		manager.POST("/meter-readings", h.ManagerRecordMeterReading)
-		manager.GET("/kitchen/headcount", h.ManagerKitchenHeadcount)
-		manager.GET("/hazards", h.ManagerListHazards)
-		manager.POST("/hazards/:id/resolve", h.ManagerResolveHazard)
-		manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
-	}
-
-	tenant := r.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo))
-	{
-		tenant.GET("/me", h.TenantMe)
-		tenant.GET("/dues", h.TenantDues)
-		tenant.GET("/dues/:id/qr", h.TenantDueQR)
-		tenant.GET("/dues/:id/pay", h.TenantDuePay)
-		tenant.POST("/dues/:id/reports", h.TenantSubmitReport)
-		tenant.GET("/payments", h.TenantPayments)
-		tenant.POST("/push/subscribe", h.TenantPushSubscribe)
-		tenant.POST("/aadhaar", h.TenantAadhaar)
-
-		// Gamification routes
-		tenant.GET("/points", h.TenantPoints)
-		tenant.GET("/rewards", h.TenantRewards)
-		tenant.POST("/rewards/:id/redeem", h.TenantRedeem)
-		tenant.GET("/inspections", h.TenantInspections)
-		tenant.POST("/inspections/items/:id/dispute", h.TenantDisputeInspectionItem)
-		tenant.GET("/meal-rsvp", h.TenantGetMealRSVP)
-		tenant.POST("/meal-rsvp", h.TenantSubmitMealRSVP)
-		tenant.GET("/menu-poll", h.TenantGetMenuPoll)
-		tenant.POST("/menu-poll/vote", h.TenantVoteMenuPoll)
-		tenant.POST("/hazards", h.TenantReportHazard)
-		tenant.GET("/violations", h.TenantViolations)
-		tenant.GET("/leaderboard", h.TenantLeaderboard)
-		tenant.GET("/referrals", h.TenantReferrals)
-		tenant.POST("/referrals", h.TenantReferrals)
-	}
-
-	// Notifications — scoped to claims.UserID at the repo layer.
-	// All roles (owner, manager, tenant) share the same endpoints.
-	notifs := r.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret))
-	{
-		notifs.GET("", h.ListNotifications)
-		notifs.PATCH("/:id/read", h.MarkNotificationRead)
-		notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
-	}
+	// SPA Catch-All
+	r.NoRoute(web.Handler())
 
 	return r
+
 }
 
 // Handlers holds Deps for thin HTTP adapters.

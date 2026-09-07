@@ -36,3 +36,7 @@ secrets/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Embedded frontend build artifacts
+internal/web/dist/*
+!internal/web/dist/index.html

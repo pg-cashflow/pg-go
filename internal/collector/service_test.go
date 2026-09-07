@@ -145,3 +145,13 @@ func TestEnsureCashfreeReusesMatchingAmount(t *testing.T) {
 		t.Fatalf("matching amount must reuse session: n=%d session=%s", cf.n, intent.PaymentSessionID)
 	}
 }
+
+func TestPNGURL(t *testing.T) {
+	id := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	if got := PNGURL("owner", id); got != "/api/owner/dues/11111111-1111-1111-1111-111111111111/qr" {
+		t.Fatalf("unexpected owner PNG URL: %s", got)
+	}
+	if got := PNGURL("tenant", id); got != "/api/tenant/dues/11111111-1111-1111-1111-111111111111/qr" {
+		t.Fatalf("unexpected tenant PNG URL: %s", got)
+	}
+}

@@ -130,7 +130,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 	router := NewRouter(deps)
 
 	// 1. Tenant trying to call manager endpoint -> 403
-	req := httptest.NewRequest(http.MethodGet, "/manager/hazards?property_id="+propA.String(), nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/manager/hazards?property_id="+propA.String(), nil)
 	req.Header.Set("Authorization", "Bearer "+tenantToken)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
@@ -139,7 +139,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 	}
 
 	// 2. Manager trying to call owner-only endpoint -> 403
-	req2 := httptest.NewRequest(http.MethodGet, "/owner/gamification/settings?property_id="+propA.String(), nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/owner/gamification/settings?property_id="+propA.String(), nil)
 	req2.Header.Set("Authorization", "Bearer "+managerAToken)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
@@ -154,7 +154,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 		"items":           []map[string]any{},
 	}
 	b, _ := json.Marshal(inspBody)
-	req3 := httptest.NewRequest(http.MethodPost, "/manager/inspections", bytes.NewReader(b))
+	req3 := httptest.NewRequest(http.MethodPost, "/api/manager/inspections", bytes.NewReader(b))
 	req3.Header.Set("Authorization", "Bearer "+managerAToken)
 	req3.Header.Set("Content-Type", "application/json")
 	w3 := httptest.NewRecorder()
@@ -164,7 +164,7 @@ func TestAuthorizationMatrix(t *testing.T) {
 	}
 
 	// 4. Owner can access owner endpoint -> 200
-	req4 := httptest.NewRequest(http.MethodGet, "/owner/gamification/settings?property_id="+propA.String(), nil)
+	req4 := httptest.NewRequest(http.MethodGet, "/api/owner/gamification/settings?property_id="+propA.String(), nil)
 	req4.Header.Set("Authorization", "Bearer "+ownerToken)
 	w4 := httptest.NewRecorder()
 	router.ServeHTTP(w4, req4)
