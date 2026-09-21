@@ -105,12 +105,12 @@ func NewUserRepo(db DBTX) *UserRepo { return &UserRepo{db: db} }
 
 func (r *UserRepo) WithTx(tx pgx.Tx) *UserRepo { return &UserRepo{db: tx} }
 
-const userCols = `id, phone, email, role, tenant_id, property_id, firebase_uid, created_at, last_login_at`
+const userCols = `id, phone, email, role, tenant_id, property_id, firebase_uid, token_version, created_at, last_login_at`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
 	var phone, email sql.NullString
-	err := row.Scan(&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.CreatedAt, &u.LastLoginAt)
+	err := row.Scan(&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.TokenVersion, &u.CreatedAt, &u.LastLoginAt)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +119,9 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 	}
 	if email.Valid {
 		u.Email = email.String
+	}
+	if u.TokenVersion < 1 {
+		u.TokenVersion = 1
 	}
 	return &u, nil
 }
@@ -180,6 +183,17 @@ func (r *UserRepo) LinkFirebaseUID(ctx context.Context, userID uuid.UUID, fireba
 func (r *UserRepo) TouchLogin(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET last_login_at=NOW() WHERE id=$1`, id)
 	return err
+}
+
+func (r *UserRepo) IncrementTokenVersion(ctx context.Context, id uuid.UUID) error {
+	tag, err := r.db.Exec(ctx, `UPDATE users SET token_version = token_version + 1 WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("user not found %s", id)
+	}
+	return nil
 }
 
 func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) error {

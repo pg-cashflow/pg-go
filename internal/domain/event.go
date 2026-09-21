@@ -50,6 +50,23 @@ const (
 	EvtMealRSVPConfirmed      EventType = "MealRSVPConfirmed"
 	EvtMeterReadingRecorded   EventType = "MeterReadingRecorded"
 	EvtReferralRewarded       EventType = "ReferralRewarded"
+
+	EvtCapitalAdded             EventType = "CapitalAdded"
+	EvtCapitalWithdrawn         EventType = "CapitalWithdrawn"
+	EvtExpenseCreated           EventType = "ExpenseCreated"
+	EvtExpenseApproved          EventType = "ExpenseApproved"
+	EvtExpenseRejected          EventType = "ExpenseRejected"
+	EvtExpensePaid              EventType = "ExpensePaid"
+	EvtManagerAdvanceCreated    EventType = "ManagerAdvanceCreated"
+	EvtManagerAdvanceReimbursed EventType = "ManagerAdvanceReimbursed"
+	EvtBudgetChanged            EventType = "BudgetChanged"
+	EvtLeakageDetected          EventType = "LeakageDetected"
+	EvtRecommendationCreated    EventType = "RecommendationCreated"
+	EvtRecommendationAccepted   EventType = "RecommendationAccepted"
+	EvtRecommendationCompleted  EventType = "RecommendationCompleted"
+	EvtFinancePolicyChanged     EventType = "FinancePolicyChanged"
+	EvtPeriodTieOutBlocked      EventType = "PeriodTieOutBlocked"
+	EvtRecurringTieOutException EventType = "RecurringTieOutException"
 )
 
 type Event struct {

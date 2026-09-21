@@ -88,6 +88,14 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtRewardRedeemed):
 		return r.toTenant(ctx, evt, "reward_redeemed", "🎁 Your reward redemption is confirmed.", "/tenant/rewards")
 
+	// Owner-directed: recurring tie-out exception across 3 consecutive months (ADR-1 Level 3 alert)
+	case string(domain.EvtRecurringTieOutException):
+		return r.toOwner(ctx, evt, "recurring_tie_out_exception", "⚠️ Recurring tie-out exception across 3 consecutive months", "/owner/finance/tie-out")
+
+	// Owner-directed: period tie-out blocked due to unexplained discrepancy
+	case string(domain.EvtPeriodTieOutBlocked):
+		return r.toOwner(ctx, evt, "period_tie_out_blocked", "⚠️ Period tie-out blocked: unexplained discrepancy", "/owner/finance/tie-out")
+
 	default:
 		// Unknown event type → skip silently. Returning no recipients with no
 		// error is the correct "skip" signal to the dispatcher.

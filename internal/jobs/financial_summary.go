@@ -14,13 +14,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/payment"
+	"github.com/pg-cashflow/pg-go/internal/roi"
 )
 
 // SummaryBuilder builds a reconciliation summary for a property/period.
 type SummaryBuilder interface {
 	BuildSummary(ctx context.Context, propertyID uuid.UUID, period string) (*payment.ReconciliationSummary, error)
+}
+
+// FinanceSummaryProvider provides operating summary (OCF, Opex).
+type FinanceSummaryProvider interface {
+	OperatingSummary(ctx context.Context, propertyID uuid.UUID, period string, collectionsRent int64) (*finance.OperatingSummary, error)
+}
+
+// ROISummaryProvider provides ROI metrics (TBE, recovery).
+type ROISummaryProvider interface {
+	Report(ctx context.Context, propertyID uuid.UUID, period string, recon *payment.ReconciliationSummary, rooms []domain.Room, tenants []domain.Tenant, billedRent, fixedOpex, variableOpex int64) (*roi.Report, error)
 }
 
 // PropertyLister lists all properties.
@@ -38,6 +50,8 @@ type FinancialSummaryJob struct {
 	Properties  PropertyLister
 	Tenants     PropertyTenants
 	Summaries   SummaryBuilder
+	Finance     FinanceSummaryProvider
+	ROI         ROISummaryProvider
 	Mailer      mailer.Mailer
 	Events      events.Publisher
 	TemplateDir string
@@ -98,6 +112,36 @@ func (j *FinancialSummaryJob) sendOne(ctx context.Context, p domain.Property, pe
 		"DepositsRefunded":   formatINR(sum.DepositsRefunded),
 		"CollectedByChannel": formatChannels(sum.CollectedByChannel),
 	}
+
+	payloadMap := map[string]any{
+		"period":  period,
+		"cadence": cadence,
+		"sent_to": p.OwnerEmail,
+	}
+
+	if j.Finance != nil {
+		if op, err := j.Finance.OperatingSummary(ctx, p.ID, period, sum.RentCollected); err == nil && op != nil {
+			data["OCF"] = formatINR(op.OCFPaise)
+			data["Opex"] = formatINR(op.OpexPaise)
+			data["OperatingRevenue"] = formatINR(op.OperatingRevenuePaise)
+			payloadMap["ocf_paise"] = op.OCFPaise
+			payloadMap["opex_paise"] = op.OpexPaise
+		}
+	}
+
+	if j.ROI != nil {
+		if rep, err := j.ROI.Report(ctx, p.ID, period, sum, nil, nil, 0, 0, 0); err == nil && rep != nil {
+			if rep.Recovery.TBEMonthsMilli != nil {
+				tbeMonths := float64(*rep.Recovery.TBEMonthsMilli) / 1000.0
+				data["TBE"] = fmt.Sprintf("%.1f months", tbeMonths)
+				payloadMap["tbe_months"] = tbeMonths
+			}
+			if rep.BreakEven.BreakEvenOccupancyBPS > 0 {
+				data["BreakEvenOccupancy"] = fmt.Sprintf("%.1f%%", float64(rep.BreakEven.BreakEvenOccupancyBPS)/100.0)
+			}
+		}
+	}
+
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return err
 	}
@@ -107,11 +151,7 @@ func (j *FinancialSummaryJob) sendOne(ctx context.Context, p domain.Property, pe
 	}
 
 	if j.Events != nil {
-		payload, _ := json.Marshal(domain.FinancialSummarySentPayload{
-			Period:  period,
-			Cadence: cadence,
-			SentTo:  p.OwnerEmail,
-		})
+		payload, _ := json.Marshal(payloadMap)
 		var tenantPtr *uuid.UUID
 		if j.Tenants != nil {
 			if ts, err := j.Tenants.ListByProperty(ctx, p.ID); err == nil && len(ts) > 0 {
@@ -142,7 +182,10 @@ func (j *FinancialSummaryJob) loadTemplate(name string) (*template.Template, err
 	if err != nil {
 		return template.New(name).Parse(`<h1>{{.Period}}</h1><p>{{.PropertyName}}</p>
 <p>Rent collected: {{.RentCollected}}</p>
-<p>Outstanding: {{.OutstandingRent}}</p>`)
+<p>Outstanding: {{.OutstandingRent}}</p>
+{{if .OCF}}<p>Operating Cash Flow: {{.OCF}}</p>{{end}}
+{{if .Opex}}<p>OPEX: {{.Opex}}</p>{{end}}
+{{if .TBE}}<p>Time to Break Even: {{.TBE}}</p>{{end}}`)
 	}
 	return template.New(name).Parse(string(b))
 }

@@ -150,6 +150,19 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 		OccurredAt: s.now().UTC(),
 	})
 
+	if s.onRedeem != nil && reward.Category == "cash_credit" {
+		type meta struct {
+			DiscountPaise int `json:"discount_paise"`
+		}
+		var m meta
+		_ = json.Unmarshal(reward.Metadata, &m)
+		discountPaise := m.DiscountPaise
+		if discountPaise <= 0 {
+			discountPaise = 50000
+		}
+		s.onRedeem(ctx, tenant, red, int64(discountPaise))
+	}
+
 	return red, nil
 }
 

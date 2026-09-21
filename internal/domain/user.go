@@ -16,15 +16,18 @@ const (
 )
 
 type User struct {
-	ID          uuid.UUID  `json:"id"`
-	Phone       string     `json:"phone,omitempty"`
-	Email       string     `json:"email,omitempty"`
-	Role        Role       `json:"role"`
-	TenantID    *uuid.UUID `json:"tenant_id,omitempty"`
-	PropertyID  *uuid.UUID `json:"property_id,omitempty"`
-	FirebaseUID *string    `json:"-"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	ID           uuid.UUID  `json:"id"`
+	Phone        string     `json:"phone,omitempty"`
+	Email        string     `json:"email,omitempty"`
+	Role         Role       `json:"role"`
+	TenantID     *uuid.UUID `json:"tenant_id,omitempty"`
+	PropertyID   *uuid.UUID `json:"property_id,omitempty"`
+	FirebaseUID  *string    `json:"-"`
+	TokenVersion       int        `json:"-"`
+	Locale             string     `json:"locale,omitempty"`
+	HasSavedPreference bool       `json:"has_saved_preference"`
+	CreatedAt          time.Time  `json:"created_at"`
+	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
 }
 
 func (u *User) IsOwner() bool {

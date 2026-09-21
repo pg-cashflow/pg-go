@@ -132,6 +132,8 @@ type Service struct {
 	blobs      BlobStore
 	logger     *slog.Logger
 	now        func() time.Time
+	onPoints   func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int)
+	onRedeem   func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64)
 }
 
 func NewService(store Store, tenants TenantReader, dues DueWriter, pub events.Publisher, blobs BlobStore) *Service {
@@ -227,6 +229,10 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 		return 0, err
 	}
 
+	if s.onPoints != nil && entry.Delta > 0 {
+		s.onPoints(ctx, tenant, entry, settings.PointValuePaise)
+	}
+
 	// Update cached balance in tenant_streaks
 	streak, _ := s.store.GetStreak(ctx, tenantID)
 	if streak != nil {
@@ -243,6 +249,14 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 	})
 
 	return rule.Points, nil
+}
+
+func (s *Service) SetFinanceHooks(
+	onPoints func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int),
+	onRedeem func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64),
+) {
+	s.onPoints = onPoints
+	s.onRedeem = onRedeem
 }
 
 // DeductPoints writes an unexpiring negative delta, guaranteeing points never drop below 0.

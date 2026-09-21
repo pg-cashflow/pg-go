@@ -17,7 +17,7 @@ jobs:
       - name: Checkout pg-react
         uses: actions/checkout@v4
         with:
-          repository: your-org/pg-react
+          repository: pg-cashflow/pg-react
           path: pg-react
           token: ${{ secrets.GH_PAT }}
 

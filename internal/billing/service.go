@@ -26,6 +26,7 @@ type Service struct {
 	tenants TenantRepository
 	pub     events.Publisher
 	now     func() time.Time
+	onProrate func(ctx context.Context, due *domain.Due, original, prorated int64)
 }
 
 func NewService(dues DueRepository, tenants TenantRepository, pub events.Publisher) *Service {
@@ -176,7 +177,14 @@ func (s *Service) Prorate(ctx context.Context, tenantID uuid.UUID, vacateDate ti
 	}); err != nil {
 		return nil, err
 	}
+	if s.onProrate != nil {
+		s.onProrate(ctx, due, int64(due.OriginalAmount), int64(prorated))
+	}
 	return due, nil
+}
+
+func (s *Service) SetProrateHook(fn func(ctx context.Context, due *domain.Due, original, prorated int64)) {
+	s.onProrate = fn
 }
 
 func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error {

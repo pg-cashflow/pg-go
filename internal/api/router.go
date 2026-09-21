@@ -10,7 +10,12 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
+	"github.com/pg-cashflow/pg-go/internal/intelligence"
+	"github.com/pg-cashflow/pg-go/internal/localization"
+	"github.com/pg-cashflow/pg-go/internal/roi"
+	"github.com/pg-cashflow/pg-go/internal/search"
 	"github.com/pg-cashflow/pg-go/internal/web"
 )
 
@@ -31,7 +36,8 @@ type Deps struct {
 	PaymentStore  PaymentStore
 	EventStore    EventStore
 	ImportStore   ImportStore
-	UserStore     UserStore
+	UserStore        UserStore
+	PreferencesStore PreferencesStore
 
 	Joins          JoinService
 	ReportStore    ReportStore
@@ -45,6 +51,7 @@ type Deps struct {
 	GamificationStore gamification.Store
 
 	AuthTenantRepo auth.TenantRepository // for RequireTenant live check
+	AuthUserRepo   auth.SessionStore     // for token_version session checks + revoke
 
 	OutboxEvents    OutboxStore         // notification outbox (best-effort from handlers)
 	NotificationSvc NotificationService // in-app notification read-side
@@ -55,6 +62,14 @@ type Deps struct {
 	CORSAllowedOrigins []string
 	FrontendURL        string
 	AppEnv             string
+
+	SearchSvc *search.Service
+
+	Finance              *finance.Service
+	ROI                  *roi.Service
+	Intelligence         *intelligence.Service
+	FinanceEnabled       bool
+	IntelligenceEnabled  bool
 }
 
 // redactingLogFormatter is a gin log formatter that replaces /p/<token> paths
@@ -78,12 +93,12 @@ func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.LoggerWithConfig(gin.LoggerConfig{
 		Formatter: redactingLogFormatter,
-	}))
+	}), localization.Middleware())
 	if len(d.CORSAllowedOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS"},
-			AllowHeaders:     []string{"Authorization", "Content-Type"},
+			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "Accept-Language"},
 			AllowCredentials: false,
 			MaxAge:           12 * time.Hour,
 		}))
@@ -114,14 +129,15 @@ func NewRouter(d Deps) *gin.Engine {
 		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
 		api.POST("/auth/otp/verify", h.OTPVerify)
 		api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
+		api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
 
-		pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret))
+		pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret, d.AuthUserRepo))
 		{
 			pending.GET("/me", h.JoinMe)
 			pending.POST("", h.JoinProfile)
 		}
 
-		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret))
+		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo))
 		{
 			owner.GET("/properties", h.ListProperties)
 			owner.GET("/invite", h.OwnerInvite)
@@ -157,6 +173,42 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/events", h.ListEvents)
 			owner.GET("/reconciliation", h.Reconciliation)
 
+			owner.GET("/finance/summary", h.FinanceSummary)
+			owner.GET("/finance/ledger", h.FinanceLedger)
+			owner.POST("/finance/capital", h.PostCapital)
+			owner.GET("/finance/capital", h.ListCapital)
+			owner.POST("/finance/expenses", h.PostExpense)
+			owner.GET("/finance/expenses", h.ListExpenses)
+			owner.POST("/finance/expenses/:id/payments", h.PostExpensePayment)
+			owner.GET("/finance/advances", h.ListAdvances)
+			owner.POST("/finance/reimbursements", h.PostReimbursement)
+			owner.GET("/finance/budgets", h.ListBudgets)
+			owner.POST("/finance/budgets", h.PostBudget)
+			owner.PATCH("/finance/budgets/:id", h.PatchBudget)
+			owner.GET("/finance/settings", h.GetFinanceSettings)
+			owner.PATCH("/finance/settings", h.PatchFinanceSettings)
+			owner.GET("/finance/policies", h.GetFinanceSettings)
+			owner.PATCH("/finance/policies", h.PatchFinanceSettings)
+			owner.GET("/finance/approvals", h.ListFinanceApprovals)
+			owner.POST("/finance/approvals/:id/:action", h.DecideFinanceApproval)
+			owner.GET("/finance/tie-out", h.FinanceTieOut)
+			owner.POST("/finance/tie-out/close", h.CloseFinanceTieOut)
+			owner.GET("/finance/variance-bridge", h.FinanceVarianceBridge)
+			owner.GET("/finance/imports", h.ListExpenseImports)
+
+			owner.GET("/roi", h.OwnerROI)
+			owner.GET("/roi/recovery", h.OwnerROIRecovery)
+			owner.GET("/roi/break-even", h.OwnerROIBreakEven)
+			owner.POST("/roi/scenario", h.OwnerROIScenario)
+
+			owner.GET("/insights", h.InsightsSummary)
+			owner.GET("/leakage", h.ListLeakage)
+			owner.GET("/leakage/:id", h.GetLeakage)
+			owner.GET("/recommendations", h.ListRecommendations)
+			owner.POST("/recommendations/:id/:action", h.RecommendationAction)
+			owner.GET("/coi", h.OwnerCOI)
+			owner.GET("/forecast", h.OwnerForecast)
+
 			// Gamification settings & management
 			owner.GET("/gamification/settings", h.OwnerGetGamificationSettings)
 			owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
@@ -167,7 +219,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/managers", h.OwnerCreateManager)
 		}
 
-		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret))
+		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))
 		{
 			manager.POST("/inspections", h.ManagerSubmitInspection)
 			manager.GET("/inspections", h.ManagerListInspections)
@@ -178,9 +230,14 @@ func NewRouter(d Deps) *gin.Engine {
 			manager.GET("/hazards", h.ManagerListHazards)
 			manager.POST("/hazards/:id/resolve", h.ManagerResolveHazard)
 			manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
+			manager.GET("/finance/expenses", h.ListExpenses)
+			manager.POST("/finance/expenses", h.PostExpense)
+			manager.POST("/finance/expenses/:id/payments", h.PostExpensePayment)
+			manager.GET("/finance/today", h.ManagerFinanceToday)
+			manager.POST("/finance/meal-prep", h.PostMealPrep)
 		}
 
-		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo))
+		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
 		{
 			tenant.GET("/me", h.TenantMe)
 			tenant.GET("/dues", h.TenantDues)
@@ -208,9 +265,21 @@ func NewRouter(d Deps) *gin.Engine {
 			tenant.POST("/referrals", h.TenantReferrals)
 		}
 
+		api.GET("/search", ipRateLimit(30.0/60, 10), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.Search)
+
+		// Public locale registry
+		api.GET("/locales", h.ListLocales)
+
+		// User preferences — scoped to claims.UserID
+		prefs := api.Group("/me/preferences", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
+		{
+			prefs.GET("", h.GetPreferences)
+			prefs.PATCH("", h.PatchPreferences)
+		}
+
 		// Notifications — scoped to claims.UserID at the repo layer.
 		// All roles (owner, manager, tenant) share the same endpoints.
-		notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret))
+		notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
 		{
 			notifs.GET("", h.ListNotifications)
 			notifs.PATCH("/:id/read", h.MarkNotificationRead)

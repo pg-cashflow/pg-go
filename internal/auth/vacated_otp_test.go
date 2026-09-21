@@ -125,6 +125,19 @@ func (s *stubUsers) LinkFirebaseUID(_ context.Context, userID uuid.UUID, firebas
 
 func (s *stubUsers) TouchLogin(context.Context, uuid.UUID) error { return nil }
 
+func (s *stubUsers) IncrementTokenVersion(_ context.Context, id uuid.UUID) error {
+	for _, u := range s.byPhone {
+		if u.ID == id {
+			if u.TokenVersion < 1 {
+				u.TokenVersion = 1
+			}
+			u.TokenVersion++
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
+}
+
 type stubTenantsAuth struct {
 	byID map[uuid.UUID]*domain.Tenant
 }
@@ -140,8 +153,6 @@ func (s *stubTenantsAuth) GetByID(_ context.Context, id uuid.UUID) (*domain.Tena
 func (s *stubTenantsAuth) GetByPhone(context.Context, string) (*domain.Tenant, error) {
 	return nil, pgx.ErrNoRows
 }
-
-
 
 func TestVerifyOTPVacatedExistingUser(t *testing.T) {
 	secret := "otp-secret"

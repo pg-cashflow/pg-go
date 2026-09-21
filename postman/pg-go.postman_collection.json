@@ -1,11 +1,12 @@
 {
   "info": {
     "name": "PG Go API",
-    "description": "pg-go REST API — source of truth for pg-react integration.\n\nImport with pg-go.postman_environment.json. Run Auth → Firebase Exchange first; token auto-saves.",
+    "description": "pg-go REST API — CONTRACT Rev 7 is canonical (CONTRACT.md).\n\nFolders: Public, Join, Owner, Tenant, Search, Notifications, Manager, Gamification, Legacy OTP.\n\nImport with pg-go.postman_environment.json. Run Public → Firebase Exchange first; token auto-saves. Set property_id for facility/manager queries.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8080" },
+    { "key": "api_base_url", "value": "http://localhost:8080/api" },
+    { "key": "origin_url", "value": "http://localhost:8080" },
     { "key": "token", "value": "" },
     { "key": "phone", "value": "+919876543210" },
     { "key": "id_token", "value": "" },
@@ -14,7 +15,9 @@
     { "key": "report_id", "value": "" },
     { "key": "tenant_id", "value": "" },
     { "key": "due_id", "value": "" },
-    { "key": "payment_token", "value": "" }
+    { "key": "payment_token", "value": "" },
+    { "key": "property_id", "value": "" },
+    { "key": "notification_id", "value": "" }
   ],
   "auth": {
     "type": "bearer",
@@ -30,7 +33,15 @@
             "auth": { "type": "noauth" },
             "method": "GET",
             "header": [],
-            "url": "{{base_url}}/healthz"
+            "url": "{{origin_url}}/healthz"
+          }
+        },
+        {
+          "name": "API Health Check",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "GET",
+            "url": "{{api_base_url}}/healthz"
           }
         },
         {
@@ -38,7 +49,7 @@
           "request": {
             "auth": { "type": "noauth" },
             "method": "GET",
-            "url": "{{base_url}}/push/vapid-public-key"
+            "url": "{{api_base_url}}/push/vapid-public-key"
           }
         },
         {
@@ -51,7 +62,8 @@
                   "const json = pm.response.json();",
                   "if (json.token) pm.collectionVariables.set('token', json.token);",
                   "if (json.user && json.user.role) pm.collectionVariables.set('role', json.user.role);",
-                  "if (json.user && json.user.tenant_id) pm.collectionVariables.set('tenant_id', json.user.tenant_id);"
+                  "if (json.user && json.user.tenant_id) pm.collectionVariables.set('tenant_id', json.user.tenant_id);",
+                  "if (json.user && json.user.property_id) pm.collectionVariables.set('property_id', json.user.property_id);"
                 ],
                 "type": "text/javascript"
               }
@@ -65,7 +77,15 @@
               "mode": "raw",
               "raw": "{\n  \"id_token\": \"{{id_token}}\",\n  \"invite_code\": \"{{invite_code}}\"\n}"
             },
-            "url": "{{base_url}}/auth/firebase"
+            "url": "{{api_base_url}}/auth/firebase"
+          }
+        },
+        {
+          "name": "Revoke Sessions",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "raw", "raw": "{}" },
+            "url": "{{api_base_url}}/auth/revoke-sessions"
           }
         },
         {
@@ -73,7 +93,7 @@
           "request": {
             "auth": { "type": "noauth" },
             "method": "GET",
-            "url": "{{base_url}}/p/{{payment_token}}"
+            "url": "{{origin_url}}/p/{{payment_token}}"
           }
         }
       ]
@@ -86,12 +106,12 @@
           "request": {
             "auth": { "type": "noauth" },
             "method": "GET",
-            "url": "{{base_url}}/join/invite/{{invite_code}}"
+            "url": "{{api_base_url}}/join/invite/{{invite_code}}"
           }
         },
         {
           "name": "Join Me",
-          "request": { "method": "GET", "url": "{{base_url}}/join/me" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/join/me" }
         },
         {
           "name": "Join Profile",
@@ -102,7 +122,7 @@
               "mode": "raw",
               "raw": "{\n  \"name\": \"Rahul\",\n  \"consent\": true,\n  \"uid_last4\": \"1234\",\n  \"confirm\": true\n}"
             },
-            "url": "{{base_url}}/join"
+            "url": "{{api_base_url}}/join"
           }
         }
       ]
@@ -112,23 +132,23 @@
       "item": [
         {
           "name": "List Properties",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/properties" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/properties" }
         },
         {
           "name": "Owner Invite",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/invite" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/invite" }
         },
         {
           "name": "Rotate Invite",
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/invite/rotate"
+            "url": "{{api_base_url}}/owner/invite/rotate"
           }
         },
         {
           "name": "List Join Requests",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/join-requests?status=pending" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/join-requests?status=pending" }
         },
         {
           "name": "Activate Join",
@@ -139,7 +159,7 @@
               "mode": "raw",
               "raw": "{\n  \"room_number\": \"101\",\n  \"rent_amount\": 1500000,\n  \"due_day\": 5,\n  \"deposit_amount\": 1500000\n}"
             },
-            "url": "{{base_url}}/owner/join-requests/{{join_id}}/activate"
+            "url": "{{api_base_url}}/owner/join-requests/{{join_id}}/activate"
           }
         },
         {
@@ -147,19 +167,19 @@
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/join-requests/{{join_id}}/reject"
+            "url": "{{api_base_url}}/owner/join-requests/{{join_id}}/reject"
           }
         },
         {
           "name": "List Payment Reports",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/payment-reports?status=pending_review" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/payment-reports?status=pending_review" }
         },
         {
           "name": "Confirm Payment Report",
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/payment-reports/{{report_id}}/confirm"
+            "url": "{{api_base_url}}/owner/payment-reports/{{report_id}}/confirm"
           }
         },
         {
@@ -168,12 +188,12 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"note\": \"UTR mismatch\"\n}" },
-            "url": "{{base_url}}/owner/payment-reports/{{report_id}}/reject"
+            "url": "{{api_base_url}}/owner/payment-reports/{{report_id}}/reject"
           }
         },
         {
           "name": "List Tenants",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/tenants" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/tenants" }
         },
         {
           "name": "Create Tenant",
@@ -196,7 +216,7 @@
               "mode": "raw",
               "raw": "{\n  \"name\": \"Rahul Sharma\",\n  \"phone\": \"+919876543210\",\n  \"room_number\": \"101\",\n  \"rent_amount\": 1500000,\n  \"due_day\": 5,\n  \"notice_period_days\": 30\n}"
             },
-            "url": "{{base_url}}/owner/tenants"
+            "url": "{{api_base_url}}/owner/tenants"
           }
         },
         {
@@ -208,7 +228,7 @@
               "mode": "raw",
               "raw": "{\n  \"room_number\": \"102\"\n}"
             },
-            "url": "{{base_url}}/owner/tenants/{{tenant_id}}"
+            "url": "{{api_base_url}}/owner/tenants/{{tenant_id}}"
           }
         },
         {
@@ -217,7 +237,7 @@
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/notice"
+            "url": "{{api_base_url}}/owner/tenants/{{tenant_id}}/notice"
           }
         },
         {
@@ -225,7 +245,7 @@
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/vacate"
+            "url": "{{api_base_url}}/owner/tenants/{{tenant_id}}/vacate"
           }
         },
         {
@@ -237,7 +257,7 @@
               "mode": "raw",
               "raw": "{\n  \"phone\": \"+919876543210\"\n}"
             },
-            "url": "{{base_url}}/owner/tenants/{{tenant_id}}/attach-phone"
+            "url": "{{api_base_url}}/owner/tenants/{{tenant_id}}/attach-phone"
           }
         },
         {
@@ -257,8 +277,8 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/owner/dues?status=pending",
-              "host": ["{{base_url}}"],
+              "raw": "{{api_base_url}}/owner/dues?status=pending",
+              "host": ["{{api_base_url}}"],
               "path": ["owner", "dues"],
               "query": [{ "key": "status", "value": "pending" }]
             }
@@ -269,7 +289,7 @@
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/dues/{{due_id}}/waive"
+            "url": "{{api_base_url}}/owner/dues/{{due_id}}/waive"
           }
         },
         {
@@ -281,7 +301,7 @@
               "mode": "raw",
               "raw": "{\n  \"amount\": 1500000,\n  \"note\": \"Collected in cash\"\n}"
             },
-            "url": "{{base_url}}/owner/dues/{{due_id}}/mark-cash-paid"
+            "url": "{{api_base_url}}/owner/dues/{{due_id}}/mark-cash-paid"
           }
         },
         {
@@ -293,16 +313,16 @@
               "mode": "raw",
               "raw": "{\n  \"amount\": 1500000,\n  \"upi_txn_id\": \"UPI123456789\"\n}"
             },
-            "url": "{{base_url}}/owner/dues/{{due_id}}/match"
+            "url": "{{api_base_url}}/owner/dues/{{due_id}}/match"
           }
         },
         {
           "name": "Due Pay JSON",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/dues/{{due_id}}/pay" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/dues/{{due_id}}/pay" }
         },
         {
           "name": "Due QR (PNG)",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/dues/{{due_id}}/qr" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/dues/{{due_id}}/qr" }
         },
         {
           "name": "Create Payment Token",
@@ -324,12 +344,12 @@
           "request": {
             "method": "POST",
             "body": { "mode": "raw", "raw": "{}" },
-            "url": "{{base_url}}/owner/dues/{{due_id}}/token"
+            "url": "{{api_base_url}}/owner/dues/{{due_id}}/token"
           }
         },
         {
           "name": "List Payments",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/payments" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/payments" }
         },
         {
           "name": "Import Statements (CSV)",
@@ -339,7 +359,7 @@
               "mode": "formdata",
               "formdata": [{ "key": "file", "type": "file", "src": "" }]
             },
-            "url": "{{base_url}}/owner/statements/import"
+            "url": "{{api_base_url}}/owner/statements/import"
           }
         },
         {
@@ -347,8 +367,8 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/owner/reconciliation?period=2026-08",
-              "host": ["{{base_url}}"],
+              "raw": "{{api_base_url}}/owner/reconciliation?period=2026-08",
+              "host": ["{{api_base_url}}"],
               "path": ["owner", "reconciliation"],
               "query": [{ "key": "period", "value": "2026-08" }]
             }
@@ -356,7 +376,7 @@
         },
         {
           "name": "List Events",
-          "request": { "method": "GET", "url": "{{base_url}}/owner/events" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/owner/events" }
         }
       ]
     },
@@ -365,21 +385,23 @@
       "item": [
         {
           "name": "Me",
-          "request": { "method": "GET", "url": "{{base_url}}/tenant/me" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/tenant/me" }
         },
         {
           "name": "My Dues",
-          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/tenant/dues" }
         },
         {
           "name": "Due Pay JSON",
-          "request": { "method": "GET", "url": "{{base_url}}/tenant/dues/{{due_id}}/pay" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/tenant/dues/{{due_id}}/pay" }
         },
         {
           "name": "Due QR (PNG)",
+          "request": { "method": "GET", "url": "{{api_base_url}}/tenant/dues/{{due_id}}/qr" }
+        },
         {
           "name": "My Payments",
-          "request": { "method": "GET", "url": "{{base_url}}/tenant/payments" }
+          "request": { "method": "GET", "url": "{{api_base_url}}/tenant/payments" }
         },
         {
           "name": "Push Subscribe",
@@ -390,7 +412,7 @@
               "mode": "raw",
               "raw": "{\n  \"endpoint\": \"https://example.com/push\",\n  \"keys\": {\n    \"p256dh\": \"test\",\n    \"auth\": \"test\"\n  }\n}"
             },
-            "url": "{{base_url}}/tenant/push/subscribe"
+            "url": "{{api_base_url}}/tenant/push/subscribe"
           }
         },
         {
@@ -402,7 +424,127 @@
               "mode": "raw",
               "raw": "{\n  \"consent\": true,\n  \"channel\": \"tenant_app\",\n  \"uid_last4\": \"1234\"\n}"
             },
-            "url": "{{base_url}}/tenant/aadhaar"
+            "url": "{{api_base_url}}/tenant/aadhaar"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "item": [
+        {
+          "name": "Global Search",
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/search?q=ravi&limit=20"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "List Notifications",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.notifications && json.notifications.length) pm.collectionVariables.set('notification_id', json.notifications[0].id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/notifications?limit=20"
+          }
+        },
+        {
+          "name": "Mark Notification Read",
+          "request": {
+            "method": "PATCH",
+            "url": "{{api_base_url}}/notifications/{{notification_id}}/read"
+          }
+        },
+        {
+          "name": "Mark All Notifications Read",
+          "request": {
+            "method": "PATCH",
+            "url": "{{api_base_url}}/notifications/read-all"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Manager",
+      "item": [
+        {
+          "name": "List Inspections",
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/manager/inspections?property_id={{property_id}}"
+          }
+        },
+        {
+          "name": "Kitchen Headcount",
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/manager/kitchen/headcount?property_id={{property_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Gamification",
+      "item": [
+        {
+          "name": "Tenant Points",
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/tenant/points"
+          }
+        },
+        {
+          "name": "Owner List Floors",
+          "request": {
+            "method": "GET",
+            "url": "{{api_base_url}}/owner/floors?property_id={{property_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Legacy OTP (deprecated)",
+      "description": "Rollback / not primary login. Prefer Firebase Exchange.",
+      "item": [
+        {
+          "name": "OTP Request",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\"\n}"
+            },
+            "url": "{{api_base_url}}/auth/otp/request"
+          }
+        },
+        {
+          "name": "OTP Verify",
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"{{phone}}\",\n  \"otp\": \"000000\"\n}"
+            },
+            "url": "{{api_base_url}}/auth/otp/verify"
           }
         }
       ]

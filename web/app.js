@@ -1,5 +1,5 @@
 const S = {
-  api: localStorage.getItem("pg_api") || location.origin,
+  api: localStorage.getItem("pg_api") || location.origin.replace(/\/$/, "") + "/api",
   token: localStorage.getItem("pg_token") || "",
   user: JSON.parse(localStorage.getItem("pg_user") || "null"),
   invite: localStorage.getItem("pg_invite") || "",

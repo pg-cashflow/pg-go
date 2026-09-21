@@ -13,6 +13,9 @@
     <tr><td>Credits held</td><td align="right">{{.CreditsHeld}}</td></tr>
     <tr><td>Deposits held</td><td align="right">{{.DepositsHeld}}</td></tr>
     <tr><td>Deposits refunded</td><td align="right">{{.DepositsRefunded}}</td></tr>
+    {{if .OCF}}<tr><td>Operating Cash Flow</td><td align="right">{{.OCF}}</td></tr>{{end}}
+    {{if .Opex}}<tr><td>OPEX</td><td align="right">{{.Opex}}</td></tr>{{end}}
+    {{if .TBE}}<tr><td>Time to Break Even</td><td align="right">{{.TBE}}</td></tr>{{end}}
   </table>
   <h2>By channel</h2>
   <ul>

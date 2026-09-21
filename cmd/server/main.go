@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
@@ -20,8 +22,11 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
+	"github.com/pg-cashflow/pg-go/internal/intelligence"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
@@ -29,6 +34,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
+	roisvc "github.com/pg-cashflow/pg-go/internal/roi"
+	"github.com/pg-cashflow/pg-go/internal/search"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
 )
@@ -85,6 +92,7 @@ func main() {
 	joinRepo := postgres.NewJoinRepo(pool)
 	reportRepo := postgres.NewPaymentReportRepo(pool)
 	intentRepo := postgres.NewPaymentIntentRepo(pool)
+	preferencesRepo := postgres.NewPreferencesRepo(pool)
 
 	if cfg.AadhaarQRPublicKeyPEM != "" {
 		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {
@@ -162,6 +170,29 @@ func main() {
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
 	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
 
+	financeRepo := postgres.NewFinanceRepo(pool)
+	financeSvc := finance.NewService(financeRepo, pub)
+	roiSvc := roisvc.NewService(financeSvc)
+	intelSvc := intelligence.NewService(financeRepo)
+	if cfg.FinanceEnabled {
+		paySvc.SetSettlementHook(func(ctx context.Context, p *domain.Payment, due *domain.Due) {
+			_ = financeSvc.MirrorPayment(ctx, p, due)
+		})
+		billingSvc.SetProrateHook(func(ctx context.Context, due *domain.Due, original, prorated int64) {
+			_ = financeSvc.MirrorProration(ctx, due, original, prorated)
+		})
+		gamificationSvc.SetFinanceHooks(
+			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("pts:%d", entry.ID)))
+				amt := int64(entry.Delta) * int64(pointValuePaise)
+				_ = financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt)
+			},
+			func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64) {
+				_ = financeSvc.MirrorRewardRedeem(ctx, tenant.PropertyID, tenant.ID, red.ID, red.PointsSpent, amountPaise)
+			},
+		)
+	}
+
 	// Notification subsystem.
 	outboxRepo := postgres.NewOutboxRepo(pool)
 	notifRepo := postgres.NewNotificationRepo(pool)
@@ -175,6 +206,29 @@ func main() {
 		logger,
 	)
 
+	searchRepo := postgres.NewSearchRepo(pool)
+	var embedder search.Embedder = search.NoopEmbedder{}
+	switch os.Getenv("SEARCH_EMBEDDING") {
+	case "hash":
+		embedder = search.HashEmbedder{}
+	}
+	searchSvc := &search.Service{Repo: searchRepo, Embedder: embedder}
+	if os.Getenv("SEARCH_REINDEX_ON_START") == "1" {
+		go func() {
+			props, err := propertyRepo.List(ctx)
+			if err != nil {
+				logger.Error("search reindex list properties", "err", err)
+				return
+			}
+			idx := search.Indexer{Repo: searchRepo, Embedder: embedder}
+			for _, p := range props {
+				if err := idx.RebuildProperty(ctx, p.ID); err != nil {
+					logger.Error("search reindex property", "property_id", p.ID, "err", err)
+				}
+			}
+		}()
+	}
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -186,6 +240,7 @@ func main() {
 		Gamification:       gamificationSvc,
 		GamificationStore:  gamificationRepo,
 		UserStore:          userRepo,
+		PreferencesStore:   preferencesRepo,
 		PropertyStore:      propertyRepo,
 		TenantStore:        tenantRepo,
 		DueStore:           dueRepo,
@@ -200,14 +255,21 @@ func main() {
 		CashfreeSecret:     cfg.CashfreeWebhookSecret,
 		CashfreeEnv:        cfg.CashfreeEnv,
 		AuthTenantRepo:     tenantRepo,
+		AuthUserRepo:       userRepo,
 		OutboxEvents:       outboxRepo,
 		NotificationSvc:    notifSvc,
 		Events:             pub,
 		MagicLinkBaseURL:   cfg.MagicLinkBaseURL,
 		VAPIDPublicKey:     cfg.VAPIDPublicKey,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
-		FrontendURL:        cfg.FrontendURL,
-		AppEnv:             cfg.AppEnv,
+		FrontendURL:         cfg.FrontendURL,
+		AppEnv:              cfg.AppEnv,
+		SearchSvc:           searchSvc,
+		Finance:             financeSvc,
+		ROI:                 roiSvc,
+		Intelligence:        intelSvc,
+		FinanceEnabled:      cfg.FinanceEnabled,
+		IntelligenceEnabled: cfg.IntelligenceEnabled,
 	})
 
 	srv := &http.Server{

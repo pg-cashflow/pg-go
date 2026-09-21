@@ -24,7 +24,8 @@ go run ./cmd/server/
 | `cmd/billing-cycle`     | Daily anniversary rent dues (00:05 IST)              |
 | `cmd/reminder`          | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST)          |
 | `cmd/cashfree-poll`     | Missed Cashfree webhook settle (no-op if keys unset) |
-| `cmd/financial-summary` | `--cadence=monthly\|yearly` collections digest email |
+| `cmd/financial-summary` | `--cadence=monthly\|yearly` collections & finance digest email (extended with OCF/TBE; not replaced) |
+| `cmd/kpi-snapshot`      | Daily KPI and ROI snapshot calculation and persist   |
 
 ## Locked Phase 1 decisions
 
@@ -43,7 +44,7 @@ Phase 2 PWA lives in a separate repo. To connect locally:
 
 1. Set `CORS_ALLOWED_ORIGINS=http://localhost:5173` in `.env`
 2. Run `go run ./cmd/server/`
-3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080` and `VITE_CASHFREE_ENV` to match `CASHFREE_ENV`
+3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080/api` and `VITE_CASHFREE_ENV` to match `CASHFREE_ENV`
 
 The in-repo `/app/` PWA is a frozen fallback for local `APP_ENV=development`. Production should set `FRONTEND_URL` to the Cloudflare Pages origin so `/` and `/app/` redirect to pg-react.
 
@@ -61,4 +62,4 @@ Place the Firebase Admin service account at `./secrets/firebase-sa.json`. Withou
 
 Firebase Hosting is not required. Reminder SMS stays on `SMS_*` (Android gateway).
 
-See [CONTRACT.md](CONTRACT.md) for the full API contract and [postman/](postman/) for a Postman collection.
+See [CONTRACT.md](CONTRACT.md) (Rev 8) for the full HTTP API (including finance, ROI, intelligence, manager, gamification, search, notifications) and [postman/](postman/) for a Postman collection. See [docs/finance_roi.md](docs/finance_roi.md) and [docs/adr/](docs/adr/) for financial architecture and ADRs.

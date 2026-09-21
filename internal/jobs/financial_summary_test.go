@@ -8,8 +8,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/payment"
+	"github.com/pg-cashflow/pg-go/internal/roi"
 )
 
 func TestPeriodForCadence(t *testing.T) {
@@ -102,5 +104,64 @@ func TestFinancialSummaryJob_RunMonthly(t *testing.T) {
 func TestFormatINR(t *testing.T) {
 	if got := formatINR(12345); got != "₹123.45" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+type stubFinanceProvider struct {
+	op *finance.OperatingSummary
+}
+
+func (s stubFinanceProvider) OperatingSummary(ctx context.Context, propertyID uuid.UUID, period string, collectionsRent int64) (*finance.OperatingSummary, error) {
+	return s.op, nil
+}
+
+type stubROIProvider struct {
+	rep *roi.Report
+}
+
+func (s stubROIProvider) Report(ctx context.Context, propertyID uuid.UUID, period string, recon *payment.ReconciliationSummary, rooms []domain.Room, tenants []domain.Tenant, billedRent, fixedOpex, variableOpex int64) (*roi.Report, error) {
+	return s.rep, nil
+}
+
+func TestFinancialSummaryJob_WithFinanceAndROI(t *testing.T) {
+	mail := &recordingMailer{}
+	propID := uuid.New()
+	tbeMilli := 14200 // 14.2 months
+	job := &FinancialSummaryJob{
+		Properties: stubProps{list: []domain.Property{{
+			ID: propID, Name: "Beta PG", OwnerEmail: "owner@beta.com",
+		}}},
+		Summaries: stubSummaries{sum: &payment.ReconciliationSummary{
+			RentCollected:      15000000,
+			OutstandingRent:    200000,
+			CollectedByChannel: map[string]int64{"upi": 15000000},
+		}},
+		Finance: stubFinanceProvider{op: &finance.OperatingSummary{
+			OCFPaise:              8000000,
+			OpexPaise:             7000000,
+			OperatingRevenuePaise: 15000000,
+		}},
+		ROI: stubROIProvider{rep: &roi.Report{
+			Recovery: roi.Recovery{
+				TBEMonthsMilli: &tbeMilli,
+			},
+			BreakEven: roi.BreakEven{
+				BreakEvenOccupancyBPS: 7500,
+			},
+		}},
+		Mailer: mail,
+	}
+
+	if err := job.Run(context.Background(), "monthly"); err != nil {
+		t.Fatalf("Run with finance & roi: %v", err)
+	}
+	if mail.n != 1 {
+		t.Fatalf("expected 1 email, got %d", mail.n)
+	}
+	if !strings.Contains(mail.body, "Operating Cash Flow") {
+		t.Errorf("mail body missing OCF: %s", mail.body)
+	}
+	if !strings.Contains(mail.body, "Time to Break Even") {
+		t.Errorf("mail body missing TBE: %s", mail.body)
 	}
 }

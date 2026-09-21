@@ -4,15 +4,19 @@ import (
 	"context"
 
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
-// PostgresPublisher writes events via EventRepo.Insert.
-type PostgresPublisher struct {
-	repo *postgres.EventRepo
+// EventInserter inserts an event into persistent storage.
+type EventInserter interface {
+	Insert(ctx context.Context, e *domain.Event) error
 }
 
-func NewPostgresPublisher(repo *postgres.EventRepo) *PostgresPublisher {
+// PostgresPublisher writes events via EventInserter.
+type PostgresPublisher struct {
+	repo EventInserter
+}
+
+func NewPostgresPublisher(repo EventInserter) *PostgresPublisher {
 	return &PostgresPublisher{repo: repo}
 }
 

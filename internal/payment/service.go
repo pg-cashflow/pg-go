@@ -37,6 +37,7 @@ type Service struct {
 	pub       events.Publisher
 	runInTx   txFn
 	now       func() time.Time
+	onSettle  func(ctx context.Context, p *domain.Payment, due *domain.Due)
 }
 
 func NewService(
@@ -78,6 +79,22 @@ func NewServiceWithPool(
 		})
 	}
 	return s
+}
+
+// SetSettlementHook runs after a successful collection. Hook must be idempotent (journal unique keys).
+func (s *Service) SetSettlementHook(fn func(ctx context.Context, p *domain.Payment, due *domain.Due)) {
+	s.onSettle = fn
+}
+
+func (s *Service) fireSettle(ctx context.Context, p *domain.Payment, dueID uuid.UUID) {
+	if s.onSettle == nil || p == nil {
+		return
+	}
+	due, err := s.dues.GetByID(ctx, dueID)
+	if err != nil {
+		return
+	}
+	s.onSettle(ctx, p, due)
 }
 
 // MatchPayment matches a CSV bank row to a due and records the payment.
@@ -214,6 +231,9 @@ func (s *Service) MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise
 		out = p
 		return nil
 	})
+	if err == nil {
+		s.fireSettle(ctx, out, dueID)
+	}
 	return out, err
 }
 
@@ -316,6 +336,9 @@ func (s *Service) settleMatched(
 		out = p
 		return nil
 	})
+	if err == nil {
+		s.fireSettle(ctx, out, dueID)
+	}
 	return out, err
 }
 

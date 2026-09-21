@@ -15,6 +15,18 @@ type TenantRepository interface {
 	GetByPhone(ctx context.Context, phone string) (*domain.Tenant, error)
 }
 
+// UserLookup is the subset of UserRepository used by JWT middleware
+// for live token_version checks. Nil is allowed in tests that skip revocation.
+type UserLookup interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+}
+
+// SessionStore supports live JWT checks and POST /auth/revoke-sessions.
+type SessionStore interface {
+	UserLookup
+	IncrementTokenVersion(ctx context.Context, id uuid.UUID) error
+}
+
 // UserRepository is the subset of postgres.UserRepo used by auth.
 type UserRepository interface {
 	Create(ctx context.Context, u *domain.User) error
@@ -24,6 +36,7 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 	LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error
 	TouchLogin(ctx context.Context, id uuid.UUID) error
+	IncrementTokenVersion(ctx context.Context, id uuid.UUID) error
 }
 
 // OTPRepository is the subset of postgres.OTPRepo used by auth.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"html/template"
 	"net/http"
@@ -8,8 +9,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/localization"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 )
@@ -180,16 +183,16 @@ type pushSubBody struct {
 func (h *Handlers) PaymentPushSubscribe(c *gin.Context) {
 	view, err := h.MagicLink.ResolveToken(c.Request.Context(), c.Param("token"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "invalid token"})
+		apierr.RespondClientErr(c, http.StatusNotFound, "invalid token", apierr.CodeAuthInvalidToken)
 		return
 	}
 	var body pushSubBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		apierr.RespondBindErr(c, "invalid body", apierr.CodeRequestInvalidBody)
 		return
 	}
 	if err := h.Push.Subscribe(c.Request.Context(), view.Due.TenantID, body.Endpoint, body.Keys.P256dh, body.Keys.Auth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "subscribe failed"})
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "subscribe failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -204,15 +207,15 @@ type otpRequestBody struct {
 func (h *Handlers) OTPRequest(c *gin.Context) {
 	var body otpRequestBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "phone required"})
+		apierr.RespondBindErr(c, "phone required", apierr.CodeRequestInvalidBody)
 		return
 	}
 	if err := h.Auth.RequestOTP(c.Request.Context(), body.Phone); err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limited"})
+			apierr.RespondClientErr(c, http.StatusTooManyRequests, "rate limited", apierr.CodeAuthRateLimited)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "otp request failed"})
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "otp request failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -227,24 +230,56 @@ type otpVerifyBody struct {
 func (h *Handlers) OTPVerify(c *gin.Context) {
 	var body otpVerifyBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "phone and otp required"})
+		apierr.RespondBindErr(c, "phone and otp required", apierr.CodeRequestInvalidBody)
 		return
 	}
 	token, user, err := h.Auth.VerifyOTPAndIssueToken(c.Request.Context(), body.Phone, body.OTP)
 	if err != nil {
 		status := http.StatusUnauthorized
+		code := apierr.CodeAuthInvalidOtp
 		switch {
-		case errors.Is(err, auth.ErrRateLimited):
-			status = http.StatusTooManyRequests
 		case errors.Is(err, auth.ErrNoAccount):
 			status = http.StatusNotFound
+			code = apierr.CodeAuthNoAccount
 		case errors.Is(err, auth.ErrTenantVacated):
 			status = http.StatusForbidden
+			code = apierr.CodeAuthAccessRevoked
+		case errors.Is(err, auth.ErrOTPExpired):
+			status = http.StatusUnauthorized
+			code = apierr.CodeAuthOtpExpired
+		case errors.Is(err, auth.ErrOTPLocked):
+			status = http.StatusUnauthorized
+			code = apierr.CodeAuthOtpLocked
+		case errors.Is(err, auth.ErrInvalidOTP):
+			status = http.StatusUnauthorized
+			code = apierr.CodeAuthInvalidOtp
+		default:
+			respondErr(c, err)
+			return
 		}
-		respondErr(c, clientErr(status, err.Error()))
+		respondErr(c, clientErrWithCode(status, err.Error(), code))
 		return
 	}
+	h.attachUserLocale(c.Request.Context(), c.Request, user)
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+
+// RevokeSessions handles POST /auth/revoke-sessions — bumps users.token_version
+// so previously issued JWTs fail live checks on the next request.
+func (h *Handlers) RevokeSessions(c *gin.Context) {
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if h.AuthUserRepo == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	if err := h.AuthUserRepo.IncrementTokenVersion(c.Request.Context(), uid); err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 type firebaseAuthBody struct {
@@ -256,46 +291,68 @@ type firebaseAuthBody struct {
 func (h *Handlers) FirebaseAuth(c *gin.Context) {
 	var body firebaseAuthBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "id_token required"})
+		apierr.RespondBindErr(c, "id_token required", apierr.CodeRequestInvalidBody)
 		return
 	}
 	token, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken, body.InviteCode)
 	if err != nil {
 		status := http.StatusUnauthorized
 		msg := "authentication failed"
+		code := apierr.CodeAuthInvalidFirebaseToken
 		switch {
 		case errors.Is(err, auth.ErrFirebaseNotConfigured):
 			status = http.StatusServiceUnavailable
 			msg = "firebase auth not configured"
+			code = apierr.CodeAuthFirebaseNotConfigured
 		case errors.Is(err, auth.ErrEmailNotVerified):
 			status = http.StatusForbidden
 			msg = "email is not verified with Google — please verify your email or use phone OTP"
+			code = apierr.CodeAuthEmailNotVerified
 		case errors.Is(err, auth.ErrNoAccount):
 			status = http.StatusNotFound
 			msg = "account not found — if you are an owner, verify your registered phone/email; if you are a tenant, get the invite code from your owner"
+			code = apierr.CodeAuthNoAccount
 		case errors.Is(err, auth.ErrInvalidInvite):
 			status = http.StatusNotFound
 			msg = "get the PG invite code from your owner"
+			code = apierr.CodeAuthInvalidInvite
 		case errors.Is(err, auth.ErrTenantVacated):
 			status = http.StatusForbidden
 			msg = "access revoked"
+			code = apierr.CodeAuthAccessRevoked
 		}
-		respondErr(c, clientErr(status, msg))
+		respondErr(c, clientErrWithCode(status, msg, code))
 		return
 	}
 	if user != nil && user.Role == domain.RoleTenant && user.TenantID == nil && user.PropertyID != nil && h.Joins != nil {
 		if _, err := h.Joins.EnsurePending(c.Request.Context(), user, *user.PropertyID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "join queue failed"})
+			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "join queue failed"})
 			return
 		}
 	}
+	h.attachUserLocale(c.Request.Context(), c.Request, user)
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+
+func (h *Handlers) attachUserLocale(ctx context.Context, r *http.Request, user *domain.User) {
+	if user == nil {
+		return
+	}
+	if h.PreferencesStore != nil {
+		if pref, err := h.PreferencesStore.GetByUserID(ctx, user.ID); err == nil && pref != nil {
+			user.Locale = pref.Locale
+			user.HasSavedPreference = true
+			return
+		}
+	}
+	user.Locale = localization.ResolveLocale(nil, r)
+	user.HasSavedPreference = false
 }
 
 func propertyIDFromClaims(c *gin.Context) (uuid.UUID, bool) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok || claims.PropertyID == nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "no property scope"})
+		apierr.RespondClientErr(c, http.StatusForbidden, "no property scope", apierr.CodeAuthNoPropertyScope)
 		return uuid.Nil, false
 	}
 	return *claims.PropertyID, true
@@ -304,7 +361,7 @@ func propertyIDFromClaims(c *gin.Context) (uuid.UUID, bool) {
 func userIDFromClaims(c *gin.Context) (uuid.UUID, bool) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
 		return uuid.Nil, false
 	}
 	return claims.UserID, true

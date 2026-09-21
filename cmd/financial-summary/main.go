@@ -12,10 +12,12 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/roi"
 )
 
 func main() {
@@ -61,10 +63,20 @@ func main() {
 		tmplDir = filepath.Join("..", "..", "internal", "mailer", "templates")
 	}
 
+	var finSvc *finance.Service
+	var roiSvc *roi.Service
+	if cfg.FinanceEnabled {
+		financeRepo := postgres.NewFinanceRepo(pool)
+		finSvc = finance.NewService(financeRepo, pub)
+		roiSvc = roi.NewService(finSvc)
+	}
+
 	job := &jobs.FinancialSummaryJob{
 		Properties:  propertyRepo,
 		Tenants:     tenantRepo,
 		Summaries:   paySvc,
+		Finance:     finSvc,
+		ROI:         roiSvc,
 		Mailer:      mail,
 		Events:      pub,
 		TemplateDir: tmplDir,

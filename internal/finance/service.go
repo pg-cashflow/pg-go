@@ -1,0 +1,505 @@
+package finance
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/domain"
+)
+
+// EventPublisher publishes domain events for audit and notifications.
+type EventPublisher interface {
+	Publish(ctx context.Context, e domain.Event) error
+}
+
+type Service struct {
+	Store Store
+	Pub   EventPublisher
+	Now   func() time.Time
+}
+
+func NewService(store Store, pub EventPublisher) *Service {
+	return &Service{Store: store, Pub: pub, Now: func() time.Time { return time.Now().UTC() }}
+}
+
+func (s *Service) publish(ctx context.Context, propertyID uuid.UUID, typ domain.EventType, payload any) {
+	if s.Pub == nil {
+		return
+	}
+	b, _ := json.Marshal(payload)
+	_ = s.Pub.Publish(ctx, domain.Event{
+		PropertyID: propertyID,
+		EventType:  typ,
+		OccurredAt: s.Now(),
+		Payload:    b,
+	})
+}
+
+func (s *Service) AddCapital(ctx context.Context, propertyID, ownerID uuid.UUID, kind domain.CapitalKind, amount int64, purpose, idem string) (*domain.CapitalTransaction, error) {
+	if idem == "" {
+		return nil, ErrIdempotencyRequired
+	}
+	if amount <= 0 {
+		return nil, ErrInvalidAmount
+	}
+	switch kind {
+	case domain.CapitalInitial, domain.CapitalAdditional, domain.CapitalWithdrawal:
+	default:
+		return nil, ErrInvalidKind
+	}
+	_ = s.Store.EnsureDefaults(ctx, propertyID)
+	n, err := s.Store.CountCapital(ctx, propertyID)
+	if err != nil {
+		return nil, err
+	}
+	at := s.Now()
+	tx := &domain.CapitalTransaction{
+		ID:             uuid.New(),
+		PropertyID:     propertyID,
+		OwnerUserID:    ownerID,
+		Kind:           kind,
+		AmountPaise:    amount,
+		Purpose:        purpose,
+		Reference:      nextCapitalRef(n),
+		IdempotencyKey: idem,
+		OccurredAt:     at,
+		CreatedAt:      at,
+	}
+	if err := s.Store.InsertCapital(ctx, tx); err != nil {
+		return nil, err
+	}
+	cashAcct := domain.AcctBank
+	var specs []LineSpec
+	if kind == domain.CapitalWithdrawal {
+		specs = []LineSpec{
+			{Account: domain.AcctOwnerCapital, Debit: amount, LineKind: "capital_out"},
+			{Account: cashAcct, Credit: amount, LineKind: "cash_out"},
+		}
+		s.publish(ctx, propertyID, domain.EvtCapitalWithdrawn, tx)
+	} else {
+		specs = []LineSpec{
+			{Account: cashAcct, Debit: amount, LineKind: "cash_in"},
+			{Account: domain.AcctOwnerCapital, Credit: amount, LineKind: "capital_in"},
+		}
+		s.publish(ctx, propertyID, domain.EvtCapitalAdded, tx)
+	}
+	lines, err := MakeLines(propertyID, tx.ID, "capital", at, specs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+		return nil, err
+	}
+	return tx, nil
+}
+
+type CreateExpenseInput struct {
+	PropertyID     uuid.UUID
+	ActorID        uuid.UUID
+	ActorRole      string
+	CategoryCode   string
+	VendorName     string
+	Description    string
+	AmountPaise    int64
+	Emergency      bool
+	RoomID         *uuid.UUID
+	IdempotencyKey string
+	OccurredAt     time.Time
+}
+
+func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*domain.Expense, *domain.ApprovalRequest, error) {
+	if in.IdempotencyKey == "" {
+		return nil, nil, ErrIdempotencyRequired
+	}
+	if in.AmountPaise <= 0 {
+		return nil, nil, ErrInvalidAmount
+	}
+	if in.CategoryCode == "" {
+		in.CategoryCode = "vendor"
+	}
+	_ = s.Store.EnsureDefaults(ctx, in.PropertyID)
+	at := in.OccurredAt
+	if at.IsZero() {
+		at = s.Now()
+	}
+	status := domain.ExpenseApproved
+	var approval *domain.ApprovalRequest
+	if in.ActorRole == string(domain.RoleManager) {
+		pol, err := s.Store.GetPolicy(ctx, in.PropertyID)
+		if err != nil {
+			return nil, nil, err
+		}
+		dayFrom := dayStart(at)
+		monthFrom, monthTo, _ := PeriodBounds(at.Format("2006-01"))
+		daily, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
+		monthly, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
+		chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, in.Emergency)
+		if chk.Reject != nil {
+			return nil, nil, chk.Reject
+		}
+		if chk.NeedsApproval {
+			status = domain.ExpensePendingApproval
+		}
+		if in.Emergency && pol.EmergencyBypassEnabled {
+			status = domain.ExpenseApproved
+		}
+	}
+	e := &domain.Expense{
+		ID:             uuid.New(),
+		PropertyID:     in.PropertyID,
+		CategoryCode:   in.CategoryCode,
+		VendorName:     in.VendorName,
+		Description:    in.Description,
+		AmountPaise:    in.AmountPaise,
+		Status:         status,
+		Emergency:      in.Emergency,
+		RoomID:         in.RoomID,
+		CreatedBy:      in.ActorID,
+		CreatedByRole:  in.ActorRole,
+		IdempotencyKey: in.IdempotencyKey,
+		OccurredAt:     at,
+		CreatedAt:      at,
+	}
+	if err := s.Store.InsertExpense(ctx, e); err != nil {
+		return nil, nil, err
+	}
+	s.publish(ctx, in.PropertyID, domain.EvtExpenseCreated, e)
+	if status == domain.ExpenseApproved {
+		if err := s.postExpenseAccrual(ctx, e); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		approval = &domain.ApprovalRequest{
+			ID:          uuid.New(),
+			PropertyID:  in.PropertyID,
+			Kind:        "expense",
+			SubjectID:   e.ID,
+			AmountPaise: e.AmountPaise,
+			RequestedBy: in.ActorID,
+			Status:      "pending",
+			CreatedAt:   at,
+		}
+		if err := s.Store.InsertApproval(ctx, approval); err != nil {
+			return nil, nil, err
+		}
+	}
+	if in.Emergency {
+		s.publish(ctx, in.PropertyID, domain.EvtExpenseApproved, map[string]any{"expense_id": e.ID, "emergency": true})
+	}
+	return e, approval, nil
+}
+
+func (s *Service) postExpenseAccrual(ctx context.Context, e *domain.Expense) error {
+	lines, err := MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
+		{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
+		{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	return s.Store.InsertJournal(ctx, lines)
+}
+
+type PayExpenseInput struct {
+	ExpenseID      uuid.UUID
+	PropertyID     uuid.UUID
+	ActorID        uuid.UUID
+	ActorRole      domain.PayerRole
+	AmountPaise    int64
+	Method         string
+	IdempotencyKey string
+}
+
+func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.ExpensePayment, error) {
+	if in.IdempotencyKey == "" {
+		return nil, ErrIdempotencyRequired
+	}
+	if in.AmountPaise <= 0 {
+		return nil, ErrInvalidAmount
+	}
+	e, err := s.Store.GetExpense(ctx, in.ExpenseID)
+	if err != nil {
+		return nil, err
+	}
+	if e.PropertyID != in.PropertyID {
+		return nil, ErrForbidden
+	}
+	if e.Status != domain.ExpenseApproved && e.Status != domain.ExpensePaid {
+		return nil, ErrExpenseNotPayable
+	}
+	paid, err := s.Store.SumExpensePayments(ctx, e.ID)
+	if err != nil {
+		return nil, err
+	}
+	if paid+in.AmountPaise > e.AmountPaise {
+		return nil, ErrOverpay
+	}
+	if in.Method == "" {
+		in.Method = "cash"
+	}
+	at := s.Now()
+	p := &domain.ExpensePayment{
+		ID:             uuid.New(),
+		ExpenseID:      e.ID,
+		PropertyID:     e.PropertyID,
+		AmountPaise:    in.AmountPaise,
+		PayerRole:      in.ActorRole,
+		PayerUserID:    in.ActorID,
+		Method:         in.Method,
+		IdempotencyKey: in.IdempotencyKey,
+		OccurredAt:     at,
+	}
+	if err := s.Store.InsertExpensePayment(ctx, p); err != nil {
+		return nil, err
+	}
+	acct := domain.AcctCash
+	if in.Method == "bank" || in.Method == "upi" {
+		acct = domain.AcctBank
+	}
+	var specs []LineSpec
+	if in.ActorRole == domain.PayerManager {
+		specs = []LineSpec{
+			{Account: domain.AcctAccountsPayable, Debit: in.AmountPaise, LineKind: "payable_clear"},
+			{Account: domain.AcctManagerAdvancePayable, Credit: in.AmountPaise, LineKind: "advance_cr"},
+		}
+		adv := &domain.ManagerAdvance{
+			ID:               uuid.New(),
+			PropertyID:       e.PropertyID,
+			ManagerUserID:    in.ActorID,
+			ExpensePaymentID: p.ID,
+			AmountPaise:      in.AmountPaise,
+			OccurredAt:       at,
+		}
+		if err := s.Store.InsertAdvance(ctx, adv); err != nil {
+			return nil, err
+		}
+		s.publish(ctx, e.PropertyID, domain.EvtManagerAdvanceCreated, adv)
+	} else {
+		specs = []LineSpec{
+			{Account: domain.AcctAccountsPayable, Debit: in.AmountPaise, LineKind: "payable_clear"},
+			{Account: acct, Credit: in.AmountPaise, LineKind: "cash_out"},
+		}
+	}
+	lines, err := MakeLines(e.PropertyID, p.ID, "expense_payment", at, specs)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+		return nil, err
+	}
+	if paid+in.AmountPaise == e.AmountPaise {
+		_ = s.Store.UpdateExpenseStatus(ctx, e.ID, domain.ExpensePaid)
+		s.publish(ctx, e.PropertyID, domain.EvtExpensePaid, p)
+	}
+	return p, nil
+}
+
+func (s *Service) ReimburseManager(ctx context.Context, propertyID, ownerID, managerID uuid.UUID, amount int64, idem string) (*domain.ManagerReimbursement, error) {
+	if idem == "" {
+		return nil, ErrIdempotencyRequired
+	}
+	if amount <= 0 {
+		return nil, ErrInvalidAmount
+	}
+	outstanding, err := s.Store.AdvanceOutstanding(ctx, propertyID)
+	if err != nil {
+		return nil, err
+	}
+	if amount > outstanding {
+		return nil, ErrOverpay
+	}
+	at := s.Now()
+	r := &domain.ManagerReimbursement{
+		ID:             uuid.New(),
+		PropertyID:     propertyID,
+		ManagerUserID:  managerID,
+		AmountPaise:    amount,
+		RecordedBy:     ownerID,
+		IdempotencyKey: idem,
+		OccurredAt:     at,
+	}
+	if err := s.Store.InsertReimbursement(ctx, r); err != nil {
+		return nil, err
+	}
+	lines, err := MakeLines(propertyID, r.ID, "reimbursement", at, []LineSpec{
+		{Account: domain.AcctManagerAdvancePayable, Debit: amount, LineKind: "advance_clear"},
+		{Account: domain.AcctBank, Credit: amount, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+		return nil, err
+	}
+	s.publish(ctx, propertyID, domain.EvtManagerAdvanceReimbursed, r)
+	return r, nil
+}
+
+func (s *Service) DecideApproval(ctx context.Context, propertyID, ownerID, approvalID uuid.UUID, approve bool, note string) error {
+	a, err := s.Store.GetApproval(ctx, approvalID)
+	if err != nil {
+		return err
+	}
+	if a.PropertyID != propertyID || a.Status != "pending" {
+		return ErrForbidden
+	}
+	now := s.Now()
+	a.DecidedBy = &ownerID
+	a.DecidedAt = &now
+	a.Note = note
+	if approve {
+		a.Status = "approved"
+		if a.Kind == "expense" {
+			if err := s.Store.UpdateExpenseStatus(ctx, a.SubjectID, domain.ExpenseApproved); err != nil {
+				return err
+			}
+			e, err := s.Store.GetExpense(ctx, a.SubjectID)
+			if err != nil {
+				return err
+			}
+			if err := s.postExpenseAccrual(ctx, e); err != nil {
+				return err
+			}
+			s.publish(ctx, propertyID, domain.EvtExpenseApproved, a)
+		}
+	} else {
+		a.Status = "rejected"
+		if a.Kind == "expense" {
+			_ = s.Store.UpdateExpenseStatus(ctx, a.SubjectID, domain.ExpenseCancelled)
+		}
+		s.publish(ctx, propertyID, domain.EvtExpenseRejected, a)
+	}
+	return s.Store.UpdateApproval(ctx, a)
+}
+
+func (s *Service) SaveBudget(ctx context.Context, b *domain.Budget) error {
+	if b.AmountPaise < 0 {
+		return ErrInvalidAmount
+	}
+	if err := s.Store.UpsertBudget(ctx, b); err != nil {
+		return err
+	}
+	s.publish(ctx, b.PropertyID, domain.EvtBudgetChanged, b)
+	return nil
+}
+
+func (s *Service) PatchSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy) (*domain.PropertyFinanceSettings, *domain.ApprovalPolicy, error) {
+	st, pol, _, err := s.PatchUnifiedSettings(ctx, propertyID, settings, policy, nil)
+	return st, pol, err
+}
+
+func (s *Service) PatchUnifiedSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy, loyalty *domain.PropertyGamificationSettings) (*domain.PropertyFinanceSettings, *domain.ApprovalPolicy, *domain.PropertyGamificationSettings, error) {
+	_ = s.Store.EnsureDefaults(ctx, propertyID)
+	curS, err := s.Store.GetSettings(ctx, propertyID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	curP, err := s.Store.GetPolicy(ctx, propertyID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if settings != nil {
+		settings.PropertyID = propertyID
+		if settings.FiscalMonthStartDay == 0 {
+			settings.FiscalMonthStartDay = curS.FiscalMonthStartDay
+		}
+		curS = *settings
+	}
+	if policy != nil {
+		policy.PropertyID = propertyID
+		curP = *policy
+	}
+	if err := s.Store.SaveUnifiedSettings(ctx, propertyID, &curS, &curP, loyalty); err != nil {
+		return nil, nil, nil, err
+	}
+	evtPayload := map[string]any{"settings": curS, "policy": curP}
+	if loyalty != nil {
+		evtPayload["loyalty"] = loyalty
+	}
+	s.publish(ctx, propertyID, domain.EvtFinancePolicyChanged, evtPayload)
+	return &curS, &curP, loyalty, nil
+}
+
+type OperatingSummary struct {
+	PeriodMonth                string `json:"period_month"`
+	CollectionsRentPaise       int64  `json:"collections_rent_paise"`
+	OperatingRevenuePaise      int64  `json:"operating_revenue_paise"`
+	OpexPaise                  int64  `json:"opex_paise"`
+	OCFPaise                   int64  `json:"ocf_paise"`
+	ManagerAdvanceOutstanding  int64  `json:"manager_advance_outstanding_paise"`
+	TDRExpensePaise            int64  `json:"tdr_expense_paise"`
+	TDRIsEstimated             bool   `json:"tdr_is_estimated"`
+	LoyaltyIssuedPaise         int64  `json:"loyalty_issued_paise"`
+	LabelCollections           string `json:"label_collections"`
+	LabelOperating             string `json:"label_operating"`
+}
+
+func (s *Service) OperatingSummary(ctx context.Context, propertyID uuid.UUID, period string, collectionsRent int64) (*OperatingSummary, error) {
+	from, to, err := PeriodBounds(period)
+	if err != nil {
+		return nil, err
+	}
+	rent, err := s.Store.SumAccountNetCredit(ctx, propertyID, domain.AcctRentRevenue, from, to)
+	if err != nil {
+		return nil, err
+	}
+	util, _ := s.Store.SumAccountNetCredit(ctx, propertyID, domain.AcctUtilityRecoveryRevenue, from, to)
+	opexDr, _, _ := s.Store.SumAccount(ctx, propertyID, domain.AcctOperatingExpense, from, to)
+	tdrDr, _, _ := s.Store.SumAccount(ctx, propertyID, domain.AcctPaymentProcessingExpense, from, to)
+	loyaltyDr, _, _ := s.Store.SumAccount(ctx, propertyID, domain.AcctLoyaltyExpense, from, to)
+	adv, _ := s.Store.AdvanceOutstanding(ctx, propertyID)
+	st, _ := s.Store.GetSettings(ctx, propertyID)
+	opex := opexDr + tdrDr + loyaltyDr
+	rev := rent + util
+	return &OperatingSummary{
+		PeriodMonth:               period,
+		CollectionsRentPaise:      collectionsRent,
+		OperatingRevenuePaise:     rev,
+		OpexPaise:                 opex,
+		OCFPaise:                  rev - opex,
+		ManagerAdvanceOutstanding: adv,
+		TDRExpensePaise:           tdrDr,
+		TDRIsEstimated:            st.TDRIsEstimated,
+		LoyaltyIssuedPaise:        loyaltyDr,
+		LabelCollections:          "Collections (reconciliation)",
+		LabelOperating:            "Operating view (ledger)",
+	}, nil
+}
+
+func (s *Service) CapitalTotals(ctx context.Context, propertyID uuid.UUID) (invested, withdrawn int64, err error) {
+	list, err := s.Store.ListCapital(ctx, propertyID)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, c := range list {
+		if c.Kind == domain.CapitalWithdrawal {
+			withdrawn += c.AmountPaise
+		} else {
+			invested += c.AmountPaise
+		}
+	}
+	return invested, withdrawn, nil
+}
+
+func (s *Service) CategoryOpex(ctx context.Context, propertyID uuid.UUID, from, to time.Time) (map[string]int64, error) {
+	exps, err := s.Store.ListExpenses(ctx, propertyID)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, e := range exps {
+		if e.Status == domain.ExpenseCancelled || e.Status == domain.ExpenseDraft || e.Status == domain.ExpensePendingApproval {
+			continue
+		}
+		if e.OccurredAt.Before(from) || !e.OccurredAt.Before(to) {
+			continue
+		}
+		out[e.CategoryCode] += e.AmountPaise
+	}
+	return out, nil
+}
+
+func fmtINR(p int64) string { return fmt.Sprintf("%d", p) }

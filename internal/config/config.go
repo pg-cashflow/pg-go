@@ -36,6 +36,8 @@ type Config struct {
 	CashfreeEnv           string
 	CashfreeWebhookSecret string
 	AadhaarQRPublicKeyPEM string
+	FinanceEnabled        bool
+	IntelligenceEnabled   bool
 }
 
 func Load() (*Config, error) {
@@ -68,6 +70,8 @@ func Load() (*Config, error) {
 		CashfreeEnv:           envOr("CASHFREE_ENV", "sandbox"),
 		CashfreeWebhookSecret: os.Getenv("CASHFREE_WEBHOOK_SECRET"),
 		AadhaarQRPublicKeyPEM: os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
+		FinanceEnabled:        envBoolDefaultTrue("FINANCE_ENABLED"),
+		IntelligenceEnabled:   envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 	}
 	if cfg.CashfreeWebhookSecret == "" {
 		cfg.CashfreeWebhookSecret = cfg.CashfreeSecretKey
@@ -92,6 +96,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required in production when Cashfree is enabled")
 	}
 	return cfg, nil
+}
+
+func envBoolDefaultTrue(k string) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(k)))
+	if v == "" {
+		return true
+	}
+	return v != "0" && v != "false" && v != "no"
 }
 
 func envOr(k, def string) string {

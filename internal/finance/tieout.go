@@ -1,0 +1,131 @@
+package finance
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/payment"
+)
+
+// ComputeTieOut compares collections control (reconciliation) to ledger rent_revenue credits.
+func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, period string, recon *payment.ReconciliationSummary) (*domain.PeriodTieOut, error) {
+	from, to, err := PeriodBounds(period)
+	if err != nil {
+		return nil, err
+	}
+	ledgerRent, err := s.Store.SumAccountNetCredit(ctx, propertyID, domain.AcctRentRevenue, from, to)
+	if err != nil {
+		return nil, err
+	}
+	diff := recon.RentCollected - ledgerRent
+	items := []domain.TieOutItem{}
+	if diff != 0 {
+		items = append(items, domain.TieOutItem{
+			Category:         "investigate",
+			AmountPaise:      diff,
+			Note:             "unexplained collections vs ledger rent_revenue",
+			UnresolvedMonths: 1,
+		})
+	}
+	existing, err := s.Store.GetTieOut(ctx, propertyID, period)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	t := &domain.PeriodTieOut{
+		PropertyID:       propertyID,
+		PeriodMonth:      period,
+		ReconTotalPaise:  recon.RentCollected,
+		LedgerTotalPaise: ledgerRent,
+		DifferencePaise:  diff,
+		Items:            items,
+		Status:           "open",
+	}
+	if existing != nil {
+		t.ID = existing.ID
+		t.Status = existing.Status
+		t.ClosedAt = existing.ClosedAt
+		t.Items = mergeInvestigateAging(existing.Items, items)
+	} else if prevT, err := time.Parse("2006-01", period); err == nil {
+		prevPeriod := prevT.AddDate(0, -1, 0).Format("2006-01")
+		if prev, err := s.Store.GetTieOut(ctx, propertyID, prevPeriod); err == nil && prev != nil {
+			t.Items = mergeInvestigateAging(prev.Items, items)
+		}
+	}
+	if err := s.Store.SaveTieOut(ctx, t); err != nil {
+		return nil, err
+	}
+	if aging := maxInvestigateMonths(t.Items); aging >= 3 {
+		s.publish(ctx, propertyID, domain.EvtRecurringTieOutException, t)
+	}
+	return t, nil
+}
+
+func mergeInvestigateAging(prev, next []domain.TieOutItem) []domain.TieOutItem {
+	had := false
+	months := 1
+	for _, p := range prev {
+		if p.Category == "investigate" && p.AmountPaise != 0 {
+			had = true
+			if p.UnresolvedMonths > 0 {
+				months = p.UnresolvedMonths + 1
+			} else {
+				months = 2
+			}
+		}
+	}
+	out := next
+	if !had {
+		return out
+	}
+	for i := range out {
+		if out[i].Category == "investigate" {
+			out[i].UnresolvedMonths = months
+		}
+	}
+	return out
+}
+
+func maxInvestigateMonths(items []domain.TieOutItem) int {
+	m := 0
+	for _, i := range items {
+		if i.UnresolvedMonths > m {
+			m = i.UnresolvedMonths
+		}
+	}
+	return m
+}
+
+func (s *Service) CloseTieOut(ctx context.Context, propertyID uuid.UUID, period string) (*domain.PeriodTieOut, error) {
+	t, err := s.Store.GetTieOut(ctx, propertyID, period)
+	if err != nil {
+		return nil, err
+	}
+	if t.DifferencePaise != 0 {
+		s.publish(ctx, propertyID, domain.EvtPeriodTieOutBlocked, t)
+		return t, ErrPeriodNotCloseable
+	}
+	now := s.Now()
+	t.Status = "closed"
+	t.ClosedAt = &now
+	if err := s.Store.SaveTieOut(ctx, t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *Service) RecurringTieOutAlert(ctx context.Context, propertyID uuid.UUID) bool {
+	list, err := s.Store.ListTieOuts(ctx, propertyID, 12)
+	if err != nil {
+		return false
+	}
+	n := 0
+	for _, t := range list {
+		if t.DifferencePaise != 0 {
+			n++
+		}
+	}
+	return n >= 3
+}
