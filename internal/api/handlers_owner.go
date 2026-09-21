@@ -10,6 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -64,7 +66,7 @@ func (h *Handlers) CreateTenant(c *gin.Context) {
 		return
 	}
 	if body.DueDay < 1 || body.DueDay > 28 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "due_day must be 1–28"})
+		apierr.RespondClientErr(c, http.StatusBadRequest, "due_day must be 1–28", apierr.CodeRequestDueDayInvalid)
 		return
 	}
 	if body.NoticePeriodDays <= 0 {
@@ -123,9 +125,8 @@ func (h *Handlers) UpdateTenant(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -153,7 +154,7 @@ func (h *Handlers) UpdateTenant(c *gin.Context) {
 	}
 	if body.DueDay != nil {
 		if *body.DueDay < 1 || *body.DueDay > 28 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "due_day must be 1–28"})
+			apierr.RespondClientErr(c, http.StatusBadRequest, "due_day must be 1–28", apierr.CodeRequestDueDayInvalid)
 			return
 		}
 		t.DueDay = body.DueDay
@@ -174,9 +175,8 @@ func (h *Handlers) TenantNotice(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -205,9 +205,8 @@ func (h *Handlers) TenantVacate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -228,9 +227,8 @@ func (h *Handlers) TenantAttachPhone(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -258,9 +256,8 @@ func (h *Handlers) TenantProrate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -277,7 +274,7 @@ func (h *Handlers) TenantProrate(c *gin.Context) {
 	}
 	due, err := h.Billing.Prorate(c.Request.Context(), id, body.VacateDate)
 	if err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, typedClientErr(http.StatusBadRequest, err, billing.ErrNoOpenRentDue, billing.ErrDueNotWaivable, billing.ErrOpenDueExists))
 		return
 	}
 	c.JSON(http.StatusOK, due)
@@ -289,9 +286,8 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -347,9 +343,8 @@ func (h *Handlers) TenantIDPhoto(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	t, err := h.TenantStore.GetByID(c.Request.Context(), id)
@@ -401,9 +396,8 @@ func (h *Handlers) WaiveDue(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -413,7 +407,7 @@ func (h *Handlers) WaiveDue(c *gin.Context) {
 	}
 	due, err = h.Billing.WaiveDue(c.Request.Context(), id)
 	if err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, typedClientErr(http.StatusBadRequest, err, billing.ErrDueNotWaivable, billing.ErrNoOpenRentDue, billing.ErrOpenDueExists))
 		return
 	}
 	c.JSON(http.StatusOK, due)
@@ -429,9 +423,8 @@ func (h *Handlers) ManualMatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -449,7 +442,7 @@ func (h *Handlers) ManualMatch(c *gin.Context) {
 	}
 	p, err := h.Payments.ManualMatch(c.Request.Context(), id, body.AmountPaise, body.TxnID, uid)
 	if err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, paymentClientErr(err))
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -465,9 +458,8 @@ func (h *Handlers) MarkCashPaid(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -485,7 +477,7 @@ func (h *Handlers) MarkCashPaid(c *gin.Context) {
 	}
 	p, err := h.Payments.MarkCashPaid(c.Request.Context(), id, body.AmountPaise, uid, body.Note)
 	if err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, paymentClientErr(err))
 		return
 	}
 	c.JSON(http.StatusOK, p)
@@ -497,9 +489,8 @@ func (h *Handlers) DueQR(c *gin.Context) {
 }
 
 func (h *Handlers) serveDueQR(c *gin.Context, ownerScoped bool) {
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -571,9 +562,8 @@ func (h *Handlers) DueToken(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -634,6 +624,9 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 	for _, row := range rows {
 		if _, err := h.Payments.MatchPayment(c.Request.Context(), pid, row.TxnID, row.AmountPaise, row.Date, row.Note); err != nil {
 			failed++
+			if h.Finance != nil && h.FinanceEnabled {
+				_ = h.Finance.SuggestCSVDebit(c.Request.Context(), pid, row.TxnID, row.AmountPaise, row.Date, row.Note)
+			}
 			continue
 		}
 		matched++

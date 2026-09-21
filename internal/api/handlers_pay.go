@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -62,9 +62,8 @@ func (h *Handlers) OwnerDuePay(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -88,9 +87,8 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 		})
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -119,9 +117,8 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -145,7 +142,7 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 		note = c.PostForm("note")
 		if f, err := c.FormFile("image"); err == nil && f != nil {
 			if f.Size > maxReportImage {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image too large (max 2MB)", apierr.CodeRequestImageTooLarge)
 				return
 			}
 			rc, err := f.Open()
@@ -154,7 +151,7 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 				_ = rc.Close()
 			}
 			if len(img) > maxReportImage {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image too large (max 2MB)", apierr.CodeRequestImageTooLarge)
 				return
 			}
 			if len(img) > 0 && !allowedReportImage(img) {
@@ -286,9 +283,8 @@ func (h *Handlers) ConfirmPaymentReport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	rep, err := h.ReportStore.GetByID(c.Request.Context(), id)
@@ -302,7 +298,7 @@ func (h *Handlers) ConfirmPaymentReport(c *gin.Context) {
 	}
 	p, err := h.Payments.ManualMatch(c.Request.Context(), rep.DueID, rep.Amount, rep.UPITxnID, uid)
 	if err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, paymentClientErr(err))
 		return
 	}
 	now := p.MatchedAt
@@ -323,9 +319,8 @@ func (h *Handlers) RejectPaymentReport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	rep, err := h.ReportStore.GetByID(c.Request.Context(), id)

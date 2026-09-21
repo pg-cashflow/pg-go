@@ -51,6 +51,12 @@ func TestRespondErr(t *testing.T) {
 			expectedStatus: http.StatusBadRequest,
 			expectedError:  "meal RSVP cutoff has passed",
 		},
+		{
+			name:           "ClientError with code returns error and code",
+			inputErr:       clientErrWithCode(http.StatusBadRequest, "unsupported locale", "preferences.invalidLocale"),
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  "unsupported locale",
+		},
 	}
 
 	for _, tt := range tests {

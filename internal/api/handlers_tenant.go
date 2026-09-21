@@ -4,8 +4,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -52,9 +52,8 @@ func (h *Handlers) TenantDueQR(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
@@ -87,7 +86,7 @@ func (h *Handlers) TenantPushSubscribe(c *gin.Context) {
 	}
 	var body pushSubBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		apierr.RespondBindErr(c, "invalid body", apierr.CodeRequestInvalidBody)
 		return
 	}
 	if err := h.Push.Subscribe(c.Request.Context(), t.ID, body.Endpoint, body.Keys.P256dh, body.Keys.Auth); err != nil {

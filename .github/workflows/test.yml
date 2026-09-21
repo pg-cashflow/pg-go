@@ -2,26 +2,55 @@ name: Test
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, div_dev]
   pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout pg-go
         uses: actions/checkout@v4
+        with:
+          path: pg-go
+
+      - name: Checkout pg-react
+        uses: actions/checkout@v4
+        with:
+          repository: pg-cashflow/pg-react
+          path: pg-react
+          token: ${{ secrets.GH_PAT }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: pg-go/go.mod
 
-      - name: Download modules
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: pg-react/package-lock.json
+
+      - name: Test and build pg-react
+        working-directory: pg-react
+        env:
+          VITE_API_BASE_URL: /api
+        run: |
+          npm ci
+          npm run lint
+          npm run check:error-codes
+          npm run test
+          npm run build
+
+      - name: Download Go modules
+        working-directory: pg-go
         run: go mod download
 
-      - name: Test
-        run: go test ./...
+      - name: Test pg-go
+        working-directory: pg-go
+        run: go test ./... -timeout 5m
 
-      - name: Vet
+      - name: Vet pg-go
+        working-directory: pg-go
         run: go vet ./...

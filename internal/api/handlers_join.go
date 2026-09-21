@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
@@ -84,22 +85,22 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		consent = c.PostForm("consent") == "true" || c.PostForm("consent") == "1"
 		if f, err := c.FormFile("image"); err == nil && f != nil {
 			if f.Size > maxJoinIDPhoto {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image too large (max 2MB)", apierr.CodeRequestImageTooLarge)
 				return
 			}
 			src, err := f.Open()
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image read failed"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image read failed", apierr.CodeRequestImageReadFailed)
 				return
 			}
 			defer src.Close()
 			photo, err = io.ReadAll(io.LimitReader(src, maxJoinIDPhoto+1))
 			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image read failed"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image read failed", apierr.CodeRequestImageReadFailed)
 				return
 			}
 			if len(photo) > maxJoinIDPhoto {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "image too large (max 2MB)"})
+				apierr.RespondClientErr(c, http.StatusBadRequest, "image too large (max 2MB)", apierr.CodeRequestImageTooLarge)
 				return
 			}
 		}
@@ -134,17 +135,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		IDPhotoBytes:     photo,
 	})
 	if err != nil {
-		// ADR-2 H2 gap case: CompleteOnboarding can wrap DB constraint errors
-		// through a 4xx path. Use typed error matching via clientErr rather
-		// than err.Error() pass-through.
-		status := http.StatusBadRequest
-		switch {
-		case errors.Is(err, joinsvc.ErrNotPending):
-			status = http.StatusNotFound
-		case errors.Is(err, joinsvc.ErrAlreadyOnboarded):
-			status = http.StatusConflict
-		}
-		respondErr(c, clientErr(status, err.Error()))
+		respondErr(c, joinHTTPError(err))
 		return
 	}
 	if h.OutboxEvents != nil && j != nil {
@@ -165,8 +156,8 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"join":   j,
-		"tenant": tenantResponse(t),
+		"join":    j,
+		"tenant":  tenantResponse(t),
 		"message": "Profile saved. Re-exchange your Firebase token to enter the tenant portal.",
 	})
 }
@@ -233,9 +224,8 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	var body activateJoinBody
@@ -244,7 +234,7 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 		return
 	}
 	if body.DueDay < 1 || body.DueDay > 28 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "due_day must be 1–28"})
+		apierr.RespondClientErr(c, http.StatusBadRequest, "due_day must be 1–28", apierr.CodeRequestDueDayInvalid)
 		return
 	}
 	t, err := h.Joins.Activate(c.Request.Context(), pid, id, joinsvc.ActivateInput{
@@ -255,11 +245,7 @@ func (h *Handlers) ActivateJoin(c *gin.Context) {
 		NoticePeriodDays: body.NoticePeriodDays,
 	})
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, joinsvc.ErrNotFound) {
-			status = http.StatusNotFound
-		}
-		respondErr(c, clientErr(status, err.Error()))
+		respondErr(c, joinHTTPError(err))
 		return
 	}
 	// Notify tenant that their join was approved.
@@ -282,14 +268,42 @@ func (h *Handlers) RejectJoin(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	if err := h.Joins.Reject(c.Request.Context(), pid, id); err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		respondErr(c, joinHTTPError(err))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func joinHTTPError(err error) error {
+	switch {
+	case errors.Is(err, joinsvc.ErrInvalidInvite):
+		return clientErrWithCode(http.StatusNotFound, err.Error(), apierr.CodeJoinInvalidInvite)
+	case errors.Is(err, joinsvc.ErrNotPending):
+		return clientErrWithCode(http.StatusNotFound, err.Error(), apierr.CodeJoinNoPendingRequest)
+	case errors.Is(err, joinsvc.ErrNotFound):
+		return clientErrWithCode(http.StatusNotFound, err.Error(), apierr.CodeJoinNotFound)
+	case errors.Is(err, joinsvc.ErrAlreadyOnboarded):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeJoinAlreadyOnboarded)
+	case errors.Is(err, joinsvc.ErrAlreadyActive):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeJoinAlreadyActive)
+	case errors.Is(err, joinsvc.ErrNameRequired):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinNameRequired)
+	case errors.Is(err, joinsvc.ErrConsentRequired):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinConsentRequired)
+	case errors.Is(err, joinsvc.ErrPhotoRequired):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinPhotoRequired)
+	case errors.Is(err, joinsvc.ErrProfileIncomplete):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinProfileIncomplete)
+	case errors.Is(err, joinsvc.ErrNotPendingOwner):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinRequestNotPending)
+	case errors.Is(err, joinsvc.ErrNotAwaitingAssign):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeJoinNotAwaitingAssignment)
+	default:
+		return err
+	}
 }
