@@ -28,6 +28,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
+	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 	notificationsvc "github.com/pg-cashflow/pg-go/internal/notification"
@@ -159,12 +160,34 @@ func main() {
 	joinSvc := joinsvc.NewServiceWithPool(pool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
 
 	var cfOrders collector.CashfreeOrders
+	var cfClient *cashfree.Client
 	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
 	if cfCfg.Enabled() {
-		cfOrders = cashfree.NewClient(cfCfg)
+		cfClient = cashfree.NewClient(cfCfg)
+		cfOrders = cfClient
 		logger.Info("cashfree orders enabled", "env", cfg.CashfreeEnv)
 	}
 	collectorSvc := collector.New(intentRepo, cfOrders)
+
+	var kycSvc api.KYCService
+	if cfg.KYCIdentitySecret != "" {
+		kycRepo := postgres.NewKYCRepo(pool)
+		var cfKYCAdapter kycsvc.CashfreeKYCClient
+		if cfClient != nil {
+			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
+			logger.Info("kyc service enabled", "digilocker", true)
+		} else {
+			logger.Warn("kyc service enabled in QR-only mode (Cashfree credentials not configured; DigiLocker unavailable)")
+		}
+		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
+			IdentitySecret:           cfg.KYCIdentitySecret,
+			HashKeyVersion:           1,
+			VerificationValidityDays: 365,
+			DigiLockerRedirectURL:    cfg.KYCDigiLockerRedirectURL,
+		})
+	} else {
+		logger.Info("kyc service dormant (KYC_IDENTITY_SECRET not set)")
+	}
 
 	gamificationSvc := gamification.NewService(gamificationRepo, tenantRepo, dueRepo, dispatchPub, gamification.NewBlobStore())
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
@@ -252,6 +275,7 @@ func main() {
 		IntentStore:        intentRepo,
 		PaymentLookup:      paymentRepo,
 		Collector:          collectorSvc,
+		KYCSvc:             kycSvc,
 		CashfreeSecret:     cfg.CashfreeWebhookSecret,
 		CashfreeEnv:        cfg.CashfreeEnv,
 		AuthTenantRepo:     tenantRepo,

@@ -70,6 +70,8 @@ type Deps struct {
 	Intelligence         *intelligence.Service
 	FinanceEnabled       bool
 	IntelligenceEnabled  bool
+
+	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
 
 // redactingLogFormatter is a gin log formatter that replaces /p/<token> paths
@@ -217,6 +219,10 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/rooms", h.OwnerListRooms)
 			owner.POST("/rooms", h.OwnerCreateRoom)
 			owner.POST("/managers", h.OwnerCreateManager)
+
+			// KYC owner review endpoints (ADR-004)
+			owner.GET("/tenants/:id/kyc", h.OwnerGetTenantKYC)
+			owner.POST("/tenants/:id/kyc/clear-duplicate", h.OwnerClearDuplicateKYC)
 		}
 
 		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))
@@ -247,6 +253,13 @@ func NewRouter(d Deps) *gin.Engine {
 			tenant.GET("/payments", h.TenantPayments)
 			tenant.POST("/push/subscribe", h.TenantPushSubscribe)
 			tenant.POST("/aadhaar", h.TenantAadhaar)
+
+			// KYC / Aadhaar identity verification (ADR-004)
+			tenant.POST("/kyc/consent", h.TenantKYCConsent)
+			tenant.POST("/kyc/initiate", tenantIDRateLimit(10.0/60, 2), h.TenantKYCInitiate)
+			tenant.POST("/kyc/qr", h.TenantKYCSubmitQR)
+			tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
+			tenant.GET("/kyc/status", h.TenantKYCStatus)
 
 			// Gamification routes
 			tenant.GET("/points", h.TenantPoints)
@@ -285,6 +298,14 @@ func NewRouter(d Deps) *gin.Engine {
 			notifs.PATCH("/:id/read", h.MarkNotificationRead)
 			notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
 		}
+
+		// Public unauthenticated endpoints (Cashfree webhooks, etc.)
+		pub := api.Group("/public")
+		{
+			// Cashfree Secure ID completion webhook — no auth, HMAC-verified inside handler.
+			pub.POST("/cashfree/kyc/webhook", h.CashfreeKYCWebhook)
+		}
+
 	}
 
 	// SPA Catch-All

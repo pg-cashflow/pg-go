@@ -26,6 +26,7 @@ go run ./cmd/server/
 | `cmd/cashfree-poll`     | Missed Cashfree webhook settle (no-op if keys unset) |
 | `cmd/financial-summary` | `--cadence=monthly\|yearly` collections & finance digest email (extended with OCF/TBE; not replaced) |
 | `cmd/kpi-snapshot`      | Daily KPI and ROI snapshot calculation and persist   |
+| `cmd/kyc-expiry`        | Hourly KYC expiry sweep (stale pending TTL & lapsed verified PII scrub) |
 
 ## Locked Phase 1 decisions
 

@@ -32,8 +32,26 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 }
 
 // Migrate applies pending *.sql files from dir in lexical order.
+// Serializes concurrent migrations across processes or concurrent test packages
+// using a Postgres advisory lock (0x50474D4947524154 / 'PGMIGRAT').
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
-	_, err := pool.Exec(ctx, `
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire conn for migration: %w", err)
+	}
+	defer conn.Release()
+
+	// 64-bit advisory lock key allocated to pg-go schema migrations: ASCII 'PGMIGRAT' (0x50474D4947524154).
+	// Distinct from other application advisory locks (e.g. KYC expiry reaper: 0x4B5943455850).
+	const migrationLockID int64 = 0x50474D4947524154 // 'PGMIGRAT'
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID)
+	}()
+
+	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -56,7 +74,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 
 	for _, name := range files {
 		var exists bool
-		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -66,7 +84,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 		if err != nil {
 			return err
 		}
-		tx, err := pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return err
 		}

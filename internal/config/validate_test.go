@@ -11,6 +11,7 @@ func validConfig() *Config {
 		JWTSecret:             "this-is-a-valid-jwt-secret-that-is-over-32-chars-long",
 		OTPHMACSecret:         "this-is-a-valid-otp-hmac-secret-over-32-chars",
 		MagicLinkHMACSecret:   "this-is-a-valid-magic-link-hmac-secret-over-32",
+		KYCIdentitySecret:     "this-is-a-valid-kyc-identity-secret-over-32-ch",
 		CashfreeAppID:         "",
 		CashfreeSecretKey:     "",
 		CashfreeWebhookSecret: "",
@@ -22,6 +23,14 @@ func TestValidateForRealDeployment_Valid(t *testing.T) {
 	cfg := validConfig()
 	if err := cfg.ValidateForRealDeployment(); err != nil {
 		t.Fatalf("expected nil error for valid config, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_ValidWithoutKYC(t *testing.T) {
+	cfg := validConfig()
+	cfg.KYCIdentitySecret = "" // dormant KYC mode
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected nil error when KYC is dormant, got: %v", err)
 	}
 }
 
@@ -51,6 +60,13 @@ func TestValidateForRealDeployment_PlaceholderSecrets(t *testing.T) {
 				c.MagicLinkHMACSecret = "change-me-to-a-long-random-string-at-least-32-chars"
 			},
 			wantSub: "MAGIC_LINK_HMAC_SECRET must not be a placeholder",
+		},
+		{
+			name: "KYC identity secret placeholder",
+			mutate: func(c *Config) {
+				c.KYCIdentitySecret = "change-me-to-a-long-random-string-at-least-32-chars"
+			},
+			wantSub: "KYC_IDENTITY_SECRET must not be a placeholder",
 		},
 	}
 
@@ -95,6 +111,13 @@ func TestValidateForRealDeployment_ShortSecrets(t *testing.T) {
 				c.MagicLinkHMACSecret = "short-secret"
 			},
 			wantSub: "MAGIC_LINK_HMAC_SECRET must be at least 32 characters",
+		},
+		{
+			name: "KYC identity secret short",
+			mutate: func(c *Config) {
+				c.KYCIdentitySecret = "short-secret"
+			},
+			wantSub: "KYC_IDENTITY_SECRET must be at least 32 characters",
 		},
 	}
 
@@ -167,3 +190,24 @@ func TestValidateWarnings(t *testing.T) {
 		t.Fatalf("expected 2 warnings (fallback + sandbox), got %d: %v", len(warns), warns)
 	}
 }
+
+func TestValidateWarnings_KYCWithoutCashfree(t *testing.T) {
+	cfg := validConfig()
+	cfg.CashfreeAppID = ""
+	cfg.CashfreeSecretKey = ""
+	cfg.CashfreeWebhookSecret = ""
+	cfg.KYCIdentitySecret = "this-is-a-valid-kyc-identity-secret-over-32-ch"
+
+	warns := cfg.ValidateWarnings()
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "KYC_IDENTITY_SECRET is set but Cashfree is not configured") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning about KYC without Cashfree, got: %v", warns)
+	}
+}
+

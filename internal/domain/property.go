@@ -14,12 +14,18 @@ type Property struct {
 	UPIVPA      string    `json:"-"` // server-side only; never in list responses
 	OwnerName   string    `json:"owner_name"`
 	OwnerEmail  string    `json:"owner_email"`
-	InviteCode  string    `json:"invite_code,omitempty"`
-	PaymentMode string    `json:"payment_mode,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	InviteCode            string     `json:"invite_code,omitempty"`
+	PaymentMode           string     `json:"payment_mode,omitempty"`
+	PaymentCollectionMode string     `json:"payment_collection_mode,omitempty"`
+	GatewayEnabledAt      *time.Time `json:"gateway_enabled_at,omitempty"`
+	GatewaySubMerchantID  *string    `json:"gateway_sub_merchant_id,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
 }
 
 const (
 	PaymentModeManual   = "manual"
 	PaymentModeCashfree = "cashfree"
+
+	CollectionModeManualProof = "manual_proof"
+	CollectionModeGateway     = "gateway"
 )

@@ -36,6 +36,8 @@ type Config struct {
 	CashfreeEnv           string
 	CashfreeWebhookSecret string
 	AadhaarQRPublicKeyPEM string
+	KYCIdentitySecret     string
+	KYCDigiLockerRedirectURL string
 	FinanceEnabled        bool
 	IntelligenceEnabled   bool
 }
@@ -68,13 +70,22 @@ func Load() (*Config, error) {
 		CashfreeAppID:         os.Getenv("CASHFREE_APP_ID"),
 		CashfreeSecretKey:     os.Getenv("CASHFREE_SECRET_KEY"),
 		CashfreeEnv:           envOr("CASHFREE_ENV", "sandbox"),
-		CashfreeWebhookSecret: os.Getenv("CASHFREE_WEBHOOK_SECRET"),
-		AadhaarQRPublicKeyPEM: os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
-		FinanceEnabled:        envBoolDefaultTrue("FINANCE_ENABLED"),
-		IntelligenceEnabled:   envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
+		CashfreeWebhookSecret:   os.Getenv("CASHFREE_WEBHOOK_SECRET"),
+		AadhaarQRPublicKeyPEM:   os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
+		KYCIdentitySecret:        os.Getenv("KYC_IDENTITY_SECRET"),
+		KYCDigiLockerRedirectURL: os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
+		FinanceEnabled:          envBoolDefaultTrue("FINANCE_ENABLED"),
+		IntelligenceEnabled:     envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 	}
 	if cfg.CashfreeWebhookSecret == "" {
 		cfg.CashfreeWebhookSecret = cfg.CashfreeSecretKey
+	}
+	if cfg.KYCDigiLockerRedirectURL == "" {
+		if cfg.FrontendURL != "" {
+			cfg.KYCDigiLockerRedirectURL = strings.TrimRight(cfg.FrontendURL, "/") + "/tenant/kyc/callback"
+		} else {
+			cfg.KYCDigiLockerRedirectURL = "http://localhost:3000/tenant/kyc/callback"
+		}
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")

@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoadRequiresSecrets(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "KYC_IDENTITY_SECRET"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -42,10 +42,24 @@ func TestLoadRequiresSecrets(t *testing.T) {
 	if cfg.JWTSecret != "jwt" {
 		t.Fatalf("got %#v", cfg)
 	}
+	// Crucial: KYCIdentitySecret must NOT fall back to JWTSecret; it must stay empty so KYC degrades gracefully
+	if cfg.KYCIdentitySecret != "" {
+		t.Fatalf("expected empty KYCIdentitySecret when unset, got %q", cfg.KYCIdentitySecret)
+	}
+
+	// When set, it should be loaded faithfully
+	_ = os.Setenv("KYC_IDENTITY_SECRET", "kyc-custom-secret")
+	cfg2, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.KYCIdentitySecret != "kyc-custom-secret" {
+		t.Fatalf("expected kyc-custom-secret, got %q", cfg2.KYCIdentitySecret)
+	}
 }
 
 func TestLoadDefaultsWebhookSecretToClientSecret(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "CASHFREE_SECRET_KEY", "CASHFREE_WEBHOOK_SECRET", "CASHFREE_APP_ID", "APP_ENV"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "KYC_IDENTITY_SECRET", "CASHFREE_SECRET_KEY", "CASHFREE_WEBHOOK_SECRET", "CASHFREE_APP_ID", "APP_ENV"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -64,6 +78,7 @@ func TestLoadDefaultsWebhookSecretToClientSecret(t *testing.T) {
 	_ = os.Setenv("JWT_SECRET", "jwt")
 	_ = os.Setenv("OTP_HMAC_SECRET", "otp")
 	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic")
+	_ = os.Setenv("KYC_IDENTITY_SECRET", "kyc")
 	_ = os.Setenv("CASHFREE_SECRET_KEY", "sk_test")
 	cfg, err := Load()
 	if err != nil {

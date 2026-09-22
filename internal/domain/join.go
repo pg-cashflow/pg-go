@@ -41,20 +41,26 @@ const (
 )
 
 type PaymentReport struct {
-	ID         uuid.UUID           `json:"id"`
-	DueID      uuid.UUID           `json:"due_id"`
-	TenantID   uuid.UUID           `json:"tenant_id"`
-	PropertyID uuid.UUID           `json:"property_id"`
-	UPITxnID   string              `json:"upi_txn_id"`
-	Amount     int                 `json:"amount"`
-	HasImage   bool                `json:"has_image"`
-	Status     PaymentReportStatus `json:"status"`
-	ReportedBy uuid.UUID           `json:"reported_by"`
-	ReviewedBy *uuid.UUID          `json:"reviewed_by,omitempty"`
-	ReviewedAt *time.Time          `json:"reviewed_at,omitempty"`
-	Note       *string             `json:"note,omitempty"`
-	CreatedAt  time.Time           `json:"created_at"`
-	ImageBytes []byte              `json:"-"`
+	ID            uuid.UUID           `json:"id"`
+	DueID         uuid.UUID           `json:"due_id"`
+	TenantID      uuid.UUID           `json:"tenant_id"`
+	PropertyID    uuid.UUID           `json:"property_id"`
+	UPITxnID      string              `json:"upi_txn_id"`
+	Amount        int                 `json:"amount"`
+	HasImage      bool                `json:"has_image"`
+	Status        PaymentReportStatus `json:"status"`
+	ReportedBy    uuid.UUID           `json:"reported_by"`
+	ReviewedBy    *uuid.UUID          `json:"reviewed_by,omitempty"`
+	ReviewedAt    *time.Time          `json:"reviewed_at,omitempty"`
+	Note          *string             `json:"note,omitempty"`
+	CreatedAt     time.Time           `json:"created_at"`
+	ImageBytes    []byte              `json:"-"`
+	ImageHash     *string             `json:"image_hash,omitempty"`
+	IsDuplicate   bool                `json:"is_duplicate"`
+	OCRAmount     *int                `json:"ocr_amount,omitempty"`
+	OCRUTR        *string             `json:"ocr_utr,omitempty"`
+	OCRTxnDate    *time.Time          `json:"ocr_txn_date,omitempty"`
+	OCRConfidence *float32            `json:"ocr_confidence,omitempty"`
 }
 
 type PaymentIntentStatus string

@@ -15,6 +15,21 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
+// KYCService orchestrates Aadhaar identity verification (ADR-004).
+// Implemented by *kyc.Service; defined here so the api package owns the interface
+// (standard Go dependency-inversion pattern — consumer defines the interface).
+type KYCService interface {
+	RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, consentVersion, consentText, ip, userAgent, actor string) (*domain.KYCConsent, error)
+	InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, actor string) (verificationURL string, err error)
+	ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, failedReason, actor string) error
+	VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
+	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
+	GetStatus(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
+	GetOwnerView(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
+	GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
+	ClearDuplicateFlag(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
+}
+
 // AuthService handles Firebase ID-token exchange (and legacy OTP helpers kept for rollback).
 type AuthService interface {
 	RequestOTP(ctx context.Context, phone string) error
@@ -139,6 +154,7 @@ type ReportStore interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.PaymentReport, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID, status *domain.PaymentReportStatus) ([]domain.PaymentReport, error)
 	UpdateReview(ctx context.Context, p *domain.PaymentReport) error
+	HasImageWithHash(ctx context.Context, propertyID uuid.UUID, hash string) (bool, error)
 }
 
 type IntentStore interface {
@@ -150,3 +166,7 @@ type IntentStore interface {
 type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 }
+
+// KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC
+// routes respond 503 with a clear message so the rest of the app keeps running.
+// (Field declaration only; the interface is defined above.)

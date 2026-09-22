@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -190,15 +192,28 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 		}
 	}
 
+	var imgHash *string
+	var isDuplicate bool
+	if len(img) > 0 {
+		hSum := sha256.Sum256(img)
+		hexHash := hex.EncodeToString(hSum[:])
+		imgHash = &hexHash
+		if dup, err := h.ReportStore.HasImageWithHash(c.Request.Context(), due.PropertyID, hexHash); err == nil && dup {
+			isDuplicate = true
+		}
+	}
+
 	rep := &domain.PaymentReport{
-		DueID:      due.ID,
-		TenantID:   t.ID,
-		PropertyID: due.PropertyID,
-		UPITxnID:   txnID,
-		Amount:     amount,
-		ImageBytes: img,
-		Status:     domain.ReportPendingReview,
-		ReportedBy: uid,
+		DueID:       due.ID,
+		TenantID:    t.ID,
+		PropertyID:  due.PropertyID,
+		UPITxnID:    txnID,
+		Amount:      amount,
+		ImageBytes:  img,
+		ImageHash:   imgHash,
+		IsDuplicate: isDuplicate,
+		Status:      domain.ReportPendingReview,
+		ReportedBy:  uid,
 	}
 	if note != "" {
 		rep.Note = &note
@@ -231,7 +246,23 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 			Payload:    payload,
 		})
 	}
-	c.JSON(http.StatusCreated, rep)
+	c.JSON(http.StatusCreated, tenantReportResponse(rep))
+}
+
+func tenantReportResponse(p *domain.PaymentReport) gin.H {
+	return gin.H{
+		"id":          p.ID,
+		"due_id":      p.DueID,
+		"tenant_id":   p.TenantID,
+		"property_id": p.PropertyID,
+		"upi_txn_id":  p.UPITxnID,
+		"amount":      p.Amount,
+		"has_image":   p.HasImage,
+		"status":      p.Status,
+		"reported_by": p.ReportedBy,
+		"note":        p.Note,
+		"created_at":  p.CreatedAt,
+	}
 }
 
 func atoi(s string) int {

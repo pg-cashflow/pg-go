@@ -25,6 +25,9 @@ func (c *Config) ValidateForRealDeployment() error {
 		{"OTP_HMAC_SECRET", c.OTPHMACSecret},
 		{"MAGIC_LINK_HMAC_SECRET", c.MagicLinkHMACSecret},
 	}
+	if strings.TrimSpace(c.KYCIdentitySecret) != "" {
+		secrets = append(secrets, secretCheck{"KYC_IDENTITY_SECRET", c.KYCIdentitySecret})
+	}
 	for _, s := range secrets {
 		if strings.HasPrefix(s.val, "change-me") {
 			errs = append(errs, fmt.Sprintf("%s must not be a placeholder value (starts with 'change-me')", s.name))
@@ -70,6 +73,11 @@ func (c *Config) ValidateWarnings() []string {
 	// L3: sandbox mode with Cashfree keys active
 	if cashfreeEnabled && !strings.EqualFold(c.CashfreeEnv, "production") {
 		warns = append(warns, "Cashfree is in sandbox mode (CASHFREE_ENV != production) — payments are not real")
+	}
+
+	// KYC enabled without Cashfree (DigiLocker unavailable, QR-only mode)
+	if strings.TrimSpace(c.KYCIdentitySecret) != "" && !cashfreeEnabled {
+		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured — KYC is active in QR-only mode; DigiLocker initiation will return 503")
 	}
 
 	return warns
