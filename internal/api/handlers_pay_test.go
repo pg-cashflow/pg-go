@@ -8,9 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,12 +20,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 type stubIntentStore struct {
+	mu        sync.RWMutex
 	byOrder   map[string]*domain.PaymentIntent
 	byCF      map[string]*domain.PaymentIntent
 	paid      string
@@ -31,6 +35,8 @@ type stubIntentStore struct {
 }
 
 func (s *stubIntentStore) GetByOrderID(_ context.Context, orderID string) (*domain.PaymentIntent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.lookupErr != nil {
 		return nil, s.lookupErr
 	}
@@ -41,6 +47,8 @@ func (s *stubIntentStore) GetByOrderID(_ context.Context, orderID string) (*doma
 	return p, nil
 }
 func (s *stubIntentStore) GetByCFPaymentID(_ context.Context, cfID string) (*domain.PaymentIntent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	p := s.byCF[cfID]
 	if p == nil {
 		return nil, payment.ErrDueNotOpen
@@ -48,13 +56,32 @@ func (s *stubIntentStore) GetByCFPaymentID(_ context.Context, cfID string) (*dom
 	return p, nil
 }
 func (s *stubIntentStore) MarkPaid(_ context.Context, id uuid.UUID, cfPaymentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.paid = cfPaymentID
 	return nil
 }
+func (s *stubIntentStore) GetDuesSnapshot(_ context.Context, _ uuid.UUID) ([]domain.PaymentIntentDue, error) {
+	return nil, nil
+}
+func (s *stubIntentStore) Create(_ context.Context, p *domain.PaymentIntent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.byOrder == nil {
+		s.byOrder = make(map[string]*domain.PaymentIntent)
+	}
+	s.byOrder[p.ProviderOrderID] = p
+	return nil
+}
+func (s *stubIntentStore) LatestOpenForDue(_ context.Context, _ uuid.UUID) (*domain.PaymentIntent, error) {
+	return nil, pgx.ErrNoRows
+}
+
 
 type stubPay struct {
 	n         int
 	txn       string
+	dedup     string
 	settleErr error
 }
 
@@ -71,9 +98,12 @@ func (s *stubPay) SettleDeposit(context.Context, uuid.UUID, int64, string) error
 func (s *stubPay) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	panic("unused")
 }
-func (s *stubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error) {
+func (s *stubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	s.n++
 	s.txn = txnID
+	if len(dedupKey) > 0 {
+		s.dedup = dedupKey[0]
+	}
 	if s.settleErr != nil {
 		return nil, s.settleErr
 	}
@@ -107,7 +137,7 @@ func TestCashfreeWebhookSettlesSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
 	}
-	if pay.n != 1 || pay.txn != "UTR1" || intents.paid != "9" {
+	if pay.n != 1 || pay.txn != "UTR1" || intents.paid != "9" || pay.dedup != "cashfree:pg:9" {
 		t.Fatalf("pay=%+v paid=%s", pay, intents.paid)
 	}
 }
@@ -199,6 +229,99 @@ func TestCashfreeWebhookDueNotOpenDoesNotMarkPaid(t *testing.T) {
 	}
 }
 
+type stubGatewayRepo struct {
+	webhookEvents []*domain.WebhookEvent
+	deadLettered  bool
+	refunds       map[string]*domain.GatewayRefund
+}
+
+func (s *stubGatewayRepo) Create(context.Context, *domain.Payment) error { return nil }
+func (s *stubGatewayRepo) GetByID(context.Context, uuid.UUID) (*domain.Payment, error) { return nil, nil }
+func (s *stubGatewayRepo) GetByUPITxnID(context.Context, string) (*domain.Payment, error) { return nil, nil }
+func (s *stubGatewayRepo) GetByCFPaymentID(context.Context, string) (*domain.Payment, error) { return nil, nil }
+func (s *stubGatewayRepo) RecordProcessedEvent(context.Context, string, string, string, string) (bool, error) { return true, nil }
+func (s *stubGatewayRepo) CreateAllocation(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
+func (s *stubGatewayRepo) ListAllocationsByPayment(context.Context, uuid.UUID) ([]domain.PaymentAllocation, error) { return nil, nil }
+func (s *stubGatewayRepo) CreateWebhookEvent(_ context.Context, evt *domain.WebhookEvent) error {
+	evt.ID = uuid.New()
+	s.webhookEvents = append(s.webhookEvents, evt)
+	return nil
+}
+func (s *stubGatewayRepo) UpdateWebhookEventStatus(_ context.Context, _ uuid.UUID, status string, _ *string) error {
+	if status == "dead_letter" {
+		s.deadLettered = true
+	}
+	return nil
+}
+func (s *stubGatewayRepo) RecordUnmatchedReceipt(context.Context, string, string, *uuid.UUID, int64, string, []byte) error { return nil }
+func (s *stubGatewayRepo) GetRefundByCFRefundID(_ context.Context, cfRefundID string) (*domain.GatewayRefund, error) {
+	if s.refunds != nil {
+		return s.refunds[cfRefundID], nil
+	}
+	return nil, nil
+}
+func (s *stubGatewayRepo) CreateOrUpdateRefund(_ context.Context, ref *domain.GatewayRefund) error {
+	if s.refunds == nil {
+		s.refunds = make(map[string]*domain.GatewayRefund)
+	}
+	if ref.CFRefundID != nil {
+		s.refunds[*ref.CFRefundID] = ref
+	}
+	return nil
+}
+func (s *stubGatewayRepo) CreateRefundAllocation(context.Context, *domain.RefundAllocation) error { return nil }
+func (s *stubGatewayRepo) GetDueNetPaidPaise(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (s *stubGatewayRepo) ListStaleNonTerminalRefunds(context.Context, time.Time) ([]domain.GatewayRefund, error) { return nil, nil }
+func (s *stubGatewayRepo) GetRefundByID(context.Context, uuid.UUID) (*domain.GatewayRefund, error) { return nil, nil }
+func (s *stubGatewayRepo) GetRefundByReference(context.Context, string) (*domain.GatewayRefund, error) { return nil, nil }
+func (s *stubGatewayRepo) GetRefundByPaymentAndIdempotency(context.Context, uuid.UUID, string) (*domain.GatewayRefund, error) { return nil, nil }
+func (s *stubGatewayRepo) GetPaymentRefundedPaise(context.Context, uuid.UUID) (int64, error) { return 0, nil }
+func (s *stubGatewayRepo) ListRefundsByPayment(context.Context, uuid.UUID) ([]domain.GatewayRefund, error) { return nil, nil }
+
+func TestCashfreeWebhookDeadLetterReturns200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gwRepo := &stubGatewayRepo{}
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "whsec",
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        &stubIntentStore{},
+	}}
+
+	// Malformed JSON payload
+	badJSON := `{ "type": "PAYMENT_SUCCESS_WEBHOOK", "data": { "unclosed`
+	code := postSignedWebhook(t, h, badJSON)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 OK on dead-letter to prevent retry flood, got %d", code)
+	}
+	if !gwRepo.deadLettered {
+		t.Fatal("expected webhook to be marked dead_letter in audit log")
+	}
+}
+
+func TestCashfreeWebhookTimestampDrift401(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      "whsec",
+		WebhookToleranceSec: 300,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	// Old timestamp (600s in the past)
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK"}`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", sign("whsec", oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for timestamp drift > 300s, got %d", w.Code)
+	}
+}
+
+
 func postSignedWebhook(t *testing.T, h *Handlers, body string) int {
 	t.Helper()
 	r := gin.New()
@@ -289,9 +412,31 @@ func (s *payTestDueStore) List(_ context.Context, _ postgres.DueListFilter) ([]d
 	return nil, nil
 }
 
-func (s *payTestDueStore) ListByTenant(_ context.Context, _ uuid.UUID) ([]domain.Due, error) {
+func (s *payTestDueStore) ListByTenant(_ context.Context, tenantID uuid.UUID) ([]domain.Due, error) {
+	var out []domain.Due
+	for _, d := range s.dues {
+		if d.TenantID == tenantID {
+			out = append(out, *d)
+		}
+	}
+	return out, nil
+}
+
+type payTestPropertyStore struct {
+	prop *domain.Property
+}
+
+func (s *payTestPropertyStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Property, error) {
+	return s.prop, nil
+}
+func (s *payTestPropertyStore) List(_ context.Context) ([]domain.Property, error) { return nil, nil }
+func (s *payTestPropertyStore) GetByOwnerPhone(_ context.Context, phone string) (*domain.Property, error) {
 	return nil, nil
 }
+func (s *payTestPropertyStore) GetByInviteCode(_ context.Context, code string) (*domain.Property, error) {
+	return nil, nil
+}
+
 
 func TestTenantSubmitReport_DuplicateImageFlagged(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -442,4 +587,125 @@ func TestTenantSubmitReport_DuplicateImageFlagged(t *testing.T) {
 		t.Fatal("expected is_duplicate to be false when no image uploaded")
 	}
 }
+
+func TestTenantDuePayBatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tenantID := uuid.New()
+	propID := uuid.New()
+	now := time.Now().UTC()
+
+	d1 := &domain.Due{
+		ID:             uuid.New(),
+		DueCode:        "DUE001",
+		TenantID:       tenantID,
+		PropertyID:     propID,
+		Amount:         550000,
+		OriginalAmount: 550000,
+		Status:         domain.DueStatusPending,
+		DueDate:        now.Add(-30 * 24 * time.Hour),
+		Kind:           domain.DueKindRent,
+	}
+	d2 := &domain.Due{
+		ID:             uuid.New(),
+		DueCode:        "DUE002",
+		TenantID:       tenantID,
+		PropertyID:     propID,
+		Amount:         550000,
+		OriginalAmount: 550000,
+		Status:         domain.DueStatusPending,
+		DueDate:        now,
+		Kind:           domain.DueKindRent,
+	}
+
+	prop := &domain.Property{
+		ID:          propID,
+		PaymentMode: domain.PaymentModeManual,
+		UPIVPA:      "test@upi",
+		OwnerName:   "Owner Test",
+	}
+
+	dueStore := &payTestDueStore{dues: map[uuid.UUID]*domain.Due{d1.ID: d1, d2.ID: d2}}
+	propStore := &payTestPropertyStore{prop: prop}
+	col := collector.New(&stubIntentStore{}, nil)
+
+	h := &Handlers{Deps: Deps{
+		DueStore:      dueStore,
+		PropertyStore: propStore,
+		Collector:     col,
+	}}
+
+	r := gin.New()
+	r.GET("/api/tenant/dues/options", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive})
+		h.TenantDuesOptions(c)
+	})
+	r.POST("/api/tenant/dues/pay-batch", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive})
+		h.TenantDuePayBatch(c)
+	})
+
+	// 1. Test GET /options
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/tenant/dues/options", nil)
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from options, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var optResp struct {
+		TotalOutstandingPaise int                    `json:"total_outstanding_paise"`
+		Options               []domain.PaymentOption `json:"options"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &optResp); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+	if optResp.TotalOutstandingPaise != 1100000 {
+		t.Fatalf("expected 1100000, got %d", optResp.TotalOutstandingPaise)
+	}
+	if len(optResp.Options) != 2 {
+		t.Fatalf("expected 2 options, got %d", len(optResp.Options))
+	}
+
+	// 2. Test POST /pay-batch with option_type = "all"
+	bodyAll, _ := json.Marshal(PayBatchRequest{OptionType: domain.OptionAll})
+	recAll := httptest.NewRecorder()
+	reqAll := httptest.NewRequest(http.MethodPost, "/api/tenant/dues/pay-batch", bytes.NewReader(bodyAll))
+	reqAll.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(recAll, reqAll)
+
+	if recAll.Code != http.StatusOK {
+		t.Fatalf("expected 200 from pay-batch all, got %d: %s", recAll.Code, recAll.Body.String())
+	}
+	var intentAll domain.PayIntent
+	_ = json.Unmarshal(recAll.Body.Bytes(), &intentAll)
+	if intentAll.AmountPaise != 1100000 || intentAll.DueCount != 2 || !intentAll.Payable {
+		t.Fatalf("unexpected intentAll: %+v", intentAll)
+	}
+
+	// 3. Test POST /pay-batch with option_type = "oldest_1"
+	body1, _ := json.Marshal(PayBatchRequest{OptionType: domain.OptionOldest1})
+	rec1 := httptest.NewRecorder()
+	req1 := httptest.NewRequest(http.MethodPost, "/api/tenant/dues/pay-batch", bytes.NewReader(body1))
+	req1.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 from pay-batch oldest_1, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	var intent1 domain.PayIntent
+	_ = json.Unmarshal(rec1.Body.Bytes(), &intent1)
+	if intent1.AmountPaise != 550000 || intent1.DueCount != 1 || !intent1.Payable {
+		t.Fatalf("unexpected intent1: %+v", intent1)
+	}
+
+	// 4. Test invalid option_type
+	bodyInv, _ := json.Marshal(PayBatchRequest{OptionType: "invalid_option"})
+	recInv := httptest.NewRecorder()
+	reqInv := httptest.NewRequest(http.MethodPost, "/api/tenant/dues/pay-batch", bytes.NewReader(bodyInv))
+	reqInv.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(recInv, reqInv)
+	if recInv.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid option, got %d", recInv.Code)
+	}
+}
+
 

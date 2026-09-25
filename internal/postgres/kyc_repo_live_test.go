@@ -125,7 +125,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	verifiedAt := time.Now().UTC()
 	expiresAt := verifiedAt.Add(365 * 24 * time.Hour)
 	identityHash := domain.ComputeIdentityHash("test-secret", "KYC Test Tenant", "1995-01-01", "M", "9999")
-	v2Completed, err := repo.CompleteVerificationTx(ctx, v2.ID, "9999", identityHash, true, 1, verifiedAt, expiresAt, "system")
+	v2Completed, err := repo.CompleteVerificationTx(ctx, v2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "system")
 	if err != nil {
 		t.Fatalf("CompleteVerificationTx failed: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	}
 
 	// Complete verification for tenant 2 with the EXACT SAME identityHash as tenant 1
-	vT2Completed, err := repo.CompleteVerificationTx(ctx, vTenant2.ID, "9999", identityHash, true, 1, verifiedAt, expiresAt, "system")
+	vT2Completed, err := repo.CompleteVerificationTx(ctx, vTenant2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "system")
 	if err != nil {
 		t.Fatalf("CompleteVerificationTx for tenant 2 failed (should flag, not block): %v", err)
 	}
@@ -351,7 +351,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 				t.Fatalf("iteration %d: failed to insert property: %v", i, err)
 			}
 
-			testPhone := fmt.Sprintf("+9198%08d", (time.Now().UnixNano()+int64(i*1000))%100000000)
+			testPhone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+int64(i*1000000007))%10000000000)
 			_, err = pool.Exec(ctx, `
 				INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
 				VALUES ($1, $2, 'Concurrent Tenant', $3, 1000000, 5, 'active')
@@ -406,7 +406,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 				verifiedAt := time.Now().UTC()
 				expiresAt := verifiedAt.Add(365 * 24 * time.Hour)
 				identityHash := domain.ComputeIdentityHash("test-secret", "Concurrent Tenant", "1995-01-01", "M", "1234")
-				completeResult, completeErr = repo.CompleteVerificationTx(ctx, vA.ID, "1234", identityHash, true, 1, verifiedAt, expiresAt, "webhook")
+				completeResult, completeErr = repo.CompleteVerificationTx(ctx, vA.ID, "1234", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook")
 			}()
 
 			// Goroutine 2: Supersede pending verification by initiating session B
@@ -562,14 +562,14 @@ func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, err1 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, verifiedAt, expiresAt, "webhook-worker-1")
+				_, err1 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook-worker-1")
 			}()
 
 			// Goroutine 2: duplicate complete v
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, err2 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, verifiedAt, expiresAt, "webhook-worker-2")
+				_, err2 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook-worker-2")
 			}()
 
 			startBarrier.Done()
@@ -700,7 +700,7 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, completeErr = repo.CompleteVerificationTx(ctx, v.ID, "7777", identityHash, true, 1, verifiedAt, expiresAt, "webhook")
+				_, completeErr = repo.CompleteVerificationTx(ctx, v.ID, "7777", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook")
 			}()
 
 			// Goroutine 2: RevokeConsent
@@ -795,6 +795,128 @@ func TestLivePostgres_ConcurrentMigrate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("goroutine %d failed Migrate: %v", i, err)
 		}
+	}
+}
+
+func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set, skipping live Postgres KYC in-flight lock test")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skip("config load failed, skipping live Postgres KYC in-flight lock test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+	}
+	defer pool.Close()
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	if err := Migrate(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("failed to apply migrations: %v", err)
+	}
+
+	repo := NewKYCRepo(pool)
+
+	propID := uuid.New()
+	tenantID := uuid.New()
+	inviteCode := fmt.Sprintf("L%s", uuid.New().String()[:7])
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
+		VALUES ($1, 'Lock Test Property', 'Test Address', '+919999900001', 'locktest@upi', 'Lock Owner', 'lockowner@test.com', $2, 'manual_proof')
+		ON CONFLICT (id) DO NOTHING
+	`, propID, inviteCode)
+	if err != nil {
+		t.Fatalf("failed to insert test property: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id = $1`, propID)
+	}()
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+		VALUES ($1, $2, 'Lock Tenant', '+919999900002', 1000000, 5, 'active')
+	`, tenantID, propID)
+	if err != nil {
+		t.Fatalf("failed to insert test tenant: %v", err)
+	}
+	defer func() {
+		_ = repo.ReleaseInFlightLock(context.Background(), tenantID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenantID)
+	}()
+
+	// 1. Initial acquire succeeds
+	acquired, err := repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		t.Fatalf("initial TryAcquireInFlightLock failed: %v", err)
+	}
+	if !acquired {
+		t.Fatal("expected first acquire to succeed")
+	}
+
+	// 2. Immediate second acquire fails (lock held)
+	acquired, err = repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		t.Fatalf("second TryAcquireInFlightLock failed: %v", err)
+	}
+	if acquired {
+		t.Fatal("expected second acquire to fail while lease is active")
+	}
+
+	// 3. Concurrent simultaneous race: 10 goroutines racing to acquire lock
+	_ = repo.ReleaseInFlightLock(ctx, tenantID)
+
+	const concurrency = 10
+	var startBarrier sync.WaitGroup
+	startBarrier.Add(1)
+	var done sync.WaitGroup
+	done.Add(concurrency)
+
+	results := make([]bool, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func(idx int) {
+			defer done.Done()
+			startBarrier.Wait()
+			ok, _ := repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+			results[idx] = ok
+		}(i)
+	}
+	startBarrier.Done()
+	done.Wait()
+
+	winCount := 0
+	for _, ok := range results {
+		if ok {
+			winCount++
+		}
+	}
+	if winCount != 1 {
+		t.Fatalf("expected exactly 1 winner out of %d concurrent racers, got %d", concurrency, winCount)
+	}
+
+	// 4. Release lock allows re-acquisition
+	if err := repo.ReleaseInFlightLock(ctx, tenantID); err != nil {
+		t.Fatalf("ReleaseInFlightLock failed: %v", err)
+	}
+	acquired, err = repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("expected acquire to succeed after release, got acquired=%v, err=%v", acquired, err)
+	}
+
+	// 5. TTL expiration: lease with 100ms TTL expires
+	time.Sleep(150 * time.Millisecond)
+	acquired, err = repo.TryAcquireInFlightLock(ctx, tenantID, 100*time.Millisecond)
+	if err != nil || !acquired {
+		t.Fatalf("expected expired lease to be overwritten and acquired, got acquired=%v, err=%v", acquired, err)
 	}
 }
 

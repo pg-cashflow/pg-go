@@ -6,6 +6,7 @@ package kyc
 
 import (
 	"context"
+	"io"
 
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 )
@@ -30,9 +31,18 @@ func (a *CashfreeAdapter) GetDigiLockerDocument(ctx context.Context, verificatio
 		return nil, err
 	}
 	return &DigiLockerDoc{
-		Name:      doc.Name,
-		DOB:       doc.DOB,
-		Gender:    doc.Gender,
-		MaskedUID: doc.MaskedUID,
+		Name:       doc.Name,
+		DOB:        doc.DOB,
+		Gender:     doc.Gender,
+		MaskedUID:  doc.MaskedUID,
+		PhotoBytes: doc.PhotoBytes,
 	}, nil
+}
+
+func (a *CashfreeAdapter) GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatus, error) {
+	return a.client.GetDigiLockerStatus(ctx, verificationID)
+}
+
+func (a *CashfreeAdapter) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error) {
+	return a.client.UploadAadhaarDocument(ctx, fileReader, filename)
 }

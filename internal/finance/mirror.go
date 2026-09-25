@@ -24,6 +24,8 @@ func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *dom
 	cashAcct := domain.AcctBank
 	if p.MatchedBy == domain.MatchedByCash {
 		cashAcct = domain.AcctCash
+	} else if p.MatchedBy == domain.MatchedByCashfree {
+		cashAcct = domain.AcctGatewayClearing
 	}
 	var specs []LineSpec
 	switch due.Kind {
@@ -54,22 +56,64 @@ func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *dom
 	if err != nil {
 		return err
 	}
-	if p.MatchedBy == domain.MatchedByCashfree {
-		st, _ := s.Store.GetSettings(ctx, due.PropertyID)
-		if st.TDREffectiveBPS > 0 {
-			tdr := amt * int64(st.TDREffectiveBPS) / 10000
-			if tdr > 0 {
-				tdrLines, err := MakeLines(due.PropertyID, p.ID, "tdr_estimate", at, []LineSpec{
-					{Account: domain.AcctPaymentProcessingExpense, Debit: tdr, LineKind: "tdr_dr"},
-					{Account: domain.AcctBank, Credit: tdr, LineKind: "tdr_cr"},
-				})
-				if err == nil {
-					_ = s.Store.InsertJournal(ctx, tdrLines)
-				}
-			}
+	return nil
+}
+
+// MirrorUnappliedPayment posts unapplied payment lines: Dr gateway_clearing, Cr unapplied_receipts.
+func (s *Service) MirrorUnappliedPayment(ctx context.Context, propertyID, paymentID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, paymentID, "unapplied_payment", at, []LineSpec{
+		{Account: domain.AcctGatewayClearing, Debit: amountPaise, LineKind: "gateway_clearing_dr"},
+		{Account: domain.AcctUnappliedReceipts, Credit: amountPaise, LineKind: "unapplied_receipt_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorRefund posts refund reversal lines: Dr unapplied_receipts/rent_revenue/deposit_liability, Cr gateway_clearing.
+func (s *Service) MirrorRefund(ctx context.Context, propertyID, refundID uuid.UUID, amountPaise int64, isUnapplied bool, dueKind domain.DueKind, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	var drAccount string
+	if isUnapplied {
+		drAccount = domain.AcctUnappliedReceipts
+	} else {
+		switch dueKind {
+		case domain.DueKindDeposit:
+			drAccount = domain.AcctDepositLiability
+		case domain.DueKindElectricity, domain.DueKindWater:
+			drAccount = domain.AcctUtilityRecoveryRevenue
+		default:
+			drAccount = domain.AcctRentRevenue
 		}
 	}
-	return nil
+	lines, err := MakeLines(propertyID, refundID, "refund", at, []LineSpec{
+		{Account: drAccount, Debit: amountPaise, LineKind: "refund_reversal_dr"},
+		{Account: domain.AcctGatewayClearing, Credit: amountPaise, LineKind: "gateway_clearing_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
 }
 
 func (s *Service) MirrorProration(ctx context.Context, due *domain.Due, original, prorated int64) error {
@@ -171,3 +215,79 @@ func (s *Service) SuggestCSVDebit(ctx context.Context, propertyID uuid.UUID, txn
 	}
 	return s.Store.UpsertImportSuggestion(ctx, sug)
 }
+
+// MirrorDepartureSettlement posts balanced journal entries for tenant departure settlement:
+// Dr deposit_liability (depositPaise)
+// Dr rent_revenue (unusedRentReversal, if > 0)
+// Dr tenant_receivable (receivableBalancePaise, if > 0)
+// Cr rent_revenue (proratedRentOwedPaise, if unpaid cycle netted from deposit)
+// Cr damages_income (damagesPaise, if > 0)
+// Cr refund_payable (netRefundPaise, if > 0)
+func (s *Service) MirrorDepartureSettlement(
+	ctx context.Context,
+	propertyID, departureID uuid.UUID,
+	depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, proratedRentOwedPaise, receivableBalancePaise int64,
+	at time.Time,
+) error {
+	if s == nil || s.Store == nil {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+
+	var specs []LineSpec
+	if depositPaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctDepositLiability, Debit: depositPaise, LineKind: "deposit_release"})
+	}
+	if unusedRentReversal > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctRentRevenue, Debit: unusedRentReversal, LineKind: "unearned_rent_reversal"})
+	}
+	if receivableBalancePaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctTenantReceivable, Debit: receivableBalancePaise, LineKind: "tenant_receivable"})
+	}
+	if proratedRentOwedPaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctRentRevenue, Credit: proratedRentOwedPaise, LineKind: "prorated_rent_earned"})
+	}
+	if damagesPaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctDamagesIncome, Credit: damagesPaise, LineKind: "damages_recovery"})
+	}
+	if netRefundPaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctRefundPayable, Credit: netRefundPaise, LineKind: "tenant_refund_payable"})
+	}
+
+	lines, err := MakeLines(propertyID, departureID, "departure_settlement", at, specs)
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorPayoutSettled posts journal entry when a refund_payable payout item is settled from the bank account:
+// Dr refund_payable (amountPaise)
+// Cr bank (amountPaise)
+func (s *Service) MirrorPayoutSettled(ctx context.Context, propertyID, payoutItemID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, payoutItemID, "payout_settlement", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "refund_paid"},
+		{Account: domain.AcctBank, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -22,11 +23,13 @@ type memStore struct {
 	ledger         []domain.PointsLedgerEntry
 	streak         map[uuid.UUID]*domain.TenantStreak
 	catalog        map[uuid.UUID]domain.RewardsCatalogItem
-	redemptions    []domain.Redemption
-	violations     []domain.Violation
-	readings       []domain.MeterReading
-	rooms          map[uuid.UUID]domain.Room
-	step3InQuarter int
+	redemptions     []domain.Redemption
+	violations      []domain.Violation
+	readings        []domain.MeterReading
+	rooms           map[uuid.UUID]domain.Room
+	step3InQuarter  int
+	streakDues      map[string]bool
+	milestoneAwards map[string]bool
 }
 
 type mockTx struct {
@@ -135,6 +138,35 @@ func (m *memStore) GetExpiringSoon(ctx context.Context, tenantID uuid.UUID, with
 	return 0, time.Time{}, nil
 }
 
+func (m *memStore) RecordStreakDueEvent(ctx context.Context, tenantID, dueID uuid.UUID) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.streakDues == nil {
+		m.streakDues = make(map[string]bool)
+	}
+	key := tenantID.String() + ":" + dueID.String()
+	if m.streakDues[key] {
+		return false, nil
+	}
+	m.streakDues[key] = true
+	return true, nil
+}
+
+func (m *memStore) RecordMilestoneAward(ctx context.Context, tenantID uuid.UUID, months int) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.milestoneAwards == nil {
+		m.milestoneAwards = make(map[string]bool)
+	}
+	key := fmt.Sprintf("%s:%d", tenantID.String(), months)
+	if m.milestoneAwards[key] {
+		return false, nil
+	}
+	m.milestoneAwards[key] = true
+	return true, nil
+}
+
+
 func (m *memStore) GetTenantMonthPoints(ctx context.Context, tenantID uuid.UUID, monthYear string, isRSVP bool) (int, error) {
 	sum := 0
 	for _, e := range m.ledger {
@@ -190,6 +222,10 @@ func (m *memStore) GetStreak(ctx context.Context, tenantID uuid.UUID) (*domain.T
 		return &domain.TenantStreak{TenantID: tenantID, FreezesAvailable: 1}, nil
 	}
 	return s, nil
+}
+
+func (m *memStore) LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	return nil
 }
 
 func (m *memStore) GetStreakForUpdate(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*domain.TenantStreak, error) {
@@ -554,3 +590,222 @@ func TestRedeem_Step3ViolationBlocksCash(t *testing.T) {
 		t.Fatalf("expected ErrStep3ViolationBlocked, got %v", err)
 	}
 }
+
+func TestConsumer_MinorGamificationSuppressed(t *testing.T) {
+	store := newMemStore()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	// Minor tenant (majority date in the future)
+	futureDate := time.Now().UTC().AddDate(1, 0, 0)
+	tRepo := &memTenantRepo{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			tenantID: {
+				ID:                     tenantID,
+				PropertyID:             propID,
+				MajorityDate:           &futureDate,
+				IsGamificationDisabled: false,
+			},
+		},
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+	consumer := NewEventConsumer(svc)
+
+	evt := domain.Event{
+		TenantID:   &tenantID,
+		PropertyID: propID,
+		DueID:      &dueID,
+		EventType:  domain.EvtDuePaidOnTime,
+		Payload:    []byte(`{}`),
+		OccurredAt: time.Now().UTC(),
+	}
+
+	err := consumer.HandleEvent(context.Background(), evt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify zero points awarded
+	bal, _ := store.GetActiveBalance(context.Background(), tenantID)
+	if bal != 0 {
+		t.Fatalf("expected 0 points for minor tenant, got %d", bal)
+	}
+
+	// Verify streak was NOT created or modified
+	if store.streak[tenantID] != nil {
+		t.Fatalf("expected nil streak for minor tenant, got %+v", store.streak[tenantID])
+	}
+}
+
+func TestConsumer_StreakDueEventAntiReplay(t *testing.T) {
+	store := newMemStore()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	tRepo := &memTenantRepo{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			tenantID: {
+				ID:         tenantID,
+				PropertyID: propID,
+			},
+		},
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+	consumer := NewEventConsumer(svc)
+
+	evt := domain.Event{
+		TenantID:   &tenantID,
+		PropertyID: propID,
+		DueID:      &dueID,
+		EventType:  domain.EvtDuePaidOnTime,
+		Payload:    []byte(`{}`),
+		OccurredAt: time.Now().UTC(),
+	}
+
+	// First event processing
+	if err := consumer.HandleEvent(context.Background(), evt); err != nil {
+		t.Fatalf("first event failed: %v", err)
+	}
+	streak1, _ := store.GetStreak(context.Background(), tenantID)
+	if streak1.OnTimeMonths != 1 {
+		t.Fatalf("expected streak=1, got %d", streak1.OnTimeMonths)
+	}
+
+	// Replay exact same event for same dueID
+	if err := consumer.HandleEvent(context.Background(), evt); err != nil {
+		t.Fatalf("replay event failed: %v", err)
+	}
+	streak2, _ := store.GetStreak(context.Background(), tenantID)
+	if streak2.OnTimeMonths != 1 {
+		t.Fatalf("expected streak to remain 1 after replay, got %d", streak2.OnTimeMonths)
+	}
+}
+
+func TestConsumer_StreakSoftLanding(t *testing.T) {
+	store := newMemStore()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	tRepo := &memTenantRepo{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			tenantID: {
+				ID:         tenantID,
+				PropertyID: propID,
+			},
+		},
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+	consumer := NewEventConsumer(svc)
+
+	// Set initial streak to 8 months with 0 freezes available
+	store.streak[tenantID] = &domain.TenantStreak{
+		TenantID:         tenantID,
+		PropertyID:       propID,
+		OnTimeMonths:     8,
+		FreezesAvailable: 0,
+	}
+
+	evt := domain.Event{
+		TenantID:   &tenantID,
+		PropertyID: propID,
+		DueID:      &dueID,
+		EventType:  domain.EvtDuePaidLate,
+		Payload:    []byte(`{}`),
+		OccurredAt: time.Now().UTC(),
+	}
+
+	if err := consumer.HandleEvent(context.Background(), evt); err != nil {
+		t.Fatalf("handle event failed: %v", err)
+	}
+
+	streak, _ := store.GetStreak(context.Background(), tenantID)
+	// Expect soft-landing: 8 -> 7 (NOT wiped to 0!)
+	if streak.OnTimeMonths != 7 {
+		t.Fatalf("expected streak to soft-land from 8 to 7, got %d", streak.OnTimeMonths)
+	}
+}
+
+func TestConsumer_MilestoneAwardsAntiFarming(t *testing.T) {
+	store := newMemStore()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	store.rules["MILESTONE_3_MONTHS"] = domain.PointRule{
+		Code:   "MILESTONE_3_MONTHS",
+		Points: 100,
+		Active: true,
+	}
+
+	tRepo := &memTenantRepo{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			tenantID: {
+				ID:         tenantID,
+				PropertyID: propID,
+			},
+		},
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+	consumer := NewEventConsumer(svc)
+
+	// Initial streak = 2 months
+	store.streak[tenantID] = &domain.TenantStreak{
+		TenantID:         tenantID,
+		PropertyID:       propID,
+		OnTimeMonths:     2,
+		FreezesAvailable: 1,
+	}
+
+	// Pay on time -> hits month 3 milestone!
+	evt := domain.Event{
+		TenantID:   &tenantID,
+		PropertyID: propID,
+		DueID:      &dueID,
+		EventType:  domain.EvtDuePaidOnTime,
+		Payload:    []byte(`{}`),
+		OccurredAt: time.Now().UTC(),
+	}
+
+	if err := consumer.HandleEvent(context.Background(), evt); err != nil {
+		t.Fatalf("event failed: %v", err)
+	}
+
+	streak, _ := store.GetStreak(context.Background(), tenantID)
+	if streak.OnTimeMonths != 3 {
+		t.Fatalf("expected streak=3, got %d", streak.OnTimeMonths)
+	}
+
+	// 50 points from RENT_ON_TIME + 100 points from MILESTONE_3_MONTHS = 150 points
+	bal, _ := store.GetActiveBalance(context.Background(), tenantID)
+	if bal != 150 {
+		t.Fatalf("expected 150 points (50 rent + 100 milestone), got %d", bal)
+	}
+
+	// Now suppose tenant pays late and soft-lands to 2:
+	store.streak[tenantID].OnTimeMonths = 2
+	dueID2 := uuid.New()
+
+	// Tenant pays due 2 on time -> hits 3 again!
+	evt2 := domain.Event{
+		TenantID:   &tenantID,
+		PropertyID: propID,
+		DueID:      &dueID2,
+		EventType:  domain.EvtDuePaidOnTime,
+		Payload:    []byte(`{}`),
+		OccurredAt: time.Now().UTC(),
+	}
+	if err := consumer.HandleEvent(context.Background(), evt2); err != nil {
+		t.Fatalf("event 2 failed: %v", err)
+	}
+
+	// Total points should now be 150 + 50 (from second RENT_ON_TIME) = 200 points.
+	// Milestone points (100) MUST NOT be awarded again (anti-farming)!
+	bal2, _ := store.GetActiveBalance(context.Background(), tenantID)
+	if bal2 != 200 {
+		t.Fatalf("expected 200 points (anti-farming prevented duplicate 100 milestone), got %d", bal2)
+	}
+}
+

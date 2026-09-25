@@ -3,9 +3,11 @@ package cashfree
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 )
@@ -34,10 +36,11 @@ type DigiLockerStatus struct {
 // tenant completes the DigiLocker consent flow. Only last-4 of UID is present
 // (masked_uid is always the XXXX-XXXX-XXXX-1234 masked form).
 type DigiLockerAadhaarDoc struct {
-	Name      string `json:"name"`
-	DOB       string `json:"dob"`    // YYYY-MM-DD or YYYY depending on UIDAI record
-	Gender    string `json:"gender"` // M | F | T
-	MaskedUID string `json:"masked_uid"`
+	Name       string `json:"name"`
+	DOB        string `json:"dob"`    // YYYY-MM-DD or YYYY depending on UIDAI record
+	Gender     string `json:"gender"` // M | F | T
+	MaskedUID  string `json:"masked_uid"`
+	PhotoBytes []byte `json:"-"`
 }
 
 // createDigiLockerReq is the request body for POST /verification/digilocker.
@@ -134,6 +137,7 @@ type getDigiLockerDocResp struct {
 			DOB       string `json:"dob"`
 			Gender    string `json:"gender"`
 			MaskedUID string `json:"masked_uid"`
+			Image     string `json:"image"`
 		} `json:"aadhaar"`
 	} `json:"data"`
 }
@@ -219,10 +223,127 @@ func (c *Client) GetDigiLockerDocument(ctx context.Context, verificationID strin
 	if a.Name == "" || a.MaskedUID == "" {
 		return nil, &CorruptDocumentError{Reason: "incomplete demographic data (name or masked_uid missing)"}
 	}
+
+	var photoBytes []byte
+	if a.Image != "" {
+		photoBytes, _ = base64.StdEncoding.DecodeString(a.Image)
+	}
+
 	return &DigiLockerAadhaarDoc{
-		Name:      a.Name,
-		DOB:       a.DOB,
-		Gender:    a.Gender,
-		MaskedUID: a.MaskedUID,
+		Name:       a.Name,
+		DOB:        a.DOB,
+		Gender:     a.Gender,
+		MaskedUID:  a.MaskedUID,
+		PhotoBytes: photoBytes,
+	}, nil
+}
+
+// SmartOCRResponse contains the extracted verification results from Cashfree Smart OCR (/bharat-ocr).
+type SmartOCRResponse struct {
+	ReferenceID int64
+	Status      string
+	MessageCode string
+	Name        string
+	DOB         string
+	Gender      string
+	MaskedUID   string
+	QRStatus    *string
+	PhotoBytes  []byte
+}
+
+// UploadAadhaarDocument submits a single Aadhaar file (JPEG/PNG/PDF up to 5MB) to Cashfree Smart OCR.
+// Network call: callers must invoke outside database transactions.
+func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*SmartOCRResponse, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("document_type", "AADHAAR"); err != nil {
+		return nil, fmt.Errorf("cashfree ocr: write document_type: %w", err)
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return nil, fmt.Errorf("cashfree ocr: create form file: %w", err)
+	}
+	if _, err := io.Copy(part, fileReader); err != nil {
+		return nil, fmt.Errorf("cashfree ocr: copy file data: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("cashfree ocr: close multipart writer: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.verificationEndpoint()+"/bharat-ocr", &body)
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
+	}
+
+	var raw struct {
+		ReferenceID int64  `json:"reference_id"`
+		Status      string `json:"status"`
+		MessageCode string `json:"message_code"`
+		OCRData     struct {
+			Name   string `json:"name"`
+			DOB    string `json:"dob"`
+			Gender string `json:"gender"`
+			UID    string `json:"uid"`
+			Image  string `json:"image"`
+		} `json:"ocr_data"`
+		QRDetails struct {
+			Status string `json:"status"`
+		} `json:"qr_details"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, &CorruptDocumentError{Reason: fmt.Sprintf("unmarshal json: %v", err)}
+	}
+
+	uidClean := strings.ReplaceAll(raw.OCRData.UID, " ", "")
+	var maskedUID string
+	if len(uidClean) >= 4 {
+		maskedUID = uidClean[len(uidClean)-4:]
+	}
+	if raw.OCRData.Name == "" || maskedUID == "" {
+		return nil, &CorruptDocumentError{Reason: "incomplete OCR demographic data (name or uid missing)"}
+	}
+
+	var photoBytes []byte
+	if raw.OCRData.Image != "" {
+		photoBytes, _ = base64.StdEncoding.DecodeString(raw.OCRData.Image)
+	}
+
+	var qrStatus *string
+	if raw.QRDetails.Status != "" {
+		q := strings.ToUpper(raw.QRDetails.Status)
+		qrStatus = &q
+	}
+
+	return &SmartOCRResponse{
+		ReferenceID: raw.ReferenceID,
+		Status:      raw.Status,
+		MessageCode: raw.MessageCode,
+		Name:        raw.OCRData.Name,
+		DOB:         raw.OCRData.DOB,
+		Gender:      raw.OCRData.Gender,
+		MaskedUID:   maskedUID,
+		QRStatus:    qrStatus,
+		PhotoBytes:  photoBytes,
 	}, nil
 }

@@ -21,6 +21,7 @@ const (
 	EvtPhoneAttached          EventType = "PhoneAttached"
 	EvtRentAmountChanged      EventType = "RentAmountChanged"
 	EvtPaymentMatched         EventType = "PaymentMatched"
+	EvtOverpaymentCredited    EventType = "OverpaymentCredited"
 	EvtPaymentMatchFailed     EventType = "PaymentMatchFailed"
 	EvtCashPaymentRecorded    EventType = "CashPaymentRecorded"
 	EvtCreditApplied          EventType = "CreditApplied"
@@ -67,6 +68,7 @@ const (
 	EvtFinancePolicyChanged     EventType = "FinancePolicyChanged"
 	EvtPeriodTieOutBlocked      EventType = "PeriodTieOutBlocked"
 	EvtRecurringTieOutException EventType = "RecurringTieOutException"
+	EvtPaymentReconciled        EventType = "PaymentReconciled"
 )
 
 type Event struct {
@@ -171,6 +173,15 @@ type PaymentMatchedPayload struct {
 	PaymentID   string `json:"payment_id"`
 	MatchedBy   string `json:"matched_by"`
 	AmountPaise int64  `json:"amount_paise"`
+}
+
+type OverpaymentCreditedPayload struct {
+	DueID       string `json:"due_id"`
+	PaymentID   string `json:"payment_id"`
+	TenantID    string `json:"tenant_id"`
+	AmountPaise int64  `json:"amount_paise"`
+	MatchedBy   string `json:"matched_by"`
+	Reason      string `json:"reason"`
 }
 
 type PhoneAttachedPayload struct {

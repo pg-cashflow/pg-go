@@ -5,41 +5,50 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	DatabaseURL           string
-	JWTSecret             string
-	OTPHMACSecret         string
-	MagicLinkHMACSecret   string
-	MagicLinkBaseURL      string
-	SMSPrimaryURL         string
-	SMSPrimaryAPIKey      string
-	SMSFallbackURL        string
-	SMSFallbackAPIKey     string
-	SMTPHost              string
-	SMTPPort              string
-	SMTPUsername          string
-	SMTPPassword          string
-	SMTPFrom              string
-	VAPIDPublicKey        string
-	VAPIDPrivateKey       string
-	VAPIDSubject          string
-	HTTPAddr              string
-	AppEnv                string
-	CORSAllowedOrigins    []string
-	FrontendURL           string
-	FirebaseProjectID     string
-	FirebaseCredentials   string
-	CashfreeAppID         string
-	CashfreeSecretKey     string
-	CashfreeEnv           string
-	CashfreeWebhookSecret string
-	AadhaarQRPublicKeyPEM string
-	KYCIdentitySecret     string
-	KYCDigiLockerRedirectURL string
-	FinanceEnabled        bool
-	IntelligenceEnabled   bool
+	DatabaseURL                  string
+	JWTSecret                    string
+	OTPHMACSecret                string
+	MagicLinkHMACSecret          string
+	MagicLinkBaseURL             string
+	SMSPrimaryURL                string
+	SMSPrimaryAPIKey             string
+	SMSFallbackURL               string
+	SMSFallbackAPIKey            string
+	SMTPHost                     string
+	SMTPPort                     string
+	SMTPUsername                 string
+	SMTPPassword                 string
+	SMTPFrom                     string
+	VAPIDPublicKey               string
+	VAPIDPrivateKey              string
+	VAPIDSubject                 string
+	HTTPAddr                     string
+	AppEnv                       string
+	CORSAllowedOrigins           []string
+	FrontendURL                  string
+	FirebaseProjectID            string
+	FirebaseCredentials          string
+	CashfreeAppID                string // Deprecated: alias for CashfreePGAppID
+	CashfreeSecretKey            string // Deprecated: alias for CashfreePGSecretKey
+	CashfreePGAppID              string
+	CashfreePGSecretKey          string
+	CashfreeKYCAppID             string
+	CashfreeKYCSecretKey         string
+	CashfreeEnv                  string
+	CashfreeWebhookSecret        string
+	WebhookTimestampToleranceSec int
+	OrderExpiryDuration          time.Duration
+	OrderPollerBufferDuration    time.Duration
+	WebhookAPIVersion            string
+	AadhaarQRPublicKeyPEM        string
+	KYCIdentitySecret            string
+	KYCDigiLockerRedirectURL     string
+	FinanceEnabled               bool
+	IntelligenceEnabled          bool
 }
 
 func Load() (*Config, error) {
@@ -67,18 +76,26 @@ func Load() (*Config, error) {
 		FrontendURL:           os.Getenv("FRONTEND_URL"),
 		FirebaseProjectID:     os.Getenv("FIREBASE_PROJECT_ID"),
 		FirebaseCredentials:   os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-		CashfreeAppID:         os.Getenv("CASHFREE_APP_ID"),
-		CashfreeSecretKey:     os.Getenv("CASHFREE_SECRET_KEY"),
-		CashfreeEnv:           envOr("CASHFREE_ENV", "sandbox"),
-		CashfreeWebhookSecret:   os.Getenv("CASHFREE_WEBHOOK_SECRET"),
-		AadhaarQRPublicKeyPEM:   os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
-		KYCIdentitySecret:        os.Getenv("KYC_IDENTITY_SECRET"),
-		KYCDigiLockerRedirectURL: os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
-		FinanceEnabled:          envBoolDefaultTrue("FINANCE_ENABLED"),
-		IntelligenceEnabled:     envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
+		CashfreePGAppID:              envFirst("CASHFREE_PG_APP_ID", "CASHFREE_APP_ID"),
+		CashfreePGSecretKey:          envFirst("CASHFREE_PG_SECRET_KEY", "CASHFREE_SECRET_KEY"),
+		CashfreeKYCAppID:             os.Getenv("CASHFREE_KYC_APP_ID"),
+		CashfreeKYCSecretKey:         os.Getenv("CASHFREE_KYC_SECRET_KEY"),
+		CashfreeEnv:                  envOr("CASHFREE_ENV", "sandbox"),
+		CashfreeWebhookSecret:        envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),
+		WebhookTimestampToleranceSec: envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
+		OrderExpiryDuration:          envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
+		OrderPollerBufferDuration:    envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
+		WebhookAPIVersion:            envOr("CASHFREE_API_VERSION", "2025-01-01"),
+		AadhaarQRPublicKeyPEM:        os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
+		KYCIdentitySecret:            os.Getenv("KYC_IDENTITY_SECRET"),
+		KYCDigiLockerRedirectURL:     os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
+		FinanceEnabled:               envBoolDefaultTrue("FINANCE_ENABLED"),
+		IntelligenceEnabled:          envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 	}
+	cfg.CashfreeAppID = cfg.CashfreePGAppID
+	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
 	if cfg.CashfreeWebhookSecret == "" {
-		cfg.CashfreeWebhookSecret = cfg.CashfreeSecretKey
+		cfg.CashfreeWebhookSecret = cfg.CashfreePGSecretKey
 	}
 	if cfg.KYCDigiLockerRedirectURL == "" {
 		if cfg.FrontendURL != "" {
@@ -102,9 +119,9 @@ func Load() (*Config, error) {
 	if cfg.AppEnv == "production" && cfg.FirebaseProjectID == "" {
 		return nil, fmt.Errorf("FIREBASE_PROJECT_ID is required in production")
 	}
-	cashfreeOn := strings.TrimSpace(cfg.CashfreeAppID) != "" && strings.TrimSpace(cfg.CashfreeSecretKey) != ""
+	cashfreeOn := strings.TrimSpace(cfg.CashfreePGAppID) != "" && strings.TrimSpace(cfg.CashfreePGSecretKey) != ""
 	if cashfreeOn && strings.EqualFold(cfg.AppEnv, "production") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
-		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required in production when Cashfree is enabled")
+		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required in production when Cashfree PG is enabled")
 	}
 	return cfg, nil
 }
@@ -148,3 +165,37 @@ func MustInt(s string, def int) int {
 	}
 	return n
 }
+
+func envFirst(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func envIntOr(k string, def int) int {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func envDurationOr(k string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(k))
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
+	}
+	return d
+}
+

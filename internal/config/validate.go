@@ -36,8 +36,26 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 	}
 
+	// --- Cashfree PG and KYC key pairs must be fully provided if either is set ---
+	pgAppID := strings.TrimSpace(c.CashfreePGAppID)
+	if pgAppID == "" {
+		pgAppID = strings.TrimSpace(c.CashfreeAppID)
+	}
+	pgSecret := strings.TrimSpace(c.CashfreePGSecretKey)
+	if pgSecret == "" {
+		pgSecret = strings.TrimSpace(c.CashfreeSecretKey)
+	}
+	if (pgAppID != "" && pgSecret == "") || (pgAppID == "" && pgSecret != "") {
+		errs = append(errs, "both CASHFREE_PG_APP_ID and CASHFREE_PG_SECRET_KEY must be provided")
+	}
+	kycAppID := strings.TrimSpace(c.CashfreeKYCAppID)
+	kycSecret := strings.TrimSpace(c.CashfreeKYCSecretKey)
+	if (kycAppID != "" && kycSecret == "") || (kycAppID == "" && kycSecret != "") {
+		errs = append(errs, "both CASHFREE_KYC_APP_ID and CASHFREE_KYC_SECRET_KEY must be provided")
+	}
+
 	// --- Cashfree webhook secret required whenever Cashfree keys are set ---
-	cashfreeEnabled := strings.TrimSpace(c.CashfreeAppID) != "" || strings.TrimSpace(c.CashfreeSecretKey) != ""
+	cashfreeEnabled := pgAppID != "" || pgSecret != ""
 	if cashfreeEnabled && strings.TrimSpace(c.CashfreeWebhookSecret) == "" {
 		errs = append(errs, "CASHFREE_WEBHOOK_SECRET is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
 	}

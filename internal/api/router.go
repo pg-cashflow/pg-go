@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/events"
@@ -14,6 +15,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
 	"github.com/pg-cashflow/pg-go/internal/localization"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
 	"github.com/pg-cashflow/pg-go/internal/web"
@@ -46,6 +48,12 @@ type Deps struct {
 	Collector      *collector.Service
 	CashfreeSecret string
 	CashfreeEnv    string
+	CashfreeClient CashfreeClient
+
+	GatewayPaymentRepo  GatewayPaymentRepo
+	WebhookToleranceSec int
+	WebhookAPIVersion   string
+	Pool                *pgxpool.Pool
 
 	Gamification      *gamification.Service
 	GamificationStore gamification.Store
@@ -70,6 +78,9 @@ type Deps struct {
 	Intelligence         *intelligence.Service
 	FinanceEnabled       bool
 	IntelligenceEnabled  bool
+
+	PayoutRepo           *postgres.PayoutRepo
+	PayoutChecksumSecret string
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
@@ -172,6 +183,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 			owner.POST("/statements/import", h.ImportStatements)
 			owner.GET("/payments", h.ListPayments)
+			owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
 			owner.GET("/events", h.ListEvents)
 			owner.GET("/reconciliation", h.Reconciliation)
 
@@ -222,7 +234,21 @@ func NewRouter(d Deps) *gin.Engine {
 
 			// KYC owner review endpoints (ADR-004)
 			owner.GET("/tenants/:id/kyc", h.OwnerGetTenantKYC)
+			owner.GET("/tenants/:id/kyc/photo", h.OwnerTenantKYCPhoto)
 			owner.POST("/tenants/:id/kyc/clear-duplicate", h.OwnerClearDuplicateKYC)
+
+			// Tenant Departures (ADR-009)
+			owner.POST("/tenants/:id/departures", h.OwnerCreateDeparture)
+			owner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
+			owner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
+			owner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
+
+			// Operational Payouts Subsystem (ADR-009)
+			owner.POST("/payouts/payees", h.OwnerCreatePayee)
+			owner.GET("/payouts/payees", h.OwnerListPayees)
+			owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
+			owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
+			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 		}
 
 		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))
@@ -247,6 +273,8 @@ func NewRouter(d Deps) *gin.Engine {
 		{
 			tenant.GET("/me", h.TenantMe)
 			tenant.GET("/dues", h.TenantDues)
+			tenant.GET("/dues/options", h.TenantDuesOptions)
+			tenant.POST("/dues/pay-batch", h.TenantDuePayBatch)
 			tenant.GET("/dues/:id/qr", h.TenantDueQR)
 			tenant.GET("/dues/:id/pay", h.TenantDuePay)
 			tenant.POST("/dues/:id/reports", h.TenantSubmitReport)
@@ -257,6 +285,8 @@ func NewRouter(d Deps) *gin.Engine {
 			// KYC / Aadhaar identity verification (ADR-004)
 			tenant.POST("/kyc/consent", h.TenantKYCConsent)
 			tenant.POST("/kyc/initiate", tenantIDRateLimit(10.0/60, 2), h.TenantKYCInitiate)
+			tenant.GET("/kyc/return", tenantIDRateLimit(10.0/60, 3), h.TenantKYCReturn)
+			tenant.POST("/kyc/upload", tenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
 			tenant.POST("/kyc/qr", h.TenantKYCSubmitQR)
 			tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
 			tenant.GET("/kyc/status", h.TenantKYCStatus)

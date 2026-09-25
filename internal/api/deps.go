@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
@@ -23,6 +24,9 @@ type KYCService interface {
 	InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, actor string) (verificationURL string, err error)
 	ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, failedReason, actor string) error
 	VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
+	VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
+	GetDigiLockerReturnStatus(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
+	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 	GetStatus(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
 	GetOwnerView(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
@@ -70,7 +74,7 @@ type PaymentService interface {
 	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int, recordedBy uuid.UUID, note string) (*domain.Payment, error)
 	SettleDeposit(ctx context.Context, tenantID uuid.UUID, refundedPaise int64, reason string) error
 	BuildSummary(ctx context.Context, propertyID uuid.UUID, period string) (*payment.ReconciliationSummary, error)
-	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error)
+	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error)
 }
 
 // PropertyStore reads properties.
@@ -161,10 +165,39 @@ type IntentStore interface {
 	GetByOrderID(ctx context.Context, orderID string) (*domain.PaymentIntent, error)
 	GetByCFPaymentID(ctx context.Context, cfID string) (*domain.PaymentIntent, error)
 	MarkPaid(ctx context.Context, id uuid.UUID, cfPaymentID string) error
+	GetDuesSnapshot(ctx context.Context, intentID uuid.UUID) ([]domain.PaymentIntentDue, error)
 }
 
 type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
+}
+
+type GatewayPaymentRepo interface {
+	Create(ctx context.Context, p *domain.Payment) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Payment, error)
+	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
+	GetByCFPaymentID(ctx context.Context, cfID string) (*domain.Payment, error)
+	RecordProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error)
+	CreateAllocation(ctx context.Context, paymentID, dueID uuid.UUID, amountPaise int64) error
+	ListAllocationsByPayment(ctx context.Context, paymentID uuid.UUID) ([]domain.PaymentAllocation, error)
+	CreateWebhookEvent(ctx context.Context, evt *domain.WebhookEvent) error
+	UpdateWebhookEventStatus(ctx context.Context, id uuid.UUID, status string, errMsg *string) error
+	RecordUnmatchedReceipt(ctx context.Context, orderID, cfPaymentID string, intentID *uuid.UUID, amountPaise int64, failureReason string, payload []byte) error
+	GetRefundByID(ctx context.Context, id uuid.UUID) (*domain.GatewayRefund, error)
+	GetRefundByCFRefundID(ctx context.Context, cfRefundID string) (*domain.GatewayRefund, error)
+	GetRefundByReference(ctx context.Context, ref string) (*domain.GatewayRefund, error)
+	GetRefundByPaymentAndIdempotency(ctx context.Context, paymentID uuid.UUID, idempotencyKey string) (*domain.GatewayRefund, error)
+	GetPaymentRefundedPaise(ctx context.Context, paymentID uuid.UUID) (int64, error)
+	ListRefundsByPayment(ctx context.Context, paymentID uuid.UUID) ([]domain.GatewayRefund, error)
+	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
+	CreateRefundAllocation(ctx context.Context, alloc *domain.RefundAllocation) error
+	GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error)
+	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
+}
+
+type CashfreeClient interface {
+	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
+	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 }
 
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC

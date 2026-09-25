@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 )
@@ -55,7 +56,7 @@ type stubSettle struct {
 	err    error
 }
 
-func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error) {
+func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string, _ ...string) (*domain.Payment, error) {
 	s.n++
 	s.dueID = dueID
 	s.amount = amountPaise
@@ -140,6 +141,64 @@ func TestCashfreePollSkipsMarkPaidOnDueNotOpen(t *testing.T) {
 		t.Fatalf("touch=%d", intents.touched)
 	}
 }
+
+type stubRefundStale struct {
+	list    []domain.GatewayRefund
+	updated *domain.GatewayRefund
+}
+
+func (s *stubRefundStale) ListStaleNonTerminalRefunds(context.Context, time.Time) ([]domain.GatewayRefund, error) {
+	return s.list, nil
+}
+
+func (s *stubRefundStale) CreateOrUpdateRefund(_ context.Context, ref *domain.GatewayRefund) error {
+	s.updated = ref
+	return nil
+}
+
+type stubRefundFetch struct {
+	details *cashfree.RefundDetails
+}
+
+func (s stubRefundFetch) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+	return s.details, nil
+}
+
+func TestCashfreePollReconcilesStuckRefund(t *testing.T) {
+	cfRefID := "cf_rf_99"
+	refRef := "rf_dup_1"
+	staleRef := domain.GatewayRefund{
+		ID:              uuid.New(),
+		CFRefundID:      &cfRefID,
+		RefundReference: &refRef,
+		Status:          "pending", // stuck!
+		AmountPaise:     550000,
+	}
+	refundRepo := &stubRefundStale{list: []domain.GatewayRefund{staleRef}}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "SUCCESS",
+			AmountPaise:  550000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.updated == nil || refundRepo.updated.Status != "success" {
+		t.Fatalf("expected stuck refund to transition to success: %+v", refundRepo.updated)
+	}
+}
+
 
 func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	dueID := uuid.New()

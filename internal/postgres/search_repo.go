@@ -201,11 +201,16 @@ func (r *SearchRepo) ListIndexSources(ctx context.Context, propertyID uuid.UUID)
 	out = append(out, scanSources(rows3)...)
 
 	rows4, err := r.db.Query(ctx, `
-		SELECT d.property_id, p.tenant_id, 'payment_note', p.id,
-		       COALESCE(p.upi_txn_id, 'Payment'), COALESCE(p.raw_note, '')
+		SELECT COALESCE(t.property_id, d.property_id), p.tenant_id, 'payment_note', p.id,
+		       COALESCE(p.upi_txn_id, 'Payment'), 
+		       TRIM(CONCAT_WS(' ', COALESCE(p.raw_note, ''), COALESCE(string_agg(DISTINCT d_alloc.due_code, ' '), '')))
 		FROM payments p
-		JOIN dues d ON d.id = p.due_id
-		WHERE d.property_id = $1 AND COALESCE(p.raw_note, '') <> ''`, propertyID)
+		LEFT JOIN tenants t ON t.id = p.tenant_id
+		LEFT JOIN dues d ON d.id = p.due_id
+		LEFT JOIN payment_allocations pa ON pa.payment_id = p.id
+		LEFT JOIN dues d_alloc ON d_alloc.id = COALESCE(pa.due_id, p.due_id)
+		WHERE (d.property_id = $1 OR t.property_id = $1) AND COALESCE(p.raw_note, '') <> ''
+		GROUP BY p.id, p.tenant_id, p.upi_txn_id, p.raw_note, t.property_id, d.property_id`, propertyID)
 	if err != nil {
 		return nil, err
 	}

@@ -155,3 +155,81 @@ func TestPNGURL(t *testing.T) {
 		t.Fatalf("unexpected tenant PNG URL: %s", got)
 	}
 }
+
+type lockingIntentStore struct {
+	reusable   *domain.PaymentIntent
+	superseded bool
+	createdWithDues bool
+}
+
+func (s *lockingIntentStore) Create(context.Context, *domain.PaymentIntent) error { return nil }
+func (s *lockingIntentStore) LatestOpenForDue(context.Context, uuid.UUID) (*domain.PaymentIntent, error) {
+	return nil, pgx.ErrNoRows
+}
+func (s *lockingIntentStore) GetReusableIntentUnderLock(_ context.Context, _, _ uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error) {
+	if s.reusable != nil {
+		if s.reusable.ExpiresAt != nil && s.reusable.ExpiresAt.Before(time.Now().Add(minRemaining)) {
+			return nil, pgx.ErrNoRows
+		}
+		return s.reusable, nil
+	}
+	return nil, pgx.ErrNoRows
+}
+func (s *lockingIntentStore) SupersedeOpenIntentsForDue(context.Context, uuid.UUID) error {
+	s.superseded = true
+	return nil
+}
+func (s *lockingIntentStore) CreateWithDues(_ context.Context, _ *domain.PaymentIntent, _ []uuid.UUID, _ []int64) error {
+	s.createdWithDues = true
+	return nil
+}
+
+func TestEnsureCashfreeUnderLockReuse(t *testing.T) {
+	sess := "reused_sess"
+	exp := time.Now().Add(25 * time.Minute)
+	store := &lockingIntentStore{
+		reusable: &domain.PaymentIntent{AmountPaise: 500000, PaymentSessionID: &sess, Status: domain.IntentCreated, ExpiresAt: &exp},
+	}
+	cf := &stubCF{}
+	svc := New(store, cf)
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "ABC123", Amount: 500000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cf.n != 0 || intent.PaymentSessionID != "reused_sess" {
+		t.Fatalf("expected reuse under lock: cf.n=%d session=%s", cf.n, intent.PaymentSessionID)
+	}
+	if store.superseded {
+		t.Fatal("should not supersede when intent is reusable")
+	}
+}
+
+func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
+	sess := "expiring_soon_sess"
+	exp := time.Now().Add(5 * time.Minute) // < 10m remaining!
+	store := &lockingIntentStore{
+		reusable: &domain.PaymentIntent{AmountPaise: 500000, PaymentSessionID: &sess, Status: domain.IntentCreated, ExpiresAt: &exp},
+	}
+	cf := &stubCF{}
+	svc := New(store, cf)
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "ABC123", Amount: 500000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cf.n != 1 || intent.PaymentSessionID != "sess_1" {
+		t.Fatalf("expected new order created when < 10m remaining: cf.n=%d session=%s", cf.n, intent.PaymentSessionID)
+	}
+	if !store.superseded {
+		t.Fatal("expected older intent to be superseded under lock")
+	}
+	if !store.createdWithDues {
+		t.Fatal("expected CreateWithDues to be called")
+	}
+}
+

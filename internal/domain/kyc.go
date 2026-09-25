@@ -32,10 +32,18 @@ const (
 )
 
 var (
-	ErrAlreadyVerified        = errors.New("kyc: tenant is already verified")
-	ErrVerificationNotFound   = errors.New("kyc: verification record not found")
-	ErrConsentRevoked         = errors.New("kyc: consent revoked")
-	ErrVerificationNotPending = errors.New("kyc: verification is not in pending status")
+	ErrAlreadyVerified          = errors.New("kyc: tenant is already verified")
+	ErrVerificationNotFound     = errors.New("kyc: verification record not found")
+	ErrConsentRevoked           = errors.New("kyc: consent revoked")
+	ErrVerificationNotPending   = errors.New("kyc: verification is not in pending status")
+	ErrVerificationInProgress   = errors.New("kyc: verification already in progress")
+)
+
+const (
+	QRStatusSecure        = "SECURE"
+	QRStatusPrimitive     = "PRIMITIVE"
+	QRStatusNotPresent    = "NOT_PRESENT"
+	QRStatusUnprocessable = "UNPROCESSABLE"
 )
 
 type KYCConsent struct {
@@ -56,23 +64,27 @@ func (c *KYCConsent) IsActive() bool {
 }
 
 type KYCVerification struct {
-	ID                uuid.UUID  `json:"id"`
-	TenantID          uuid.UUID  `json:"tenant_id"`
-	ConsentID         uuid.UUID  `json:"consent_id"`
-	VendorName        string     `json:"vendor_name"`
-	VendorReferenceID string     `json:"vendor_reference_id"`
-	MaskedUID         *string    `json:"masked_uid,omitempty"`
-	IdentityHash      *string    `json:"identity_hash,omitempty"`
-	HashKeyVersion    int16      `json:"hash_key_version"`
-	IsDedupable       bool       `json:"is_dedupable"`
-	DuplicateDetected bool       `json:"duplicate_detected"`
-	Method            KYCMethod  `json:"method"`
-	Status            KYCStatus  `json:"status"`
-	FailureReason     *string    `json:"failure_reason,omitempty"`
-	VerifiedAt        *time.Time `json:"verified_at,omitempty"`
-	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID                 uuid.UUID  `json:"id"`
+	TenantID           uuid.UUID  `json:"tenant_id"`
+	ConsentID          uuid.UUID  `json:"consent_id"`
+	VendorName         string     `json:"vendor_name"`
+	VendorReferenceID  string     `json:"vendor_reference_id"`
+	MaskedUID          *string    `json:"masked_uid,omitempty"`
+	IdentityHash       *string    `json:"identity_hash,omitempty"`
+	HashKeyVersion     int16      `json:"hash_key_version"`
+	IsDedupable        bool       `json:"is_dedupable"`
+	DuplicateDetected  bool       `json:"duplicate_detected"`
+	Method             KYCMethod  `json:"method"`
+	Status             KYCStatus  `json:"status"`
+	FailureReason      *string    `json:"failure_reason,omitempty"`
+	QRStatus           *string    `json:"qr_status,omitempty"`
+	NameMismatch       bool       `json:"name_mismatch"`
+	AttestedPhotoBytes []byte     `json:"-"`
+	PhotoStored        bool       `json:"photo_stored"`
+	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 func (v *KYCVerification) IsValid(now time.Time) bool {
@@ -83,6 +95,57 @@ func (v *KYCVerification) IsValid(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func (v *KYCVerification) TrustTier() string {
+	if v.Status != KYCStatusVerified {
+		return "unverified"
+	}
+	if v.Method == KYCMethodDigiLocker {
+		return "digilocker_verified"
+	}
+	qr := ""
+	if v.QRStatus != nil {
+		qr = *v.QRStatus
+	}
+	if v.Method == KYCMethodQR || qr == QRStatusSecure {
+		return "document_secure_qr"
+	}
+	switch qr {
+	case QRStatusPrimitive:
+		return "document_legacy_qr"
+	case QRStatusUnprocessable:
+		return "document_degraded_qr"
+	default:
+		return "document_ocr_only"
+	}
+}
+
+// IsNameMatch compares two names using token-set overlap after normalization.
+func IsNameMatch(profileName, attestedName string) bool {
+	normProfile := NormalizeName(profileName)
+	normAttested := NormalizeName(attestedName)
+	if normProfile == "" || normAttested == "" {
+		return false
+	}
+	if normProfile == normAttested {
+		return true
+	}
+	pTokens := strings.Fields(normProfile)
+	aTokens := strings.Fields(normAttested)
+	if len(pTokens) == 0 || len(aTokens) == 0 {
+		return false
+	}
+	matchCount := 0
+	for _, pt := range pTokens {
+		for _, at := range aTokens {
+			if pt == at || (len(pt) == 1 && strings.HasPrefix(at, pt)) || (len(at) == 1 && strings.HasPrefix(pt, at)) {
+				matchCount++
+				break
+			}
+		}
+	}
+	return matchCount > 0 && matchCount >= (len(pTokens)+1)/2
 }
 
 type KYCAuditLog struct {

@@ -48,13 +48,13 @@ func (r *DueRepo) GetByDueCode(ctx context.Context, code string) (*domain.Due, e
 }
 
 const dueCols = `id, due_code, tenant_id, property_id, kind, amount, original_amount,
-	period_start, period_end, due_date, status, paid_at, created_at, updated_at`
+	period_start, period_end, due_date, status, paid_at, contractual_ceiling_paise, created_at, updated_at`
 
 func (r *DueRepo) scanOne(ctx context.Context, q string, args ...any) (*domain.Due, error) {
 	var d domain.Due
 	err := r.db.QueryRow(ctx, q, args...).Scan(
 		&d.ID, &d.DueCode, &d.TenantID, &d.PropertyID, &d.Kind, &d.Amount, &d.OriginalAmount,
-		&d.PeriodStart, &d.PeriodEnd, &d.DueDate, &d.Status, &d.PaidAt, &d.CreatedAt, &d.UpdatedAt,
+		&d.PeriodStart, &d.PeriodEnd, &d.DueDate, &d.Status, &d.PaidAt, &d.ContractualCeilingPaise, &d.CreatedAt, &d.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -65,8 +65,8 @@ func (r *DueRepo) scanOne(ctx context.Context, q string, args ...any) (*domain.D
 func (r *DueRepo) Update(ctx context.Context, d *domain.Due) error {
 	d.UpdatedAt = time.Now().UTC()
 	_, err := r.db.Exec(ctx, `
-		UPDATE dues SET amount=$2, status=$3, paid_at=$4, updated_at=$5 WHERE id=$1`,
-		d.ID, d.Amount, d.Status, d.PaidAt, d.UpdatedAt,
+		UPDATE dues SET amount=$2, status=$3, paid_at=$4, contractual_ceiling_paise=$5, updated_at=$6 WHERE id=$1`,
+		d.ID, d.Amount, d.Status, d.PaidAt, d.ContractualCeilingPaise, d.UpdatedAt,
 	)
 	return err
 }
@@ -130,7 +130,7 @@ func (r *DueRepo) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]domai
 func (r *DueRepo) ActivePendingRentDues(ctx context.Context) ([]domain.Due, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT d.id, d.due_code, d.tenant_id, d.property_id, d.kind, d.amount, d.original_amount,
-			d.period_start, d.period_end, d.due_date, d.status, d.paid_at, d.created_at, d.updated_at
+			d.period_start, d.period_end, d.due_date, d.status, d.paid_at, d.contractual_ceiling_paise, d.created_at, d.updated_at
 		FROM dues d
 		JOIN tenants t ON t.id = d.tenant_id
 		WHERE d.status IN ('pending', 'partial')
@@ -161,7 +161,7 @@ func scanDues(rows pgx.Rows) ([]domain.Due, error) {
 		var d domain.Due
 		if err := rows.Scan(
 			&d.ID, &d.DueCode, &d.TenantID, &d.PropertyID, &d.Kind, &d.Amount, &d.OriginalAmount,
-			&d.PeriodStart, &d.PeriodEnd, &d.DueDate, &d.Status, &d.PaidAt, &d.CreatedAt, &d.UpdatedAt,
+			&d.PeriodStart, &d.PeriodEnd, &d.DueDate, &d.Status, &d.PaidAt, &d.ContractualCeilingPaise, &d.CreatedAt, &d.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

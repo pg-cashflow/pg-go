@@ -104,25 +104,32 @@ func (r *GamificationRepo) GetSettings(ctx context.Context, propertyID uuid.UUID
 	var s domain.PropertyGamificationSettings
 	err := r.pool.QueryRow(ctx, `
 		SELECT property_id, point_value_paise, monthly_budget_paise, earn_cap_per_tenant,
-		       rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise, created_at, updated_at
+		       rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise,
+		       grace_days, late_penalty_points_per_day, late_penalty_max_points,
+		       created_at, updated_at
 		FROM property_gamification_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.PointValuePaise, &s.MonthlyBudgetPaise, &s.EarnCapPerTenant,
-		&s.RSVPSubCap, &s.ExpiryDays, &s.FloorBonusThreshold, &s.ElectricityTariffPaise, &s.CreatedAt, &s.UpdatedAt,
+		&s.RSVPSubCap, &s.ExpiryDays, &s.FloorBonusThreshold, &s.ElectricityTariffPaise,
+		&s.GraceDays, &s.LatePenaltyPointsPerDay, &s.LatePenaltyMaxPoints,
+		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// return default
 		return &domain.PropertyGamificationSettings{
-			PropertyID:             propertyID,
-			PointValuePaise:        100,
-			MonthlyBudgetPaise:     1000000,
-			EarnCapPerTenant:       200,
-			RSVPSubCap:             60,
-			ExpiryDays:             180,
-			FloorBonusThreshold:    85,
-			ElectricityTariffPaise: 1000,
-			CreatedAt:              time.Now().UTC(),
-			UpdatedAt:              time.Now().UTC(),
+			PropertyID:              propertyID,
+			PointValuePaise:         100,
+			MonthlyBudgetPaise:      1000000,
+			EarnCapPerTenant:        200,
+			RSVPSubCap:              60,
+			ExpiryDays:              180,
+			FloorBonusThreshold:     85,
+			ElectricityTariffPaise:  1000,
+			GraceDays:               2,
+			LatePenaltyPointsPerDay: 2,
+			LatePenaltyMaxPoints:    50,
+			CreatedAt:               time.Now().UTC(),
+			UpdatedAt:               time.Now().UTC(),
 		}, nil
 	}
 	return &s, err
@@ -130,11 +137,22 @@ func (r *GamificationRepo) GetSettings(ctx context.Context, propertyID uuid.UUID
 
 func (r *GamificationRepo) UpdateSettings(ctx context.Context, s *domain.PropertyGamificationSettings) error {
 	s.UpdatedAt = time.Now().UTC()
+	if s.GraceDays <= 0 {
+		s.GraceDays = 2
+	}
+	if s.LatePenaltyPointsPerDay < 0 {
+		s.LatePenaltyPointsPerDay = 2
+	}
+	if s.LatePenaltyMaxPoints <= 0 {
+		s.LatePenaltyMaxPoints = 50
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO property_gamification_settings (
 			property_id, point_value_paise, monthly_budget_paise, earn_cap_per_tenant,
-			rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise,
+			grace_days, late_penalty_points_per_day, late_penalty_max_points,
+			updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (property_id) DO UPDATE SET
 			point_value_paise = EXCLUDED.point_value_paise,
 			monthly_budget_paise = EXCLUDED.monthly_budget_paise,
@@ -143,11 +161,50 @@ func (r *GamificationRepo) UpdateSettings(ctx context.Context, s *domain.Propert
 			expiry_days = EXCLUDED.expiry_days,
 			floor_bonus_threshold = EXCLUDED.floor_bonus_threshold,
 			electricity_tariff_paise = EXCLUDED.electricity_tariff_paise,
+			grace_days = EXCLUDED.grace_days,
+			late_penalty_points_per_day = EXCLUDED.late_penalty_points_per_day,
+			late_penalty_max_points = EXCLUDED.late_penalty_max_points,
 			updated_at = EXCLUDED.updated_at`,
 		s.PropertyID, s.PointValuePaise, s.MonthlyBudgetPaise, s.EarnCapPerTenant,
-		s.RSVPSubCap, s.ExpiryDays, s.FloorBonusThreshold, s.ElectricityTariffPaise, s.UpdatedAt,
+		s.RSVPSubCap, s.ExpiryDays, s.FloorBonusThreshold, s.ElectricityTariffPaise,
+		s.GraceDays, s.LatePenaltyPointsPerDay, s.LatePenaltyMaxPoints,
+		s.UpdatedAt,
 	)
 	return err
+}
+
+func (r *GamificationRepo) RecordStreakDueEvent(ctx context.Context, tenantID, dueID uuid.UUID) (bool, error) {
+	var id uuid.UUID
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO tenant_streak_due_events (tenant_id, due_id)
+		VALUES ($1, $2)
+		ON CONFLICT (tenant_id, due_id) DO NOTHING
+		RETURNING id`, tenantID, dueID,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // already processed
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *GamificationRepo) RecordMilestoneAward(ctx context.Context, tenantID uuid.UUID, months int) (bool, error) {
+	var id uuid.UUID
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO tenant_milestone_awards (tenant_id, milestone_months)
+		VALUES ($1, $2)
+		ON CONFLICT (tenant_id, milestone_months) DO NOTHING
+		RETURNING id`, tenantID, months,
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // already awarded
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *GamificationRepo) ListPointRules(ctx context.Context, propertyID uuid.UUID) ([]domain.PointRule, error) {
@@ -335,6 +392,12 @@ func (r *GamificationRepo) GetStreak(ctx context.Context, tenantID uuid.UUID) (*
 		}, nil
 	}
 	return &s, err
+}
+
+// LockTenantTx acquires row lock on tenants inside transaction (Universal Lock Hierarchy step 1)
+func (r *GamificationRepo) LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	var exists int
+	return tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&exists)
 }
 
 // P0 Fix: Acquire row lock on tenant_streaks inside transaction

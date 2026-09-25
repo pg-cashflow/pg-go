@@ -32,6 +32,7 @@ var (
 // Store defines repository requirements for the gamification engine.
 type Store interface {
 	BeginTx(ctx context.Context) (pgx.Tx, error)
+	LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error
 
 	// Floors & Rooms
 	CreateFloor(ctx context.Context, f *domain.Floor) error
@@ -60,6 +61,8 @@ type Store interface {
 	GetStreakForUpdate(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*domain.TenantStreak, error)
 	UpsertStreak(ctx context.Context, s *domain.TenantStreak) error
 	UpsertStreakTx(ctx context.Context, tx pgx.Tx, s *domain.TenantStreak) error
+	RecordStreakDueEvent(ctx context.Context, tenantID, dueID uuid.UUID) (bool, error)
+	RecordMilestoneAward(ctx context.Context, tenantID uuid.UUID, months int) (bool, error)
 
 	// Rewards & Redemptions
 	ListRewardsCatalog(ctx context.Context, propertyID uuid.UUID) ([]domain.RewardsCatalogItem, error)
@@ -153,6 +156,10 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 	tenant, err := s.tenants.GetByID(ctx, tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("%w: %v", ErrTenantNotFound, err)
+	}
+
+	if !tenant.GamificationActive(s.now().UTC()) {
+		return 0, nil // Gamification disabled under DPDP Act for minors or opted-out tenants
 	}
 
 	settings, err := s.store.GetSettings(ctx, tenant.PropertyID)
@@ -278,7 +285,12 @@ func (s *Service) DeductPoints(ctx context.Context, tenantID uuid.UUID, ruleCode
 		defer func() { _ = tx.Rollback(ctx) }()
 	}
 
-	// Lock streak row for atomic balance check
+	// Universal Lock Hierarchy Step 1: Lock tenant first
+	if err := s.store.LockTenantTx(ctx, tx, tenantID); err != nil {
+		return fmt.Errorf("lock tenant for point deduction: %w", err)
+	}
+
+	// Universal Lock Hierarchy Step 2: Lock streak row for atomic balance check
 	streak, err := s.store.GetStreakForUpdate(ctx, tx, tenantID)
 	if err != nil {
 		// initialize if missing

@@ -28,6 +28,10 @@ const (
 	AcctRewardLiability         = "reward_liability"
 	AcctLoyaltyExpense          = "loyalty_expense"
 	AcctPaymentProcessingExpense = "payment_processing_expense"
+	AcctGatewayClearing          = "gateway_clearing"
+	AcctUnappliedReceipts        = "unapplied_receipts"
+	AcctDamagesIncome            = "damages_income"
+	AcctRefundPayable            = "refund_payable"
 )
 
 type CapitalKind string

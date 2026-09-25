@@ -147,8 +147,8 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByManual, txnPtr, &recordedBy, nil)
 }
 
-// GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id.
-func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error) {
+// GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id and optional dedupKey.
+func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	if strings.TrimSpace(txnID) == "" {
 		return nil, ErrEmptyTxnID
 	}
@@ -157,7 +157,11 @@ func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPais
 	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
-	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByCashfree, &txnID, nil, nil)
+	var dedup string
+	if len(dedupKey) > 0 {
+		dedup = dedupKey[0]
+	}
+	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByCashfree, &txnID, nil, nil, dedup)
 }
 
 // MarkCashPaid records a full cash settlement of the remaining due amount.
@@ -276,14 +280,78 @@ func (s *Service) settleMatched(
 	txnID *string,
 	recordedBy *uuid.UUID,
 	rawNote *string,
+	dedupKey ...string,
 ) (*domain.Payment, error) {
+	var dedup string
+	if len(dedupKey) > 0 {
+		dedup = dedupKey[0]
+	}
 	var out *domain.Payment
 	err := s.runInTx(ctx, func(dues DueRepository, payments PaymentRepository, tenants TenantRepository, pub events.Publisher) error {
+		if dedup != "" {
+			if recorder, ok := payments.(interface {
+				RecordWebhookEvent(ctx context.Context, dedupKey, provider, eventType string) (bool, error)
+			}); ok {
+				firstSeen, err := recorder.RecordWebhookEvent(ctx, dedup, "cashfree", "PAYMENT_SUCCESS_WEBHOOK")
+				if err != nil {
+					return err
+				}
+				if !firstSeen {
+					return nil
+				}
+			}
+		}
 		due, err := getDueForUpdate(ctx, dues, dueID)
 		if err != nil {
 			return err
 		}
 		if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
+			// If money was captured by Cashfree gateway on an already closed due (race loser vs cash/UTR confirmation),
+			// never drop the payment write. Persist payment and credit 100% of the amount to tenant credit balance.
+			if matchedBy == domain.MatchedByCashfree {
+				at := s.now()
+				overpaymentNote := "overpayment: due already closed, converted to tenant credit"
+				if rawNote != nil && *rawNote != "" {
+					overpaymentNote = *rawNote + " (" + overpaymentNote + ")"
+				}
+				p := &domain.Payment{
+					DueID:      due.ID,
+					TenantID:   due.TenantID,
+					UPITxnID:   txnID,
+					Amount:     amountPaise,
+					MatchedBy:  matchedBy,
+					RecordedBy: recordedBy,
+					MatchedAt:  at,
+					RawNote:    &overpaymentNote,
+				}
+				if err := payments.Create(ctx, p); err != nil {
+					return err
+				}
+				if err := addTenantCredit(ctx, tenants, due.TenantID, amountPaise); err != nil {
+					return err
+				}
+				overpayPayload, _ := json.Marshal(domain.OverpaymentCreditedPayload{
+					DueID:       due.ID.String(),
+					PaymentID:   p.ID.String(),
+					TenantID:    due.TenantID.String(),
+					AmountPaise: int64(amountPaise),
+					MatchedBy:   string(matchedBy),
+					Reason:      "due_already_closed",
+				})
+				did := due.ID
+				if err := pub.Publish(ctx, domain.Event{
+					TenantID:   domain.Ptr(due.TenantID),
+					PropertyID: due.PropertyID,
+					EventType:  domain.EvtOverpaymentCredited,
+					DueID:      &did,
+					OccurredAt: at,
+					Payload:    overpayPayload,
+				}); err != nil {
+					return err
+				}
+				out = p
+				return nil
+			}
 			return ErrDueNotOpen
 		}
 		at := s.now()
@@ -337,6 +405,9 @@ func (s *Service) settleMatched(
 		return nil
 	})
 	if err == nil {
+		if out == nil && txnID != nil && *txnID != "" {
+			out, _ = s.payments.GetByUPITxnID(ctx, *txnID)
+		}
 		s.fireSettle(ctx, out, dueID)
 	}
 	return out, err

@@ -35,11 +35,33 @@ type Tenant struct {
 	JoinedOn           *time.Time   `json:"joined_on,omitempty"` // date only
 	HasIDPhoto         bool         `json:"has_id_photo"`
 	IDPhotoBytes       []byte       `json:"-"`
+	MajorityDate              *time.Time `json:"majority_date,omitempty"`
+	GuardianName              *string    `json:"guardian_name,omitempty"`
+	GuardianPhone             *string    `json:"guardian_phone,omitempty"`
+	GuardianRelation          *string    `json:"guardian_relation,omitempty"`
+	GuardianKYCReferenceID    *string    `json:"guardian_kyc_reference_id,omitempty"`
+	GuardianConsentVerifiedAt *time.Time `json:"guardian_consent_verified_at,omitempty"`
+	IsGamificationDisabled    bool       `json:"is_gamification_disabled"`
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
+func (t Tenant) IsMinor(now time.Time) bool {
+	if t.MajorityDate != nil && t.MajorityDate.After(now) {
+		return true
+	}
+	return false
+}
+
+func (t Tenant) GamificationActive(now time.Time) bool {
+	if t.IsGamificationDisabled || t.IsMinor(now) {
+		return false
+	}
+	return true
+}
+
 func (t Tenant) IsPhoneLess() bool {
+
 	return t.Phone == nil || *t.Phone == ""
 }
 

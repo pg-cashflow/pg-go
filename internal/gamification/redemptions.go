@@ -37,7 +37,12 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 		defer func() { _ = tx.Rollback(ctx) }()
 	}
 
-	// P0 Fix: Lock tenant_streaks row for update to prevent concurrent double-spends
+	// Universal Lock Hierarchy Step 1: Lock tenant first
+	if err := s.store.LockTenantTx(ctx, tx, tenantID); err != nil {
+		return nil, fmt.Errorf("lock tenant for redemption: %w", err)
+	}
+
+	// Universal Lock Hierarchy Step 2: Lock tenant_streaks row for update to prevent concurrent double-spends
 	streak, err := s.store.GetStreakForUpdate(ctx, tx, tenantID)
 	if err != nil {
 		return nil, err

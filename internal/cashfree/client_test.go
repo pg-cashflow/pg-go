@@ -97,3 +97,49 @@ func TestCreateUPIOrderRequiresPhone(t *testing.T) {
 		t.Fatal("expected error when customer phone is empty")
 	}
 }
+
+func TestCreateRefund(t *testing.T) {
+	var gotBody []byte
+	var gotIdempotency string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orders/order_123/refunds" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		gotIdempotency = r.Header.Get("x-idempotency-key")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"cf_refund_id": "999888",
+			"refund_id": "rf_test_123",
+			"order_id": "order_123",
+			"cf_payment_id": "777666",
+			"refund_status": "SUCCESS",
+			"refund_amount": 5500.00,
+			"refund_type": "PAYMENT_REVERSAL",
+			"refund_reason": "Tenant moved out"
+		}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1", Env: "sandbox"})
+	c.baseOverride = srv.URL
+
+	ref, err := c.CreateRefund(context.Background(), "order_123", "rf_test_123", 550000, "Tenant moved out", "idemp_test_key")
+	if err != nil {
+		t.Fatalf("CreateRefund failed: %v", err)
+	}
+	if gotIdempotency != "idemp_test_key" {
+		t.Fatalf("expected idempotency header 'idemp_test_key', got: %s", gotIdempotency)
+	}
+	var reqBody CreateRefundRequest
+	if err := json.Unmarshal(gotBody, &reqBody); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if reqBody.RefundAmount != 5500.00 || reqBody.RefundID != "rf_test_123" || reqBody.RefundNote != "Tenant moved out" {
+		t.Fatalf("unexpected request body: %+v", reqBody)
+	}
+	if ref.CFRefundID != "999888" || ref.AmountPaise != 550000 || ref.RefundStatus != "SUCCESS" {
+		t.Fatalf("unexpected refund details: %+v", ref)
+	}
+}

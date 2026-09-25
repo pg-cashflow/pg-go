@@ -3,6 +3,7 @@ package gamification
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -49,6 +50,29 @@ func (c *EventConsumer) HandleEvent(ctx context.Context, e domain.Event) error {
 	}
 	tenantID := *e.TenantID
 
+	// DPDP Section 9(3): Minor Protection & Gamification Opt-Out Gate
+	tenant, err := c.svc.tenants.GetByID(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	now := c.svc.now().UTC()
+	if !tenant.GamificationActive(now) {
+		c.logger.Info("gamification suppressed for minor / disabled tenant", "tenant_id", tenantID)
+		return nil
+	}
+
+	// Replay Protection for streak events (guarantees single-shot execution per due)
+	if e.DueID != nil {
+		firstTime, err := c.svc.store.RecordStreakDueEvent(ctx, tenantID, *e.DueID)
+		if err != nil {
+			c.logger.Warn("could not record streak due event", "err", err, "tenant_id", tenantID, "due_id", *e.DueID)
+		}
+		if !firstTime {
+			c.logger.Info("streak due event already processed, skipping streak mutation", "tenant_id", tenantID, "due_id", *e.DueID)
+			return nil
+		}
+	}
+
 	switch e.EventType {
 	case domain.EvtDuePaidOnTime:
 		var payload domain.DuePaidPayload
@@ -81,14 +105,25 @@ func (c *EventConsumer) HandleEvent(ctx context.Context, e domain.Event) error {
 		}
 		_ = c.svc.store.UpsertStreak(ctx, streak)
 
-		// 3. Check if this is the first rent payment for a referred tenant
+		// 3. Milestone awards (3, 6, 12 months) with anti-farming protection
+		if streak.OnTimeMonths == 3 || streak.OnTimeMonths == 6 || streak.OnTimeMonths == 12 {
+			awarded, err := c.svc.store.RecordMilestoneAward(ctx, tenantID, streak.OnTimeMonths)
+			if err == nil && awarded {
+				milestoneRuleCode := fmt.Sprintf("MILESTONE_%d_MONTHS", streak.OnTimeMonths)
+				mRefType := "milestone"
+				mRefID := fmt.Sprintf("%s:%d", tenantID.String(), streak.OnTimeMonths)
+				_, _ = c.svc.AwardPoints(ctx, tenantID, milestoneRuleCode, &mRefType, &mRefID, nil)
+				c.logger.Info("awarded streak milestone points", "tenant_id", tenantID, "months", streak.OnTimeMonths)
+			}
+		}
+
+		// 4. Check if this is the first rent payment for a referred tenant
 		c.checkReferralReward(ctx, tenantID, e.PropertyID)
 
 	case domain.EvtDuePaidLate:
 		// Check freeze availability (1 freeze per 6 months)
 		streak, err := c.svc.store.GetStreak(ctx, tenantID)
 		if err == nil && streak != nil {
-			now := c.svc.now().UTC()
 			canUseFreeze := streak.FreezesAvailable > 0 &&
 				(streak.LastFreezeUsedAt == nil || now.Sub(*streak.LastFreezeUsedAt) > 180*24*time.Hour)
 
@@ -97,9 +132,15 @@ func (c *EventConsumer) HandleEvent(ctx context.Context, e domain.Event) error {
 				streak.LastFreezeUsedAt = &now
 				c.logger.Info("tenant used streak freeze for late rent", "tenant_id", tenantID, "streak", streak.OnTimeMonths)
 			} else {
-				// Reset streak
-				streak.OnTimeMonths = 0
-				c.logger.Info("tenant streak reset due to late rent", "tenant_id", tenantID)
+				// Soft-landing: instead of resetting an 8-month streak directly to 0,
+				// drop by 1 month (8 -> 7) to preserve tenant engagement.
+				if streak.OnTimeMonths > 1 {
+					streak.OnTimeMonths--
+					c.logger.Info("tenant streak soft-landed due to late rent", "tenant_id", tenantID, "new_streak", streak.OnTimeMonths)
+				} else {
+					streak.OnTimeMonths = 0
+					c.logger.Info("tenant streak reset to 0 due to late rent", "tenant_id", tenantID)
+				}
 			}
 			_ = c.svc.store.UpsertStreak(ctx, streak)
 		}

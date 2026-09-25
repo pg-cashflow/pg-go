@@ -23,7 +23,8 @@ func NewKYCRepo(pool *pgxpool.Pool) *KYCRepo {
 const (
 	kycVerificationCols = `id, tenant_id, consent_id, vendor_name, vendor_reference_id,
 		masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, method,
-		status, failure_reason, verified_at, expires_at, created_at, updated_at`
+		status, failure_reason, qr_status, name_mismatch, attested_photo_bytes, photo_stored,
+		verified_at, expires_at, created_at, updated_at`
 
 	kycConsentCols = `id, tenant_id, purpose, consent_version, consent_text,
 		consent_text_hash, consent_given_at, ip_address, user_agent, revoked_at`
@@ -36,7 +37,8 @@ func scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
 	err := row.Scan(
 		&v.ID, &v.TenantID, &v.ConsentID, &v.VendorName, &v.VendorReferenceID,
 		&v.MaskedUID, &v.IdentityHash, &v.HashKeyVersion, &v.IsDedupable, &v.DuplicateDetected, &v.Method,
-		&v.Status, &v.FailureReason, &v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt,
+		&v.Status, &v.FailureReason, &v.QRStatus, &v.NameMismatch, &v.AttestedPhotoBytes, &v.PhotoStored,
+		&v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,6 +148,8 @@ func (r *KYCRepo) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 			SET status = 'revoked',
 				masked_uid = NULL,
 				identity_hash = NULL,
+				attested_photo_bytes = NULL,
+				photo_stored = FALSE,
 				updated_at = $2
 			WHERE tenant_id = $1 AND status IN ('pending', 'verified')
 		`, tenantID, now)
@@ -288,6 +292,9 @@ func (r *KYCRepo) CompleteVerificationTx(
 	maskedUID, identityHash string,
 	isDedupable bool,
 	hashKeyVersion int16,
+	qrStatus *string,
+	nameMismatch bool,
+	attestedPhotoBytes []byte,
 	verifiedAt, expiresAt time.Time,
 	actor string,
 ) (*domain.KYCVerification, error) {
@@ -356,6 +363,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 		}
 		duplicateDetected := len(collidingTenantIDs) > 0
 
+		photoStored := len(attestedPhotoBytes) > 0
 		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
@@ -364,17 +372,21 @@ func (r *KYCRepo) CompleteVerificationTx(
 				is_dedupable = $4,
 				duplicate_detected = $5,
 				hash_key_version = $6,
-				verified_at = $7,
-				expires_at = $8,
-				updated_at = $9
+				qr_status = $7,
+				name_mismatch = $8,
+				attested_photo_bytes = $9,
+				photo_stored = $10,
+				verified_at = $11,
+				expires_at = $12,
+				updated_at = $13
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, verifiedAt, expiresAt, now))
+		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, qrStatus, nameMismatch, attestedPhotoBytes, photoStored, verifiedAt, expiresAt, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to verified: %w", err)
 		}
 
-		// Update tenant profile with masked UID
+		// Update tenant profile with masked UID only (never clobber name or id_photo_bytes)
 		_, err = tx.Exec(ctx, `
 			UPDATE tenants
 			SET aadhaar_last4 = $2, updated_at = $3
@@ -405,6 +417,13 @@ func (r *KYCRepo) CompleteVerificationTx(
 				if err := r.appendAuditLogTx(ctx, tx, tid, actor, "duplicate_detected", fmt.Sprintf("collided_with_incoming_tenant=%s identity_hash=%s", existing.TenantID, identityHash), now); err != nil {
 					return fmt.Errorf("kyc: append duplicate_detected audit log for colliding tenant %s: %w", tid, err)
 				}
+			}
+		}
+
+		// Audit log name_mismatch if detected (zero demographic PII, DPDP Rule 8 compliance)
+		if nameMismatch {
+			if err := r.appendAuditLogTx(ctx, tx, existing.TenantID, actor, "name_mismatch", "mismatch_detected=true", now); err != nil {
+				return fmt.Errorf("kyc: append name_mismatch audit log: %w", err)
 			}
 		}
 
@@ -509,6 +528,30 @@ func (r *KYCRepo) ListAuditLogsByTenant(ctx context.Context, tenantID uuid.UUID)
 		logs = append(logs, l)
 	}
 	return logs, rows.Err()
+}
+
+// ListPendingDigiLockerVerifications returns all pending DigiLocker verification sessions ordered by creation time.
+func (r *KYCRepo) ListPendingDigiLockerVerifications(ctx context.Context) ([]domain.KYCVerification, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification
+		WHERE status = 'pending' AND method = 'digilocker'
+		ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("kyc: list pending digilocker: %w", err)
+	}
+	defer rows.Close()
+
+	var list []domain.KYCVerification
+	for rows.Next() {
+		v, err := scanKYCVerification(rows)
+		if err != nil {
+			return nil, fmt.Errorf("kyc: scan pending digilocker: %w", err)
+		}
+		list = append(list, *v)
+	}
+	return list, rows.Err()
 }
 
 // ExpireStalePendingVerifications batch expires pending verifications past their TTL cutoff.
@@ -694,4 +737,65 @@ func (r *KYCRepo) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 
 		return nil
 	})
+}
+
+// TryAcquireInFlightLock attempts to acquire a short-lived atomic lease for in-flight KYC verification.
+// Returns true if acquired, false if a non-expired lease already exists.
+func (r *KYCRepo) TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-ttl)
+	tag, err := r.pool.Exec(ctx, `
+		INSERT INTO kyc_in_flight_lock (tenant_id, locked_at)
+		VALUES ($1, $2)
+		ON CONFLICT (tenant_id)
+		DO UPDATE SET locked_at = EXCLUDED.locked_at
+		WHERE kyc_in_flight_lock.locked_at <= $3
+	`, tenantID, now, cutoff)
+	if err != nil {
+		return false, fmt.Errorf("kyc: acquire in-flight lock: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ReleaseInFlightLock removes the in-flight lease for a tenant.
+func (r *KYCRepo) ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM kyc_in_flight_lock WHERE tenant_id = $1
+	`, tenantID)
+	if err != nil {
+		return fmt.Errorf("kyc: release in-flight lock: %w", err)
+	}
+	return nil
+}
+
+// GetTenantName retrieves the tenant's submitted name from the tenants table.
+func (r *KYCRepo) GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error) {
+	var name string
+	err := r.pool.QueryRow(ctx, `SELECT name FROM tenants WHERE id = $1`, tenantID).Scan(&name)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("kyc: tenant %s not found", tenantID)
+		}
+		return "", fmt.Errorf("kyc: get tenant name: %w", err)
+	}
+	return name, nil
+}
+
+// GetAttestedPhoto fetches the verified government/vendor-attested Aadhaar photo crop.
+func (r *KYCRepo) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
+	var photoBytes []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT attested_photo_bytes
+		FROM kyc_verification
+		WHERE tenant_id = $1 AND status = 'verified' AND photo_stored = TRUE
+		ORDER BY verified_at DESC NULLS LAST, created_at DESC
+		LIMIT 1
+	`, tenantID).Scan(&photoBytes)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("kyc: get attested photo: %w", err)
+	}
+	return photoBytes, nil
 }

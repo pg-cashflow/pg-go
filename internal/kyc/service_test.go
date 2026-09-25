@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 )
@@ -19,6 +22,12 @@ type fakeRepo struct {
 	verification    *domain.KYCVerification
 	latestVerif     *domain.KYCVerification
 	auditLogs       []domain.KYCAuditLog
+	tenantName      string
+	attestedPhoto   []byte
+	lockAcquired    *bool
+	lockAcquireErr  error
+	lockReleaseErr  error
+	releasedLockIDs []uuid.UUID
 	recordConsentFn func(c *domain.KYCConsent) error
 	initiateVTxFn   func() (*domain.KYCVerification, error)
 	completeVTxFn   func(id uuid.UUID) (*domain.KYCVerification, error)
@@ -59,18 +68,33 @@ func (f *fakeRepo) InitiateVerificationTx(_ context.Context, tenantID, consentID
 	f.verification = v
 	return v, nil
 }
-func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, _, _ time.Time, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, _, _ time.Time, _ string) (*domain.KYCVerification, error) {
 	if f.completeVTxFn != nil {
 		return f.completeVTxFn(id)
 	}
 	now := time.Now().UTC()
+	refID := ""
+	tenantID := uuid.Nil
+	if f.verification != nil {
+		refID = f.verification.VendorReferenceID
+		tenantID = f.verification.TenantID
+	}
 	v := &domain.KYCVerification{
-		ID:        id,
-		Status:    domain.KYCStatusVerified,
-		MaskedUID: &maskedUID,
-		VerifiedAt: &now,
+		ID:                 id,
+		TenantID:           tenantID,
+		VendorReferenceID:  refID,
+		Status:             domain.KYCStatusVerified,
+		MaskedUID:          &maskedUID,
+		QRStatus:           qrStatus,
+		NameMismatch:       nameMismatch,
+		AttestedPhotoBytes: attestedPhotoBytes,
+		PhotoStored:        len(attestedPhotoBytes) > 0,
+		VerifiedAt:         &now,
 	}
 	f.latestVerif = v
+	if f.verification != nil && f.verification.ID == id {
+		f.verification = v
+	}
 	return v, nil
 }
 func (f *fakeRepo) FailVerificationTx(_ context.Context, id uuid.UUID, reason, _ string) error {
@@ -109,19 +133,55 @@ func (f *fakeRepo) ClearDuplicateFlag(_ context.Context, id uuid.UUID, _, reason
 func (f *fakeRepo) ListAuditLogsByTenant(_ context.Context, _ uuid.UUID) ([]domain.KYCAuditLog, error) {
 	return f.auditLogs, nil
 }
+func (f *fakeRepo) TryAcquireInFlightLock(_ context.Context, _ uuid.UUID, _ time.Duration) (bool, error) {
+	if f.lockAcquireErr != nil {
+		return false, f.lockAcquireErr
+	}
+	if f.lockAcquired != nil {
+		return *f.lockAcquired, nil
+	}
+	return true, nil
+}
+func (f *fakeRepo) ReleaseInFlightLock(_ context.Context, tenantID uuid.UUID) error {
+	f.releasedLockIDs = append(f.releasedLockIDs, tenantID)
+	return f.lockReleaseErr
+}
+func (f *fakeRepo) GetTenantName(_ context.Context, _ uuid.UUID) (string, error) {
+	if f.tenantName != "" {
+		return f.tenantName, nil
+	}
+	return "Ravi Kumar", nil
+}
+func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
+	return f.attestedPhoto, nil
+}
 
 type fakeCashfree struct {
-	linkURL string
-	linkErr error
-	doc     *kycsvc.DigiLockerDoc
-	docErr  error
+	linkURL    string
+	linkErr    error
+	linkCalled bool
+	doc        *kycsvc.DigiLockerDoc
+	docErr     error
+	status     *cashfree.DigiLockerStatus
+	statusErr  error
+	ocrResp    *cashfree.SmartOCRResponse
+	ocrErr     error
+	ocrCalled  bool
 }
 
 func (f *fakeCashfree) CreateDigiLockerLink(_ context.Context, _, _ string) (string, error) {
+	f.linkCalled = true
 	return f.linkURL, f.linkErr
 }
 func (f *fakeCashfree) GetDigiLockerDocument(_ context.Context, _ string) (*kycsvc.DigiLockerDoc, error) {
 	return f.doc, f.docErr
+}
+func (f *fakeCashfree) GetDigiLockerStatus(_ context.Context, _ string) (*cashfree.DigiLockerStatus, error) {
+	return f.status, f.statusErr
+}
+func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
+	f.ocrCalled = true
+	return f.ocrResp, f.ocrErr
 }
 
 func newTestService(repo *fakeRepo, cf kycsvc.CashfreeKYCClient) *kycsvc.Service {
@@ -458,6 +518,256 @@ func TestProcessDigiLockerCompletion_TOCTOURace_SupersededDuringNetworkFetch(t *
 	}
 }
 
+func TestVerifyAadhaarDocument_Success(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		tenantName: "Ravi Kumar",
+	}
+	qrStatus := domain.QRStatusSecure
+	cf := &fakeCashfree{
+		ocrResp: &cashfree.SmartOCRResponse{
+			ReferenceID: 123456,
+			Status:      "SUCCESS",
+			Name:        "Ravi Kumar",
+			DOB:         "1990-01-01",
+			Gender:      "M",
+			MaskedUID:   "1234",
+			QRStatus:    &qrStatus,
+			PhotoBytes:  []byte{0xDE, 0xAD, 0xBE, 0xEF},
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", v.Status)
+	}
+	if !v.PhotoStored || len(v.AttestedPhotoBytes) == 0 {
+		t.Errorf("expected photo to be stored")
+	}
+	if v.NameMismatch {
+		t.Errorf("expected name_mismatch=false for exact name match")
+	}
+	if v.TrustTier() != "document_secure_qr" {
+		t.Errorf("expected trust tier document_secure_qr, got %s", v.TrustTier())
+	}
+}
+
+func TestVerifyAadhaarDocument_NameMismatch(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		tenantName: "Priya Sharma",
+	}
+	cf := &fakeCashfree{
+		ocrResp: &cashfree.SmartOCRResponse{
+			ReferenceID: 123457,
+			Status:      "SUCCESS",
+			Name:        "Ravi Kumar",
+			DOB:         "1990-01-01",
+			Gender:      "M",
+			MaskedUID:   "1234",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v.NameMismatch {
+		t.Errorf("expected name_mismatch=true for different names")
+	}
+}
+
+func TestGetDigiLockerReturnStatus_PendingToCompleted(t *testing.T) {
+	tenantID := uuid.New()
+	vendorRefID := "dl-return-123"
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		verification: &domain.KYCVerification{
+			ID:                uuid.New(),
+			TenantID:          tenantID,
+			VendorReferenceID: vendorRefID,
+			Status:            domain.KYCStatusPending,
+		},
+		tenantName: "Ravi Kumar",
+	}
+	cf := &fakeCashfree{
+		status: &cashfree.DigiLockerStatus{Status: "COMPLETED"},
+		doc: &kycsvc.DigiLockerDoc{
+			Name:      "Ravi Kumar",
+			DOB:       "1990-01-01",
+			Gender:    "M",
+			MaskedUID: "XXXX-XXXX-1234",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.GetDigiLockerReturnStatus(context.Background(), vendorRefID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v == nil || v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected completed verification, got %+v", v)
+	}
+}
+
+func TestInitiateDigiLocker_InFlightLockContention(t *testing.T) {
+	tenantID := uuid.New()
+	locked := false
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		lockAcquired: &locked,
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.InitiateDigiLocker(context.Background(), tenantID, "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
+	}
+	if cf.linkCalled {
+		t.Error("expected Cashfree CreateDigiLockerLink to NOT be called under lease contention")
+	}
+}
+
+func TestInitiateDigiLocker_ReleaseLockOnError(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		linkErr: errors.New("upstream cashfree 503"),
+	}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.InitiateDigiLocker(context.Background(), tenantID, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(repo.releasedLockIDs) != 1 || repo.releasedLockIDs[0] != tenantID {
+		t.Fatalf("expected lease lock to be released via defer on error, got released IDs: %v", repo.releasedLockIDs)
+	}
+}
+
+func TestVerifyAadhaarDocument_InFlightLockContention(t *testing.T) {
+	tenantID := uuid.New()
+	locked := false
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		lockAcquired: &locked,
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
+	}
+	if cf.ocrCalled {
+		t.Error("expected Cashfree UploadAadhaarDocument to NOT be called under lease contention")
+	}
+}
+
+func TestVerifyAadhaarDocument_ReleaseLockOnError(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		ocrErr: errors.New("upstream ocr failure"),
+	}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if len(repo.releasedLockIDs) != 1 || repo.releasedLockIDs[0] != tenantID {
+		t.Fatalf("expected lease lock to be released via defer on error, got released IDs: %v", repo.releasedLockIDs)
+	}
+}
+
+func TestService_InitiateDigiLocker_Cooldown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+		verification: &domain.KYCVerification{
+			ID:        uuid.New(),
+			TenantID:  tenantID,
+			Status:    domain.KYCStatusPending,
+			CreatedAt: time.Now().UTC().Add(-10 * time.Second), // Created 10s ago (< 60s cooldown)
+		},
+	}
+	cf := &fakeCashfree{linkURL: "https://test.cf/digilocker"}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.InitiateDigiLocker(context.Background(), tenantID, "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress on cooldown, got %v", err)
+	}
+	if len(repo.releasedLockIDs) != 1 || repo.releasedLockIDs[0] != tenantID {
+		t.Fatalf("expected lease lock to be released on cooldown return, got: %v", repo.releasedLockIDs)
+	}
+}
+
+func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+		verification: &domain.KYCVerification{
+			ID:        uuid.New(),
+			TenantID:  tenantID,
+			Status:    domain.KYCStatusPending,
+			CreatedAt: time.Now().UTC().Add(-20 * time.Second), // Created 20s ago (< 60s cooldown)
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "card.jpg", "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress on cooldown, got %v", err)
+	}
+	if len(repo.releasedLockIDs) != 1 || repo.releasedLockIDs[0] != tenantID {
+		t.Fatalf("expected lease lock to be released on cooldown return, got: %v", repo.releasedLockIDs)
+	}
+}
+
 // ---- Helpers ----------------------------------------------------------------
 
 type countingCashfree struct {
@@ -471,4 +781,10 @@ func (c *countingCashfree) CreateDigiLockerLink(ctx context.Context, verificatio
 func (c *countingCashfree) GetDigiLockerDocument(ctx context.Context, verificationID string) (*kycsvc.DigiLockerDoc, error) {
 	c.onDoc()
 	return c.inner.GetDigiLockerDocument(ctx, verificationID)
+}
+func (c *countingCashfree) GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatus, error) {
+	return c.inner.GetDigiLockerStatus(ctx, verificationID)
+}
+func (c *countingCashfree) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error) {
+	return c.inner.UploadAadhaarDocument(ctx, fileReader, filename)
 }

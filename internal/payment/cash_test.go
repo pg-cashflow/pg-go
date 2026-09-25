@@ -44,6 +44,21 @@ func (s *stubPayments) GetByUPITxnID(_ context.Context, txnID string) (*domain.P
 	return &cp, nil
 }
 
+func (s *stubPayments) RecordWebhookEvent(_ context.Context, dedupKey, _, _ string) (bool, error) {
+	if s.byTxn == nil {
+		s.byTxn = make(map[string]*domain.Payment)
+	}
+	if s.created == nil {
+		s.created = []*domain.Payment{}
+	}
+	// We use byTxn or a dedup map. Let's track dedup keys in a special marker or map.
+	if s.byTxn["__dedup__:"+dedupKey] != nil {
+		return false, nil
+	}
+	s.byTxn["__dedup__:"+dedupKey] = &domain.Payment{}
+	return true, nil
+}
+
 type stubTenants struct {
 	byID map[uuid.UUID]*domain.Tenant
 }
@@ -235,5 +250,106 @@ func TestGatewaySettleRequiresTxnID(t *testing.T) {
 	svc := NewService(&stubDues{}, &stubPayments{}, &stubTenants{}, nil, &recordingPublisher{})
 	if _, err := svc.GatewaySettle(context.Background(), uuid.New(), 5000, ""); err != ErrEmptyTxnID {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestGatewaySettle_DueAlreadyPaid_ConvertsToTenantCredit(t *testing.T) {
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	due := &domain.Due{
+		ID: dueID, TenantID: tenantID, PropertyID: propID,
+		DueCode: "CF002B", Amount: 0, OriginalAmount: 8000,
+		Status: domain.DueStatusPaid, DueDate: time.Now().UTC(),
+	}
+	dues := &stubDues{byID: map[uuid.UUID]*domain.Due{dueID: due}}
+	pays := &stubPayments{}
+	tenants := &stubTenants{byID: map[uuid.UUID]*domain.Tenant{
+		tenantID: {ID: tenantID, PropertyID: propID, CreditBalancePaise: 0},
+	}}
+	pub := &recordingPublisher{}
+	svc := NewService(dues, pays, tenants, nil, pub)
+
+	p, err := svc.GatewaySettle(context.Background(), dueID, 8000, "UTR-CF-OVERPAY")
+	if err != nil {
+		t.Fatalf("unexpected error on gateway settle for paid due: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected payment to be persisted, got nil")
+	}
+	if p.MatchedBy != domain.MatchedByCashfree {
+		t.Fatalf("expected matched_by=cashfree, got %s", p.MatchedBy)
+	}
+
+	// Verify tenant credit was updated
+	updatedTenant, _ := tenants.GetByID(context.Background(), tenantID)
+	if updatedTenant.CreditBalancePaise != 8000 {
+		t.Fatalf("expected credit_balance_paise=8000, got %d", updatedTenant.CreditBalancePaise)
+	}
+
+	// Verify due status remains Paid (not modified)
+	if due.Status != domain.DueStatusPaid {
+		t.Fatalf("expected due status to remain paid, got %s", due.Status)
+	}
+
+	// Verify events: exactly one EvtOverpaymentCredited, zero EvtDuePaidOnTime/EvtDuePaidLate
+	var foundOverpay bool
+	for _, e := range pub.events {
+		if e.EventType == domain.EvtDuePaidOnTime || e.EventType == domain.EvtDuePaidLate {
+			t.Fatalf("must NOT emit due paid events on overpayment: got %s", e.EventType)
+		}
+		if e.EventType == domain.EvtPaymentMatched {
+			t.Fatalf("must NOT emit EvtPaymentMatched on closed due: got %s", e.EventType)
+		}
+		if e.EventType == domain.EvtOverpaymentCredited {
+			foundOverpay = true
+		}
+	}
+	if !foundOverpay {
+		t.Fatal("expected EvtOverpaymentCredited event to be published")
+	}
+}
+
+func TestGatewaySettle_WebhookDedupKey_Idempotent(t *testing.T) {
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	due := &domain.Due{
+		ID: dueID, TenantID: tenantID, PropertyID: propID,
+		DueCode: "DEDUP01", Amount: 5000, OriginalAmount: 5000,
+		Status: domain.DueStatusPending, DueDate: time.Now().UTC(),
+	}
+	dues := &stubDues{byID: map[uuid.UUID]*domain.Due{dueID: due}}
+	pays := &stubPayments{}
+	tenants := &stubTenants{byID: map[uuid.UUID]*domain.Tenant{
+		tenantID: {ID: tenantID, PropertyID: propID},
+	}}
+	pub := &recordingPublisher{}
+	svc := NewService(dues, pays, tenants, nil, pub)
+
+	dedup := "cashfree:pg:cf_order_pay_123"
+	p1, err := svc.GatewaySettle(context.Background(), dueID, 5000, "cf_txn_123", dedup)
+	if err != nil {
+		t.Fatalf("first settle failed: %v", err)
+	}
+	if p1 == nil {
+		t.Fatal("expected payment from first settle")
+	}
+
+	// Second settle with same dedupKey
+	p2, err := svc.GatewaySettle(context.Background(), dueID, 5000, "cf_txn_123", dedup)
+	if err != nil {
+		t.Fatalf("duplicate settle failed: %v", err)
+	}
+	if p2 == nil {
+		t.Fatal("expected payment on duplicate settle")
+	}
+	if p2.ID != p1.ID {
+		t.Fatalf("expected same payment ID, got %v vs %v", p1.ID, p2.ID)
+	}
+
+	// Verify only 1 payment was created in storage
+	if len(pays.created) != 1 {
+		t.Fatalf("expected 1 payment in storage, got %d", len(pays.created))
 	}
 }

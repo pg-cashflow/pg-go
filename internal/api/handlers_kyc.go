@@ -76,6 +76,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.no_consent"))
 	case errors.Is(err, domain.ErrAlreadyVerified):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.already_verified"))
+	case errors.Is(err, domain.ErrVerificationInProgress):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.in_flight"))
 	case errors.Is(err, domain.ErrConsentRevoked):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.consent_revoked"))
 	case errors.Is(err, kycsvc.ErrQRSignatureInvalid):
@@ -253,6 +255,82 @@ func (h *Handlers) TenantKYCStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
+// TenantKYCReturn handles GET /api/tenant/kyc/return?vendor_ref_id=<id>.
+// This is the browser redirect landing endpoint after DigiLocker consent is completed.
+// It inspects or synchronizes verification status and returns the tenant-safe view.
+func (h *Handlers) TenantKYCReturn(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+
+	vendorRefID := c.Query("vendor_ref_id")
+	if vendorRefID == "" {
+		// Fallback to active verification for this tenant
+		v, _, err := svc.GetStatus(c.Request.Context(), t.ID)
+		if err != nil {
+			respondErr(c, kycClientErr(err))
+			return
+		}
+		if v == nil {
+			apierr.RespondClientErr(c, http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
+			return
+		}
+		vendorRefID = v.VendorReferenceID
+	}
+
+	v, err := svc.GetDigiLockerReturnStatus(c.Request.Context(), vendorRefID)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
+}
+
+// TenantKYCUpload handles POST /api/tenant/kyc/upload.
+// Presents a single Aadhaar document (image/PDF up to 5MB) for Smart OCR verification.
+func (h *Handlers) TenantKYCUpload(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		apierr.RespondBindErr(c, "file field is required in multipart form", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	if fileHeader.Size > 5*1024*1024 {
+		apierr.RespondClientErr(c, http.StatusBadRequest, "file size exceeds 5MB limit", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	file, err := fileHeader.Open()
+	if err != nil {
+		apierr.RespondClientErr(c, http.StatusBadRequest, "unable to open uploaded file", apierr.CodeRequestInvalidBody)
+		return
+	}
+	defer file.Close()
+
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+	v, err := svc.VerifyAadhaarDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
+}
+
 // ---------------------------------------------------------------------------
 // Owner-facing KYC endpoints
 // ---------------------------------------------------------------------------
@@ -361,6 +439,41 @@ func (h *Handlers) OwnerClearDuplicateKYC(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// OwnerTenantKYCPhoto handles GET /api/owner/tenants/:id/kyc/photo.
+// Returns the verified government/vendor-attested photo crop as raw image bytes.
+func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	if h.TenantStore == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	tenant, err := h.TenantStore.GetByID(c.Request.Context(), tenantID)
+	if err != nil || tenant.PropertyID != propertyID {
+		apierr.RespondClientErr(c, http.StatusNotFound, "tenant not found", apierr.CodeRequestInvalidId)
+		return
+	}
+
+	b, err := svc.GetAttestedPhoto(c.Request.Context(), tenantID)
+	if err != nil || len(b) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no kyc photo"})
+		return
+	}
+	ct := http.DetectContentType(b)
+	c.Data(http.StatusOK, ct, b)
 }
 
 // ---------------------------------------------------------------------------
@@ -503,5 +616,9 @@ func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 	m := tenantKYCVerificationView(v)
 	m["duplicate_detected"] = v.DuplicateDetected
 	m["is_dedupable"] = v.IsDedupable
+	m["trust_tier"] = v.TrustTier()
+	m["qr_status"] = v.QRStatus
+	m["photo_stored"] = v.PhotoStored
+	m["name_mismatch"] = v.NameMismatch
 	return m
 }

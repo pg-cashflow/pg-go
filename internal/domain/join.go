@@ -66,11 +66,22 @@ type PaymentReport struct {
 type PaymentIntentStatus string
 
 const (
-	IntentCreated PaymentIntentStatus = "created"
-	IntentPaid    PaymentIntentStatus = "paid"
-	IntentExpired PaymentIntentStatus = "expired"
-	IntentFailed  PaymentIntentStatus = "failed"
+	IntentInitiating PaymentIntentStatus = "initiating"
+	IntentCreated    PaymentIntentStatus = "created"
+	IntentPaid       PaymentIntentStatus = "paid"
+	IntentExpired    PaymentIntentStatus = "expired"
+	IntentFailed     PaymentIntentStatus = "failed"
+	IntentSuperseded PaymentIntentStatus = "superseded"
 )
+
+type PaymentIntentDue struct {
+	ID              uuid.UUID           `json:"id"`
+	PaymentIntentID uuid.UUID           `json:"payment_intent_id"`
+	DueID           uuid.UUID           `json:"due_id"`
+	AmountPaise     int64               `json:"amount_paise"`
+	Status          PaymentIntentStatus `json:"status"`
+	CreatedAt       time.Time           `json:"created_at"`
+}
 
 type PaymentIntent struct {
 	ID               uuid.UUID           `json:"id"`
@@ -87,13 +98,16 @@ type PaymentIntent struct {
 }
 
 type PayIntent struct {
-	Mode             string `json:"mode"` // manual | cashfree
-	VPA              string `json:"vpa,omitempty"`
-	UPILink          string `json:"upi_link,omitempty"`
-	Note             string `json:"note"`
-	DueCode          string `json:"due_code"`
-	AmountPaise      int    `json:"amount_paise"`
-	QRPNGURL         string `json:"qr_png_url"`
-	Payable          bool   `json:"payable"`
-	PaymentSessionID string `json:"payment_session_id,omitempty"`
+	Mode             string      `json:"mode"` // manual | cashfree
+	VPA              string      `json:"vpa,omitempty"`
+	UPILink          string      `json:"upi_link,omitempty"`
+	Note             string      `json:"note"`
+	DueCode          string      `json:"due_code"`
+	AmountPaise      int         `json:"amount_paise"`
+	QRPNGURL         string      `json:"qr_png_url,omitempty"`
+	Payable          bool        `json:"payable"`
+	PaymentSessionID string      `json:"payment_session_id,omitempty"`
+	DueCount         int         `json:"due_count,omitempty"`
+	DueIDs           []uuid.UUID `json:"due_ids,omitempty"`
 }
+

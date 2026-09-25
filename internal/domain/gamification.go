@@ -37,6 +37,9 @@ type PropertyGamificationSettings struct {
 	ExpiryDays             int       `json:"expiry_days"`
 	FloorBonusThreshold    int       `json:"floor_bonus_threshold"` // percentage e.g. 85
 	ElectricityTariffPaise int       `json:"electricity_tariff_paise"`
+	GraceDays              int       `json:"grace_days"`
+	LatePenaltyPointsPerDay int      `json:"late_penalty_points_per_day"`
+	LatePenaltyMaxPoints   int       `json:"late_penalty_max_points"`
 	CreatedAt              time.Time `json:"created_at"`
 	UpdatedAt              time.Time `json:"updated_at"`
 }

@@ -1,10 +1,15 @@
 # ADR 005: Owner Payment Enablement — Collection Mode Switch & Screenshot Proof Verification
 
 ## Status
-Proposed
+Superseded by Day-0 Business Registration Workstream & ADR 006
+**Date:** 2026-09-25
+
+> [!WARNING]
+> **SUPERSEDED NOTICE**: The earlier consideration of onboarding as an "Individual Merchant with T+2 settlement into a personal savings account" has been **formally rejected** by Cashfree underwriting policy for PG/hostel commercial accommodation collections. Production gateway onboarding requires an explicit **Day-0 Business Registration Workstream** (online Sole Proprietorship registration via Udyam at `udyamregistration.gov.in` + dedicated Current Account opened in the business entity name) running in parallel with sandbox development.
+> This ADR is preserved for historical context regarding offline P2P UPI screenshot verification (`manual_proof`) fallback during initial pre-gateway onboarding.
 
 ## Context
-Cashfree Payment Gateway merchant onboarding was rejected under a restricted category ("Timeshare Rentals", incomplete VCIP). This blocks automated online payment collection through the platform, but does not block direct tenant-to-owner P2P payments (UPI).
+Cashfree Payment Gateway underwriting categorically rejects accommodation and PG/hostel collections into personal savings accounts without business registration. This blocks automated online payment collection through personal merchant profiles, but does not block direct tenant-to-owner P2P payments (UPI).
 
 To enable operations immediately while working through merchant re-classification:
 1. Tenants pay the property owner's UPI ID directly outside the platform.

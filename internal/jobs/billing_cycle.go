@@ -67,18 +67,30 @@ func (j *BillingCycle) Run(ctx context.Context) error {
 	}
 	now := time.Now().In(loc)
 	day := now.Day()
-	if day > 28 {
-		log.Info("billing-cycle: day>28, nothing to do", "day", day)
-		return nil
+
+	// Month-end clamping logic:
+	// If today is the last day of the current month, also query tenants whose due_day > today's day (e.g. 29, 30, 31).
+	tomorrow := now.AddDate(0, 0, 1)
+	isMonthEnd := tomorrow.Month() != now.Month()
+
+	dueDays := []int{day}
+	if isMonthEnd {
+		for d := day + 1; d <= 31; d++ {
+			dueDays = append(dueDays, d)
+		}
 	}
 
-	tenants, err := j.Tenants.ListActiveByDueDay(ctx, day, nil)
-	if err != nil {
-		return fmt.Errorf("billing-cycle: list tenants: %w", err)
+	var allTenants []domain.Tenant
+	for _, d := range dueDays {
+		list, err := j.Tenants.ListActiveByDueDay(ctx, d, nil)
+		if err != nil {
+			return fmt.Errorf("billing-cycle: list tenants for day %d: %w", d, err)
+		}
+		allTenants = append(allTenants, list...)
 	}
 
 	var firstErr error
-	for _, t := range tenants {
+	for _, t := range allTenants {
 		if err := j.processTenant(ctx, t); err != nil {
 			log.Error("billing-cycle: tenant failed", "tenant_id", t.ID, "err", err)
 			if firstErr == nil {

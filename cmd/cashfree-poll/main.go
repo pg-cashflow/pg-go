@@ -44,12 +44,15 @@ func main() {
 	eventRepo := postgres.NewEventRepo(pool)
 	paySvc := payment.NewServiceWithPool(pool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(pool))
 
+	cfClient := cashfree.NewClient(cfCfg)
 	job := &jobs.CashfreePollJob{
-		Intents: intentRepo,
-		Dues:    dueRepo,
-		Client:  cashfree.NewClient(cfCfg),
-		Settle:  paySvc,
-		Log:     slog.Default(),
+		Intents:      intentRepo,
+		Dues:         dueRepo,
+		Client:       cfClient,
+		Settle:       paySvc,
+		Refunds:      paymentRepo,
+		RefundClient: cfClient,
+		Log:          slog.Default(),
 	}
 	if err := job.Run(ctx); err != nil {
 		log.Fatal(err)

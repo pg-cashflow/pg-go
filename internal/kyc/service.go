@@ -12,10 +12,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -52,7 +55,7 @@ type KYCRepo interface {
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 
 	InitiateVerificationTx(ctx context.Context, tenantID, consentID uuid.UUID, method domain.KYCMethod, vendorName, vendorRefID, actor string) (*domain.KYCVerification, error)
-	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, verifiedAt, expiresAt time.Time, actor string) (*domain.KYCVerification, error)
+	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, actor string) (*domain.KYCVerification, error)
 	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
@@ -61,23 +64,24 @@ type KYCRepo interface {
 	ClearDuplicateFlag(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
 
 	ListAuditLogsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.KYCAuditLog, error)
+
+	TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (bool, error)
+	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
+	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
+	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 }
 
 // CashfreeKYCClient is the Cashfree Secure ID dependency.
 // Implemented by *cashfree.Client.
 type CashfreeKYCClient interface {
 	CreateDigiLockerLink(ctx context.Context, verificationID, redirectURL string) (string, error)
-	GetDigiLockerDocument(ctx context.Context, verificationID string) (*DigiLockerDoc, error)
+	GetDigiLockerDocument(ctx context.Context, verificationID string) (*cashfree.DigiLockerAadhaarDoc, error)
+	GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatus, error)
+	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
 }
 
-// DigiLockerDoc is a value-type shim so the kyc package does not import cashfree
-// directly (avoiding an import cycle if cashfree were ever to depend on kyc).
-type DigiLockerDoc struct {
-	Name      string
-	DOB       string
-	Gender    string
-	MaskedUID string
-}
+// DigiLockerDoc is a value-type shim for backwards compatibility in tests.
+type DigiLockerDoc = cashfree.DigiLockerAadhaarDoc
 
 // Config holds the invariant configuration for the KYC service.
 type Config struct {
@@ -173,10 +177,37 @@ func (s *Service) InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, ac
 		return "", ErrNoActiveConsent
 	}
 
-	// 2. Allocate stable vendor reference ID.
+	// 2. Acquire distributed in-flight lease FIRST (30s TTL, Cloud Run multi-instance guard)
+	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
+	}
+	if !locked {
+		return "", domain.ErrVerificationInProgress
+	}
+	defer func() {
+		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+	}()
+
+	// 3. Under lease lock: pre-check active verification status and enforce 60s cooldown
+	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+		return "", fmt.Errorf("kyc service: check active verification: %w", err)
+	}
+	if active != nil {
+		if active.Status == domain.KYCStatusVerified {
+			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
+				return "", domain.ErrAlreadyVerified
+			}
+		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
+			return "", domain.ErrVerificationInProgress
+		}
+	}
+
+	// 4. Allocate stable vendor reference ID.
 	vendorRefID := uuid.New().String()
 
-	// 3. Network call — OUTSIDE transaction (ADR-004).
+	// 5. Network call — OUTSIDE transaction (ADR-004).
 	if s.cashfree == nil {
 		return "", ErrDigiLockerUnavailable
 	}
@@ -185,7 +216,7 @@ func (s *Service) InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, ac
 		return "", fmt.Errorf("kyc service: create digilocker link: %w", err)
 	}
 
-	// 4. DB transaction: supersede any stale pending, insert new pending record.
+	// 6. DB transaction: supersede any stale pending, insert new pending record.
 	if _, err := s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
 		domain.KYCMethodDigiLocker,
@@ -267,7 +298,14 @@ func (s *Service) ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, 
 		return fmt.Errorf("kyc service: fetch digilocker document: %w", err)
 	}
 
-	// 5. Normalise demographics.
+	// 5. Fetch tenant's submitted name and evaluate name match
+	tenantName, err := s.repo.GetTenantName(ctx, v.TenantID)
+	if err != nil {
+		return fmt.Errorf("kyc service: fetch tenant name: %w", err)
+	}
+	nameMismatch := !domain.IsNameMatch(tenantName, doc.Name)
+
+	// 6. Normalise demographics.
 	canonicalDOB, isDedupable, err := domain.NormalizeDOB(doc.DOB)
 	if err != nil {
 		// Year-only DOB is handled inside NormalizeDOB (returns isDedupable=false).
@@ -279,12 +317,13 @@ func (s *Service) ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, 
 	gender := doc.Gender
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, gender, doc.MaskedUID)
 
-	// 6. DB transaction: mark verified, run dedup, write audit.
+	// 7. DB transaction: mark verified, run dedup, write audit.
 	now := time.Now().UTC()
 	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
 	if _, err := s.repo.CompleteVerificationTx(ctx,
 		v.ID, doc.MaskedUID, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, now, expiresAt, actor,
+		s.cfg.HashKeyVersion, nil, nameMismatch, doc.PhotoBytes,
+		now, expiresAt, actor,
 	); err != nil {
 		if errors.Is(err, domain.ErrVerificationNotPending) {
 			// TOCTOU race guard: the verification was superseded by a new attempt or revoked
@@ -328,7 +367,14 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, ErrQRDataIncomplete
 	}
 
-	// 3. Normalise and compute identity hash.
+	// 3. Fetch tenant's submitted name and evaluate name match
+	tenantName, err := s.repo.GetTenantName(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: fetch tenant name for qr: %w", err)
+	}
+	nameMismatch := !domain.IsNameMatch(tenantName, data.Name)
+
+	// 4. Normalise and compute identity hash.
 	dobStr := data.DOB
 	if dobStr == "" {
 		dobStr = data.YOB // year-only fallback
@@ -337,7 +383,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	name := domain.NormalizeName(data.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
 
-	// 4. Initiate pending (supersedes any stale record).
+	// 5. Initiate pending (supersedes any stale record).
 	vendorRefID := uuid.New().String()
 	pending, err := s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
@@ -348,17 +394,169 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, fmt.Errorf("kyc service: initiate qr verification: %w", err)
 	}
 
-	// 5. Immediately complete (synchronous — no async webhook).
+	// 6. Immediately complete (synchronous — no async webhook).
 	now := time.Now().UTC()
 	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	qrStatus := domain.QRStatusSecure
 	verified, err := s.repo.CompleteVerificationTx(ctx,
 		pending.ID, data.UIDLast4, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, now, expiresAt, actor,
+		s.cfg.HashKeyVersion, &qrStatus, nameMismatch, nil,
+		now, expiresAt, actor,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: complete qr verification: %w", err)
 	}
 	return verified, nil
+}
+
+// VerifyAadhaarDocument executes the single document-upload KYC flow using Cashfree Smart OCR (/bharat-ocr).
+//
+// Invariants enforced:
+//   - Network call (Cashfree multipart upload) executes outside database transaction.
+//   - Distributed lease (kyc_in_flight_lock) prevents double-billing across horizontal Cloud Run instances.
+//   - Demographic fields (Name, DOB, Gender) are ephemeral inputs to ComputeIdentityHash and IsNameMatch; zero demographic persistence.
+//   - Attested photo crop is saved to kyc_verification.attested_photo_bytes (photo_stored=true).
+//   - tenant profile is updated with masked UID only (never overwrites name or operational id_photo_bytes).
+func (s *Service) VerifyAadhaarDocument(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	fileReader io.Reader,
+	filename, actor string,
+) (*domain.KYCVerification, error) {
+	// 1. Consent gate
+	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
+	if err != nil {
+		if errors.Is(err, domain.ErrVerificationNotFound) {
+			return nil, ErrNoActiveConsent
+		}
+		return nil, fmt.Errorf("kyc service: get consent: %w", err)
+	}
+	if !consent.IsActive() {
+		return nil, ErrNoActiveConsent
+	}
+
+	// 2. Acquire distributed in-flight lease FIRST (30s TTL, Cloud Run multi-instance guard)
+	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
+	}
+	if !locked {
+		return nil, domain.ErrVerificationInProgress
+	}
+	defer func() {
+		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+	}()
+
+	// 3. Under lease lock: pre-check active verification status and enforce 60s cooldown
+	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+		return nil, fmt.Errorf("kyc service: check active verification: %w", err)
+	}
+	if active != nil {
+		if active.Status == domain.KYCStatusVerified {
+			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
+				return nil, domain.ErrAlreadyVerified
+			}
+		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
+			return nil, domain.ErrVerificationInProgress
+		}
+	}
+
+	// 4. Billed network call outside DB transaction
+	if s.cashfree == nil {
+		return nil, ErrDigiLockerUnavailable
+	}
+	resp, err := s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: cashfree smart ocr: %w", err)
+	}
+
+	vendorRefID := fmt.Sprintf("cf_ocr_%d", resp.ReferenceID)
+
+	slog.InfoContext(ctx, "cashfree smart ocr completed",
+		"tenant_id", tenantID,
+		"vendor_reference_id", vendorRefID,
+		"cashfree_reference_id", resp.ReferenceID,
+		"vendor_status", resp.Status,
+		"message_code", resp.MessageCode,
+		"qr_status", resp.QRStatus,
+		"has_photo", len(resp.PhotoBytes) > 0,
+	)
+
+	if resp.Name == "" || resp.MaskedUID == "" {
+		return nil, ErrQRDataIncomplete
+	}
+
+	// 5. Fetch tenant's submitted name and evaluate name match
+	tenantName, err := s.repo.GetTenantName(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: fetch tenant name: %w", err)
+	}
+	nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
+
+	// 6. Normalise demographics and compute identity hash
+	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(resp.DOB)
+	name := domain.NormalizeName(resp.Name)
+	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
+
+	// 7. DB transaction 1: Initiate pending verification record
+	pending, err := s.repo.InitiateVerificationTx(ctx,
+		tenantID, consent.ID,
+		domain.KYCMethodOCR,
+		"cashfree_smart_ocr", vendorRefID, actor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: initiate ocr verification: %w", err)
+	}
+
+	// 8. DB transaction 2: Complete verification record
+	now := time.Now().UTC()
+	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	verified, err := s.repo.CompleteVerificationTx(ctx,
+		pending.ID, resp.MaskedUID, identityHash, isDedupable,
+		s.cfg.HashKeyVersion, resp.QRStatus, nameMismatch, resp.PhotoBytes,
+		now, expiresAt, actor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: complete ocr verification: %w", err)
+	}
+
+	return verified, nil
+}
+
+// GetDigiLockerReturnStatus inspects the verification status for a tenant landing back from DigiLocker.
+// If the record is still pending, it queries Cashfree's status endpoint and opportunistically
+// completes the verification if DigiLocker has finished, avoiding race conditions with asynchronous webhooks.
+func (s *Service) GetDigiLockerReturnStatus(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
+	v, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: get return verification: %w", err)
+	}
+
+	if v.Status == domain.KYCStatusPending && s.cashfree != nil {
+		st, err := s.cashfree.GetDigiLockerStatus(ctx, vendorRefID)
+		if err == nil && st != nil {
+			if st.Status == "COMPLETED" {
+				if compErr := s.ProcessDigiLockerCompletion(ctx, vendorRefID, "", "tenant_return"); compErr == nil {
+					if reloaded, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID); err == nil {
+						v = reloaded
+					}
+				}
+			} else if st.Status == "FAILED" {
+				_ = s.ProcessDigiLockerCompletion(ctx, vendorRefID, st.Message, "tenant_return")
+				if reloaded, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID); err == nil {
+					v = reloaded
+				}
+			}
+		}
+	}
+
+	return v, nil
+}
+
+// GetAttestedPhoto retrieves the verified government/vendor-attested photo crop for owner inspection.
+func (s *Service) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
+	return s.repo.GetAttestedPhoto(ctx, tenantID)
 }
 
 // --- Read-side ----------------------------------------------------------------

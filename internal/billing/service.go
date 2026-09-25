@@ -45,13 +45,6 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 	if tenant == nil {
 		return nil, fmt.Errorf("billing: tenant is required")
 	}
-	open, err := s.dues.HasOpenRentDue(ctx, tenant.ID)
-	if err != nil {
-		return nil, err
-	}
-	if open {
-		return nil, ErrOpenDueExists
-	}
 
 	today := calendarDateIST(s.now())
 	periodEnd := today.AddDate(0, 1, -1)
@@ -156,6 +149,7 @@ func (s *Service) Prorate(ctx context.Context, tenantID uuid.UUID, vacateDate ti
 	daysInPeriod := domain.DaysInPeriod(due.PeriodStart, due.PeriodEnd)
 	prorated := domain.ProrateAmount(due.OriginalAmount, daysOccupied, daysInPeriod)
 	due.Prorate(prorated)
+	due.ContractualCeilingPaise = &prorated
 	if err := s.dues.Update(ctx, due); err != nil {
 		return nil, err
 	}
@@ -242,7 +236,12 @@ func (s *Service) insertDueWithCodeRetry(ctx context.Context, due *domain.Due) e
 		if err == nil {
 			return nil
 		}
-		if isUniqueViolation(err) {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if pgErr.ConstraintName == "uq_dues_tenant_rent_cycle" {
+				// Duplicate rent cycle for the same period already billed; do not retry due_code
+				return ErrOpenDueExists
+			}
 			return qr.ErrConflict
 		}
 		return err

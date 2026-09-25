@@ -43,8 +43,48 @@ func (h *Handlers) TenantDues(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"dues": list})
+	ptrList := make([]*domain.Due, len(list))
+	totalOutstanding := 0
+	for i := range list {
+		ptrList[i] = &list[i]
+		if list[i].Status == domain.DueStatusPending || list[i].Status == domain.DueStatusPartial {
+			totalOutstanding += list[i].Amount
+		}
+	}
+	options := domain.CalculatePaymentOptions(ptrList)
+	c.JSON(http.StatusOK, gin.H{
+		"dues":                    list,
+		"total_outstanding_paise": totalOutstanding,
+		"options":                 options,
+	})
 }
+
+// TenantDuesOptions handles GET /tenant/dues/options.
+func (h *Handlers) TenantDuesOptions(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	list, err := h.DueStore.ListByTenant(c.Request.Context(), t.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
+		return
+	}
+	ptrList := make([]*domain.Due, len(list))
+	totalOutstanding := 0
+	for i := range list {
+		ptrList[i] = &list[i]
+		if list[i].Status == domain.DueStatusPending || list[i].Status == domain.DueStatusPartial {
+			totalOutstanding += list[i].Amount
+		}
+	}
+	options := domain.CalculatePaymentOptions(ptrList)
+	c.JSON(http.StatusOK, gin.H{
+		"total_outstanding_paise": totalOutstanding,
+		"options":                 options,
+	})
+}
+
 
 // TenantDueQR handles GET /tenant/dues/:id/qr.
 func (h *Handlers) TenantDueQR(c *gin.Context) {
