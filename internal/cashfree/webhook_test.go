@@ -125,4 +125,31 @@ func TestParseWebhookTypes(t *testing.T) {
 	if !ok || autoRef.RefundAmount != 250000 || !autoRef.IsAutoRefund || autoRef.RefundStatus != "SUCCESS" {
 		t.Fatalf("unexpected auto refund content: %+v", autoRef)
 	}
+
+	// 5. Dispute Created
+	rawDispute := []byte(`{
+		"type": "PAYMENT_DISPUTE_CREATED_WEBHOOK",
+		"data": {
+			"dispute": {
+				"dispute_id": "DISP_98765",
+				"dispute_type": "CHARGEBACK",
+				"dispute_status": "ACTION_REQUIRED",
+				"order_id": "pg-ORDER-4",
+				"cf_payment_id": "999891",
+				"dispute_amount": "12000.00",
+				"reason_code": "FRAUDULENT",
+				"reason_description": "Cardholder disputes transaction",
+				"respond_by": "2026-10-05T12:00:00Z"
+			}
+		}
+	}`)
+	val, typ, err = ParseWebhook(rawDispute)
+	if err != nil || typ != "PAYMENT_DISPUTE_CREATED_WEBHOOK" {
+		t.Fatalf("expected dispute, got typ=%s err=%v", typ, err)
+	}
+	disp, ok := val.(DisputeWebhook)
+	if !ok || disp.DisputeID != "DISP_98765" || disp.DisputeAmount != 1200000 || disp.DisputeStatus != "ACTION_REQUIRED" || disp.OrderID != "pg-ORDER-4" {
+		t.Fatalf("unexpected dispute content: %+v", disp)
+	}
 }
+

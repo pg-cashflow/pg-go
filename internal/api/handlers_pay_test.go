@@ -232,6 +232,7 @@ func TestCashfreeWebhookDueNotOpenDoesNotMarkPaid(t *testing.T) {
 type stubGatewayRepo struct {
 	webhookEvents []*domain.WebhookEvent
 	deadLettered  bool
+	lastStatus    string
 	refunds       map[string]*domain.GatewayRefund
 }
 
@@ -248,6 +249,7 @@ func (s *stubGatewayRepo) CreateWebhookEvent(_ context.Context, evt *domain.Webh
 	return nil
 }
 func (s *stubGatewayRepo) UpdateWebhookEventStatus(_ context.Context, _ uuid.UUID, status string, _ *string) error {
+	s.lastStatus = status
 	if status == "dead_letter" {
 		s.deadLettered = true
 	}
@@ -318,6 +320,98 @@ func TestCashfreeWebhookTimestampDrift401(t *testing.T) {
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized for timestamp drift > 300s, got %d", w.Code)
+	}
+}
+
+type stubOutboxStore struct {
+	events []*domain.OutboxEvent
+}
+
+func (s *stubOutboxStore) InsertEvent(_ context.Context, evt *domain.OutboxEvent) error {
+	s.events = append(s.events, evt)
+	return nil
+}
+
+type stubPayDueStore struct {
+	dues map[uuid.UUID]*domain.Due
+}
+
+func (s *stubPayDueStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Due, error) {
+	if s.dues != nil {
+		return s.dues[id], nil
+	}
+	return nil, nil
+}
+func (s *stubPayDueStore) List(context.Context, postgres.DueListFilter) ([]domain.Due, error) {
+	return nil, nil
+}
+func (s *stubPayDueStore) ListByTenant(context.Context, uuid.UUID) ([]domain.Due, error) {
+	return nil, nil
+}
+
+func TestCashfreeWebhook_DisputeFailSafe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gwRepo := &stubGatewayRepo{}
+	outbox := &stubOutboxStore{}
+	propID := uuid.New()
+	tenantID := uuid.New()
+	dueID := uuid.New()
+	dueStore := &stubPayDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				PropertyID: propID,
+				TenantID:   tenantID,
+			},
+		},
+	}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		DueID:           dueID,
+		ProviderOrderID: "order_disp_123",
+	}
+	intents := &stubIntentStore{
+		byOrder: map[string]*domain.PaymentIntent{"order_disp_123": intent},
+		byCF:    map[string]*domain.PaymentIntent{},
+	}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "whsec",
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        intents,
+		DueStore:           dueStore,
+		OutboxEvents:       outbox,
+	}}
+
+	disputeJSON := `{
+		"type": "PAYMENT_DISPUTE_CREATED_WEBHOOK",
+		"data": {
+			"dispute": {
+				"dispute_id": "DISP_555",
+				"dispute_type": "CHARGEBACK",
+				"dispute_status": "ACTION_REQUIRED",
+				"order_id": "order_disp_123",
+				"cf_payment_id": "999899",
+				"dispute_amount": "8000.00",
+				"reason_code": "UNAUTHORIZED_TRANSACTION",
+				"reason_description": "Customer claims unauthorized payment",
+				"respond_by": "2026-10-10T12:00:00Z"
+			}
+		}
+	}`
+
+	code := postSignedWebhook(t, h, disputeJSON)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 OK on dispute webhook to prevent retry storms, got %d", code)
+	}
+	if gwRepo.lastStatus != "dispute_action_required" {
+		t.Fatalf("expected webhook status dispute_action_required, got %s", gwRepo.lastStatus)
+	}
+	if len(outbox.events) != 1 || outbox.events[0].EventType != string(domain.EvtPaymentDisputed) {
+		t.Fatalf("expected 1 EvtPaymentDisputed outbox event, got %+v", outbox.events)
+	}
+	if outbox.events[0].PropertyID != propID {
+		t.Fatalf("expected propertyID %s, got %s", propID, outbox.events[0].PropertyID)
 	}
 }
 

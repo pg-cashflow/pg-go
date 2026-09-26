@@ -96,6 +96,10 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtPeriodTieOutBlocked):
 		return r.toOwner(ctx, evt, "period_tie_out_blocked", "⚠️ Period tie-out blocked: unexplained discrepancy", "/owner/finance/tie-out")
 
+	// Owner-directed: payment dispute or chargeback filed by payer
+	case string(domain.EvtPaymentDisputed):
+		return r.toOwner(ctx, evt, "payment_disputed", "🚨 URGENT: A payment dispute/chargeback has been filed.", "/owner/payments")
+
 	default:
 		// Unknown event type → skip silently. Returning no recipients with no
 		// error is the correct "skip" signal to the dispatcher.

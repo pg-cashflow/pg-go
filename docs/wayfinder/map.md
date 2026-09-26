@@ -29,14 +29,14 @@
 - [Track F (Ticket 5): Audit Untouched Background & Secondary Packages](file:///c:/Users/divak/Downloads/pg-go/internal/jobs/reminder.go): Resolved across all 4 blast-radius buckets: Bucket 1 (`join`, `magiclink`), Bucket 2 (`billing`, `collector`, `jobs`, `events` — remediated atomic `TryLog` dedup in `reminder.go` with `DeleteLog` rollback on send failure in commit `35ee7bf`), Bucket 3 (`notification`, `push`, `sms` — added table-driven unit tests for SMS failover, WebPush lifecycle, and outbox backoff/cursors in commit `74e95af`), and Bucket 4 (`search`, `gamification`, `intelligence`, `roi`, `localization` — verified 100% green test coverage).
 - [Track G (Ticket 6): Automated Security & Dependency Vulnerability Audit](file:///c:/Users/divak/Downloads/pg-go/go.mod): Resolved in commit `8e55f48` and persisted in `6587ac1`. 28/28 commits clean under Gitleaks (0 leaks found, verified via `gitleaks detect -v` and `gitleaks-report.json`). `govulncheck` call-graph scan verified 0 reachable symbol vulnerabilities across 42 packages (`govulncheck-report.json`). Documented permanent module-level deprecation advisory `GO-2026-5932` (`x/crypto/openpgp`) with 0 reachable call sites. Transitive advisories cleared by bumping `grpc` to `v1.83.2` and `golang.org/x/crypto` to `v0.56.0`.
 - [Track H (Ticket 7): Capacity & Connection-Pool Hardening (1000+ Concurrent Scale)](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/db.go): Resolved. Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns` in `db.go`; `pg_advisory_xact_lock` dual-locking inside migration tx and `DATABASE_URL_UNPOOLED`/`DIRECT_URL` fallback for PgBouncer/Neon compatibility in `cmd/migrate`; production timeouts (`ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`) on `http.Server` in `cmd/server/main.go`; and memory-bounded rate limiting (10,000 max entries, 10m TTL sweep, oldest eviction on saturation) in `internal/api/ratelimit.go`.
+- [Track I (Ticket 8): Gateway Dispute & Chargeback Webhook Fail-Safe Handling](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_i_gateway_dispute_handling.md): Resolved. Added Cashfree dispute webhook parser (`DISPUTE_CREATED_WEBHOOK`, `PAYMENT_DISPUTE_CREATED_WEBHOOK`, `DISPUTE_STATUS_UPDATE_WEBHOOK`) with flexible alphanumeric ID deserialization. Integrated fail-safe handler recording `dispute_action_required` in `webhook_events`, loud operator alert via `slog.Error`, and property-scoped in-app notification `EvtPaymentDisputed`. Enforces strict fail-safe isolation and zero automated ledger reversal invariant (a dispute is a contested claim, not an approved refund) while responding HTTP 200 OK to prevent gateway retry storms.
 
 ## Frontier (Open Tickets)
 
-- None currently active. All production-readiness roadmap tickets (Tracks 0 through H / Tickets 1 through 7) are resolved and verified with 100% green tests.
+- None currently active. All production-readiness roadmap tickets (Tracks 0 through I / Tickets 1 through 8) are resolved and verified with 100% green tests.
 
 ## Not yet specified
 
-- Gateway dispute / chargeback webhook handling (whether ADR-004 covers incoming disputes or requires dead-letter alerting).
 - Post-commit journal event reconciliation / dead-letter queue design.
 
 ## Out of scope

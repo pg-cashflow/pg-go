@@ -94,6 +94,20 @@ type RefundWebhook struct {
 	RefundReason  string
 }
 
+// DisputeWebhook is extracted from DISPUTE_CREATED_WEBHOOK, PAYMENT_DISPUTE_CREATED_WEBHOOK, or DISPUTE_STATUS_UPDATE_WEBHOOK.
+type DisputeWebhook struct {
+	Type              string
+	DisputeID         string
+	OrderID           string
+	CFPaymentID       string
+	DisputeType       string
+	DisputeStatus     string
+	DisputeAmount     int64 // in paise
+	ReasonCode        string
+	ReasonDescription string
+	RespondBy         string
+}
+
 // ParseWebhook parses the raw payload and returns the identified typed struct or an error.
 // If payload is invalid JSON, returns a descriptive error so caller can mark dead-letter and return HTTP 200.
 func ParseWebhook(raw []byte) (any, string, error) {
@@ -230,6 +244,37 @@ func ParseWebhook(raw []byte) (any, string, error) {
 			RefundAmount: paise,
 			RefundType:   p.AutoRefund.RefundType,
 			RefundReason: p.AutoRefund.RefundReason,
+		}, evtType, nil
+
+	case "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE_WEBHOOK":
+		var p struct {
+			Dispute struct {
+				DisputeID         any         `json:"dispute_id"`
+				DisputeType       string      `json:"dispute_type"`
+				DisputeStatus     string      `json:"dispute_status"`
+				OrderID           string      `json:"order_id"`
+				CFPaymentID       any         `json:"cf_payment_id"`
+				DisputeAmount     json.Number `json:"dispute_amount"`
+				ReasonCode        string      `json:"reason_code"`
+				ReasonDescription string      `json:"reason_description"`
+				RespondBy         string      `json:"respond_by"`
+			} `json:"dispute"`
+		}
+		if err := json.Unmarshal(env.RawData, &p); err != nil {
+			return nil, evtType, fmt.Errorf("dispute data json: %w", err)
+		}
+		paise, _ := ParseRupeesToPaise(p.Dispute.DisputeAmount.String())
+		return DisputeWebhook{
+			Type:              evtType,
+			DisputeID:         fmt.Sprintf("%v", p.Dispute.DisputeID),
+			OrderID:           p.Dispute.OrderID,
+			CFPaymentID:       fmt.Sprintf("%v", p.Dispute.CFPaymentID),
+			DisputeType:       p.Dispute.DisputeType,
+			DisputeStatus:     strings.ToUpper(strings.TrimSpace(p.Dispute.DisputeStatus)),
+			DisputeAmount:     paise,
+			ReasonCode:        p.Dispute.ReasonCode,
+			ReasonDescription: p.Dispute.ReasonDescription,
+			RespondBy:         p.Dispute.RespondBy,
 		}, evtType, nil
 
 	default:

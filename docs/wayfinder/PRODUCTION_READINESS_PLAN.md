@@ -37,6 +37,7 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
 | **Ticket 5: Background Packages** | Dedup race, send failures | Atomic `TryLog` slot acquisition before notification dispatch with `DeleteLog` rollback on delivery error in `reminder.go`. Table-driven tests for SMS dual-gateway failover and WebPush lifecycle. | **Verified** (`35ee7bf`, `74e95af`) |
 | **Ticket 6: Automated Security** | Leaked credentials, vulnerable dependencies | Gitleaks scan 100% clean across all 28 commits (0 leaks found). `govulncheck` call-graph scan verified 0 reachable symbol vulnerabilities across 42 packages. `GO-2026-5932` documented as an acknowledged exception. | **Verified** (`govulncheck-report.json`, `gitleaks-report.json`) |
 | **Ticket 7: Capacity & Scaling** | 1,000+ user bursts, pool starvation, PgBouncer leaks | Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns`. Streamlined `pg_advisory_xact_lock` inside migration transactions. `http.Server` production timeouts (30s read, 60s write, 120s idle). Bounded rate limiter (10,000 cap, 10m TTL sweep). | **Verified** (`871e4b8`, `ccea9fc`) |
+| **Track I: Gateway Disputes** | Silent chargeback clawbacks, retry storms, ledger corruption | Ingestion of `PAYMENT_DISPUTE_CREATED_WEBHOOK` & `DISPUTE_STATUS_UPDATE_WEBHOOK`. Audit logging to `webhook_events` as `dispute_action_required`, loud operator alert via `slog.Error`, in-app owner notification `EvtPaymentDisputed`. Zero automated ledger/due mutation invariant. | **Verified** (`internal/api/handlers_pay.go`, `internal/cashfree/webhook.go`) |
 
 ---
 
@@ -176,6 +177,14 @@ In `internal/api/ratelimit.go`:
   * **iOS (16.4+)**: Web Push is supported exclusively when the tenant uses Safari's "Add to Home Screen" to install the PWA.
   * **Hygiene**: Returned HTTP 404/410 (Gone) automatically triggers `DeleteByEndpoint`, preventing dead endpoint database bloat.
   * **Scope**: Push is strictly supplementary; critical dues and step-up codes rely on SMS and in-app notification feeds.
+
+### E. Gateway Dispute & Chargeback Fail-Safe Isolation
+In `internal/cashfree/webhook.go` and `internal/api/handlers_pay.go`:
+* **Dispute Ingestion**: Handles `PAYMENT_DISPUTE_CREATED_WEBHOOK`, `DISPUTE_CREATED_WEBHOOK`, and `DISPUTE_STATUS_UPDATE_WEBHOOK`. Supports polymorphic string and numeric IDs (`DisputeID`, `CFPaymentID`).
+* **Audit Trail**: Recorded in `webhook_events` with status `dispute_action_required`.
+* **Zero Ledger Mutation Invariant**: A dispute is a provisional contestation by the cardholder/issuing bank, not an authorized refund. The system **never** automatically reverses double-entry journal entries or marks the due unpaid upon dispute creation. Automated mutation would introduce ledger corruption and duplicate debits if the merchant contests the dispute with proof of accommodation and wins.
+* **Operator Alerting & Notification**: Emits high-priority `slog.Error` containing dispute details, due ID, and amount, and publishes `domain.EvtPaymentDisputed` routing an urgent notification to the property owner.
+* **HTTP 200 OK**: Always returns 200 OK to the gateway to acknowledge receipt and prevent webhook retry storms.
 
 ---
 

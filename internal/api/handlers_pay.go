@@ -618,6 +618,14 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		}
 		h.handleRefundWebhook(c, ref, evtRecord)
 
+	case "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE_WEBHOOK":
+		disp, ok := val.(cashfree.DisputeWebhook)
+		if !ok {
+			c.Status(http.StatusOK)
+			return
+		}
+		h.handleDisputeWebhook(c, disp, evtRecord)
+
 	default:
 		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
 			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "ignored", nil)
@@ -983,6 +991,73 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 	if evtRecord.ID != uuid.Nil {
 		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
 	}
+	c.Status(http.StatusOK)
+}
+
+func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWebhook, evtRecord *domain.WebhookEvent) {
+	ctx := c.Request.Context()
+	slog.Default().Error("CASHFREE PAYMENT DISPUTE RECEIVED: OPERATOR ACTION REQUIRED",
+		"dispute_id", disp.DisputeID,
+		"order_id", disp.OrderID,
+		"cf_payment_id", disp.CFPaymentID,
+		"dispute_type", disp.DisputeType,
+		"dispute_status", disp.DisputeStatus,
+		"dispute_amount_paise", disp.DisputeAmount,
+		"respond_by", disp.RespondBy,
+		"reason_code", disp.ReasonCode,
+		"reason_description", disp.ReasonDescription,
+	)
+
+	statusMsg := fmt.Sprintf("dispute_id=%s type=%s status=%s respond_by=%s", disp.DisputeID, disp.DisputeType, disp.DisputeStatus, disp.RespondBy)
+	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "dispute_action_required", &statusMsg)
+	}
+
+	if h.IntentStore != nil && disp.OrderID != "" {
+		intent, err := h.IntentStore.GetByOrderID(ctx, disp.OrderID)
+		if err == nil && intent != nil {
+			var propID uuid.UUID
+			var tenantID *uuid.UUID
+			if h.DueStore != nil {
+				if d, err := h.DueStore.GetByID(ctx, intent.DueID); err == nil && d != nil {
+					propID = d.PropertyID
+					tenantID = &d.TenantID
+				}
+			}
+
+			payload, _ := json.Marshal(map[string]any{
+				"order_id":             disp.OrderID,
+				"dispute_id":           disp.DisputeID,
+				"dispute_type":         disp.DisputeType,
+				"dispute_status":       disp.DisputeStatus,
+				"dispute_amount_paise": disp.DisputeAmount,
+				"respond_by":           disp.RespondBy,
+				"reason_description":   disp.ReasonDescription,
+			})
+			if h.Events != nil {
+				_ = h.Events.Publish(ctx, domain.Event{
+					PropertyID: propID,
+					TenantID:   tenantID,
+					EventType:  domain.EvtPaymentDisputed,
+					OccurredAt: time.Now().UTC(),
+					Payload:    payload,
+				})
+			}
+			if h.OutboxEvents != nil {
+				_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+					EventType:  string(domain.EvtPaymentDisputed),
+					PropertyID: propID,
+					TenantID:   tenantID,
+					ActorRole:  string(domain.RoleOwner),
+					Payload:    payload,
+				})
+			}
+		}
+	}
+
+	// Fail-Safe Ledger Invariant: A dispute is a contested claim, NOT an authorized or confirmed refund.
+	// We strictly refrain from mutating double-entry journals or resetting dues to pending automatically.
+	// Returning HTTP 200 OK acknowledges the webhook delivery to prevent gateway retry storms.
 	c.Status(http.StatusOK)
 }
 
