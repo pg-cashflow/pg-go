@@ -1333,7 +1333,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": vErr.msg})
 				return
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "refund initiation failed: " + err.Error()})
+			respondErr(c, err)
 			return
 		}
 	} else {
@@ -1361,7 +1361,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		} else {
 			_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
 		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": "cashfree refund failed: " + cfErr.Error()})
+		respondErr(c, clientErr(http.StatusBadGateway, "gateway refund failed"))
 		return
 	}
 
