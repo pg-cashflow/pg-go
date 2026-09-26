@@ -1,7 +1,7 @@
 # Ticket 8 (Track I): Gateway Dispute & Chargeback Webhook Fail-Safe Handling
 
 - **Type**: `wayfinder:task`
-- **Status**: In Progress
+- **Status**: Resolved
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
 
 ## Objective & Threat Model
@@ -16,15 +16,18 @@ While card-based chargebacks are rare in Indian PG accommodation (where UPI and 
 ## Architectural Invariants & Remediation
 
 1. **Typed Parsing**:
-   - Add `DisputeWebhook` to `internal/cashfree/webhook.go` to parse dispute ID, order ID, CF payment ID, dispute type, status, dispute amount (in pure integer paise), reason description, and respond-by deadline.
+   - `DisputeWebhook` in `internal/cashfree/webhook.go` parses dispute ID, order ID, CF payment ID, dispute type, status, dispute amount (in pure integer paise), reason description, and respond-by deadline. Verified in `internal/cashfree/webhook_test.go:129-152`.
 2. **Fail-Safe Audit & Loud Alerting**:
-   - Ingest every dispute webhook into `webhook_events` with status `dispute_action_required`.
-   - Log critical operator alert via `slog.Error("CASHFREE PAYMENT DISPUTE RECEIVED: OPERATOR ACTION REQUIRED", ...)`.
+   - Ingests every dispute webhook into `webhook_events` with status `dispute_action_required`.
+   - Logs critical operator alert via `slog.Default().Error("CASHFREE PAYMENT DISPUTE RECEIVED: OPERATOR ACTION REQUIRED", ...)`.
 3. **Owner Notification**:
-   - Add `EvtPaymentDisputed` in `internal/domain/event.go`.
-   - Wire `internal/notification/resolver.go` to route `EvtPaymentDisputed` directly to property owners with deep-link `/owner/payments`.
+   - `EvtPaymentDisputed` in `internal/domain/event.go`.
+   - Wired in `internal/notification/resolver.go` to route `EvtPaymentDisputed` directly to property owners with deep-link `/owner/payments`.
+   - Outbox event written with `RoleOwner`.
 4. **Ledger Immutability Guarantee**:
-   - Strictly prohibit automated double-entry journal reversal on dispute receipt.
+   - Strictly prohibits automated double-entry journal reversal on dispute receipt.
    - Settle state remains unaltered until the operator reviews the claim and records a manual adjustment or formal refund.
 5. **Idempotent HTTP 200 Acknowledgment**:
-   - Return HTTP 200 OK after cryptographic verification and persistent recording.
+   - Returns HTTP 200 OK after cryptographic verification and persistent recording to halt retry loops.
+6. **Operational Runbook**:
+   - Documented in [Dispute & Chargeback Operational Runbook](file:///c:/Users/divak/Downloads/pg-go/docs/runbooks/dispute_chargeback_runbook.md).

@@ -660,6 +660,31 @@ func TestTenantKYCReturn_OK(t *testing.T) {
 	}
 }
 
+func TestTenantKYCReturn_ForeignTenant_Returns404(t *testing.T) {
+	verified := domain.KYCStatusVerified
+	vID := uuid.New()
+	foreignTenantID := uuid.New() // distinct from calling tenant
+	svc := &fakeKYCSvc{
+		returnFn: func(_ context.Context, vendorRefID string) (*domain.KYCVerification, error) {
+			return &domain.KYCVerification{
+				ID:                vID,
+				TenantID:          foreignTenantID,
+				Status:            verified,
+				VendorReferenceID: vendorRefID,
+			}, nil
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/return?vendor_ref_id=test-foreign-ref", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 on foreign tenant verification, got %d", w.Code)
+	}
+}
+
 func TestOwnerKYCVerificationView_Fields(t *testing.T) {
 	qrStatus := domain.QRStatusSecure
 	v := &domain.KYCVerification{

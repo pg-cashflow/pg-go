@@ -43,12 +43,17 @@ Every handler in `internal/api/` was methodically audited against property and t
 - **`OwnerCreateRoom` (POST `/api/owner/rooms`)**: Overwrites `PropertyID: pid` and verifies referenced `floor_id` belongs to caller's property.
 - **`OwnerCreateManager` (POST `/api/owner/managers`)**: Forbids passing foreign `property_id` overrides (403 on mismatch) and strictly binds manager to `&pid`.
 
+#### C. Identity Subsystem (`internal/api/handlers_kyc.go`)
+- **`TenantKYCReturn` (GET `/api/tenant/kyc/return`)**: Remediated IDOR where an arbitrary query parameter `vendor_ref_id` could fetch or complete another tenant's verification session. Added affirmative ownership verification (`v.TenantID != uuid.Nil && v.TenantID != t.ID`) returning `404 Not Found`.
+
 ## Automated Tests Added
 
 1. **`internal/api/handlers_finance_test.go`**:
    - `TestFinanceCrossPropertyIDORGuards`: Asserts Owner A cannot read Property B leakage events (404) or mutate Property B recommendations (404), while Owner B succeeds (200).
 2. **`internal/api/handlers_gamification_test.go`**:
    - `TestGamificationCrossPropertyIDORGuards`: Table and unit scenarios covering all 14 cross-property isolation boundaries across tenants, managers, and owners.
+3. **`internal/api/handlers_kyc_test.go`**:
+   - `TestTenantKYCReturn_ForeignTenant_Returns404`: Asserts Tenant A cannot inspect or poll foreign Tenant B's DigiLocker return session (`404 Not Found`).
 
 ## Uncached Test Verification
 

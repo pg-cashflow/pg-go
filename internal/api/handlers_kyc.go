@@ -288,6 +288,10 @@ func (h *Handlers) TenantKYCReturn(c *gin.Context) {
 		respondErr(c, kycClientErr(err))
 		return
 	}
+	if v.TenantID != uuid.Nil && v.TenantID != t.ID {
+		apierr.RespondClientErr(c, http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
+		return
+	}
 	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
 }
 
