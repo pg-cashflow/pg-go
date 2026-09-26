@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -339,6 +340,34 @@ func main() {
 			}
 		}
 	}()
+
+	// Financial Ledger Mirror Outbox Worker: polls pending departure mirror events on a 30s ticker.
+	if cfg.FinanceEnabled {
+		ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(pool)
+		deadLetterAlerter := finance.NewEmailDeadLetterNotifier(mail, cfg.AdminEmail)
+		if cfg.AdminPhone != "" && gateway != nil {
+			deadLetterAlerter.WithSMSBackstop(gateway, cfg.AdminPhone)
+		}
+		ledgerWorker := finance.NewLedgerOutboxWorker(pool, ledgerOutboxRepo, financeSvc, deadLetterAlerter)
+
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-dispatchCtx.Done():
+					return
+				case <-ticker.C:
+					processed, err := ledgerWorker.ProcessBatch(dispatchCtx, 50)
+					if err != nil && !errors.Is(err, context.Canceled) {
+						logger.Error("ledger outbox worker batch failed", "err", err)
+					} else if processed > 0 {
+						logger.Info("ledger outbox worker processed events", "count", processed)
+					}
+				}
+			}
+		}()
+	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

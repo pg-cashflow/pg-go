@@ -29,3 +29,8 @@ In `internal/finance/ledger_worker.go`, `ProcessSingleEvent` processes transacti
 3. **Verification**:
    - `internal/finance/alert_test.go`: `TestEmailDeadLetterNotifier_Send` and `TestEmailDeadLetterNotifier_ErrorsAndNil` verifying email payload generation, recipient targeting, and graceful handling of nil receivers/mailers.
    - `internal/finance/ledger_worker_test.go`: Enhanced `TestLiveLedgerOutboxWorkerAndReconciliation` with `mockAlerter`, proving zero alerts fire on retryable failures (attempt 1 of 2) and exactly 1 alert fires when reaching terminal dead-letter status (attempt 2 of 2).
+
+4. **Runtime Background Daemon (`cmd/server/main.go`)**:
+   - Instantiated and started `LedgerOutboxWorker` in `cmd/server/main.go` on a 30s background ticker governed by `dispatchCtx`.
+   - Wired with `EmailDeadLetterNotifier` (`AdminEmail`) and SMS backstop (`WithSMSBackstop` to `AdminPhone` via `gateway`).
+   - Ensures any departure mirror deferred by the inline fast path in `payout_repo.go` is continuously polled, processed via row-level locking (`FOR UPDATE SKIP LOCKED`), and escalated upon terminal failure without relying on external cron jobs.
