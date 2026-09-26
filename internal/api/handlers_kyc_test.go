@@ -122,8 +122,14 @@ func (f *fakeKYCSvc) ClearDuplicateFlag(ctx context.Context, verificationID uuid
 //   - The KYC tenant routes wired to the given KYCService
 //   - The KYC public webhook route
 func kycTestTenantRouter(svc KYCService, cashfreeSecret string) *gin.Engine {
+	return kycTestTenantRouterWithTenant(svc, cashfreeSecret, nil)
+}
+
+func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant *domain.Tenant) *gin.Engine {
 	gin.SetMode(gin.TestMode)
-	tenant := &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
+	if tenant == nil {
+		tenant = &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
+	}
 
 	r := gin.New()
 	// Inject fake tenant for all tenant routes without requiring a real JWT.
@@ -635,16 +641,18 @@ func TestTenantKYCInitiate_ActorFormat(t *testing.T) {
 func TestTenantKYCReturn_OK(t *testing.T) {
 	verified := domain.KYCStatusVerified
 	vID := uuid.New()
+	tenantID := uuid.New()
 	svc := &fakeKYCSvc{
 		returnFn: func(_ context.Context, vendorRefID string) (*domain.KYCVerification, error) {
 			return &domain.KYCVerification{
 				ID:                vID,
+				TenantID:          tenantID,
 				Status:            verified,
 				VendorReferenceID: vendorRefID,
 			}, nil
 		},
 	}
-	r := kycTestTenantRouter(svc, "")
+	r := kycTestTenantRouterWithTenant(svc, "", &domain.Tenant{ID: tenantID, PropertyID: uuid.New()})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/return?vendor_ref_id=test-ref", nil)
 	w := httptest.NewRecorder()

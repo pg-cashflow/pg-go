@@ -44,7 +44,7 @@ Every handler in `internal/api/` was methodically audited against property and t
 - **`OwnerCreateManager` (POST `/api/owner/managers`)**: Forbids passing foreign `property_id` overrides (403 on mismatch) and strictly binds manager to `&pid`.
 
 #### C. Identity Subsystem (`internal/api/handlers_kyc.go`)
-- **`TenantKYCReturn` (GET `/api/tenant/kyc/return`)**: Remediated IDOR where an arbitrary query parameter `vendor_ref_id` could fetch or complete another tenant's verification session. Added affirmative ownership verification (`v.TenantID != uuid.Nil && v.TenantID != t.ID`) returning `404 Not Found`.
+- **`TenantKYCReturn` (GET `/api/tenant/kyc/return`)**: Remediated IDOR where an arbitrary query parameter `vendor_ref_id` could fetch or complete another tenant's verification session. Added unconditional affirmative ownership verification (`v.TenantID != t.ID`) returning `404 Not Found` on any mismatch, reinforced by schema `tenant_id UUID NOT NULL REFERENCES tenants(id)`.
 
 ## Automated Tests Added
 
