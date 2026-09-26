@@ -426,5 +426,66 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Errorf("expected 403 Forbidden on export IDOR, got %d", w.Code)
 		}
 	})
+
+	// 11. Checksum Mismatch Tamper Gate:
+	t.Run("GET /owner/payouts/batches/:id/export with tampered checksum", func(t *testing.T) {
+		_, err := pool.Exec(ctx, `UPDATE payout_batches SET file_checksum='tampered_bad_checksum' WHERE id=$1`, batchID)
+		if err != nil {
+			t.Fatalf("tamper batch: %v", err)
+		}
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict on tampered checksum, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
+
+func TestCSVExportSanitizationAndFormatting(t *testing.T) {
+	// Formula injection triggers must be escaped with a leading single quote
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"NORMAL_REF", "NORMAL_REF"},
+		{"=SUM(A1:B10)", "'=SUM(A1:B10)"},
+		{"+cmd|' /C calc'!A0", "'+cmd|' /C calc'!A0"},
+		{"-12345", "'-12345"},
+		{"@SUM(A1:A5)", "'@SUM(A1:A5)"},
+		{"\tTAB_CMD", "'\tTAB_CMD"},
+		{"\rCR_CMD", "'\rCR_CMD"},
+	}
+
+	for _, tc := range cases {
+		got := sanitizeCSVCell(tc.input)
+		if got != tc.expected {
+			t.Errorf("sanitizeCSVCell(%q) = %q; want %q", tc.input, got, tc.expected)
+		}
+	}
+
+	// Exact 2-decimal formatting without float precision loss
+	inrCases := []struct {
+		paise    int64
+		expected string
+	}{
+		{0, "0.00"},
+		{5, "0.05"},
+		{50, "0.50"},
+		{100, "1.00"},
+		{12345, "123.45"},
+		{750000, "7500.00"},
+		{-50000, "-500.00"},
+	}
+
+	for _, tc := range inrCases {
+		got := formatPaiseToINR(tc.paise)
+		if got != tc.expected {
+			t.Errorf("formatPaiseToINR(%d) = %q; want %q", tc.paise, got, tc.expected)
+		}
+	}
+}
+
 

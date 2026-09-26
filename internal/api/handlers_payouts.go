@@ -1,10 +1,12 @@
 package api
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -486,6 +488,23 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 		return
 	}
 
+	// Active Checksum Verification Gate:
+	// Verify that current item rows strictly match the approved HMAC checksum.
+	secret := []byte(h.getChecksumSecret())
+	computedChecksum := domain.ComputeBatchChecksum(secret, items)
+	if batch.FileChecksum != nil && *batch.FileChecksum != "" {
+		if !hmac.Equal([]byte(*batch.FileChecksum), []byte(computedChecksum)) {
+			slog.Error("payout batch checksum mismatch on export - possible tampering or manual mutation",
+				"batch_id", batch.ID,
+				"batch_number", batch.BatchNumber,
+				"stored_checksum", *batch.FileChecksum,
+				"computed_checksum", computedChecksum,
+			)
+			respondErr(c, clientErr(http.StatusConflict, "payout batch checksum mismatch"))
+			return
+		}
+	}
+
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"payout_%s.csv\"", batch.BatchNumber))
 	if batch.FileChecksum != nil {
@@ -509,23 +528,46 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 	})
 
 	for _, it := range items {
-		inr := fmt.Sprintf("%.2f", float64(it.AmountPaise)/100.0)
+		inr := formatPaiseToINR(it.AmountPaise)
 		utr := ""
 		if it.UTR != nil {
 			utr = *it.UTR
 		}
 		_ = writer.Write([]string{
-			it.ReferenceNumber,
+			sanitizeCSVCell(it.ReferenceNumber),
 			it.PayeeID.String(),
-			it.Purpose,
-			it.PeriodLabel,
+			sanitizeCSVCell(it.Purpose),
+			sanitizeCSVCell(it.PeriodLabel),
 			fmt.Sprintf("%d", it.AmountPaise),
 			inr,
 			string(it.Status),
-			utr,
+			sanitizeCSVCell(utr),
 			it.CreatedAt.Format(time.RFC3339),
 		})
 	}
+}
+
+// sanitizeCSVCell prefixes any cell value beginning with formula-trigger characters with a single quote.
+func sanitizeCSVCell(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	default:
+		return s
+	}
+}
+
+// formatPaiseToINR formats an integer paise balance to an INR string with exact 2-decimal precision without float conversion.
+func formatPaiseToINR(paise int64) string {
+	sign := ""
+	if paise < 0 {
+		sign = "-"
+		paise = -paise
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, paise/100, paise%100)
 }
 
 // Helper methods
