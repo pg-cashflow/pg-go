@@ -3,7 +3,7 @@
 > **Status**: Verified Production-Ready for Phase 1 Deployment  
 > **Target Scale**: 1–10 Properties · 50–500 Tenants · 5–20 Staff  
 > **Repository**: `github.com/pg-cashflow/pg-go`  
-> **Active Branches**: `origin/div_dev` & `origin/develop` (in sync at commit `ccea9fc`)
+> **Active Branches**: `origin/div_dev` & `origin/develop`
 
 ---
 
@@ -27,20 +27,123 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
 
 | Track / Area | Target Risk | Remediation & Cryptographic Guarantee | Verification Status |
 |---|---|---|---|
-| **Track 0: Financial Math & IDOR** | Float precision loss, balance leaks, IDOR | Pure integer-paise math throughout (`AmountPaise`, `int64`). `MirrorDepartureSettlement` balances double-entry ledger $\sum\text{Debits} == \sum\text{Credits}$. 4x IDOR guards added on payout routes. | **Verified** (`34ec648`) |
-| **Track A: Identity & KYC** | Aadhaar storage liability, DPDP violation | RSA-2048 UIDAI QR signature verification is fail-closed. DPDP consent gating with atomic PII wipe on revocation cascade. Zero raw 12-digit Aadhaar storage. 30s distributed mutex lease with 60s cooldown. | **Verified** (ADR-004, `internal/kyc`) |
+| **Track 0: Financial Math & IDOR** | Float precision loss, balance leaks, IDOR | Pure integer-paise math throughout (`AmountPaise`, `int64`). `MirrorDepartureSettlement` balances double-entry ledger $\sum\text{Debits} == \sum\text{Credits}$. 4x IDOR guards added on payout routes. | **Verified** (`internal/api/handlers_payouts.go`, `internal/finance/mirror.go`) |
+| **Track A: Identity & KYC** | Aadhaar storage liability, DPDP violation | RSA-2048 UIDAI QR signature verification is fail-closed. DPDP consent gating with atomic PII wipe on revocation cascade. Zero raw 12-digit Aadhaar storage. 30s distributed mutex lease with 60s cooldown. | **Verified** (ADR-004, `internal/aadhaar`, `internal/kyc`) |
 | **Track B: Payment Collections** | Webhook replay, double-credit, tampering | Timing-safe `hmac.Equal`, atomic first-seen dedup in `webhook_events` table under due row-lock (`FOR UPDATE`). Re-asserts `amount == intent.AmountPaise`. Loser payments converted to tracked tenant credit. | **Verified** (`af4ed81`, `cashfree_poll.go`) |
 | **Track C / C.2: Payout Controls** | Unauthorized fund disbursement, tampering | Draft-first lifecycle (`domain.BatchDraft`). Affirmative verification of item count and total paise. Multi-owner dual-control maker-checker (`UserID != CreatedBy`). OWASP CSV formula injection prefix sanitization (`'`, `+`, `-`, `=`, `@`). | **Verified** (`2bc013b`, `track_c2`) |
 | **Track C.3: Step-Up Reauth** | Account takeover on solo-owner approval | Cryptographic step-up reauthentication. Dedicated trigger `POST .../approve/request-otp` with purpose-parameterized SMS. Unexpired, single-use, attempt-locked OTP records (preventing replay). Firebase token `auth_time` checked $\le 5$ minutes. | **Verified** (`d313d21`, `internal/auth/step_up.go`) |
-| **Track D: Cross-Cutting IDOR** | Tenant horizontal privilege escalation | Tenant ID claims binding across all gamification, menu voting, and finance endpoints. Cross-tenant tampering strictly rejected. | **Verified** (`track_d`) |
-| **Track E: Departure Outbox** | Silently unmirrored ledger records on crash | Dedicated `ledger_outbox_events` table enqueued within `SettleDepartureUnderLock` before `tx.Commit`. Asynchronous `LedgerOutboxWorker` with row-level `SKIP LOCKED` and dead-letter escalation. | **Verified** (`track_e`) |
+| **Track D: Cross-Cutting IDOR** | Tenant horizontal privilege escalation | Tenant ID claims binding across all gamification, menu voting, and finance endpoints. Cross-tenant tampering strictly rejected. | **Verified** (`internal/api/handlers_gamification.go`, `internal/api/handlers_finance.go`) |
+| **Track E: Departure Outbox** | Silently unmirrored ledger records on crash | Dedicated `ledger_outbox_events` table enqueued within `SettleDepartureUnderLock` before `tx.Commit`. Asynchronous `LedgerOutboxWorker` with row-level `SKIP LOCKED` and dead-letter escalation. | **Verified** (`internal/finance/ledger_worker.go`, `internal/postgres/payout_repo.go`) |
 | **Ticket 5: Background Packages** | Dedup race, send failures | Atomic `TryLog` slot acquisition before notification dispatch with `DeleteLog` rollback on delivery error in `reminder.go`. Table-driven tests for SMS dual-gateway failover and WebPush lifecycle. | **Verified** (`35ee7bf`, `74e95af`) |
-| **Ticket 6: Automated Security** | Leaked credentials, vulnerable dependencies | Gitleaks scan 100% clean across all 19 commits. `govulncheck` verified 0 reachable symbol vulnerabilities across 42 packages. Transitive modules bumped (`grpc@v1.83.2`, `x/crypto@v0.56.0`). | **Verified** (`8e55f48`) |
+| **Ticket 6: Automated Security** | Leaked credentials, vulnerable dependencies | Gitleaks scan 100% clean across all 28 commits (0 leaks found). `govulncheck` call-graph scan verified 0 reachable symbol vulnerabilities across 42 packages. `GO-2026-5932` documented as an acknowledged exception. | **Verified** (`govulncheck-report.json`, `gitleaks-report.json`) |
 | **Ticket 7: Capacity & Scaling** | 1,000+ user bursts, pool starvation, PgBouncer leaks | Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns`. Streamlined `pg_advisory_xact_lock` inside migration transactions. `http.Server` production timeouts (30s read, 60s write, 120s idle). Bounded rate limiter (10,000 cap, 10m TTL sweep). | **Verified** (`871e4b8`, `ccea9fc`) |
 
 ---
 
-## 3. Capacity & Runtime Profiles (1,000+ Concurrent Scale)
+## 3. Deep-Dive Evidence & Invariant Verification (Tracks 0, A, D, E)
+
+### Track 0: Financial Math, IDOR Guards & Balanced Double-Entry Ledgers
+1. **Integer Arithmetic & Float Elimination**:
+   - Every financial field in the system uses integer paise (`int64`, `AmountPaise`). No float operations exist in any balance, due, or payment calculation path.
+2. **Payout Route IDOR Hardening** ([handlers_payouts.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/handlers_payouts.go)):
+   - `OwnerInspectDeparture` (L134–137): Asserts `dep.PropertyID == pid` (`403 Forbidden` on mismatch).
+   - `OwnerAddDeduction` (L195–198): Asserts `dep.PropertyID == pid` (`403 Forbidden` on mismatch).
+   - `OwnerSettleDeparture` (L263–266): Asserts `dep.PropertyID == pid` (`403 Forbidden` on mismatch).
+   - `OwnerCreatePayoutBatch` (L380–450): Derives `pid` from claims; enforces strict unbatched pending item property scoping.
+3. **Double-Entry Ledger Balancing Invariant** ([mirror.go](file:///c:/Users/divak/Downloads/pg-go/internal/finance/mirror.go), [journal.go](file:///c:/Users/divak/Downloads/pg-go/internal/finance/journal.go)):
+   - `MakeLines` (`internal/finance/journal.go:L18–42`) strictly enforces debit/credit equality:
+     $$\sum \text{Debits} == \sum \text{Credits} \quad (\text{with } \text{Debits} > 0)$$
+     Any imbalance immediately aborts with `ErrUnbalancedJournal`.
+   - In `MirrorDepartureSettlement` (`internal/finance/mirror.go:L226–268`), the journal entry posts:
+     - **Debits**: `depositPaise` (Dr `AcctDepositLiability`) + `unusedRentReversal` (Dr `AcctRentRevenue`) + `receivableBalancePaise` (Dr `AcctTenantReceivable`)
+     - **Credits**: `outstandingDuesNettedPaise` (Cr `AcctRentRevenue`) + `damagesPaise` (Cr `AcctDamagesIncome`) + `netRefundPaise` (Cr `AcctRefundPayable`)
+   - **Mathematical Balance Proof**:
+     - In `SettleDepartureUnderLock` (`internal/postgres/payout_repo.go:L826–837`):
+       $$\text{totalCredits} = \text{DepositAmountPaise} + \text{UnusedRentRefundPaise}$$
+       $$\text{totalDebits} = \text{OutstandingDuesNettedPaise} + \text{TotalDeductions}$$
+     - When $\text{totalCredits} \ge \text{totalDebits}$:
+       $\text{netRefundPaise} = \text{totalCredits} - \text{totalDebits}$ and $\text{receivableBalancePaise} = 0$.
+       $$\sum \text{Debits} = \text{totalCredits} + 0 = \text{totalCredits}$$
+       $$\sum \text{Credits} = \text{totalDebits} + (\text{totalCredits} - \text{totalDebits}) = \text{totalCredits}$$
+     - When $\text{totalCredits} < \text{totalDebits}$:
+       $\text{netRefundPaise} = 0$ and $\text{receivableBalancePaise} = \text{totalDebits} - \text{totalCredits}$.
+       $$\sum \text{Debits} = \text{totalCredits} + (\text{totalDebits} - \text{totalCredits}) = \text{totalDebits}$$
+       $$\sum \text{Credits} = \text{totalDebits} + 0 = \text{totalDebits}$$
+     - In all cases, $\sum \text{Debits} == \sum \text{Credits}$ holds strictly.
+   - Verified by unit tests: `TestMirrorDepartureSettlement_WithPriorOverdueDues_Balances` and `TestJournalBalanceAndManagerAdvance`.
+
+---
+
+### Track A: Identity, DigiLocker & DPDP KYC Subsystem
+1. **Fail-Closed RSA-2048 UIDAI Signature Verification** ([secureqr.go](file:///c:/Users/divak/Downloads/pg-go/internal/aadhaar/secureqr.go)):
+   - `init()` invokes `SetSecureQRPublicKeyPEM("")` ensuring zero default trust.
+   - `decodeSecureQR` checks `currentSecurePub() == nil` and returns `ErrInvalidSignature` fail-closed if `AADHAAR_QR_PUBLIC_KEY_PEM` is unset.
+   - Cryptographic verification via `rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig)` guarantees tampering rejection.
+2. **DPDP Rule 8 Data Erasure Cascade** ([kyc_repo.go](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/kyc_repo.go)):
+   - `RevokeConsent` (L121–177) acquires an exclusive row-level lock on the tenant (`FOR UPDATE`), revokes consent records, scrubs all PII from `kyc_verification` (`masked_uid = NULL`, `identity_hash = NULL`, `attested_photo_bytes = NULL`, `photo_stored = FALSE`), clears `tenants.aadhaar_last4 = NULL`, and appends an immutable audit log entry.
+3. **Cryptographically Chained Audit Trail** ([kyc_repo.go:L657–697](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/kyc_repo.go)):
+   - `appendAuditLogTx` queries the previous audit log entry strictly ordered by `BIGSERIAL id DESC` to guarantee monotonic ordering within identical transaction timestamps.
+   - Computes SHA-256 chained hash:
+     $$\text{entryHash} = \text{SHA256}(\text{prevHash} \mathbin{\Vert} \text{tenantID} \mathbin{\Vert} \text{actor} \mathbin{\Vert} \text{action} \mathbin{\Vert} \text{detail} \mathbin{\Vert} \text{timestamp})$$
+4. **Zero Raw Aadhaar Storage & Deduplication**:
+   - Zero raw 12-digit Aadhaar numbers are persisted to disk. Identity is tracked via keyed HMAC-SHA256 hash `identity_hash` alongside `aadhaar_last4`.
+5. **Distributed In-Flight Mutex Lease** ([kyc_repo.go:L742–768](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/kyc_repo.go)):
+   - `TryAcquireInFlightLock` uses atomic `ON CONFLICT (tenant_id) DO UPDATE ... WHERE locked_at <= cutoff` with 30-second TTL and 60-second cooldown to eliminate double-verification race conditions.
+
+---
+
+### Track D: Cross-Cutting IDOR Boundaries
+1. **Gamification & Menu Polls** ([handlers_gamification.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/handlers_gamification.go)):
+   - `TenantRedeem` (L84–98): Asserts `reward.PropertyID == tenant.PropertyID` (`404 Not Found` on foreign reward ID).
+   - `TenantVoteMenuPoll` (L234–271): Re-queries `GetActiveMenuPoll` for `tenant.PropertyID` and asserts `activePoll.ID == pid` (`404 Not Found` on foreign poll ID). Binds vote strictly to `tenant.ID`.
+2. **Finance Insights & Leakage** ([handlers_finance.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/handlers_finance.go)):
+   - `GetLeakage` (L610–634): Asserts `e.PropertyID == pid` (`404 Not Found` on foreign property ID).
+   - `RecommendationAction` (L653–675): Asserts `rec.PropertyID == pid` (`404 Not Found` on foreign property ID).
+3. **Manager Operations**:
+   - `ManagerSubmitInspection`, `ManagerListInspections`, `ManagerResolveInspectionItem`, `ManagerLogViolation`, `ManagerRecordMeterReading`, and `ManagerKitchenHeadcount` assert caller's `claims.PropertyID` matches the resource (`403 Forbidden` / `404 Not Found` on mismatch).
+4. **Automated Verification**:
+   - `TestFinanceCrossPropertyIDORGuards` and `TestGamificationCrossPropertyIDORGuards` verify 14 cross-property boundaries pass with 100% isolation.
+
+---
+
+### Track E: Departure Settlement Mirror Outbox & Resilience
+1. **Transactional Outbox Enqueue** ([payout_repo.go:L940–965](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/payout_repo.go)):
+   - `SettleDepartureUnderLock` serializes `DepartureSettlementMirrorPayload` and enqueues a `departure_settlement_mirror` event into `ledger_outbox_events` inside the PostgreSQL transaction before `tx.Commit(ctx)`.
+2. **Asynchronous Processor with Row-Level Locking** ([ledger_worker.go](file:///c:/Users/divak/Downloads/pg-go/internal/finance/ledger_worker.go)):
+   - `ProcessSingleEvent` locks pending events via `SELECT ... FOR UPDATE SKIP LOCKED`.
+   - On dispatch failure, computes exponential backoff ($2^n$, capped at 3600s) and triggers loud dead-letter escalation (`slog.Error`) when `attempts >= max_attempts`.
+3. **Secondary Reconciliation Detector** ([departure_reconciliation.go](file:///c:/Users/divak/Downloads/pg-go/internal/finance/departure_reconciliation.go)):
+   - `ReconcileDepartureSettlements` identifies approved/refunded departures older than 1 hour missing mirror records in `financial_journal_entries`, logging critical anomalies for operations without silent data mutation.
+   - Verified by `TestLiveLedgerOutboxWorkerAndReconciliation`.
+
+---
+
+## 4. Automated Security Verification & Monitoring Policy (Ticket 6)
+
+### A. Govulncheck Call-Graph Vulnerability Scan
+* **Report Artifact**: [govulncheck-report.json](file:///c:/Users/divak/Downloads/pg-go/govulncheck-report.json) (generated from `govulncheck ./...`).
+* **Scan Results**:
+  * **Symbol Results**: "No vulnerabilities found." (0 reachable vulnerabilities in your code or dependencies).
+  * **Package Results**: "No other vulnerabilities found."
+  * **Summary**: "Your code is affected by 0 vulnerabilities."
+* **Monitored Advisory Exception**:
+  > **GO-2026-5932 (`golang.org/x/crypto/openpgp`)**:  
+  > *Status*: Acknowledged, module-level deprecation only. Zero reachable call sites as of 2026-09-26 `govulncheck` run.  
+  > *Remediation*: No upstream fix available (`Fixed in: N/A` — the `openpgp` subpackage has been retired and unmaintained by the Go project).  
+  > *Policy*: Re-verify call-graph reachability on every future `x/crypto` or SSH-adjacent dependency bump.
+
+### B. Gitleaks Secrets Detection
+* **Report Artifact**: [gitleaks-report.json](file:///c:/Users/divak/Downloads/pg-go/gitleaks-report.json).
+* **Scan Results**:
+  * 28 commits scanned across entire repository history.
+  * `no leaks found` (exit code 0).
+* **Configuration & Baseline**:
+  * [.gitleaks.toml](file:///c:/Users/divak/Downloads/pg-go/.gitleaks.toml): Allowlists vulnerability scan report artifacts (`govulncheck-report.json`, `gitleaks-report.json`) to prevent false-positive commit SHA matches.
+  * [.gitleaksignore](file:///c:/Users/divak/Downloads/pg-go/.gitleaksignore): Catalogs 9 reviewed test fixture and example configuration fingerprints.
+
+---
+
+## 5. Capacity & Runtime Profiles (1,000+ Concurrent Scale)
 
 ### A. Database Connection Pool & PgBouncer Strategy
 * **Connection Pool Ceiling**: Configured via `DATABASE_MAX_CONNS` (defaults to 25). `MinConns` scales automatically (`max(2, maxConns/5)`).
@@ -76,7 +179,7 @@ In `internal/api/ratelimit.go`:
 
 ---
 
-## 4. Branching Model & Release Discipline
+## 6. Branching Model & Release Discipline
 
 * **`div_dev`**: Primary active development and feature branch.
 * **`develop`**: Stable integration branch. Pushed in lockstep with `div_dev` once all tests pass 100%.
@@ -85,7 +188,7 @@ In `internal/api/ratelimit.go`:
 
 ---
 
-## 5. Pre-Launch Production Checklist
+## 7. Pre-Launch Production Checklist
 
 Before toggling public traffic on the production server:
 

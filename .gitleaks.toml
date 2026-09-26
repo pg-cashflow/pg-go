@@ -1,0 +1,6 @@
+[allowlist]
+description = "Ignore vulnerability and security scan report artifacts"
+paths = [
+    '''govulncheck-report\.json''',
+    '''gitleaks-report\.json''',
+]
