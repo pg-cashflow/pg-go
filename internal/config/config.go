@@ -49,10 +49,14 @@ type Config struct {
 	KYCDigiLockerRedirectURL     string
 	FinanceEnabled               bool
 	IntelligenceEnabled          bool
+	AdminEmail                   string
+	AdminPhone                   string
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
+		AdminEmail:                   envFirst("ADMIN_EMAIL", "ALERT_EMAIL", "SMTP_FROM"),
+		AdminPhone:                   envFirst("ADMIN_PHONE", "ALERT_PHONE"),
 		DatabaseURL:           os.Getenv("DATABASE_URL"),
 		JWTSecret:             os.Getenv("JWT_SECRET"),
 		OTPHMACSecret:         os.Getenv("OTP_HMAC_SECRET"),

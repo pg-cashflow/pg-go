@@ -2,6 +2,7 @@ package finance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,10 +15,17 @@ type DeadLetterNotifier interface {
 	NotifyDeadLetter(ctx context.Context, evt *domain.LedgerOutboxEvent, failureErr string) error
 }
 
-// EmailDeadLetterNotifier sends an urgent email alert to the operator/admin via mailer.Mailer.
+// SMSGateway defines the interface required to dispatch SMS alerts.
+type SMSGateway interface {
+	Send(ctx context.Context, phone, message string) error
+}
+
+// EmailDeadLetterNotifier sends an urgent email alert (and optional SMS backstop) to the operator/admin.
 type EmailDeadLetterNotifier struct {
 	mailer     mailer.Mailer
 	adminEmail string
+	smsGateway SMSGateway
+	adminPhone string
 }
 
 // NewEmailDeadLetterNotifier constructs a dead-letter email notifier.
@@ -28,7 +36,14 @@ func NewEmailDeadLetterNotifier(m mailer.Mailer, adminEmail string) *EmailDeadLe
 	}
 }
 
-// NotifyDeadLetter dispatches a formatted critical email alert to the operator.
+// WithSMSBackstop configures an SMS gateway and recipient phone for high-urgency alerts.
+func (n *EmailDeadLetterNotifier) WithSMSBackstop(sms SMSGateway, adminPhone string) *EmailDeadLetterNotifier {
+	n.smsGateway = sms
+	n.adminPhone = adminPhone
+	return n
+}
+
+// NotifyDeadLetter dispatches a formatted critical email alert (and SMS backstop) to the operator.
 func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *domain.LedgerOutboxEvent, failureErr string) error {
 	if n == nil {
 		return fmt.Errorf("email dead-letter notifier is nil")
@@ -39,6 +54,10 @@ func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *dom
 	if n.adminEmail == "" {
 		return fmt.Errorf("admin email not configured for dead-letter notification")
 	}
+
+	var dispatchErrs []error
+
+	// Primary Leg: Rich HTML Email
 	subject := fmt.Sprintf("🚨 CRITICAL: Ledger Outbox Event #%d Dead-Lettered", evt.ID)
 	body := fmt.Sprintf(
 		"<h2>🚨 CRITICAL: Financial Books Desynchronized</h2>"+
@@ -63,5 +82,20 @@ func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *dom
 		evt.CreatedAt.Format(time.RFC3339),
 		failureErr,
 	)
-	return n.mailer.Send(ctx, n.adminEmail, subject, body)
+	if err := n.mailer.Send(ctx, n.adminEmail, subject, body); err != nil {
+		dispatchErrs = append(dispatchErrs, fmt.Errorf("email send: %w", err))
+	}
+
+	// Backstop Leg: Instant SMS
+	if n.smsGateway != nil && n.adminPhone != "" {
+		smsMsg := fmt.Sprintf("🚨 CRITICAL: Ledger outbox event #%d dead-lettered (%s). Financial books desynchronized. Immediate manual reconciliation required.", evt.ID, evt.EventType)
+		if err := n.smsGateway.Send(ctx, n.adminPhone, smsMsg); err != nil {
+			dispatchErrs = append(dispatchErrs, fmt.Errorf("sms backstop send: %w", err))
+		}
+	}
+
+	if len(dispatchErrs) > 0 {
+		return errors.Join(dispatchErrs...)
+	}
+	return nil
 }

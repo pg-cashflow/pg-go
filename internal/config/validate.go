@@ -60,6 +60,11 @@ func (c *Config) ValidateForRealDeployment() error {
 		errs = append(errs, "CASHFREE_WEBHOOK_SECRET is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
 	}
 
+	// --- Admin email required for critical operator alerts (outbox dead-letters, financial desynchronization) ---
+	if (c.AppEnv == "production" || cashfreeEnabled) && strings.TrimSpace(c.AdminEmail) == "" {
+		errs = append(errs, "ADMIN_EMAIL (or SMTP_FROM) is required for critical operator alerts when in production or when payment gateways are configured")
+	}
+
 	// --- AUTO_MIGRATE safety ---
 	if (os.Getenv("AUTO_MIGRATE") == "1" || os.Getenv("AUTO_MIGRATE") == "true") && c.AppEnv == "production" {
 		errs = append(errs, "AUTO_MIGRATE=1 is disallowed in production (APP_ENV=production); use cmd/migrate instead")
@@ -96,6 +101,11 @@ func (c *Config) ValidateWarnings() []string {
 	// KYC enabled without Cashfree (DigiLocker unavailable, QR-only mode)
 	if strings.TrimSpace(c.KYCIdentitySecret) != "" && !cashfreeEnabled {
 		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured — KYC is active in QR-only mode; DigiLocker initiation will return 503")
+	}
+
+	// Admin email unset warning in non-production
+	if strings.TrimSpace(c.AdminEmail) == "" {
+		warns = append(warns, "ADMIN_EMAIL is not configured — outbox dead-letter alerts and operator failure notices will only be logged locally")
 	}
 
 	return warns

@@ -15,6 +15,7 @@ func validConfig() *Config {
 		CashfreeAppID:         "",
 		CashfreeSecretKey:     "",
 		CashfreeWebhookSecret: "",
+		AdminEmail:            "admin@example.com",
 		AppEnv:                "development",
 	}
 }
@@ -208,6 +209,42 @@ func TestValidateWarnings_KYCWithoutCashfree(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected warning about KYC without Cashfree, got: %v", warns)
+	}
+}
+
+func TestValidateForRealDeployment_AdminEmailRequired(t *testing.T) {
+	cfg := validConfig()
+	cfg.AppEnv = "production"
+	cfg.AdminEmail = ""
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_EMAIL") {
+		t.Fatalf("expected error mentioning ADMIN_EMAIL in production, got: %v", err)
+	}
+
+	cfg.AppEnv = "development"
+	cfg.CashfreeAppID = "CF_TEST_APP"
+	cfg.CashfreeSecretKey = "CF_TEST_SECRET"
+	cfg.CashfreeWebhookSecret = "CF_TEST_WEBHOOK_SECRET"
+	cfg.AdminEmail = ""
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_EMAIL") {
+		t.Fatalf("expected error mentioning ADMIN_EMAIL when Cashfree is enabled, got: %v", err)
+	}
+}
+
+func TestValidateWarnings_AdminEmailUnset(t *testing.T) {
+	cfg := validConfig()
+	cfg.AdminEmail = ""
+	warns := cfg.ValidateWarnings()
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "ADMIN_EMAIL is not configured") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning about unset ADMIN_EMAIL, got: %v", warns)
 	}
 }
 

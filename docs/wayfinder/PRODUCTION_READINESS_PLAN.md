@@ -187,11 +187,13 @@ In `internal/cashfree/webhook.go` and `internal/api/handlers_pay.go`:
 * **Zero Ledger Mutation Invariant**: A dispute is a provisional contestation by the cardholder/issuing bank, not an authorized refund. The system **never** automatically reverses double-entry journal entries or marks the due unpaid upon dispute creation. Automated mutation would introduce ledger corruption and duplicate debits if the merchant contests the dispute with proof of accommodation and wins.
 * **Operator Alerting & Notification**: Emits high-priority `slog.Error` containing dispute details, due ID, and amount, and publishes `domain.EvtPaymentDisputed` routing an urgent notification to the property owner.
 * **HTTP 200 OK**: Always returns 200 OK to the gateway to acknowledge receipt and prevent webhook retry storms.
+* **Operational Runbook**: Follow the step-by-step contestation workflow, statutory evidence checklist, and post-adjudication journal reconciliation procedure in [Dispute & Chargeback Operational Runbook](file:///c:/Users/divak/Downloads/pg-go/docs/runbooks/dispute_chargeback_runbook.md).
 
 ### F. Transactional Outbox Dead-Letter Active Escalation
 In `internal/finance/alert.go` and `internal/finance/ledger_worker.go`:
 * **DeadLetterNotifier Interface**: Enables domain-specific operator notifications upon terminal outbox failure without coupling across unrelated subsystems.
-* **EmailDeadLetterNotifier**: Wraps `mailer.Mailer` to send structured forensic alerts containing Event ID, Type, Property ID, Source ID, Idempotency Key, Created At, and Terminal Error.
+* **Dual-Channel Alerting (Email + SMS Backstop)**: `EmailDeadLetterNotifier` sends structured forensic email alerts containing Event ID, Type, Property ID, Source ID, Idempotency Key, Created At, and Terminal Error, augmented by `WithSMSBackstop` dispatching an instant SMS alert to `AdminPhone` via `internal/sms`.
+* **Boot-Time Configuration Enforcement**: `ValidateForRealDeployment()` in `internal/config/validate.go` strictly fails to boot in production or whenever payment gateways are active if `AdminEmail` is unset, preventing silent alert drops.
 * **Loud Escalation Invariant**: When an event hits `attempts >= MaxAttempts`, failure state is committed to PostgreSQL, loud `slog.Error` is emitted with full context, and `NotifyDeadLetter` is actively dispatched to page operators.
 
 ---
