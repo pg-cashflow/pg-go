@@ -69,21 +69,21 @@ func TestEmailDeadLetterNotifier_ErrorsAndNil(t *testing.T) {
 
 	// Nil receiver
 	var nilNotifier *EmailDeadLetterNotifier
-	if err := nilNotifier.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err != nil {
-		t.Errorf("expected nil on nil receiver, got %v", err)
+	if err := nilNotifier.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err == nil {
+		t.Errorf("expected error on nil receiver, got nil")
 	}
 
 	// Nil mailer
 	n1 := NewEmailDeadLetterNotifier(nil, "admin@example.com")
-	if err := n1.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err != nil {
-		t.Errorf("expected nil on nil mailer, got %v", err)
+	if err := n1.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err == nil {
+		t.Errorf("expected error on nil mailer, got nil")
 	}
 
 	// Empty admin email
 	mm := &mockMailer{}
 	n2 := NewEmailDeadLetterNotifier(mm, "")
-	if err := n2.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err != nil {
-		t.Errorf("expected nil on empty admin email, got %v", err)
+	if err := n2.NotifyDeadLetter(ctx, &domain.LedgerOutboxEvent{}, "err"); err == nil {
+		t.Errorf("expected error on empty admin email, got nil")
 	}
 
 	// Mailer send failure bubbles up

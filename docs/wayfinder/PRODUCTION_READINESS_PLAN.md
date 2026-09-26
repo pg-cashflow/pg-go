@@ -39,6 +39,7 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
 | **Ticket 7: Capacity & Scaling** | 1,000+ user bursts, pool starvation, PgBouncer leaks | Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns`. Streamlined `pg_advisory_xact_lock` inside migration transactions. `http.Server` production timeouts (30s read, 60s write, 120s idle). Bounded rate limiter (10,000 cap, 10m TTL sweep). | **Verified** (`871e4b8`, `ccea9fc`) |
 | **Track I: Gateway Disputes** | Silent chargeback clawbacks, retry storms, ledger corruption | Ingestion of `PAYMENT_DISPUTE_CREATED_WEBHOOK` & `DISPUTE_STATUS_UPDATE_WEBHOOK`. Audit logging to `webhook_events` as `dispute_action_required`, loud operator alert via `slog.Error`, in-app owner notification `EvtPaymentDisputed`. Zero automated ledger/due mutation invariant. | **Verified** (`internal/api/handlers_pay.go`, `internal/cashfree/webhook.go`) |
 | **Track J: Outbox Dead-Letter Alerting** | Silently dropped unmirrored ledger events | Integration of `DeadLetterNotifier` and `EmailDeadLetterNotifier` in `internal/finance/alert.go`. When an unmirrored event exceeds `MaxAttempts`, it triggers loud `slog.Error` escalation and dispatches forensic email alerts to operators, preventing silent desynchronization. | **Verified** (`internal/finance/ledger_worker.go`, `internal/finance/alert.go`) |
+| **Track K: Money-Math Evals** | Precision loss, rounding drift, imbalanced journals | Continuous randomized property evaluations (10,000 runs) and perturbation fuzzing (5,000 runs) proving $\sum\text{Debits} == \sum\text{Credits}$ with 0 integer-paise drift and 100% fail-closed rejection of $\pm 1$ paise imbalance. | **Verified** (`internal/finance/invariants_test.go`) |
 
 ---
 
@@ -72,7 +73,7 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
        $$\sum \text{Debits} = \text{totalCredits} + (\text{totalDebits} - \text{totalCredits}) = \text{totalDebits}$$
        $$\sum \text{Credits} = \text{totalDebits} + 0 = \text{totalDebits}$$
      - In all cases, $\sum \text{Debits} == \sum \text{Credits}$ holds strictly.
-   - Verified by unit tests: `TestMirrorDepartureSettlement_WithPriorOverdueDues_Balances` and `TestJournalBalanceAndManagerAdvance`.
+   - Verified by unit tests and continuous property evals: `TestMirrorDepartureSettlement_WithPriorOverdueDues_Balances`, `TestJournalBalanceAndManagerAdvance`, and `TestMoneyMath_DoubleEntryConservation_PropertyEvals` (10,000 randomized iterations).
 
 ---
 

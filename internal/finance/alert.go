@@ -30,8 +30,14 @@ func NewEmailDeadLetterNotifier(m mailer.Mailer, adminEmail string) *EmailDeadLe
 
 // NotifyDeadLetter dispatches a formatted critical email alert to the operator.
 func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *domain.LedgerOutboxEvent, failureErr string) error {
-	if n == nil || n.mailer == nil || n.adminEmail == "" {
-		return nil
+	if n == nil {
+		return fmt.Errorf("email dead-letter notifier is nil")
+	}
+	if n.mailer == nil {
+		return fmt.Errorf("mailer not configured for dead-letter notification")
+	}
+	if n.adminEmail == "" {
+		return fmt.Errorf("admin email not configured for dead-letter notification")
 	}
 	subject := fmt.Sprintf("🚨 CRITICAL: Ledger Outbox Event #%d Dead-Lettered", evt.ID)
 	body := fmt.Sprintf(
