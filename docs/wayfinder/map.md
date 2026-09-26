@@ -26,17 +26,15 @@
 - [Track E (Ticket 4): Departure Settlement Mirror Post-Commit Resilience](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_e_departure_settlement_resilience.md): Resolved. Implemented dedicated `ledger_outbox_events` table (migration 023) enqueued inside `SettleDepartureUnderLock` before `tx.Commit(ctx)`. Added inline fast-path mirror post-commit, asynchronous `LedgerOutboxWorker` with row-level `FOR UPDATE SKIP LOCKED` and loud `slog.Error` dead-letter escalation on max attempts, and secondary reconciliation check `ReconcileDepartureSettlements`.
 - [Track C.2 (Ticket 4a): Payout Batch Dual-Control & Maker-Checker Gating](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_c2_payout_maker_checker.md): Resolved. Batches initialize in `domain.BatchDraft` with `ApprovedBy: nil`. Dedicated `POST /owner/payouts/batches/:id/approve` endpoint enforces affirmative re-acknowledgment (`expected_item_count` and `expected_total_paise`), strict maker-checker rejection (`claims.UserID != batch.CreatedBy`) on multi-owner properties, and graceful fallback to step-up reauthentication on solo-owner properties. `GET /owner/payouts/batches/:id/export` strictly gated on `batch.Status == domain.BatchApproved` (`409 Conflict` on draft).
 - [Track C.3 (Ticket 4b): Payout Batch Cryptographic Step-Up Reauth & OTP Verification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_c3_payout_step_up_otp.md): Resolved. Replaced non-empty placeholder string in solo-owner batch approval with real cryptographic step-up reauthentication. Implemented dedicated trigger endpoint `POST /owner/payouts/batches/:id/approve/request-otp` dispatching purpose-parameterized SMS copy. Enforced fail-closed verification via unexpired, single-use, attempt-locked OTP records (preventing replay attacks) and Firebase ID token freshness verification requiring `auth_time` $\le 5$ minutes.
+- [Track F (Ticket 5): Audit Untouched Background & Secondary Packages](file:///c:/Users/divak/Downloads/pg-go/internal/jobs/reminder.go): Resolved across all 4 blast-radius buckets: Bucket 1 (`join`, `magiclink`), Bucket 2 (`billing`, `collector`, `jobs`, `events` — remediated atomic `TryLog` dedup in `reminder.go` with `DeleteLog` rollback on send failure in commit `35ee7bf`), Bucket 3 (`notification`, `push`, `sms` — added table-driven unit tests for SMS failover, WebPush lifecycle, and outbox backoff/cursors in commit `74e95af`), and Bucket 4 (`search`, `gamification`, `intelligence`, `roi`, `localization` — verified 100% green test coverage).
+- [Track G (Ticket 6): Automated Security & Dependency Vulnerability Audit](file:///c:/Users/divak/Downloads/pg-go/go.mod): Resolved in commit `8e55f48`. 19/19 commits clean under Gitleaks. `govulncheck` call-graph scan verified 0 reachable vulnerabilities across 42 packages. Transitive advisories cleared by bumping `grpc` to `v1.83.2` and `golang.org/x/crypto` to `v0.56.0`.
 
 ## Frontier (Open Tickets)
 
-- **Ticket 5: Audit Untouched Background & Secondary Packages** `wayfinder:research` (Claimed next)
-  - Reordered package audit sequence by trust-layer blast radius:
-    1. **Credential-issuance & trust boundary**: `join`, `magiclink` (account takeover / credential leakage risks).
-    2. **Financial & collection loop**: `billing`, `collector`, `jobs`, `events` (downstream ledger/dues operations).
-    3. **Delivery infrastructure**: `notification`, `push`, `sms` (delivery failures, lower blast radius).
-    4. **Secondary / non-financial features**: `search`, `gamification`, `intelligence`, `roi`, `localization`.
-- **Ticket 6: Automated Security & Dependency Vulnerability Audit** `wayfinder:task`
-  - Execute Gitleaks secret scan and `govulncheck` in an environment with access to toolchain binaries.
+- **Ticket 7: Capacity & Connection-Pool Hardening (1000+ Concurrent Scale)** `wayfinder:task`
+  - Make `DATABASE_MAX_CONNS` configurable via environment variable (default 25) in `internal/postgres/db.go`.
+  - Add production HTTP server timeouts (`ReadTimeout: 30s`, `WriteTimeout: 30s`, `IdleTimeout: 120s`) to `srv := &http.Server{}` in `cmd/server/main.go`.
+  - Add bounded eviction/TTL cleanup on `ipRateLimit` in `internal/api/ratelimit.go` to prevent unbounded memory growth under high-cardinality IP traffic.
 
 ## Not yet specified
 
