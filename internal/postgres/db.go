@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,8 +18,19 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
-	cfg.MaxConns = 10
-	cfg.MinConns = 1
+
+	maxConns := 25
+	if s := os.Getenv("DATABASE_MAX_CONNS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+	cfg.MaxConns = int32(maxConns)
+	minConns := maxConns / 5
+	if minConns < 2 {
+		minConns = 2
+	}
+	cfg.MinConns = int32(minConns)
 	cfg.MaxConnLifetime = time.Hour
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -87,6 +99,12 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return err
+		}
+		// Transaction-level advisory lock ensures serialized execution across concurrent workers
+		// even when connected through PgBouncer in transaction-pooling mode.
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockID); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("acquire migration tx advisory lock: %w", err)
 		}
 		if _, err := tx.Exec(ctx, string(body)); err != nil {
 			_ = tx.Rollback(ctx)

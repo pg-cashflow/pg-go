@@ -28,13 +28,11 @@
 - [Track C.3 (Ticket 4b): Payout Batch Cryptographic Step-Up Reauth & OTP Verification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_c3_payout_step_up_otp.md): Resolved. Replaced non-empty placeholder string in solo-owner batch approval with real cryptographic step-up reauthentication. Implemented dedicated trigger endpoint `POST /owner/payouts/batches/:id/approve/request-otp` dispatching purpose-parameterized SMS copy. Enforced fail-closed verification via unexpired, single-use, attempt-locked OTP records (preventing replay attacks) and Firebase ID token freshness verification requiring `auth_time` $\le 5$ minutes.
 - [Track F (Ticket 5): Audit Untouched Background & Secondary Packages](file:///c:/Users/divak/Downloads/pg-go/internal/jobs/reminder.go): Resolved across all 4 blast-radius buckets: Bucket 1 (`join`, `magiclink`), Bucket 2 (`billing`, `collector`, `jobs`, `events` — remediated atomic `TryLog` dedup in `reminder.go` with `DeleteLog` rollback on send failure in commit `35ee7bf`), Bucket 3 (`notification`, `push`, `sms` — added table-driven unit tests for SMS failover, WebPush lifecycle, and outbox backoff/cursors in commit `74e95af`), and Bucket 4 (`search`, `gamification`, `intelligence`, `roi`, `localization` — verified 100% green test coverage).
 - [Track G (Ticket 6): Automated Security & Dependency Vulnerability Audit](file:///c:/Users/divak/Downloads/pg-go/go.mod): Resolved in commit `8e55f48`. 19/19 commits clean under Gitleaks. `govulncheck` call-graph scan verified 0 reachable vulnerabilities across 42 packages. Transitive advisories cleared by bumping `grpc` to `v1.83.2` and `golang.org/x/crypto` to `v0.56.0`.
+- [Track H (Ticket 7): Capacity & Connection-Pool Hardening (1000+ Concurrent Scale)](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/db.go): Resolved. Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns` in `db.go`; `pg_advisory_xact_lock` dual-locking inside migration tx and `DATABASE_URL_UNPOOLED`/`DIRECT_URL` fallback for PgBouncer/Neon compatibility in `cmd/migrate`; production timeouts (`ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`) on `http.Server` in `cmd/server/main.go`; and memory-bounded rate limiting (10,000 max entries, 10m TTL sweep, oldest eviction on saturation) in `internal/api/ratelimit.go`.
 
 ## Frontier (Open Tickets)
 
-- **Ticket 7: Capacity & Connection-Pool Hardening (1000+ Concurrent Scale)** `wayfinder:task`
-  - Make `DATABASE_MAX_CONNS` configurable via environment variable (default 25) in `internal/postgres/db.go`.
-  - Add production HTTP server timeouts (`ReadTimeout: 30s`, `WriteTimeout: 30s`, `IdleTimeout: 120s`) to `srv := &http.Server{}` in `cmd/server/main.go`.
-  - Add bounded eviction/TTL cleanup on `ipRateLimit` in `internal/api/ratelimit.go` to prevent unbounded memory growth under high-cardinality IP traffic.
+- None currently active. All production-readiness roadmap tickets (Tracks 0 through H / Tickets 1 through 7) are resolved and verified with 100% green tests.
 
 ## Not yet specified
 

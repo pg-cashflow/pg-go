@@ -22,7 +22,15 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	dbURL := os.Getenv("DATABASE_URL_UNPOOLED")
+	if dbURL == "" {
+		dbURL = os.Getenv("DIRECT_URL")
+	}
+	if dbURL == "" {
+		dbURL = cfg.DatabaseURL
+	}
+
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
