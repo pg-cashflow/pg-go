@@ -62,6 +62,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	}
 	defer pool.Close()
 
+	_, _ = pool.Exec(ctx, `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 1`)
+
 	propID := uuid.New()
 	inviteCode := fmt.Sprintf("E%s", uuid.New().String()[:7])
 	_, err = pool.Exec(ctx, `
@@ -128,11 +130,13 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
+	userRepo := postgres.NewUserRepo(pool)
 	h := &Handlers{
 		Deps: Deps{
 			Pool:                 pool,
 			PayoutRepo:           payoutRepo,
 			TenantStore:          tenantStore,
+			UserStore:            userRepo,
 			PayoutChecksumSecret: "test_secret_for_http_export",
 		},
 	}
@@ -155,6 +159,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		owner.GET("/payouts/payees", h.OwnerListPayees)
 		owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 		owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
+		owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
 		owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 	}
 
@@ -349,14 +354,67 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 	})
 
-	// 9. Export Payout Batch CSV
-	t.Run("GET /owner/payouts/batches/:id/export", func(t *testing.T) {
+	// 9. Draft Export Gating & Dual-Control Approval Flow
+	t.Run("Draft export gate and approval flow", func(t *testing.T) {
+		// Attempt export while in draft - must be blocked with 409 Conflict
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
 		router.ServeHTTP(w, req)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict exporting draft batch, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Affirmative mismatch rejection (mismatched paise)
+		mismatchBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 999999,
+			"reauth_confirmation": "CONFIRM_TEST",
+		}
+		mismatchJSON, _ := json.Marshal(mismatchBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(mismatchJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on affirmative mismatch, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Missing reauth confirmation for solo owner
+		noReauthBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 750000,
+		}
+		noReauthJSON, _ := json.Marshal(noReauthBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(noReauthJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized without reauth_confirmation, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Valid approval with affirmative matching and reauth confirmation
+		validBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 750000,
+			"reauth_confirmation": "CONFIRM_PAYOUT_BATCH",
+		}
+		validJSON, _ := json.Marshal(validBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(validJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK approving batch, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Export Payout Batch CSV after approval - must succeed
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
+		router.ServeHTTP(w, req)
 
 		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("expected 200 OK after approval, got %d: %s", w.Code, w.Body.String())
 		}
 		if ct := w.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
 			t.Errorf("expected Content-Type text/csv, got %s", ct)
@@ -370,6 +428,108 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 		if !strings.Contains(csvContent, "7500.00") {
 			t.Errorf("expected ₹7500.00 in exported CSV, got:\n%s", csvContent)
+		}
+	})
+
+	// 9b. Multi-Owner Dual Control Maker-Checker Gating
+	t.Run("Multi-owner dual control enforcement and fallback", func(t *testing.T) {
+		// Provision a second owner for the property
+		owner2ID := uuid.New()
+		owner2Phone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+33)%10000000000)
+		_, err := pool.Exec(ctx, `INSERT INTO users (id, phone, role, property_id) VALUES ($1, $2, 'owner', $3)`, owner2ID, owner2Phone, propID)
+		if err != nil {
+			t.Fatalf("insert second owner: %v", err)
+		}
+		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, owner2ID)
+		}()
+
+		// Create a new batch as ownerID (maker)
+		piID := uuid.New()
+		_, err = pool.Exec(ctx, `
+			INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
+			VALUES ($1, $2, 'REF-DUAL-01', 250000, 'Vendor Service', '2026-09', 'pending')`, piID, payeeID)
+		if err != nil {
+			t.Fatalf("insert payout item: %v", err)
+		}
+		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID)
+		}()
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Dual control test"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create batch as owner1: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var dualResp struct {
+			Batch domain.PayoutBatch `json:"batch"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &dualResp)
+		dualBatchID := dualResp.Batch.ID
+		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, dualBatchID)
+		}()
+
+		// 1. Maker (ownerID) tries to approve their own batch -> must fail 403 Forbidden
+		w = httptest.NewRecorder()
+		approvePayload := `{"expected_item_count":1,"expected_total_paise":250000,"reauth_confirmation":"CONFIRM"}`
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", dualBatchID), strings.NewReader(approvePayload))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden when maker tries to approve own batch, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// 2. Second owner (owner2ID) approves -> must succeed 200 OK
+		owner2Router := gin.New()
+		owner2Group := owner2Router.Group("/owner", func(c *gin.Context) {
+			c.Set(auth.ContextClaimsKey, &auth.Claims{
+				UserID:     owner2ID,
+				PropertyID: &propID,
+				Role:       domain.RoleOwner,
+			})
+		})
+		owner2Group.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
+
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", dualBatchID), strings.NewReader(approvePayload))
+		req.Header.Set("Content-Type", "application/json")
+		owner2Router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK when checker approves batch, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// 3. Test Edge Case: Second owner removed fallback
+		piID2 := uuid.New()
+		_, _ = pool.Exec(ctx, `
+			INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
+			VALUES ($1, $2, 'REF-DUAL-02', 150000, 'Vendor Supply', '2026-09', 'pending')`, piID2, payeeID)
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID2) }()
+
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Fallback test"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		_ = json.Unmarshal(w.Body.Bytes(), &dualResp)
+		fallbackBatchID := dualResp.Batch.ID
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, fallbackBatchID) }()
+
+		// Remove second owner from property (cleanup earlier batch referencing owner2 first)
+		_, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, dualBatchID)
+		_, err = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, owner2ID)
+		if err != nil {
+			t.Fatalf("delete second owner: %v", err)
+		}
+
+		// Now creator tries to approve with step-up reauth -> gracefully succeeds (doesn't brick)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", fallbackBatchID), strings.NewReader(`{"expected_item_count":1,"expected_total_paise":150000,"reauth_confirmation":"CONFIRM_FALLBACK"}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK via graceful solo fallback when second owner removed, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 

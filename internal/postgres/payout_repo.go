@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ type DepartureMirrorer interface {
 type PayoutRepo struct {
 	pool     *pgxpool.Pool
 	mirrorer DepartureMirrorer
+	outbox   *LedgerOutboxRepo
 }
 
 func NewPayoutRepo(pool *pgxpool.Pool, mirrorer ...DepartureMirrorer) *PayoutRepo {
@@ -33,7 +35,7 @@ func NewPayoutRepo(pool *pgxpool.Pool, mirrorer ...DepartureMirrorer) *PayoutRep
 	if len(mirrorer) > 0 {
 		m = mirrorer[0]
 	}
-	return &PayoutRepo{pool: pool, mirrorer: m}
+	return &PayoutRepo{pool: pool, mirrorer: m, outbox: NewLedgerOutboxRepo(pool)}
 }
 
 func (r *PayoutRepo) SetMirrorer(m DepartureMirrorer) {
@@ -429,12 +431,12 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		PropertyID:       propertyID,
 		BatchNumber:      batchNumber,
 		FormatType:       "instruction_sheet",
-		Status:           domain.BatchApproved,
+		Status:           domain.BatchDraft,
 		TotalAmountPaise: totalPaise,
 		ItemCount:        len(items),
 		CreatedBy:        ownerID,
-		ApprovedBy:       &ownerID,
-		ApprovedAt:       &now,
+		ApprovedBy:       nil,
+		ApprovedAt:       nil,
 		FileChecksum:     &checksum,
 		Notes:            notes,
 		CreatedAt:        now,
@@ -477,6 +479,26 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		return nil, nil, err
 	}
 	return batch, items, nil
+}
+
+// ApproveBatch transitions a draft batch to approved with the specified approver.
+func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.UUID) (*domain.PayoutBatch, error) {
+	now := time.Now().UTC()
+	row := r.pool.QueryRow(ctx, `
+		UPDATE payout_batches
+		SET status = 'approved', approved_by = $2, approved_at = $3, updated_at = $3
+		WHERE id = $1 AND status = 'draft'
+		RETURNING `+batchCols,
+		batchID, approverID, now,
+	)
+	b, err := scanBatch(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return b, nil
 }
 
 type SettleDepartureParams struct {
@@ -914,11 +936,38 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 		return nil, fmt.Errorf("update tenant to vacated: %w", err)
 	}
 
+	// Step 16: Transactional Ledger Outbox Enqueue (before commit)
+	mirrorPayload := domain.DepartureSettlementMirrorPayload{
+		PropertyID:                 dep.PropertyID,
+		DepartureID:                dep.ID,
+		DepositAmountPaise:         dep.DepositAmountPaise,
+		UnusedRentRefundPaise:      unusedRentRefundPaise,
+		TotalDeductions:            totalDeductions,
+		NetRefundPaise:             netRefundPaise,
+		OutstandingDuesNettedPaise: outstandingDuesNettedPaise,
+		ReceivableBalancePaise:     receivableBalancePaise,
+		OccurredAt:                 now,
+	}
+	payloadBytes, _ := json.Marshal(mirrorPayload)
+	outboxEvt := &domain.LedgerOutboxEvent{
+		EventType:      "departure_settlement_mirror",
+		PropertyID:     dep.PropertyID,
+		SourceID:       dep.ID,
+		Payload:        payloadBytes,
+		IdempotencyKey: fmt.Sprintf("departure_settlement:%s", dep.ID),
+		MaxAttempts:    5,
+	}
+	if r.outbox != nil {
+		if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+			return nil, fmt.Errorf("enqueue ledger outbox event: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit departure settlement: %w", err)
 	}
 
-	// Post balanced financial mirror journals
+	// Post balanced financial mirror journals (inline fast path)
 	if r.mirrorer != nil {
 		if err := r.mirrorer.MirrorDepartureSettlement(
 			ctx,
@@ -931,7 +980,12 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 			receivableBalancePaise,
 			now,
 		); err != nil {
-			slog.Error("failed to post departure settlement financial mirror journal", "departure_id", dep.ID, "err", err)
+			slog.Warn("inline departure settlement mirror deferred to ledger outbox processor",
+				"departure_id", dep.ID,
+				"err", err,
+			)
+		} else if r.outbox != nil {
+			_ = r.outbox.MarkProcessedByIdempotencyKey(ctx, outboxEvt.IdempotencyKey)
 		}
 	}
 

@@ -668,8 +668,23 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 			t.Fatalf("create batch failed: %v", err)
 		}
 
-		if batch.Status != domain.BatchApproved {
-			t.Errorf("expected batch status 'approved', got %s", batch.Status)
+		if batch.Status != domain.BatchDraft {
+			t.Errorf("expected batch status 'draft', got %s", batch.Status)
+		}
+		if batch.ApprovedBy != nil {
+			t.Errorf("expected nil approved_by on creation, got %v", batch.ApprovedBy)
+		}
+
+		// Approve batch
+		approvedBatch, err := payoutRepo.ApproveBatch(ctx, batch.ID, ownerID)
+		if err != nil {
+			t.Fatalf("approve batch failed: %v", err)
+		}
+		if approvedBatch.Status != domain.BatchApproved {
+			t.Errorf("expected approved batch status, got %s", approvedBatch.Status)
+		}
+		if approvedBatch.ApprovedBy == nil || *approvedBatch.ApprovedBy != ownerID {
+			t.Errorf("expected approved_by %s, got %v", ownerID, approvedBatch.ApprovedBy)
 		}
 		if batch.ItemCount != len(items) {
 			t.Errorf("expected item count %d, got %d", len(items), batch.ItemCount)

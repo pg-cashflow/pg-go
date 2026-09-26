@@ -454,6 +454,107 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"batch": batch, "items": items})
 }
 
+type approveBatchBody struct {
+	ExpectedItemCount  int    `json:"expected_item_count" binding:"required"`
+	ExpectedTotalPaise int64  `json:"expected_total_paise" binding:"required"`
+	ReauthConfirmation string `json:"reauth_confirmation"`
+}
+
+// OwnerApprovePayoutBatch handles POST /owner/payouts/batches/:id/approve.
+func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	batchID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	var body approveBatchBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body: expected_item_count and expected_total_paise are required"))
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+		return
+	}
+	if batch.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+		return
+	}
+
+	if batch.Status != domain.BatchDraft {
+		respondErr(c, clientErr(http.StatusConflict, fmt.Sprintf("batch cannot be approved from status '%s'", batch.Status)))
+		return
+	}
+
+	// Affirmative verification check: must match batch item count and total paise
+	if body.ExpectedItemCount != batch.ItemCount || body.ExpectedTotalPaise != batch.TotalAmountPaise {
+		respondErr(c, clientErr(http.StatusBadRequest, fmt.Sprintf("batch affirmative verification mismatch: expected %d items totaling %d paise, batch has %d items totaling %d paise",
+			body.ExpectedItemCount, body.ExpectedTotalPaise, batch.ItemCount, batch.TotalAmountPaise)))
+		return
+	}
+
+	// Check active owners for property to evaluate dual-control vs solo-owner step-up auth
+	var activeOwners []domain.User
+	if h.UserStore != nil {
+		owners, err := h.UserStore.GetByPropertyAndRole(c.Request.Context(), pid, domain.RoleOwner)
+		if err == nil {
+			activeOwners = owners
+		}
+	}
+
+	approvalMode := "dual_control"
+	if len(activeOwners) > 1 {
+		// Strict maker-checker enforcement
+		if uid == batch.CreatedBy {
+			slog.Warn("dual control approval rejected: maker cannot be checker", "batch_id", batch.ID, "user_id", uid)
+			respondErr(c, clientErr(http.StatusForbidden, "dual control required: payout batch must be approved by a different owner"))
+			return
+		}
+	} else {
+		// Solo owner path (or co-owner was removed): require step-up re-authentication confirmation
+		approvalMode = "solo_owner_reauth"
+		if strings.TrimSpace(body.ReauthConfirmation) == "" {
+			respondErr(c, clientErr(http.StatusUnauthorized, "step-up authentication required: reauth_confirmation must be provided for solo-owner batch approval"))
+			return
+		}
+	}
+
+	approvedBatch, err := repo.ApproveBatch(c.Request.Context(), batchID, uid)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	slog.Info("payout batch approved",
+		"batch_id", approvedBatch.ID,
+		"batch_number", approvedBatch.BatchNumber,
+		"approved_by", uid,
+		"approval_mode", approvalMode,
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"batch":         approvedBatch,
+		"approval_mode": approvalMode,
+	})
+}
+
 // OwnerExportPayoutBatch handles GET /owner/payouts/batches/:id/export.
 func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
@@ -479,6 +580,12 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 	}
 	if batch.PropertyID != pid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+		return
+	}
+
+	// Gated on approval: draft or processing batches cannot be exported
+	if batch.Status != domain.BatchApproved {
+		respondErr(c, clientErr(http.StatusConflict, fmt.Sprintf("payout batch is in status '%s'; only approved batches can be exported", batch.Status)))
 		return
 	}
 

@@ -126,6 +126,7 @@ type OutboxStore interface {
 type UserStore interface {
 	Create(ctx context.Context, u *domain.User) error
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
+	GetByPropertyAndRole(ctx context.Context, propertyID uuid.UUID, role domain.Role) ([]domain.User, error)
 }
 
 // PreferencesStore manages user preferences.
