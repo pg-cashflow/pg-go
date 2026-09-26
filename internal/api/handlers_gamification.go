@@ -89,6 +89,14 @@ func (h *Handlers) TenantRedeem(c *gin.Context) {
 		return
 	}
 
+	if h.GamificationStore != nil {
+		reward, err := h.GamificationStore.GetRewardByID(c.Request.Context(), rewardID)
+		if err != nil || reward == nil || reward.PropertyID != tenant.PropertyID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "reward not found"})
+			return
+		}
+	}
+
 	red, err := h.Gamification.RedeemReward(c.Request.Context(), tenant.ID, rewardID)
 	if err != nil {
 		respondErr(c, gamificationClientErr(http.StatusBadRequest, err))
@@ -238,6 +246,15 @@ func (h *Handlers) TenantVoteMenuPoll(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid poll_id"})
 		return
+	}
+
+	if h.GamificationStore != nil {
+		monthYear := time.Now().UTC().Format("2006-01")
+		activePoll, err := h.GamificationStore.GetActiveMenuPoll(c.Request.Context(), tenant.PropertyID, monthYear)
+		if err != nil || activePoll == nil || activePoll.ID != pid {
+			c.JSON(http.StatusNotFound, gin.H{"error": "poll not found"})
+			return
+		}
 	}
 
 	vote := &domain.MenuVote{
@@ -413,9 +430,9 @@ func (h *Handlers) ManagerSubmitInspection(c *gin.Context) {
 		return
 	}
 
-	// Scoped property check for managers
-	if claims.Role == domain.RoleManager && (claims.PropertyID == nil || *claims.PropertyID != propID) {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "manager not authorized for this property"})
+	// Scoped property check
+	if claims.PropertyID == nil || *claims.PropertyID != propID {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
 		return
 	}
 
@@ -479,14 +496,16 @@ type inspectionItemPayload struct {
 // ManagerListInspections lists inspections.
 func (h *Handlers) ManagerListInspections(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
-	propIDStr := c.Query("property_id")
-	if propIDStr == "" && claims.PropertyID != nil {
-		propIDStr = claims.PropertyID.String()
-	}
-	propID, err := uuid.Parse(propIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "property_id is required"})
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
 		return
+	}
+	propID := *claims.PropertyID
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != propID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
 	}
 
 	list, err := h.GamificationStore.ListInspections(c.Request.Context(), propID, nil, nil, 30)
@@ -500,6 +519,10 @@ func (h *Handlers) ManagerListInspections(c *gin.Context) {
 // ManagerResolveInspectionItem upholds or overturns a tenant dispute.
 func (h *Handlers) ManagerResolveInspectionItem(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
+		return
+	}
 	itemID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid item id"})
@@ -514,7 +537,7 @@ func (h *Handlers) ManagerResolveInspectionItem(c *gin.Context) {
 		return
 	}
 
-	if err := h.Gamification.ResolveInspectionItem(c.Request.Context(), itemID, claims.UserID, body.Status); err != nil {
+	if err := h.Gamification.ResolveInspectionItem(c.Request.Context(), *claims.PropertyID, itemID, claims.UserID, body.Status); err != nil {
 		respondErr(c, gamificationClientErr(http.StatusBadRequest, err))
 		return
 	}
@@ -525,6 +548,10 @@ func (h *Handlers) ManagerResolveInspectionItem(c *gin.Context) {
 // ManagerLogViolation records a rule violation.
 func (h *Handlers) ManagerLogViolation(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
+		return
+	}
 	var body struct {
 		TenantID       string `json:"tenant_id"`
 		RuleCode       string `json:"rule_code"`
@@ -542,6 +569,14 @@ func (h *Handlers) ManagerLogViolation(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid tenant_id"})
 		return
+	}
+
+	if h.TenantStore != nil {
+		tenant, err := h.TenantStore.GetByID(c.Request.Context(), tid)
+		if err != nil || tenant == nil || tenant.PropertyID != *claims.PropertyID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+			return
+		}
 	}
 
 	var evidence []byte
@@ -579,6 +614,11 @@ func (h *Handlers) ManagerRecordMeterReading(c *gin.Context) {
 	propID, err := uuid.Parse(body.PropertyID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid property_id"})
+		return
+	}
+
+	if claims.PropertyID == nil || *claims.PropertyID != propID {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
 		return
 	}
 
@@ -620,14 +660,16 @@ func (h *Handlers) ManagerRecordMeterReading(c *gin.Context) {
 // ManagerKitchenHeadcount returns live headcount report for kitchen staff.
 func (h *Handlers) ManagerKitchenHeadcount(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
-	propIDStr := c.Query("property_id")
-	if propIDStr == "" && claims.PropertyID != nil {
-		propIDStr = claims.PropertyID.String()
-	}
-	propID, err := uuid.Parse(propIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "property_id is required"})
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
 		return
+	}
+	propID := *claims.PropertyID
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != propID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
 	}
 
 	dateStr := c.Query("date")
@@ -650,14 +692,16 @@ func (h *Handlers) ManagerKitchenHeadcount(c *gin.Context) {
 // ManagerHazards lists and resolves maintenance hazards.
 func (h *Handlers) ManagerListHazards(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
-	propIDStr := c.Query("property_id")
-	if propIDStr == "" && claims.PropertyID != nil {
-		propIDStr = claims.PropertyID.String()
-	}
-	propID, err := uuid.Parse(propIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "property_id is required"})
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
 		return
+	}
+	propID := *claims.PropertyID
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != propID {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
 	}
 
 	status := c.Query("status")
@@ -672,10 +716,22 @@ func (h *Handlers) ManagerListHazards(c *gin.Context) {
 
 func (h *Handlers) ManagerResolveHazard(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
+	if claims.PropertyID == nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
+		return
+	}
 	hazardID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hazard id"})
 		return
+	}
+
+	if h.GamificationStore != nil {
+		hz, err := h.GamificationStore.GetHazardByID(c.Request.Context(), hazardID)
+		if err != nil || hz == nil || hz.PropertyID != *claims.PropertyID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "hazard not found"})
+			return
+		}
 	}
 
 	var body struct {
@@ -716,6 +772,11 @@ func (h *Handlers) ManagerSubmitVendorInspection(c *gin.Context) {
 		return
 	}
 
+	if claims.PropertyID == nil || *claims.PropertyID != propID {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+		return
+	}
+
 	var photoBytes []byte
 	if body.PhotoBase64 != "" {
 		photoBytes, _ = base64.StdEncoding.DecodeString(body.PhotoBase64)
@@ -744,19 +805,24 @@ func (h *Handlers) ManagerSubmitVendorInspection(c *gin.Context) {
 
 // OwnerGamificationSettings gets gamification rules & budget settings.
 func (h *Handlers) OwnerGetGamificationSettings(c *gin.Context) {
-	propID, err := uuid.Parse(c.Query("property_id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid property_id"})
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
 		return
 	}
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != pid {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
+	}
 
-	settings, err := h.GamificationStore.GetSettings(c.Request.Context(), propID)
+	settings, err := h.GamificationStore.GetSettings(c.Request.Context(), pid)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 
-	rules, err := h.GamificationStore.ListPointRules(c.Request.Context(), propID)
+	rules, err := h.GamificationStore.ListPointRules(c.Request.Context(), pid)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -767,11 +833,16 @@ func (h *Handlers) OwnerGetGamificationSettings(c *gin.Context) {
 
 // OwnerUpdateGamificationSettings updates caps, point values, or floor multipliers.
 func (h *Handlers) OwnerUpdateGamificationSettings(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	var body domain.PropertyGamificationSettings
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
+	body.PropertyID = pid
 
 	if err := h.GamificationStore.UpdateSettings(c.Request.Context(), &body); err != nil {
 		respondErr(c, err)
@@ -783,13 +854,18 @@ func (h *Handlers) OwnerUpdateGamificationSettings(c *gin.Context) {
 
 // OwnerFloorsAndRooms lists floors and rooms for a property.
 func (h *Handlers) OwnerListFloors(c *gin.Context) {
-	propID, err := uuid.Parse(c.Query("property_id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "property_id is required"})
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
 		return
 	}
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != pid {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
+	}
 
-	floors, err := h.GamificationStore.ListFloors(c.Request.Context(), propID)
+	floors, err := h.GamificationStore.ListFloors(c.Request.Context(), pid)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -798,8 +874,11 @@ func (h *Handlers) OwnerListFloors(c *gin.Context) {
 }
 
 func (h *Handlers) OwnerCreateFloor(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	var body struct {
-		PropertyID  string `json:"property_id"`
 		FloorNumber int    `json:"floor_number"`
 		Name        string `json:"name"`
 	}
@@ -807,14 +886,9 @@ func (h *Handlers) OwnerCreateFloor(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	propID, err := uuid.Parse(body.PropertyID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid property_id"})
-		return
-	}
 
 	f := &domain.Floor{
-		PropertyID:  propID,
+		PropertyID:  pid,
 		FloorNumber: body.FloorNumber,
 		Name:        body.Name,
 	}
@@ -826,13 +900,18 @@ func (h *Handlers) OwnerCreateFloor(c *gin.Context) {
 }
 
 func (h *Handlers) OwnerListRooms(c *gin.Context) {
-	propID, err := uuid.Parse(c.Query("property_id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "property_id is required"})
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
 		return
 	}
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != pid {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
+	}
 
-	rooms, err := h.GamificationStore.ListRooms(c.Request.Context(), propID)
+	rooms, err := h.GamificationStore.ListRooms(c.Request.Context(), pid)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -841,8 +920,11 @@ func (h *Handlers) OwnerListRooms(c *gin.Context) {
 }
 
 func (h *Handlers) OwnerCreateRoom(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	var body struct {
-		PropertyID    string `json:"property_id"`
 		FloorID       string `json:"floor_id"`
 		RoomNumber    string `json:"room_number"`
 		Capacity      int16  `json:"capacity"`
@@ -852,19 +934,32 @@ func (h *Handlers) OwnerCreateRoom(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	propID, err := uuid.Parse(body.PropertyID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid property_id"})
-		return
-	}
 	floorID, err := uuid.Parse(body.FloorID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid floor_id"})
 		return
 	}
 
+	// Verify floor belongs to this property
+	floors, err := h.GamificationStore.ListFloors(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	floorFound := false
+	for _, f := range floors {
+		if f.ID == floorID {
+			floorFound = true
+			break
+		}
+	}
+	if !floorFound {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "floor does not belong to this property"})
+		return
+	}
+
 	rm := &domain.Room{
-		PropertyID:    propID,
+		PropertyID:    pid,
 		FloorId:       floorID,
 		RoomNumber:    body.RoomNumber,
 		Capacity:      body.Capacity,
@@ -879,7 +974,10 @@ func (h *Handlers) OwnerCreateRoom(c *gin.Context) {
 
 // OwnerCreateManager provisions a warden/manager user account scoped to a property.
 func (h *Handlers) OwnerCreateManager(c *gin.Context) {
-	claims, _ := auth.ClaimsFromContext(c)
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	var body struct {
 		PropertyID string `json:"property_id"`
 		Phone      string `json:"phone" binding:"required"`
@@ -889,18 +987,17 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 		return
 	}
 
-	propID := claims.PropertyID
 	if body.PropertyID != "" {
-		p, err := uuid.Parse(body.PropertyID)
-		if err == nil {
-			propID = &p
+		if reqPID, err := uuid.Parse(body.PropertyID); err != nil || reqPID != pid {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
 		}
 	}
 
 	u := &domain.User{
 		Phone:      body.Phone,
 		Role:       domain.RoleManager,
-		PropertyID: propID,
+		PropertyID: &pid,
 	}
 	if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
 		respondErr(c, err)

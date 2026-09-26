@@ -612,6 +612,10 @@ func (h *Handlers) GetLeakage(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "unavailable"})
 		return
 	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
@@ -620,6 +624,10 @@ func (h *Handlers) GetLeakage(c *gin.Context) {
 	e, err := h.Finance.Store.GetLeakage(c.Request.Context(), id)
 	if err != nil {
 		respondErr(c, financeClientErr(err))
+		return
+	}
+	if e.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"leakage": e})
@@ -647,6 +655,10 @@ func (h *Handlers) RecommendationAction(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "unavailable"})
 		return
 	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
@@ -655,6 +667,10 @@ func (h *Handlers) RecommendationAction(c *gin.Context) {
 	rec, err := h.Finance.Store.GetRecommendation(c.Request.Context(), id)
 	if err != nil {
 		respondErr(c, financeClientErr(err))
+		return
+	}
+	if rec.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	now := time.Now().UTC()

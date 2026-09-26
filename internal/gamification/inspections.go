@@ -92,12 +92,12 @@ func (s *Service) DisputeInspectionItem(ctx context.Context, itemID uuid.UUID, t
 }
 
 // ResolveInspectionItem allows manager/owner to uphold or overturn a dispute.
-func (s *Service) ResolveInspectionItem(ctx context.Context, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error {
+func (s *Service) ResolveInspectionItem(ctx context.Context, propertyID uuid.UUID, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error {
 	if status != "upheld" && status != "overturned" {
 		return errors.New("resolution status must be 'upheld' or 'overturned'")
 	}
 
-	return s.store.ResolveInspectionItem(ctx, itemID, resolvedBy, status)
+	return s.store.ResolveInspectionItem(ctx, propertyID, itemID, resolvedBy, status)
 }
 
 // EvaluateFloorMultipliers awards a multiplier on individual clean points if the floor average >= threshold.

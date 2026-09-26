@@ -655,15 +655,21 @@ func (r *GamificationRepo) DisputeInspectionItem(ctx context.Context, itemID uui
 	return err
 }
 
-func (r *GamificationRepo) ResolveInspectionItem(ctx context.Context, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error {
+func (r *GamificationRepo) ResolveInspectionItem(ctx context.Context, propertyID uuid.UUID, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error {
 	now := time.Now().UTC()
-	_, err := r.pool.Exec(ctx, `
+	tag, err := r.pool.Exec(ctx, `
 		UPDATE inspection_items
 		SET resolved_at = $2, resolved_by = $3, resolution_status = $4
-		WHERE id = $1`,
-		itemID, now, resolvedBy, status,
+		WHERE id = $1 AND inspection_id IN (SELECT id FROM inspections WHERE property_id = $5)`,
+		itemID, now, resolvedBy, status, propertyID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	return nil
 }
 
 func (r *GamificationRepo) GetFloorCleanlinessAverage(ctx context.Context, floorID uuid.UUID, monthYear string) (float64, error) {

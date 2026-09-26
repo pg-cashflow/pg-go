@@ -76,7 +76,7 @@ type Store interface {
 	ListInspections(ctx context.Context, propertyID uuid.UUID, roomID *uuid.UUID, floorID *uuid.UUID, limit int) ([]domain.Inspection, error)
 	GetInspectionByID(ctx context.Context, id uuid.UUID) (*domain.Inspection, error)
 	DisputeInspectionItem(ctx context.Context, itemID uuid.UUID, disputeNote string) error
-	ResolveInspectionItem(ctx context.Context, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error
+	ResolveInspectionItem(ctx context.Context, propertyID uuid.UUID, itemID uuid.UUID, resolvedBy uuid.UUID, status string) error
 	GetFloorCleanlinessAverage(ctx context.Context, floorID uuid.UUID, monthYear string) (float64, error)
 	CreateVendorInspection(ctx context.Context, vi *domain.VendorInspection) error
 	ListVendorInspections(ctx context.Context, propertyID uuid.UUID, limit int) ([]domain.VendorInspection, error)
