@@ -1,8 +1,7 @@
 name: Deploy pg-app
 
 on:
-  push:
-    branches: [main]
+  # Restore 'push: branches: [main]' once the pg-app-server self-hosted runner is provisioned and registered.
   workflow_dispatch:
 
 jobs:
