@@ -372,4 +372,59 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Errorf("expected ₹7500.00 in exported CSV, got:\n%s", csvContent)
 		}
 	})
+
+	// 10. IDOR Guards: another owner with a different property ID cannot access these endpoints
+	t.Run("IDOR ownership guards", func(t *testing.T) {
+		otherPropID := uuid.New()
+		otherRouter := gin.New()
+		otherOwner := otherRouter.Group("/owner", func(c *gin.Context) {
+			c.Set(auth.ContextClaimsKey, &auth.Claims{
+				UserID:     uuid.New(),
+				PropertyID: &otherPropID,
+				Role:       domain.RoleOwner,
+			})
+		})
+		{
+			otherOwner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
+			otherOwner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
+			otherOwner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
+			otherOwner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
+		}
+
+		// Inspect IDOR check
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/inspect", depID), strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		otherRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden on inspect IDOR, got %d", w.Code)
+		}
+
+		// Add Deduction IDOR check
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/deductions", depID), strings.NewReader(`{"description":"test","amount_paise":100}`))
+		req.Header.Set("Content-Type", "application/json")
+		otherRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden on deductions IDOR, got %d", w.Code)
+		}
+
+		// Settle IDOR check
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/settle", depID), strings.NewReader(`{"actual_vacate_date":"2026-09-15"}`))
+		req.Header.Set("Content-Type", "application/json")
+		otherRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden on settle IDOR, got %d", w.Code)
+		}
+
+		// Export IDOR check
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
+		otherRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden on export IDOR, got %d", w.Code)
+		}
+	})
 }
+

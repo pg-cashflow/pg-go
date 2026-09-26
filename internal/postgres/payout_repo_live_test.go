@@ -32,7 +32,7 @@ type testMirrorer struct {
 func (m *testMirrorer) MirrorDepartureSettlement(
 	ctx context.Context,
 	propertyID, departureID uuid.UUID,
-	depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, proratedRentOwedPaise, receivableBalancePaise int64,
+	depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, outstandingDuesNettedPaise, receivableBalancePaise int64,
 	at time.Time,
 ) error {
 	m.settlements = append(m.settlements, recordedSettlement{
@@ -42,7 +42,7 @@ func (m *testMirrorer) MirrorDepartureSettlement(
 		UnusedRentReversal:     unusedRentReversal,
 		DamagesPaise:           damagesPaise,
 		NetRefundPaise:         netRefundPaise,
-		ProratedRentOwedPaise:  proratedRentOwedPaise,
+		ProratedRentOwedPaise:  outstandingDuesNettedPaise,
 		ReceivableBalancePaise: receivableBalancePaise,
 	})
 	return nil
@@ -81,7 +81,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 
 	// Create test Property
 	propID := uuid.New()
-	inviteCode := fmt.Sprintf("DEP%d", time.Now().UnixNano()%100000)
+	inviteCode := fmt.Sprintf("DEP%s", uuid.New().String()[:8])
 	_, err = pool.Exec(ctx, `
 		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 		VALUES ($1, 'Departure Test PG', '123 Test St', '+919999988888', 'owner@upi', 'Owner', 'owner@test.com', $2)`,
@@ -147,7 +147,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 		pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 		dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		dueCode := fmt.Sprintf("D%05d", (time.Now().UnixNano()+10)%100000)
+		dueCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
 			VALUES ($1, $2, $3, $4, 'rent', 550000, 550000, $5, $6, $7, 'pending')`,
@@ -244,7 +244,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 		pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 		dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		dueCode := fmt.Sprintf("D%05d", (time.Now().UnixNano()+20)%100000)
+		dueCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 		now := time.Now().UTC()
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status, paid_at)
@@ -341,7 +341,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 		pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 		dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		dueCode := fmt.Sprintf("D%05d", (time.Now().UnixNano()+30)%100000)
+		dueCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
 			VALUES ($1, $2, $3, $4, 'rent', 250000, 550000, $5, $6, $7, 'partial')`,
@@ -435,7 +435,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 		pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 		dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		dueCode := fmt.Sprintf("D%05d", (time.Now().UnixNano()+40)%100000)
+		dueCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
 			VALUES ($1, $2, $3, $4, 'rent', 550000, 550000, $5, $6, $7, 'pending')`,
@@ -545,7 +545,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 		pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 		dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		dueCode := fmt.Sprintf("D%05d", (time.Now().UnixNano()+50)%100000)
+		dueCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 		now := time.Now().UTC()
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status, paid_at)

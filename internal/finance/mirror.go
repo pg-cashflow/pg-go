@@ -220,13 +220,13 @@ func (s *Service) SuggestCSVDebit(ctx context.Context, propertyID uuid.UUID, txn
 // Dr deposit_liability (depositPaise)
 // Dr rent_revenue (unusedRentReversal, if > 0)
 // Dr tenant_receivable (receivableBalancePaise, if > 0)
-// Cr rent_revenue (proratedRentOwedPaise, if unpaid cycle netted from deposit)
+// Cr rent_revenue (outstandingDuesNettedPaise, if unpaid cycle or prorated dues netted from deposit)
 // Cr damages_income (damagesPaise, if > 0)
 // Cr refund_payable (netRefundPaise, if > 0)
 func (s *Service) MirrorDepartureSettlement(
 	ctx context.Context,
 	propertyID, departureID uuid.UUID,
-	depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, proratedRentOwedPaise, receivableBalancePaise int64,
+	depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, outstandingDuesNettedPaise, receivableBalancePaise int64,
 	at time.Time,
 ) error {
 	if s == nil || s.Store == nil {
@@ -246,8 +246,8 @@ func (s *Service) MirrorDepartureSettlement(
 	if receivableBalancePaise > 0 {
 		specs = append(specs, LineSpec{Account: domain.AcctTenantReceivable, Debit: receivableBalancePaise, LineKind: "tenant_receivable"})
 	}
-	if proratedRentOwedPaise > 0 {
-		specs = append(specs, LineSpec{Account: domain.AcctRentRevenue, Credit: proratedRentOwedPaise, LineKind: "prorated_rent_earned"})
+	if outstandingDuesNettedPaise > 0 {
+		specs = append(specs, LineSpec{Account: domain.AcctRentRevenue, Credit: outstandingDuesNettedPaise, LineKind: "dues_netted_earned"})
 	}
 	if damagesPaise > 0 {
 		specs = append(specs, LineSpec{Account: domain.AcctDamagesIncome, Credit: damagesPaise, LineKind: "damages_recovery"})

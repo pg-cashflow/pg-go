@@ -64,13 +64,6 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.emptyTxnId` | 400 | Payment | Transaction ID cannot be empty |
 | `payment.ambiguousMatch` | 400 | Payment | Multiple dues match amount within date window |
 | `payment.noMatch` | 400 | Payment | No pending due found matching amount within date window |
-| `payment.refundExceedsBalance` | 400 | Payment | Requested refund amount exceeds remaining refundable balance |
-| `payment.refundSettledDeparture` | 400 | Payment | Cannot issue gateway refund against payment tied to settled departure (Guard A) |
-| `payment.refundNotEligible` | 400 | Payment | Payment is not gateway-eligible or exceeds 180-day refund window |
-| `departure.activeExists` | 409 | Departure | An active departure already exists for this tenant |
-| `departure.notFound` | 404 | Departure | Departure record not found |
-| `payout.payeeNotFound` | 404 | Payout | Payout payee not found or unverified |
-| `payout.batchEmpty` | 400 | Payout | No unbatched payout items available to package |
 | `finance.duplicateRequest` | 409 | Finance | Duplicate idempotency key |
 | `finance.idempotencyRequired` | 400 | Finance | Idempotency-Key header is required |
 | `finance.invalidAmount` | 400 | Finance | Invalid expense or payment amount |
@@ -816,13 +809,6 @@ Validation & error responses:
 | **Payment** | `payment.emptyTxnId` | 400 | UTR or transaction ID was empty or blank |
 | **Payment** | `payment.ambiguousMatch` | 400 | Multiple dues match amount within date window |
 | **Payment** | `payment.noMatch` | 400 | No open due matches the provided payment amount |
-| **Payment** | `payment.refundExceedsBalance` | 400 | Requested refund amount exceeds remaining refundable balance |
-| **Payment** | `payment.refundSettledDeparture` | 400 | Cannot issue gateway refund against payment tied to settled departure (Guard A) |
-| **Payment** | `payment.refundNotEligible` | 400 | Payment is not gateway-eligible or exceeds 180-day refund window |
-| **Departure** | `departure.activeExists` | 409 | An active departure already exists for this tenant |
-| **Departure** | `departure.notFound` | 404 | Departure record not found |
-| **Payout** | `payout.payeeNotFound` | 404 | Payout payee not found or unverified |
-| **Payout** | `payout.batchEmpty` | 400 | No unbatched payout items available to package |
 | **Finance** | `finance.duplicateRequest` | 409 | Mutating financial request with duplicate Idempotency-Key |
 | **Finance** | `finance.idempotencyRequired` | 400 | Idempotency-Key header is missing on mutating financial endpoint |
 | **Finance** | `finance.invalidAmount` | 400 | Financial amount in paise must be positive integer |

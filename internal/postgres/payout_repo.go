@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ type DepartureMirrorer interface {
 	MirrorDepartureSettlement(
 		ctx context.Context,
 		propertyID, departureID uuid.UUID,
-		depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, proratedRentOwedPaise, receivableBalancePaise int64,
+		depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, outstandingDuesNettedPaise, receivableBalancePaise int64,
 		at time.Time,
 	) error
 }
@@ -919,17 +920,19 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 
 	// Post balanced financial mirror journals
 	if r.mirrorer != nil {
-		_ = r.mirrorer.MirrorDepartureSettlement(
+		if err := r.mirrorer.MirrorDepartureSettlement(
 			ctx,
 			dep.PropertyID, dep.ID,
 			dep.DepositAmountPaise,
 			unusedRentRefundPaise,
 			totalDeductions,
 			netRefundPaise,
-			proratedRentOwedPaise,
+			outstandingDuesNettedPaise,
 			receivableBalancePaise,
 			now,
-		)
+		); err != nil {
+			slog.Error("failed to post departure settlement financial mirror journal", "departure_id", dep.ID, "err", err)
+		}
 	}
 
 	return &SettleDepartureResult{

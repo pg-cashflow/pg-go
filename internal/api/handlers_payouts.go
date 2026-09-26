@@ -39,7 +39,7 @@ func (h *Handlers) OwnerCreateDeparture(c *gin.Context) {
 
 	var body createDepartureBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
@@ -92,7 +92,7 @@ func (h *Handlers) OwnerCreateDeparture(c *gin.Context) {
 	}
 
 	if err := repo.CreateDeparture(c.Request.Context(), dep); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create departure: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -106,13 +106,29 @@ type inspectDepartureBody struct {
 
 // OwnerInspectDeparture handles POST /owner/departures/:id/inspect.
 func (h *Handlers) OwnerInspectDeparture(c *gin.Context) {
-	_, ok := propertyIDFromClaims(c)
+	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
 	depID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid departure id"})
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
+		return
+	}
+	if dep.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
 		return
 	}
 
@@ -124,14 +140,8 @@ func (h *Handlers) OwnerInspectDeparture(c *gin.Context) {
 		inspectedAt = body.InspectedAt.UTC()
 	}
 
-	repo := h.getPayoutRepo()
-	if repo == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
-		return
-	}
-
 	if err := repo.UpdateDepartureInspection(c.Request.Context(), depID, inspectedAt, body.Notes); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record inspection: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -147,7 +157,7 @@ type addDeductionBody struct {
 
 // OwnerAddDepartureDeduction handles POST /owner/departures/:id/deductions.
 func (h *Handlers) OwnerAddDepartureDeduction(c *gin.Context) {
-	_, ok := propertyIDFromClaims(c)
+	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
@@ -159,11 +169,27 @@ func (h *Handlers) OwnerAddDepartureDeduction(c *gin.Context) {
 
 	var body addDeductionBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 	if body.AmountPaise <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_paise must be positive"})
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
+		return
+	}
+	if dep.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
 		return
 	}
 
@@ -180,14 +206,8 @@ func (h *Handlers) OwnerAddDepartureDeduction(c *gin.Context) {
 		Status:           status,
 	}
 
-	repo := h.getPayoutRepo()
-	if repo == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
-		return
-	}
-
 	if err := repo.AddDeduction(c.Request.Context(), ded); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add deduction: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -203,7 +223,7 @@ type settleDepartureBody struct {
 
 // OwnerSettleDeparture handles POST /owner/departures/:id/settle.
 func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
-	_, ok := propertyIDFromClaims(c)
+	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
@@ -215,7 +235,7 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 
 	var body settleDepartureBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
@@ -231,6 +251,16 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 		return
 	}
 
+	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
+		return
+	}
+	if dep.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
+		return
+	}
+
 	res, err := repo.SettleDepartureUnderLock(c.Request.Context(), postgres.SettleDepartureParams{
 		DepartureID:       depID,
 		ActualVacateDate:  vacateDate,
@@ -239,7 +269,7 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 		Notes:             body.Notes,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "settle departure failed: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -280,7 +310,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 
 	var body createPayeeBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
@@ -334,7 +364,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	}
 
 	if err := repo.CreatePayee(c.Request.Context(), payee); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create payee: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -354,7 +384,7 @@ func (h *Handlers) OwnerListPayees(c *gin.Context) {
 	}
 	payees, err := repo.ListPayeesByProperty(c.Request.Context(), pid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list payees: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"payees": payees})
@@ -373,7 +403,7 @@ func (h *Handlers) OwnerListUnbatchedPayoutItems(c *gin.Context) {
 	}
 	items, err := repo.ListUnbatchedPendingPayoutItems(c.Request.Context(), pid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list unbatched items: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
@@ -411,7 +441,11 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 	secret := []byte(h.getChecksumSecret())
 	batch, items, err := repo.CreateBatchFromUnbatchedItems(c.Request.Context(), pid, uid, batchNumber, secret, body.Notes)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to create batch: " + err.Error()})
+		if strings.Contains(err.Error(), "no unbatched") {
+			respondErr(c, clientErr(http.StatusBadRequest, "no unbatched pending payout items found"))
+			return
+		}
+		respondErr(c, err)
 		return
 	}
 
@@ -420,7 +454,7 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 
 // OwnerExportPayoutBatch handles GET /owner/payouts/batches/:id/export.
 func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
-	_, ok := propertyIDFromClaims(c)
+	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
@@ -441,10 +475,14 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
 		return
 	}
+	if batch.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+		return
+	}
 
 	items, err := repo.ListPayoutItemsByBatch(c.Request.Context(), batchID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list items: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 

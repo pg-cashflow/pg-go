@@ -238,3 +238,60 @@ func TestIdempotencyDuplicates(t *testing.T) {
 		t.Fatalf("expected ErrDuplicateIdempotency on duplicate key, got: %v", err)
 	}
 }
+
+func TestMirrorDepartureSettlement_WithPriorOverdueDues_Balances(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+	depID := uuid.New()
+
+	// Case 1: Deposit covers overdue dues + deductions, remainder refunded to tenant.
+	// Deposit: 10,000 INR (1,000,000 paise)
+	// Deductions/damages: 1,000 INR (100,000 paise)
+	// Overdue dues netted: 3,000 INR (300,000 paise)
+	// Net refund: 6,000 INR (600,000 paise)
+	err := svc.MirrorDepartureSettlement(ctx, pid, depID, 1_000_000, 0, 100_000, 600_000, 300_000, 0, time.Now())
+	if err != nil {
+		t.Fatalf("MirrorDepartureSettlement failed: %v", err)
+	}
+
+	lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal failed: %v", err)
+	}
+	var debits, credits int64
+	for _, l := range lines {
+		debits += l.DebitPaise
+		credits += l.CreditPaise
+	}
+	if debits != credits || debits != 1_000_000 {
+		t.Fatalf("journal imbalance: debits=%d credits=%d", debits, credits)
+	}
+
+	// Case 2: Overdue dues + damages exceed deposit, leaving a receivable balance.
+	// Deposit: 1,000,000 paise
+	// Deductions: 200,000 paise
+	// Overdue dues netted: 1,200,000 paise
+	// Net refund: 0 paise
+	// Receivable balance: 400,000 paise
+	depID2 := uuid.New()
+	err = svc.MirrorDepartureSettlement(ctx, pid, depID2, 1_000_000, 0, 200_000, 0, 1_200_000, 400_000, time.Now())
+	if err != nil {
+		t.Fatalf("MirrorDepartureSettlement with receivable failed: %v", err)
+	}
+
+	lines2, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal failed: %v", err)
+	}
+	var totalD, totalC int64
+	for _, l := range lines2 {
+		totalD += l.DebitPaise
+		totalC += l.CreditPaise
+	}
+	if totalD != totalC {
+		t.Fatalf("cumulative journal imbalance: totalD=%d totalC=%d", totalD, totalC)
+	}
+}
+
