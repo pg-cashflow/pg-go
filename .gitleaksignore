@@ -1,0 +1,10 @@
+# Test fixtures and example configuration false-positives
+37509ccb9a63c0117d7a40adf0362a4fb1ad4c64:internal/api/handlers_finance_test.go:generic-api-key:19
+37509ccb9a63c0117d7a40adf0362a4fb1ad4c64:internal/api/handlers_gamification_test.go:generic-api-key:233
+07be300ff91ef3c0c3d2373a868e6765901ca622:internal/api/handlers_auth_test.go:generic-api-key:47
+07be300ff91ef3c0c3d2373a868e6765901ca622:internal/api/error_characterization_test.go:generic-api-key:143
+07be300ff91ef3c0c3d2373a868e6765901ca622:internal/api/handlers_preferences_test.go:generic-api-key:51
+07be300ff91ef3c0c3d2373a868e6765901ca622:internal/api/handlers_search_test.go:generic-api-key:17
+1ce5b395c9de4a2894e6a3711af3fc38dbebfcf7:deploy/.env.example:generic-api-key:12
+1ce5b395c9de4a2894e6a3711af3fc38dbebfcf7:internal/api/router_test.go:generic-api-key:69
+888e8dfbc202741efce2dbd6f247f1fe15ee2246:internal/api/handlers_gamification_test.go:generic-api-key:113
