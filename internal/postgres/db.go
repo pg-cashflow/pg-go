@@ -45,7 +45,8 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 
 // Migrate applies pending *.sql files from dir in lexical order.
 // Serializes concurrent migrations across processes or concurrent test packages
-// using a Postgres advisory lock (0x50474D4947524154 / 'PGMIGRAT').
+// using transaction-scoped advisory locks (0x50474D4947524154 / 'PGMIGRAT'),
+// ensuring full compatibility with both direct connections and PgBouncer transaction-mode pooling.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -54,14 +55,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	defer conn.Release()
 
 	// 64-bit advisory lock key allocated to pg-go schema migrations: ASCII 'PGMIGRAT' (0x50474D4947524154).
-	// Distinct from other application advisory locks (e.g. KYC expiry reaper: 0x4B5943455850).
 	const migrationLockID int64 = 0x50474D4947524154 // 'PGMIGRAT'
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockID); err != nil {
-		return fmt.Errorf("acquire migration advisory lock: %w", err)
-	}
-	defer func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockID)
-	}()
 
 	_, err = conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -85,27 +79,34 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	sort.Strings(files)
 
 	for _, name := range files {
-		var exists bool
-		if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
-			return err
-		}
-		if exists {
-			continue
-		}
 		body, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			return err
 		}
+
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		// Transaction-level advisory lock ensures serialized execution across concurrent workers
+
+		// Transaction-level advisory lock guarantees serialized execution across concurrent workers
 		// even when connected through PgBouncer in transaction-pooling mode.
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrationLockID); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("acquire migration tx advisory lock: %w", err)
+			return fmt.Errorf("acquire migration tx advisory lock for %s: %w", name, err)
 		}
+
+		// Check existence inside the locked transaction to prevent TOCTOU races between concurrent runners
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if exists {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+
 		if _, err := tx.Exec(ctx, string(body)); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply %s: %w", name, err)
