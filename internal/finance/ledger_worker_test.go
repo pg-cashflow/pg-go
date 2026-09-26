@@ -21,6 +21,17 @@ type mockMirrorer struct {
 	fail  bool
 }
 
+type mockAlerter struct {
+	calledWith []*domain.LedgerOutboxEvent
+	lastError  string
+}
+
+func (a *mockAlerter) NotifyDeadLetter(ctx context.Context, evt *domain.LedgerOutboxEvent, failureErr string) error {
+	a.calledWith = append(a.calledWith, evt)
+	a.lastError = failureErr
+	return nil
+}
+
 func (m *mockMirrorer) MirrorDepartureSettlement(
 	ctx context.Context,
 	propertyID, departureID uuid.UUID,
@@ -119,7 +130,8 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 
 	repo := postgres.NewLedgerOutboxRepo(pool)
 	mirror := &mockMirrorer{}
-	worker := NewLedgerOutboxWorker(pool, repo, mirror)
+	alerter := &mockAlerter{}
+	worker := NewLedgerOutboxWorker(pool, repo, mirror, alerter)
 
 	depID := uuid.New()
 	now := time.Now().UTC()
@@ -217,6 +229,9 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	if nextRetry == nil {
 		t.Errorf("expected next_retry_at to be populated")
 	}
+	if len(alerter.calledWith) != 0 {
+		t.Errorf("expected 0 dead-letter alerts before reaching max attempts, got %d", len(alerter.calledWith))
+	}
 
 	// Reset next_retry_at to past so it can be re-locked
 	_, _ = pool.Exec(ctx, `UPDATE ledger_outbox_events SET next_retry_at = now() - interval '1 second' WHERE id = $1`, failEvtID)
@@ -229,6 +244,11 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	}
 	if failedAt == nil {
 		t.Errorf("expected failed_at to be set after reaching max attempts (dead letter escalation)")
+	}
+	if len(alerter.calledWith) != 1 {
+		t.Errorf("expected exactly 1 dead-letter alert on max attempts, got %d", len(alerter.calledWith))
+	} else if alerter.calledWith[0].ID != failEvtID {
+		t.Errorf("expected alert for event %d, got %d", failEvtID, alerter.calledWith[0].ID)
 	}
 
 	// 4. Test Secondary Reconciliation Sweep

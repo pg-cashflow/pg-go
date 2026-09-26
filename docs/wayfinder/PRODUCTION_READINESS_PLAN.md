@@ -38,6 +38,7 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
 | **Ticket 6: Automated Security** | Leaked credentials, vulnerable dependencies | Gitleaks scan 100% clean across all 28 commits (0 leaks found). `govulncheck` call-graph scan verified 0 reachable symbol vulnerabilities across 42 packages. `GO-2026-5932` documented as an acknowledged exception. | **Verified** (`govulncheck-report.json`, `gitleaks-report.json`) |
 | **Ticket 7: Capacity & Scaling** | 1,000+ user bursts, pool starvation, PgBouncer leaks | Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns`. Streamlined `pg_advisory_xact_lock` inside migration transactions. `http.Server` production timeouts (30s read, 60s write, 120s idle). Bounded rate limiter (10,000 cap, 10m TTL sweep). | **Verified** (`871e4b8`, `ccea9fc`) |
 | **Track I: Gateway Disputes** | Silent chargeback clawbacks, retry storms, ledger corruption | Ingestion of `PAYMENT_DISPUTE_CREATED_WEBHOOK` & `DISPUTE_STATUS_UPDATE_WEBHOOK`. Audit logging to `webhook_events` as `dispute_action_required`, loud operator alert via `slog.Error`, in-app owner notification `EvtPaymentDisputed`. Zero automated ledger/due mutation invariant. | **Verified** (`internal/api/handlers_pay.go`, `internal/cashfree/webhook.go`) |
+| **Track J: Outbox Dead-Letter Alerting** | Silently dropped unmirrored ledger events | Integration of `DeadLetterNotifier` and `EmailDeadLetterNotifier` in `internal/finance/alert.go`. When an unmirrored event exceeds `MaxAttempts`, it triggers loud `slog.Error` escalation and dispatches forensic email alerts to operators, preventing silent desynchronization. | **Verified** (`internal/finance/ledger_worker.go`, `internal/finance/alert.go`) |
 
 ---
 
@@ -185,6 +186,12 @@ In `internal/cashfree/webhook.go` and `internal/api/handlers_pay.go`:
 * **Zero Ledger Mutation Invariant**: A dispute is a provisional contestation by the cardholder/issuing bank, not an authorized refund. The system **never** automatically reverses double-entry journal entries or marks the due unpaid upon dispute creation. Automated mutation would introduce ledger corruption and duplicate debits if the merchant contests the dispute with proof of accommodation and wins.
 * **Operator Alerting & Notification**: Emits high-priority `slog.Error` containing dispute details, due ID, and amount, and publishes `domain.EvtPaymentDisputed` routing an urgent notification to the property owner.
 * **HTTP 200 OK**: Always returns 200 OK to the gateway to acknowledge receipt and prevent webhook retry storms.
+
+### F. Transactional Outbox Dead-Letter Active Escalation
+In `internal/finance/alert.go` and `internal/finance/ledger_worker.go`:
+* **DeadLetterNotifier Interface**: Enables domain-specific operator notifications upon terminal outbox failure without coupling across unrelated subsystems.
+* **EmailDeadLetterNotifier**: Wraps `mailer.Mailer` to send structured forensic alerts containing Event ID, Type, Property ID, Source ID, Idempotency Key, Created At, and Terminal Error.
+* **Loud Escalation Invariant**: When an event hits `attempts >= MaxAttempts`, failure state is committed to PostgreSQL, loud `slog.Error` is emitted with full context, and `NotifyDeadLetter` is actively dispatched to page operators.
 
 ---
 

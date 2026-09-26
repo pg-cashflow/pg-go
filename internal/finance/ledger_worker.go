@@ -29,14 +29,25 @@ type LedgerOutboxWorker struct {
 	pool     *pgxpool.Pool
 	repo     *postgres.LedgerOutboxRepo
 	mirrorer LedgerMirrorer
+	alerter  DeadLetterNotifier
 }
 
-func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, mirrorer LedgerMirrorer) *LedgerOutboxWorker {
+func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, mirrorer LedgerMirrorer, alerter ...DeadLetterNotifier) *LedgerOutboxWorker {
+	var a DeadLetterNotifier
+	if len(alerter) > 0 {
+		a = alerter[0]
+	}
 	return &LedgerOutboxWorker{
 		pool:     pool,
 		repo:     repo,
 		mirrorer: mirrorer,
+		alerter:  a,
 	}
+}
+
+// SetAlerter sets or replaces the dead-letter notifier for this worker.
+func (w *LedgerOutboxWorker) SetAlerter(a DeadLetterNotifier) {
+	w.alerter = a
 }
 
 // ProcessBatch processes a batch of eligible pending ledger outbox events.
@@ -103,7 +114,27 @@ func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) e
 	if err := w.repo.RecordEventFailureTx(ctx, tx, evt, newAttempts, dispatchErr.Error(), nextRetry, isDeadLetter); err != nil {
 		return fmt.Errorf("record event failure tx: %w", err)
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit failure tx: %w", err)
+	}
+
+	if isDeadLetter {
+		slog.Error("CRITICAL: ledger outbox event exceeded max attempts - financial books desynchronized",
+			"event_id", evt.ID,
+			"event_type", evt.EventType,
+			"source_id", evt.SourceID,
+			"property_id", evt.PropertyID,
+			"attempts", newAttempts,
+			"error", dispatchErr.Error(),
+		)
+		if w.alerter != nil {
+			if alertErr := w.alerter.NotifyDeadLetter(ctx, evt, dispatchErr.Error()); alertErr != nil {
+				slog.Error("failed to dispatch dead-letter alert", "event_id", evt.ID, "err", alertErr)
+			}
+		}
+	}
+
+	return dispatchErr
 }
 
 func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOutboxEvent) error {

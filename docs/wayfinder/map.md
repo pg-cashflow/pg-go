@@ -30,14 +30,15 @@
 - [Track G (Ticket 6): Automated Security & Dependency Vulnerability Audit](file:///c:/Users/divak/Downloads/pg-go/go.mod): Resolved in commit `8e55f48` and persisted in `6587ac1`. 28/28 commits clean under Gitleaks (0 leaks found, verified via `gitleaks detect -v` and `gitleaks-report.json`). `govulncheck` call-graph scan verified 0 reachable symbol vulnerabilities across 42 packages (`govulncheck-report.json`). Documented permanent module-level deprecation advisory `GO-2026-5932` (`x/crypto/openpgp`) with 0 reachable call sites. Transitive advisories cleared by bumping `grpc` to `v1.83.2` and `golang.org/x/crypto` to `v0.56.0`.
 - [Track H (Ticket 7): Capacity & Connection-Pool Hardening (1000+ Concurrent Scale)](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/db.go): Resolved. Configurable `DATABASE_MAX_CONNS` (default 25) with proportional `MinConns` in `db.go`; `pg_advisory_xact_lock` dual-locking inside migration tx and `DATABASE_URL_UNPOOLED`/`DIRECT_URL` fallback for PgBouncer/Neon compatibility in `cmd/migrate`; production timeouts (`ReadTimeout: 30s`, `WriteTimeout: 60s`, `IdleTimeout: 120s`) on `http.Server` in `cmd/server/main.go`; and memory-bounded rate limiting (10,000 max entries, 10m TTL sweep, oldest eviction on saturation) in `internal/api/ratelimit.go`.
 - [Track I (Ticket 8): Gateway Dispute & Chargeback Webhook Fail-Safe Handling](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_i_gateway_dispute_handling.md): Resolved. Added Cashfree dispute webhook parser (`DISPUTE_CREATED_WEBHOOK`, `PAYMENT_DISPUTE_CREATED_WEBHOOK`, `DISPUTE_STATUS_UPDATE_WEBHOOK`) with flexible alphanumeric ID deserialization. Integrated fail-safe handler recording `dispute_action_required` in `webhook_events`, loud operator alert via `slog.Error`, and property-scoped in-app notification `EvtPaymentDisputed`. Enforces strict fail-safe isolation and zero automated ledger reversal invariant (a dispute is a contested claim, not an approved refund) while responding HTTP 200 OK to prevent gateway retry storms.
+- [Track J (Ticket 9): Ledger Outbox Dead-Letter Active Operator Alerting](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_j_ledger_outbox_dead_letter_alerting.md): Resolved. Added `DeadLetterNotifier` interface and `EmailDeadLetterNotifier` in `internal/finance/alert.go` using `mailer.Mailer` with structured HTML forensic metadata. Integrated active escalation into `LedgerOutboxWorker` in `internal/finance/ledger_worker.go`, triggering loud `slog.Error` and email notification when events exceed `MaxAttempts`. Verified via unit tests in `alert_test.go` and `ledger_worker_test.go`.
 
 ## Frontier (Open Tickets)
 
-- None currently active. All production-readiness roadmap tickets (Tracks 0 through I / Tickets 1 through 8) are resolved and verified with 100% green tests.
+- None currently active. All production-readiness roadmap tickets (Tracks 0 through J / Tickets 1 through 9) are resolved and verified with 100% green tests.
 
 ## Not yet specified
 
-- Post-commit journal event reconciliation / dead-letter queue design.
+- None remaining. All operational and money-handling tracks fully specified and closed.
 
 ## Out of scope
 
