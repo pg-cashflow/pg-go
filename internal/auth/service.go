@@ -31,6 +31,7 @@ var (
 	ErrInvalidFirebaseToken  = errors.New("invalid firebase token")
 	ErrFirebaseNotConfigured = errors.New("firebase auth not configured")
 	ErrEmailNotVerified      = errors.New("firebase email not verified")
+	ErrStaleAuthToken        = errors.New("auth token is stale: fresh re-authentication required")
 )
 
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
@@ -75,9 +76,15 @@ func (s *Service) SetFirebaseVerifier(v FirebaseTokenVerifier) {
 	s.firebase = v
 }
 
-// RequestOTP generates, stores (hashed), and SMS-sends an OTP.
+// RequestOTP generates, stores (hashed), and SMS-sends an OTP with login copy.
 // Max 3 requests per phone per 10 minutes.
 func (s *Service) RequestOTP(ctx context.Context, phone string) error {
+	return s.RequestOTPWithPurpose(ctx, phone, "login")
+}
+
+// RequestOTPWithPurpose generates, stores (hashed), and SMS-sends an OTP tailored to a specific purpose.
+// Max 3 requests per phone per 10 minutes.
+func (s *Service) RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error {
 	since := time.Now().UTC().Add(-OTPRateWindow)
 	n, err := s.otp.CountRecent(ctx, phone, since)
 	if err != nil {
@@ -103,10 +110,47 @@ func (s *Service) RequestOTP(ctx context.Context, phone string) error {
 		return fmt.Errorf("store otp: %w", err)
 	}
 
-	msg := fmt.Sprintf("Your login OTP is %s. Valid for %d minutes.", code, int(OTPTTL.Minutes()))
+	var msg string
+	switch purpose {
+	case "payout_approval":
+		msg = fmt.Sprintf("Your payout approval code is %s. Valid for %d minutes.", code, int(OTPTTL.Minutes()))
+	default:
+		msg = fmt.Sprintf("Your login OTP is %s. Valid for %d minutes.", code, int(OTPTTL.Minutes()))
+	}
+
 	if err := s.gateway.Send(ctx, phone, msg); err != nil {
 		return fmt.Errorf("send otp sms: %w", err)
 	}
+	return nil
+}
+
+// VerifyStepUpOTP validates an OTP for step-up reauthentication without issuing a new JWT.
+// Marks the OTP as used to prevent replay attacks.
+func (s *Service) VerifyStepUpOTP(ctx context.Context, phone, otp string) error {
+	req, err := s.otp.LatestUnused(ctx, phone)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvalidOTP
+		}
+		return fmt.Errorf("load otp: %w", err)
+	}
+
+	if time.Now().UTC().After(req.ExpiresAt) {
+		return ErrOTPExpired
+	}
+	if req.Attempts >= OTPMaxAttempts {
+		return ErrOTPLocked
+	}
+
+	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
+		_ = s.otp.IncrementAttempts(ctx, req.ID)
+		return ErrInvalidOTP
+	}
+
+	if err := s.otp.MarkUsed(ctx, req.ID); err != nil {
+		return fmt.Errorf("mark otp used: %w", err)
+	}
+
 	return nil
 }
 
@@ -207,6 +251,26 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		return "", nil, err
 	}
 	return s.finishLogin(ctx, user)
+}
+
+// VerifyFirebaseStepUp validates a Firebase ID token and ensures the token's auth_time is within maxAge.
+func (s *Service) VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (FirebaseIdentity, error) {
+	if s.firebase == nil {
+		return FirebaseIdentity{}, ErrFirebaseNotConfigured
+	}
+	ident, err := s.firebase.IdentityFromIDToken(ctx, idToken)
+	if err != nil {
+		return FirebaseIdentity{}, err
+	}
+	if ident.UID == "" {
+		return FirebaseIdentity{}, ErrInvalidFirebaseToken
+	}
+	if maxAge > 0 {
+		if ident.AuthTime.IsZero() || time.Since(ident.AuthTime) > maxAge {
+			return ident, ErrStaleAuthToken
+		}
+	}
+	return ident, nil
 }
 
 // IssueTokenForVerifiedPhone loads or creates the user for a verified phone and issues a JWT.

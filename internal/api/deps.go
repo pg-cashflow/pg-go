@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -37,8 +38,11 @@ type KYCService interface {
 // AuthService handles Firebase ID-token exchange (and legacy OTP helpers kept for rollback).
 type AuthService interface {
 	RequestOTP(ctx context.Context, phone string) error
+	RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error
 	VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error)
+	VerifyStepUpOTP(ctx context.Context, phone, otp string) error
 	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)
+	VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (auth.FirebaseIdentity, error)
 }
 
 // MagicLinkService resolves and creates payment tokens.
@@ -127,6 +131,7 @@ type UserStore interface {
 	Create(ctx context.Context, u *domain.User) error
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
 	GetByPropertyAndRole(ctx context.Context, propertyID uuid.UUID, role domain.Role) ([]domain.User, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 }
 
 // PreferencesStore manages user preferences.

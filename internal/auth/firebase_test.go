@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -17,6 +18,7 @@ type stubFirebaseVerifier struct {
 	phone         string
 	email         string
 	emailVerified bool
+	authTime      time.Time
 	err           error
 }
 
@@ -29,6 +31,7 @@ func (s stubFirebaseVerifier) IdentityFromIDToken(_ context.Context, _ string) (
 		Phone:         s.phone,
 		Email:         s.email,
 		EmailVerified: s.emailVerified,
+		AuthTime:      s.authTime,
 	}, nil
 }
 

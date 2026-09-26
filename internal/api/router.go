@@ -249,6 +249,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 			owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
 			owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
+			owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
 			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 		}
 

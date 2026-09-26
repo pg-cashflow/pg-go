@@ -41,6 +41,15 @@ func (m *mockTenantStoreForPayouts) GetIDPhoto(_ context.Context, _ uuid.UUID) (
 	return nil, nil
 }
 
+type mockSMSForPayouts struct {
+	sent []string
+}
+
+func (m *mockSMSForPayouts) Send(_ context.Context, phone, message string) error {
+	m.sent = append(m.sent, message)
+	return nil
+}
+
 func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
@@ -131,12 +140,16 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	userRepo := postgres.NewUserRepo(pool)
+	mockSMS := &mockSMSForPayouts{}
+	otpRepo := postgres.NewOTPRepo(pool)
+	authSvc := auth.NewService(otpRepo, userRepo, nil, nil, mockSMS, "test_otp_secret_32_characters_long", cfg.JWTSecret)
 	h := &Handlers{
 		Deps: Deps{
 			Pool:                 pool,
 			PayoutRepo:           payoutRepo,
 			TenantStore:          tenantStore,
 			UserStore:            userRepo,
+			Auth:                 authSvc,
 			PayoutChecksumSecret: "test_secret_for_http_export",
 		},
 	}
@@ -160,6 +173,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 		owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
 		owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
+		owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
 		owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 	}
 
@@ -379,7 +393,22 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Fatalf("expected 400 Bad Request on affirmative mismatch, got %d: %s", w.Code, w.Body.String())
 		}
 
-		// Missing reauth confirmation for solo owner
+		// Arbitrary placeholder string ("CONFIRM_TEST") is strictly rejected (401 Unauthorized)
+		fakeReauthBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 750000,
+			"reauth_confirmation": "CONFIRM_TEST",
+		}
+		fakeJSON, _ := json.Marshal(fakeReauthBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(fakeJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized with arbitrary placeholder string, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Missing credentials entirely
 		noReauthBody := map[string]interface{}{
 			"expected_item_count":  1,
 			"expected_total_paise": 750000,
@@ -390,14 +419,46 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusUnauthorized {
-			t.Fatalf("expected 401 Unauthorized without reauth_confirmation, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("expected 401 Unauthorized without credentials, got %d: %s", w.Code, w.Body.String())
 		}
 
-		// Valid approval with affirmative matching and reauth confirmation
+		// Request OTP trigger endpoint
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve/request-otp", batchID), nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK requesting OTP, got %d: %s", w.Code, w.Body.String())
+		}
+		if len(mockSMS.sent) == 0 {
+			t.Fatalf("expected SMS to be sent")
+		}
+		smsMsg := mockSMS.sent[len(mockSMS.sent)-1]
+		if !strings.Contains(smsMsg, "Your payout approval code is") {
+			t.Fatalf("expected payout approval copy in SMS, got: %s", smsMsg)
+		}
+		smsParts := strings.Split(smsMsg, " ")
+		approvalCode := strings.TrimSuffix(smsParts[5], ".")
+
+		// Wrong OTP rejection
+		wrongBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 750000,
+			"otp":                  "000000",
+		}
+		wrongJSON, _ := json.Marshal(wrongBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(wrongJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized with wrong OTP, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Valid approval with affirmative matching and real OTP
 		validBody := map[string]interface{}{
 			"expected_item_count":  1,
 			"expected_total_paise": 750000,
-			"reauth_confirmation": "CONFIRM_PAYOUT_BATCH",
+			"otp":                  approvalCode,
 		}
 		validJSON, _ := json.Marshal(validBody)
 		w = httptest.NewRecorder()
@@ -405,7 +466,16 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK approving batch, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("expected 200 OK approving batch with valid OTP, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Replay attack with same OTP must be rejected (401 Unauthorized or 409 Conflict)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(validJSON))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusConflict && w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized or 409 Conflict on replay, got %d: %s", w.Code, w.Body.String())
 		}
 
 		// Export Payout Batch CSV after approval - must succeed
@@ -523,9 +593,26 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Fatalf("delete second owner: %v", err)
 		}
 
-		// Now creator tries to approve with step-up reauth -> gracefully succeeds (doesn't brick)
+		// Request OTP for solo fallback
 		w = httptest.NewRecorder()
-		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", fallbackBatchID), strings.NewReader(`{"expected_item_count":1,"expected_total_paise":150000,"reauth_confirmation":"CONFIRM_FALLBACK"}`))
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve/request-otp", fallbackBatchID), nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK requesting OTP for fallback batch, got %d: %s", w.Code, w.Body.String())
+		}
+		fbMsg := mockSMS.sent[len(mockSMS.sent)-1]
+		fbParts := strings.Split(fbMsg, " ")
+		fbCode := strings.TrimSuffix(fbParts[5], ".")
+
+		// Now creator tries to approve with step-up reauth OTP -> gracefully succeeds (doesn't brick)
+		w = httptest.NewRecorder()
+		approveBody := map[string]interface{}{
+			"expected_item_count":  1,
+			"expected_total_paise": 150000,
+			"otp":                  fbCode,
+		}
+		approveJSON, _ := json.Marshal(approveBody)
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", fallbackBatchID), bytes.NewReader(approveJSON))
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {

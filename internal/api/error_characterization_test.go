@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
@@ -218,12 +219,27 @@ func (s *stubAuthService) RequestOTP(ctx context.Context, phone string) error {
 	return s.reqOTPErr
 }
 
+func (s *stubAuthService) RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error {
+	return s.reqOTPErr
+}
+
 func (s *stubAuthService) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (string, *domain.User, error) {
 	return s.verifyOTPTkn, s.verifyOTPUsr, s.verifyOTPErr
 }
 
+func (s *stubAuthService) VerifyStepUpOTP(ctx context.Context, phone, otp string) error {
+	return s.verifyOTPErr
+}
+
 func (s *stubAuthService) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (string, *domain.User, error) {
 	return s.verifyFBTkn, s.verifyFBUsr, s.verifyFBErr
+}
+
+func (s *stubAuthService) VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (auth.FirebaseIdentity, error) {
+	if s.verifyFBErr != nil {
+		return auth.FirebaseIdentity{}, s.verifyFBErr
+	}
+	return auth.FirebaseIdentity{UID: "stub-firebase-uid", AuthTime: time.Now().UTC()}, nil
 }
 
 func TestOTPVerifyCharacterization(t *testing.T) {

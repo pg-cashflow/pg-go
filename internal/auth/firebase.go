@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	firebase "firebase.google.com/go/v4"
 	fbauth "firebase.google.com/go/v4/auth"
@@ -16,6 +17,7 @@ type FirebaseIdentity struct {
 	Phone         string
 	Email         string
 	EmailVerified bool
+	AuthTime      time.Time
 }
 
 // FirebaseVerifier validates Firebase ID tokens and extracts UID + phone/email.
@@ -59,10 +61,21 @@ func (v *FirebaseVerifier) IdentityFromIDToken(ctx context.Context, idToken stri
 	if token.UID == "" || (phone == "" && email == "") {
 		return FirebaseIdentity{}, ErrInvalidFirebaseToken
 	}
+
+	var authTime time.Time
+	if token.AuthTime > 0 {
+		authTime = time.Unix(token.AuthTime, 0).UTC()
+	} else if at, ok := token.Claims["auth_time"].(float64); ok && at > 0 {
+		authTime = time.Unix(int64(at), 0).UTC()
+	} else if at, ok := token.Claims["auth_time"].(int64); ok && at > 0 {
+		authTime = time.Unix(at, 0).UTC()
+	}
+
 	return FirebaseIdentity{
 		UID:           token.UID,
 		Phone:         phone,
 		Email:         email,
 		EmailVerified: emailVerified,
+		AuthTime:      authTime,
 	}, nil
 }
