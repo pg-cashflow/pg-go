@@ -38,8 +38,16 @@ func (s *stubReminderLogger) Exists(ctx context.Context, dueID uuid.UUID, remind
 
 func (s *stubReminderLogger) TryLog(ctx context.Context, dueID uuid.UUID, reminderType, channel string) (bool, error) {
 	s.calls++
+	if s.exists {
+		return false, nil
+	}
 	s.logged++
 	return true, nil
+}
+
+func (s *stubReminderLogger) DeleteLog(ctx context.Context, dueID uuid.UUID, reminderType, channel string) error {
+	s.logged--
+	return nil
 }
 
 type failingSMS struct {
@@ -310,5 +318,34 @@ func TestReminder_SendFailDoesNotLog(t *testing.T) {
 	}
 	if logs.logged != 0 {
 		t.Fatalf("send failure must not insert reminder_logs, logged=%d", logs.logged)
+	}
+}
+
+func TestReminder_AtomicDedupSkipsSecondAttempt(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	logs := &stubReminderLogger{exists: true} // Already claimed/logged
+	sms := &countingSMS{}
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive, Name: "T",
+		}},
+		Properties: stubPropertyGetter{p: &domain.Property{ID: propID, OwnerEmail: "o@example.com"}},
+		Reminders:  logs,
+		SMS:        sms,
+		BaseURL:    "https://pay.example.com",
+	}
+	due := domain.Due{
+		ID: uuid.New(), TenantID: tenantID, PropertyID: propID,
+		DueDate: today, Amount: 10000, DueCode: "DEDUP01",
+	}
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 0 {
+		t.Fatalf("expected 0 sends when TryLog returns inserted=false, got %d", sms.n)
 	}
 }

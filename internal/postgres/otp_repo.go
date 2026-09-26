@@ -179,6 +179,13 @@ func (r *ReminderRepo) Exists(ctx context.Context, dueID uuid.UUID, reminderType
 	return ok, err
 }
 
+func (r *ReminderRepo) DeleteLog(ctx context.Context, dueID uuid.UUID, reminderType, channel string) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM reminder_logs
+		WHERE due_id=$1 AND reminder_type=$2 AND channel=$3`, dueID, reminderType, channel)
+	return err
+}
+
 type ImportRepo struct{ pool *pgxpool.Pool }
 
 func NewImportRepo(pool *pgxpool.Pool) *ImportRepo { return &ImportRepo{pool: pool} }

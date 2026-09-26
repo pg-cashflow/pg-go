@@ -41,6 +41,7 @@ type PropertyGetter interface {
 type ReminderLogger interface {
 	Exists(ctx context.Context, dueID uuid.UUID, reminderType, channel string) (bool, error)
 	TryLog(ctx context.Context, dueID uuid.UUID, reminderType, channel string) (inserted bool, err error)
+	DeleteLog(ctx context.Context, dueID uuid.UUID, reminderType, channel string) error
 }
 
 // ImportRecency reports the latest CSV import time for a property.
@@ -221,13 +222,16 @@ func (j *ReminderJob) sendSMS(ctx context.Context, due domain.Due, tenant *domai
 		return false
 	}
 	if j.Reminders != nil {
-		exists, err := j.Reminders.Exists(ctx, due.ID, remType, "sms")
-		if err != nil || exists {
+		inserted, err := j.Reminders.TryLog(ctx, due.ID, remType, "sms")
+		if err != nil || !inserted {
 			return false
 		}
 	}
 	err := j.SMS.Send(ctx, *tenant.Phone, msg)
 	if err != nil {
+		if j.Reminders != nil {
+			_ = j.Reminders.DeleteLog(ctx, due.ID, remType, "sms")
+		}
 		j.publishReminder(ctx, due, remType, "sms", err)
 		if j.Mailer != nil && prop != nil && prop.OwnerEmail != "" {
 			_ = j.Mailer.Send(ctx, prop.OwnerEmail,
@@ -236,9 +240,6 @@ func (j *ReminderJob) sendSMS(ctx context.Context, due domain.Due, tenant *domai
 					due.DueCode, tenant.Name, msg, err))
 		}
 		return false
-	}
-	if j.Reminders != nil {
-		_, _ = j.Reminders.TryLog(ctx, due.ID, remType, "sms")
 	}
 	j.publishReminder(ctx, due, remType, "sms", nil)
 	return true
@@ -249,19 +250,19 @@ func (j *ReminderJob) sendPush(ctx context.Context, due domain.Due, remType, msg
 		return false
 	}
 	if j.Reminders != nil {
-		exists, err := j.Reminders.Exists(ctx, due.ID, remType, "push")
-		if err != nil || exists {
+		inserted, err := j.Reminders.TryLog(ctx, due.ID, remType, "push")
+		if err != nil || !inserted {
 			return false
 		}
 	}
 	payload := fmt.Appendf(nil, `{"title":"Rent reminder","body":%q,"url":%q}`, msg, payURL)
 	err := j.Push.Send(ctx, due.TenantID, payload)
 	if err != nil {
+		if j.Reminders != nil {
+			_ = j.Reminders.DeleteLog(ctx, due.ID, remType, "push")
+		}
 		j.publishReminder(ctx, due, remType, "push", err)
 		return false
-	}
-	if j.Reminders != nil {
-		_, _ = j.Reminders.TryLog(ctx, due.ID, remType, "push")
 	}
 	j.publishReminder(ctx, due, remType, "push", nil)
 	return true
