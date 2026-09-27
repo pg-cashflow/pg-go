@@ -87,6 +87,3 @@ CREATE TABLE IF NOT EXISTS wage_calculations (
 CREATE INDEX IF NOT EXISTS idx_wage_cycle_property_month 
     ON wage_calculations (property_id, cycle_month, status);
 
-ALTER TABLE wage_calculations 
-    ADD COLUMN IF NOT EXISTS days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0;
-

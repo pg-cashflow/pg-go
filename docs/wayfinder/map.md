@@ -37,11 +37,12 @@
 
 ## Frontier (Open Tickets)
 
-- Stream 3 / Next Milestone: Financial Control Layer & Reconciliation (Cashfree Settlement report ingestion, bank statement feeds, and account reconciliation).
+- [Track N (Ticket 13): Stream 3 Layer 1 — Cashfree Settlement Ingress & Order-to-Intent Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_n_settlement_reconciliation_layer1.md): Ingress for Cashfree settlement webhooks and order-level API polling (2025-01-01 / 2026-01-01 polymorphic parser), order-to-intent matching, integer paise MDR/GST allocation, balanced double-entry journals, and human-gated discrepancy review.
 
 ## Not yet specified
 
-- Stream 3 specific breakdown tickets (Layer 1, Layer 2, Layer 3).
+- Stream 3 Layer 2: Bank Statement Ingress & Unidentified Deposit Reconciliation.
+- Stream 3 Layer 3: End-of-Day Multi-Way Settlement Balancer & Audit Trail.
 
 ## Out of scope
 
