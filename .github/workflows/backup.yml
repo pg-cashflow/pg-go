@@ -2,8 +2,9 @@
 name: Database backup to R2
 
 on:
-  schedule:
-    - cron: "30 20 * * *"
+  # Schedule disabled until production server and database are provisioned
+  # schedule:
+  #   - cron: "30 20 * * *"
   workflow_dispatch:
 
 jobs:
