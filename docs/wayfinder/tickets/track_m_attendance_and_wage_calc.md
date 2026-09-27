@@ -37,7 +37,7 @@ CREATE TABLE staff_profiles (
     property_id UUID NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
     payee_id UUID NOT NULL REFERENCES payout_payees(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('cook', 'warden', 'security', 'housekeeping', 'maintenance', 'manager', 'other')),
+    role TEXT NOT NULL, -- Free-text (e.g. 'cook', 'warden', 'security', 'gardener', 'electrician'); owner-managed without hardcoded enum constraints
     phone VARCHAR(15),
     base_monthly_wage_paise BIGINT NOT NULL CHECK (base_monthly_wage_paise > 0),
     effective_from DATE NOT NULL,
@@ -102,12 +102,14 @@ CREATE TABLE wage_calculations (
     staff_id UUID NOT NULL REFERENCES staff_profiles(id),
     cycle_month CHAR(7) NOT NULL, -- 'YYYY-MM'
     base_monthly_wage_paise BIGINT NOT NULL,
+    prorated_base_wage_paise BIGINT NOT NULL, -- Equals base_monthly_wage_paise unless hired or departed mid-cycle
     total_basis_days INT NOT NULL,
+    employed_basis_days INT NOT NULL,
     days_present NUMERIC(4, 1) NOT NULL,
     days_paid_leave NUMERIC(4, 1) NOT NULL,
     days_holiday NUMERIC(4, 1) NOT NULL,
     days_absent NUMERIC(4, 1) NOT NULL,
-    free_leave_days_allowed INT NOT NULL,
+    free_leave_days_allowed NUMERIC(4, 1) NOT NULL,
     excess_absent_days NUMERIC(4, 1) NOT NULL,
     per_day_rate_paise BIGINT NOT NULL,
     total_deduction_paise BIGINT NOT NULL,
@@ -129,19 +131,30 @@ CREATE TABLE wage_calculations (
    - For `calendar_days`: Total days in month (e.g. 28, 29, 30, 31).
    - For `fixed_30`: Always 30 days.
    - For `working_days_excluding_sundays`: Calendar days minus count of Sundays in month.
-3. **Per-Day Rate ($R_{\text{day}}$)**:
+3. **Mid-Cycle Hire / Departure Proration**:
+   - If a staff member joins mid-month (`effective_from > cycle_start`) or leaves mid-month (`effective_to != nil && effective_to < cycle_end`):
+     - Active employed window:
+       $$[\text{window\_start}, \text{window\_end}] = [\max(\text{cycle\_start}, \text{effective\_from}), \min(\text{cycle\_end}, \text{effective\_to})]$$
+     - If $\text{window\_end} < \text{window\_start}$, employed days = 0, Net Wage = 0.
+     - Employed basis days $D_{\text{employed}}$: Number of basis days falling within the active employed window.
+     - Prorated Base Monthly Wage:
+       $$\text{ProratedBasePaise} = \left\lfloor \text{BaseMonthlyWagePaise} \times \frac{D_{\text{employed}}}{D_{\text{basis}}} \right\rfloor$$
+     - Attendance records (present, absent, leave) are recorded and evaluated only within $[\text{window\_start}, \text{window\_end}]$.
+     - Pro-rated Free Leave Days Allowed:
+       $$\text{FreeLeaveDaysAllowed} = \frac{\text{MonthlyFreeLeaveDays} \times D_{\text{employed}}}{D_{\text{basis}}}$$
+4. **Per-Day Rate ($R_{\text{day}}$)**:
    $$R_{\text{day}} = \left\lfloor \frac{\text{BaseMonthlyWagePaise}}{D_{\text{basis}}} \right\rfloor$$
-4. **Attendance Accounting**:
+5. **Attendance Accounting**:
    - $\text{Present} = \text{Count}(\text{present}) + 0.5 \times \text{Count}(\text{half\_day})$
    - $\text{Absent} = \text{Count}(\text{absent}) + 0.5 \times \text{Count}(\text{half\_day})$
    - $\text{PaidLeave} = \text{Count}(\text{paid\_leave})$
    - $\text{Holidays} = \text{Count}(\text{holiday})$
-5. **Excess Absent Days**:
+6. **Excess Absent Days**:
    $$\text{ExcessAbsentDays} = \max\left(0, \text{Absent} - \text{FreeLeaveDaysAllowed}\right)$$
-6. **Total Deduction**:
-   $$\text{TotalDeductionPaise} = \text{round}\left(\text{ExcessAbsentDays} \times R_{\text{day}}\right)$$
-7. **Net Wage (Floor Guard)**:
-   $$\text{NetWagePaise} = \max\left(0, \text{BaseMonthlyWagePaise} - \text{TotalDeductionPaise}\right)$$
+7. **Total Deduction**:
+   $$\text{TotalDeductionPaise} = \left\lfloor \text{ExcessAbsentDays} \times R_{\text{day}} \right\rfloor$$
+8. **Net Wage (Floor Guard)**:
+   $$\text{NetWagePaise} = \max\left(0, \text{ProratedBasePaise} - \text{TotalDeductionPaise}\right)$$
    *(Net wage can never be negative; excess absences cannot create a debt to the employer).*
 
 ---
