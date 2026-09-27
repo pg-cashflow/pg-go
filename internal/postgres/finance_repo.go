@@ -30,12 +30,17 @@ func isUnique(err error) bool {
 }
 
 func (r *FinanceRepo) EnsureDefaults(ctx context.Context, propertyID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO property_finance_settings (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
-	if err != nil {
-		return err
+	if r.pool == nil {
+		return fmt.Errorf("EnsureDefaults requires pool access, got nil pool")
 	}
-	_, err = r.pool.Exec(ctx, `INSERT INTO approval_policies (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
-	return err
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO property_finance_settings (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO approval_policies (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
+		return err
+	})
 }
 
 func (r *FinanceRepo) GetPolicy(ctx context.Context, propertyID uuid.UUID) (domain.ApprovalPolicy, error) {

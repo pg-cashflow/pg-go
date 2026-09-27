@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -38,64 +39,73 @@ func scanPayment(row pgx.Row) (*domain.Payment, error) {
 }
 
 func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
-	now := time.Now().UTC()
-	if p.MatchedAt.IsZero() {
-		p.MatchedAt = now
-	}
-	p.CreatedAt = now
-	if p.Provider == "" {
-		if p.MatchedBy == domain.MatchedByCash {
-			p.Provider = "cash"
-		} else if p.MatchedBy == domain.MatchedByManual {
-			p.Provider = "manual"
-		} else {
-			p.Provider = "cashfree"
+	insertAll := func(repo *PaymentRepo) error {
+		now := time.Now().UTC()
+		if p.MatchedAt.IsZero() {
+			p.MatchedAt = now
 		}
-	}
-	if p.Provider == "cashfree" {
-		if p.CFPaymentID == nil && p.ProviderPaymentID != nil {
-			p.CFPaymentID = p.ProviderPaymentID
+		p.CreatedAt = now
+		if p.Provider == "" {
+			if p.MatchedBy == domain.MatchedByCash {
+				p.Provider = "cash"
+			} else if p.MatchedBy == domain.MatchedByManual {
+				p.Provider = "manual"
+			} else {
+				p.Provider = "cashfree"
+			}
 		}
-		if p.ProviderPaymentID == nil && p.CFPaymentID != nil {
-			p.ProviderPaymentID = p.CFPaymentID
+		if p.Provider == "cashfree" {
+			if p.CFPaymentID == nil && p.ProviderPaymentID != nil {
+				p.CFPaymentID = p.ProviderPaymentID
+			}
+			if p.ProviderPaymentID == nil && p.CFPaymentID != nil {
+				p.ProviderPaymentID = p.CFPaymentID
+			}
 		}
-	}
-	var dueIDArg *uuid.UUID
-	if p.DueID != uuid.Nil {
-		dueIDArg = &p.DueID
-	}
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-		RETURNING id`,
-		dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt,
-	).Scan(&p.ID)
-	if err != nil {
-		return err
-	}
-	if p.DueID != uuid.Nil && p.Amount > 0 && !p.IsUnapplied {
-		// Dual-Write Rationale:
-		// PaymentRepo.Create is the canonical Go application entrypoint for single-due payments
-		// (Cash, Manual, and legacy Single-Due Gateway paths). We explicitly insert into
-		// payment_allocations here so that all callers using transactions or mock repos have
-		// allocations populated immediately.
-		//
-		// Concurrently, migration 020 defines PostgreSQL trigger `trg_payments_auto_allocate`
-		// which performs the identical ON CONFLICT DO UPDATE upsert on AFTER INSERT ON payments.
-		// The trigger exists as an infrastructure-level safety net for direct SQL scripts, manual DB
-		// repairs, and raw migration backfills. Because both writes use idempotent
-		// ON CONFLICT (payment_id, due_id) DO UPDATE, concurrent or duplicate execution is completely safe.
-		_, err = r.db.Exec(ctx, `
-			INSERT INTO payment_allocations (payment_id, due_id, amount_paise, created_at)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (payment_id, due_id) DO UPDATE SET amount_paise = EXCLUDED.amount_paise`,
-			p.ID, p.DueID, int64(p.Amount), p.CreatedAt,
-		)
+		var dueIDArg *uuid.UUID
+		if p.DueID != uuid.Nil {
+			dueIDArg = &p.DueID
+		}
+		err := repo.db.QueryRow(ctx, `
+			INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			RETURNING id`,
+			dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt,
+		).Scan(&p.ID)
 		if err != nil {
-			return fmt.Errorf("create payment allocation for single due: %w", err)
+			return err
 		}
+		if p.DueID != uuid.Nil && p.Amount > 0 && !p.IsUnapplied {
+			// Dual-Write Rationale:
+			// PaymentRepo.Create is the canonical Go application entrypoint for single-due payments
+			// (Cash, Manual, and legacy Single-Due Gateway paths). We explicitly insert into
+			// payment_allocations here so that all callers using transactions or mock repos have
+			// allocations populated immediately.
+			//
+			// Concurrently, migration 020 defines PostgreSQL trigger `trg_payments_auto_allocate`
+			// which performs the identical ON CONFLICT DO UPDATE upsert on AFTER INSERT ON payments.
+			// The trigger exists as an infrastructure-level safety net for direct SQL scripts, manual DB
+			// repairs, and raw migration backfills. Because both writes use idempotent
+			// ON CONFLICT (payment_id, due_id) DO UPDATE, concurrent or duplicate execution is completely safe.
+			_, err = repo.db.Exec(ctx, `
+				INSERT INTO payment_allocations (payment_id, due_id, amount_paise, created_at)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (payment_id, due_id) DO UPDATE SET amount_paise = EXCLUDED.amount_paise`,
+				p.ID, p.DueID, int64(p.Amount), p.CreatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("create payment allocation for single due: %w", err)
+			}
+		}
+		return nil
 	}
-	return nil
+
+	if pool, ok := r.db.(*pgxpool.Pool); ok {
+		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
+			return insertAll(r.WithTx(tx))
+		})
+	}
+	return insertAll(r)
 }
 
 func (r *PaymentRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Payment, error) {
