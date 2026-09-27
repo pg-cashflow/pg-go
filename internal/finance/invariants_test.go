@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -356,3 +357,179 @@ func TestMoneyMath_MirrorPaymentAccountMapping(t *testing.T) {
 		})
 	}
 }
+
+// TestMoneyMath_SettlementConservation_PropertyEvals executes 5,000 randomized property evaluations
+// verifying that ProcessSettlement strictly conserves double-entry balance:
+// Gross == Net + ServiceFee + ServiceTax + Adjustment
+// sum(Debits) == sum(Credits) == max(Gross, Gross - Adjustment) with 0 integer-paise drift across
+// arbitrary combinations of positive, negative, and zero adjustments.
+func TestMoneyMath_SettlementConservation_PropertyEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(54321))
+	ctx := context.Background()
+
+	const iterations = 5000
+	for i := 0; i < iterations; i++ {
+		st := NewMemoryStore()
+		svc := NewService(st, nil)
+		pid := uuid.New()
+
+		// Gross amount between ₹100 (10,000 paise) and ₹100,000 (10,000,000 paise)
+		grossPaise := int64(rng.Intn(9990000) + 10000)
+
+		// Fee up to 3% of gross, min 0
+		feePaise := int64(float64(grossPaise) * (float64(rng.Intn(300)) / 10000.0))
+		// Tax is 18% of fee
+		taxPaise := int64(float64(feePaise) * 0.18)
+
+		// Adjustment: can be positive (refund deducted), zero, or negative (correction added)
+		// Keep adjustment bounded so net remains positive (> 0)
+		maxPositiveAdj := (grossPaise - feePaise - taxPaise) / 2
+		if maxPositiveAdj < 1 {
+			maxPositiveAdj = 1
+		}
+		var adjPaise int64
+		switch rng.Intn(3) {
+		case 0:
+			adjPaise = 0
+		case 1:
+			adjPaise = int64(rng.Intn(int(maxPositiveAdj)))
+		case 2:
+			// Negative adjustment: gateway added money back
+			adjPaise = -int64(rng.Intn(int(maxPositiveAdj)))
+		}
+
+		netPaise := grossPaise - (feePaise + taxPaise + adjPaise)
+		if netPaise <= 0 {
+			continue
+		}
+
+		rec := SettlementRecord{
+			SettlementID:     fmt.Sprintf("SETTLE_PROP_%d", i),
+			TransferUTR:      fmt.Sprintf("UTR_PROP_%d", i),
+			TransferTime:     time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC),
+			GrossAmountPaise: grossPaise,
+			NetAmountPaise:   netPaise,
+			ServiceFeePaise:  feePaise,
+			ServiceTaxPaise:  taxPaise,
+			AdjustmentPaise:  adjPaise,
+		}
+
+		err := svc.ProcessSettlement(ctx, pid, rec)
+		if err != nil {
+			t.Fatalf("[Iteration %d] expected success, got error: %v (gross=%d net=%d fee=%d tax=%d adj=%d)",
+				i, err, grossPaise, netPaise, feePaise, taxPaise, adjPaise)
+		}
+
+		// List journal lines and verify double-entry conservation
+		lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+		if err != nil {
+			t.Fatalf("[Iteration %d] list journal failed: %v", i, err)
+		}
+
+		var totalDr, totalCr int64
+		var bankDr, clearingCr, feeDr, adjDr, adjCr int64
+
+		for _, l := range lines {
+			if l.DebitPaise > 0 && l.CreditPaise > 0 {
+				t.Fatalf("[Iteration %d] line %s has both debit and credit", i, l.ID)
+			}
+			if l.DebitPaise < 0 || l.CreditPaise < 0 {
+				t.Fatalf("[Iteration %d] negative paise on line %s", i, l.ID)
+			}
+			totalDr += l.DebitPaise
+			totalCr += l.CreditPaise
+
+			switch l.AccountCode {
+			case domain.AcctBank:
+				bankDr += l.DebitPaise
+			case domain.AcctGatewayClearing:
+				clearingCr += l.CreditPaise
+			case domain.AcctPaymentProcessingExpense:
+				feeDr += l.DebitPaise
+			case domain.AcctGatewayAdjustment:
+				adjDr += l.DebitPaise
+				adjCr += l.CreditPaise
+			}
+		}
+
+		if totalDr != totalCr {
+			t.Fatalf("[Iteration %d] journal imbalanced: totalDr=%d totalCr=%d diff=%d",
+				i, totalDr, totalCr, totalDr-totalCr)
+		}
+		if bankDr != netPaise {
+			t.Fatalf("[Iteration %d] bankDr mismatch: expected %d, got %d", i, netPaise, bankDr)
+		}
+		if clearingCr != grossPaise {
+			t.Fatalf("[Iteration %d] clearingCr mismatch: expected %d, got %d", i, grossPaise, clearingCr)
+		}
+		if feeDr != (feePaise + taxPaise) {
+			t.Fatalf("[Iteration %d] feeDr mismatch: expected %d, got %d", i, feePaise+taxPaise, feeDr)
+		}
+		if adjPaise > 0 && adjDr != adjPaise {
+			t.Fatalf("[Iteration %d] positive adjDr mismatch: expected %d, got %d", i, adjPaise, adjDr)
+		}
+		if adjPaise < 0 && adjCr != -adjPaise {
+			t.Fatalf("[Iteration %d] negative adjCr mismatch: expected %d, got %d", i, -adjPaise, adjCr)
+		}
+	}
+}
+
+// TestMoneyMath_SettlementPerturbation_FailClosedEvals verifies that deliberate 1-paise perturbations
+// on ANY of the 5 settlement terms (Gross, Net, ServiceFee, ServiceTax, Adjustment) strictly fail closed.
+func TestMoneyMath_SettlementPerturbation_FailClosedEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(98765))
+	ctx := context.Background()
+
+	const iterations = 2500
+	for i := 0; i < iterations; i++ {
+		st := NewMemoryStore()
+		svc := NewService(st, nil)
+		pid := uuid.New()
+
+		grossPaise := int64(rng.Intn(5000000) + 10000)
+		feePaise := int64(1000)
+		taxPaise := int64(180)
+		adjPaise := int64(500)
+		netPaise := grossPaise - (feePaise + taxPaise + adjPaise)
+
+		// Perturb one random component by +/- 1 to +/- 10 paise
+		delta := int64(rng.Intn(10) + 1)
+		if rng.Intn(2) == 0 {
+			delta = -delta
+		}
+
+		rec := SettlementRecord{
+			SettlementID:     fmt.Sprintf("SETTLE_PERTURB_%d", i),
+			GrossAmountPaise: grossPaise,
+			NetAmountPaise:   netPaise,
+			ServiceFeePaise:  feePaise,
+			ServiceTaxPaise:  taxPaise,
+			AdjustmentPaise:  adjPaise,
+		}
+
+		targetTerm := rng.Intn(5)
+		switch targetTerm {
+		case 0:
+			rec.GrossAmountPaise += delta
+		case 1:
+			rec.NetAmountPaise += delta
+		case 2:
+			rec.ServiceFeePaise += delta
+		case 3:
+			rec.ServiceTaxPaise += delta
+		case 4:
+			rec.AdjustmentPaise += delta
+		}
+
+		if rec.GrossAmountPaise <= 0 || rec.NetAmountPaise <= 0 {
+			continue
+		}
+
+		err := svc.ProcessSettlement(ctx, pid, rec)
+		if !errors.Is(err, ErrSettlementUnbalanced) && !errors.Is(err, ErrInvalidSettlementData) {
+			t.Fatalf("[Iteration %d, Term %d] expected ErrSettlementUnbalanced for delta %d, got: %v",
+				i, targetTerm, delta, err)
+		}
+	}
+}
+

@@ -212,9 +212,8 @@ func (h *Handlers) PostExpensePayment(c *gin.Context) {
 	if !ok {
 		return
 	}
-	eid, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	eid, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	claims, _ := auth.ClaimsFromContext(c)
@@ -414,9 +413,8 @@ func (h *Handlers) DecideFinanceApproval(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	approve := c.Param("action") == "approve"
@@ -616,9 +614,8 @@ func (h *Handlers) GetLeakage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	e, err := h.Finance.Store.GetLeakage(c.Request.Context(), id)
@@ -659,9 +656,8 @@ func (h *Handlers) RecommendationAction(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	rec, err := h.Finance.Store.GetRecommendation(c.Request.Context(), id)

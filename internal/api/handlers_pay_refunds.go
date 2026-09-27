@@ -49,6 +49,7 @@ func recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *postgres.DueRep
 type OwnerRefundRequest struct {
 	AmountPaise int64  `json:"amount_paise" binding:"required,gt=0"`
 	Reason      string `json:"reason" binding:"required"`
+	StepUpAuthInput
 }
 
 type dueAllocInfo struct {
@@ -108,6 +109,11 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	tenant, err := h.TenantStore.GetByID(ctx, p.TenantID)
 	if err != nil || tenant == nil || tenant.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found for property"})
+		return
+	}
+
+	// Cryptographic step-up / dual-control enforcement
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
 		return
 	}
 

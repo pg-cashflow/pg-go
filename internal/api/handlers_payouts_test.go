@@ -645,8 +645,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/inspect", depID), strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		otherRouter.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden on inspect IDOR, got %d", w.Code)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 Not Found on inspect IDOR, got %d", w.Code)
 		}
 
 		// Add Deduction IDOR check
@@ -654,8 +654,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/deductions", depID), strings.NewReader(`{"description":"test","amount_paise":100}`))
 		req.Header.Set("Content-Type", "application/json")
 		otherRouter.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden on deductions IDOR, got %d", w.Code)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 Not Found on deductions IDOR, got %d", w.Code)
 		}
 
 		// Settle IDOR check
@@ -663,16 +663,16 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/settle", depID), strings.NewReader(`{"actual_vacate_date":"2026-09-15"}`))
 		req.Header.Set("Content-Type", "application/json")
 		otherRouter.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden on settle IDOR, got %d", w.Code)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 Not Found on settle IDOR, got %d", w.Code)
 		}
 
 		// Export IDOR check
 		w = httptest.NewRecorder()
 		req, _ = http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
 		otherRouter.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("expected 403 Forbidden on export IDOR, got %d", w.Code)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected 404 Not Found on export IDOR, got %d", w.Code)
 		}
 	})
 

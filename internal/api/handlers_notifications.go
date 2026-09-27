@@ -61,9 +61,8 @@ func (h *Handlers) MarkNotificationRead(c *gin.Context) {
 	if !ok {
 		return
 	}
-	notifID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid notification id"})
+	notifID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 	if err := h.NotificationSvc.MarkAsRead(c.Request.Context(), notifID, claims.UserID); err != nil {

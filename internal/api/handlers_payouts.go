@@ -36,9 +36,8 @@ func (h *Handlers) OwnerCreateDeparture(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tenantID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid tenant id"})
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -56,12 +55,8 @@ func (h *Handlers) OwnerCreateDeparture(c *gin.Context) {
 
 	// Verify tenant exists and belongs to this property
 	t, err := h.TenantStore.GetByID(c.Request.Context(), tenantID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
-		return
-	}
-	if t.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "tenant does not belong to owner property"})
+	if err != nil || t.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -115,9 +110,8 @@ func (h *Handlers) OwnerInspectDeparture(c *gin.Context) {
 	if !ok {
 		return
 	}
-	depID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid departure id"})
+	depID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -128,12 +122,8 @@ func (h *Handlers) OwnerInspectDeparture(c *gin.Context) {
 	}
 
 	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
-		return
-	}
-	if dep.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
+	if err != nil || dep.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -166,9 +156,8 @@ func (h *Handlers) OwnerAddDepartureDeduction(c *gin.Context) {
 	if !ok {
 		return
 	}
-	depID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid departure id"})
+	depID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -189,12 +178,8 @@ func (h *Handlers) OwnerAddDepartureDeduction(c *gin.Context) {
 	}
 
 	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
-		return
-	}
-	if dep.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
+	if err != nil || dep.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -232,9 +217,8 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 	if !ok {
 		return
 	}
-	depID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid departure id"})
+	depID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -257,12 +241,8 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 	}
 
 	dep, err := repo.GetDepartureByID(c.Request.Context(), depID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "departure not found"})
-		return
-	}
-	if dep.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "departure does not belong to owner property"})
+	if err != nil || dep.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -483,9 +463,8 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 	if !ok {
 		return
 	}
-	batchID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+	batchID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -496,12 +475,8 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 	}
 
 	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
-		return
-	}
-	if batch.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+	if err != nil || batch.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 	if batch.Status != domain.BatchDraft {
@@ -550,9 +525,8 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	batchID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+	batchID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -569,12 +543,8 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 	}
 
 	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
-		return
-	}
-	if batch.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+	if err != nil || batch.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -590,104 +560,13 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		return
 	}
 
-	// Check active owners for property to evaluate dual-control vs solo-owner step-up auth
-	var activeOwners []domain.User
-	if h.UserStore != nil {
-		owners, err := h.UserStore.GetByPropertyAndRole(c.Request.Context(), pid, domain.RoleOwner)
-		if err == nil {
-			activeOwners = owners
-		}
-	}
-
-	approvalMode := "dual_control"
-	if len(activeOwners) > 1 {
-		// Strict maker-checker enforcement
-		if uid == batch.CreatedBy {
-			slog.Warn("dual control approval rejected: maker cannot be checker", "batch_id", batch.ID, "user_id", uid)
-			respondErr(c, clientErr(http.StatusForbidden, "dual control required: payout batch must be approved by a different owner"))
-			return
-		}
-	} else {
-		// Solo owner path (or co-owner was removed): require cryptographic step-up re-authentication
-		approvalMode = "solo_owner_reauth"
-
-		candidateOTP := strings.TrimSpace(body.OTP)
-		if candidateOTP == "" && len(strings.TrimSpace(body.ReauthConfirmation)) == 6 {
-			isDigits := true
-			for _, r := range strings.TrimSpace(body.ReauthConfirmation) {
-				if r < '0' || r > '9' {
-					isDigits = false
-					break
-				}
-			}
-			if isDigits {
-				candidateOTP = strings.TrimSpace(body.ReauthConfirmation)
-			}
-		}
-
-		candidateFirebase := strings.TrimSpace(body.FirebaseIDToken)
-
-		if h.UserStore == nil || h.Auth == nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "auth service not configured"})
-			return
-		}
-
-		user, err := h.UserStore.GetByID(c.Request.Context(), uid)
-		if err != nil {
-			respondErr(c, clientErr(http.StatusUnauthorized, "owner account not found for step-up verification"))
-			return
-		}
-
-		if candidateOTP != "" {
-			phone := strings.TrimSpace(user.Phone)
-			if phone == "" {
-				respondErr(c, clientErr(http.StatusUnauthorized, "step-up authentication failed: owner has no registered phone"))
-				return
-			}
-			if err := h.Auth.VerifyStepUpOTP(c.Request.Context(), phone, candidateOTP); err != nil {
-				if errors.Is(err, auth.ErrInvalidOTP) {
-					respondErr(c, clientErr(http.StatusUnauthorized, "invalid payout approval code"))
-					return
-				}
-				if errors.Is(err, auth.ErrOTPExpired) {
-					respondErr(c, clientErr(http.StatusUnauthorized, "payout approval code has expired; please request a new code"))
-					return
-				}
-				if errors.Is(err, auth.ErrOTPLocked) {
-					respondErr(c, clientErr(http.StatusUnauthorized, "payout approval code locked due to too many failed attempts; please request a new code"))
-					return
-				}
-				respondErr(c, clientErr(http.StatusUnauthorized, fmt.Sprintf("step-up authentication failed: %v", err)))
-				return
-			}
-		} else if candidateFirebase != "" {
-			ident, err := h.Auth.VerifyFirebaseStepUp(c.Request.Context(), candidateFirebase, 5*time.Minute)
-			if err != nil {
-				if errors.Is(err, auth.ErrStaleAuthToken) {
-					respondErr(c, clientErr(http.StatusUnauthorized, "firebase re-authentication is stale: fresh authentication (<5 minutes) required for approval"))
-					return
-				}
-				respondErr(c, clientErr(http.StatusUnauthorized, "invalid firebase token for step-up authentication"))
-				return
-			}
-			// Verify Firebase identity matches the authenticated owner
-			matches := false
-			if user.FirebaseUID != nil && *user.FirebaseUID == ident.UID {
-				matches = true
-			} else if user.Phone != "" && strings.TrimSpace(user.Phone) == ident.Phone && ident.Phone != "" {
-				matches = true
-			} else if user.Email != "" && strings.EqualFold(user.Email, ident.Email) && ident.Email != "" {
-				matches = true
-			}
-			if !matches {
-				respondErr(c, clientErr(http.StatusUnauthorized, "step-up authentication failed: token identity does not match authenticated owner"))
-				return
-			}
-		} else {
-			// Fail-closed: arbitrary strings (e.g. "CONFIRM") or missing credentials are strictly rejected
-			respondErr(c, clientErr(http.StatusUnauthorized, "step-up authentication required: valid otp or fresh firebase_id_token must be provided for solo-owner batch approval"))
-			return
-		}
+	approvalMode, ok := h.verifyDualControlOrStepUp(c, pid, uid, &batch.CreatedBy, StepUpAuthInput{
+		OTP:                body.OTP,
+		ReauthConfirmation: body.ReauthConfirmation,
+		FirebaseIDToken:    body.FirebaseIDToken,
+	})
+	if !ok {
+		return
 	}
 
 	approvedBatch, err := repo.ApproveBatch(c.Request.Context(), batchID, uid)
@@ -715,9 +594,8 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	batchID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+	batchID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -728,12 +606,8 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 	}
 
 	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
-		return
-	}
-	if batch.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+	if err != nil || batch.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 
@@ -859,9 +733,8 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
-	batchID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+	batchID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -872,12 +745,8 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 	}
 
 	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
-		return
-	}
-	if batch.PropertyID != pid {
-		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+	if err != nil || batch.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
 

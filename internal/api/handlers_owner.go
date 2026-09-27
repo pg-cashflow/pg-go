@@ -286,6 +286,10 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 	if !ok {
 		return
 	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
 	id, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return
@@ -298,9 +302,13 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 	var body struct {
 		RefundedPaise int64  `json:"refunded_amount_paise" binding:"required"`
 		Reason        string `json:"reason"`
+		StepUpAuthInput
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "refunded_amount_paise required"})
+		return
+	}
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, body.StepUpAuthInput); !ok {
 		return
 	}
 	if err := h.Payments.SettleDeposit(c.Request.Context(), id, body.RefundedPaise, body.Reason); err != nil {
@@ -396,6 +404,10 @@ func (h *Handlers) WaiveDue(c *gin.Context) {
 	if !ok {
 		return
 	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
 	id, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return
@@ -403,6 +415,13 @@ func (h *Handlers) WaiveDue(c *gin.Context) {
 	due, err := h.DueStore.GetByID(c.Request.Context(), id)
 	if err != nil || due.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	var body struct {
+		StepUpAuthInput
+	}
+	_ = c.ShouldBindJSON(&body)
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, body.StepUpAuthInput); !ok {
 		return
 	}
 	due, err = h.Billing.WaiveDue(c.Request.Context(), id)

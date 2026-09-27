@@ -83,9 +83,8 @@ func (h *Handlers) TenantRewards(c *gin.Context) {
 // TenantRedeem executes redemption with row-lock concurrency protection.
 func (h *Handlers) TenantRedeem(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
-	rewardID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid reward id"})
+	rewardID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -132,9 +131,8 @@ func (h *Handlers) TenantInspections(c *gin.Context) {
 // TenantDisputeInspectionItem files a dispute within 48 hours.
 func (h *Handlers) TenantDisputeInspectionItem(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
-	itemID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid item id"})
+	itemID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -523,9 +521,8 @@ func (h *Handlers) ManagerResolveInspectionItem(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
 		return
 	}
-	itemID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid item id"})
+	itemID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -720,9 +717,8 @@ func (h *Handlers) ManagerResolveHazard(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "no property scope"})
 		return
 	}
-	hazardID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid hazard id"})
+	hazardID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 

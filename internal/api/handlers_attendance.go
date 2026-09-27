@@ -116,9 +116,8 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 		return
 	}
 
-	staffID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid staff id"})
+	staffID, ok := ParseUUIDParam(c, "id")
+	if !ok {
 		return
 	}
 
@@ -144,7 +143,7 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 		effectiveTo = &parsed
 	}
 
-	err = h.AttendanceRepo.UpdateStaffProfileStatus(c.Request.Context(), pid, staffID, status, effectiveTo)
+	err := h.AttendanceRepo.UpdateStaffProfileStatus(c.Request.Context(), pid, staffID, status, effectiveTo)
 	if errors.Is(err, postgres.ErrStaffNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "staff profile not found"})
 		return

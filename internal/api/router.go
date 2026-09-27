@@ -88,6 +88,9 @@ type Deps struct {
 	AttendanceRepo *postgres.AttendanceRepo
 	AttendanceSvc  *attendance.Service
 
+	SettlementRepo       *postgres.SettlementRepo
+	SettlementReconciler *finance.SettlementReconciler
+
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
 
@@ -133,6 +136,7 @@ func NewRouter(d Deps) *gin.Engine {
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+	r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
 
 	// Data API routes (Namespaced under /api to avoid SPA collisions)
 	api := r.Group("/api")
@@ -259,6 +263,11 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
 			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 			owner.POST("/payouts/batches/:id/dispatch", h.OwnerDispatchPayoutBatch)
+
+			// Gateway Settlement Ingress & Reconciliation (Track N / Ticket 13)
+			owner.GET("/settlements", h.OwnerListSettlements)
+			owner.GET("/settlements/:id", h.OwnerGetSettlement)
+			owner.POST("/settlements/:id/resolve", h.OwnerResolveSettlementDiscrepancy)
 
 			// Staff Attendance & Wage-Calculation Engine (Track M)
 			owner.POST("/staff", h.OwnerCreateStaffProfile)

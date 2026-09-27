@@ -354,6 +354,7 @@ type GatewaySettlement struct {
 
 type SettlementFilter struct {
 	Status    *SettlementReconStatus
+	Source    *IngestionSource
 	FromDate  *time.Time
 	ToDate    *time.Time
 	Limit     int
