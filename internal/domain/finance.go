@@ -32,6 +32,7 @@ const (
 	AcctUnappliedReceipts        = "unapplied_receipts"
 	AcctDamagesIncome            = "damages_income"
 	AcctRefundPayable            = "refund_payable"
+	AcctGatewayAdjustment        = "gateway_adjustment"
 )
 
 type CapitalKind string

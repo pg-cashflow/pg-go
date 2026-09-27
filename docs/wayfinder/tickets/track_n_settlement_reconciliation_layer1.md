@@ -1,7 +1,7 @@
 # Ticket 13: Track N — Stream 3 Layer 1: Cashfree Settlement Ingress & Order-to-Intent Reconciliation
 
 - **Type**: `wayfinder:task`
-- **Status**: Draft (Updated with Cashfree Ground Truth Corrections)
+- **Status**: Draft (Grounded & Unified Architecture)
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
 - **Prerequisite**: Track L (Payouts Transfers V2) & Track M (Staff Attendance & Wage Engine) committed and verified.
 
@@ -10,14 +10,17 @@
 ## 1. Objective
 
 Implement **Stream 3 Layer 1 (Cashfree Settlement Ingress & Order-to-Intent Reconciliation)**:
-1. Ingest Cashfree Payment Gateway settlement data via both **real-time webhooks** (`SETTLEMENT_SUCCESS`, `SETTLEMENT_FAILED`, `SETTLEMENT_REVERSED`) and **on-demand order-level API polling** (`GET /pg/orders/{order_id}/settlements`).
+1. Ingest Cashfree Payment Gateway settlement data via three unified ingress channels:
+   - **Real-time webhooks** (`SETTLEMENT_SUCCESS`, `SETTLEMENT_FAILED`, `SETTLEMENT_REVERSED`)
+   - **On-demand order-level API polling** (`GET /pg/orders/{order_id}/settlements`)
+   - **Manual Settlement Summary CSV upload** (`POST /api/owner/settlements/import-csv`) as an operational fallback.
 2. Reconcile settled funds against internal `payment_intents` and `payments` to verify gross amounts, quantify gateway MDR deductions (`service_charge`), GST (`service_tax`), and net adjustments (`adjustment` for refunds/chargebacks/disputes), and capture bank UTRs.
-3. Post balanced double-entry financial journals moving funds from `gateway_clearing` to `bank` with explicit recognition of `payment_processing_expense` and `gateway_adjustment`, maintaining $\sum\text{Debits} == \sum\text{Credits}$ without float drift.
-4. Provide human-gated exception handling for reconciliation discrepancies (timing lags, MDR mismatches, missing orders, unallocated adjustments).
+3. Unify journal posting into a single shared engine (`ProcessSettlement` in `internal/finance/settlement.go`), moving funds from `gateway_clearing` to `bank` with explicit recognition of `payment_processing_expense` and `gateway_adjustment`, maintaining $\sum\text{Debits} == \sum\text{Credits}$ without float drift.
+4. Guarantee full audit trail and exception queue parity across all three ingress sources via `gateway_settlements`, recording failed or unbalanced batches as `reconciliation_status = 'discrepancy'` for human-gated operator review.
 
 ---
 
-## 2. Grounded Cashfree Settlement Payload Analysis (`2025-01-01` Ground Truth)
+## 2. Grounded Cashfree Ingress Payloads (`2025-01-01` Ground Truth)
 
 Directly verified against Cashfree's `2025-01-01` Payment Gateway API specification:
 
@@ -49,9 +52,9 @@ When Cashfree executes a settlement payout batch to the merchant's bank account,
 **Key Webhook Nuances:**
 - `adjustment`: Sum of refunds, chargebacks, disputes, or manual adjustments netted against this settlement batch.
 - Timestamp fields:
-  - `settled_on`: Bank acknowledgment/execution timestamp.
+  - `settled_on`: Bank execution timestamp.
   - `settlement_initiated_on`: Batch initiation timestamp.
-  *(Note: Webhooks have no `transfer_time` field; that field exists exclusively on the order-level response).*
+  *(Note: Webhooks do not carry a `transfer_time` field; that field exists exclusively on the order-level response).*
 - `settlement_id` & `utr`: Can arrive as integer or string. Deserializer coerces both safely into canonical strings.
 - Monetary values: Returned as float rupees (e.g. `97.94`, `100`, `1.75`, `0.31`, `0.00`). Parsed via `cashfree.ParseRupeesToPaise` (exact string-split arithmetic) into integer paise.
 
@@ -88,8 +91,13 @@ When Cashfree executes a settlement payout batch to the merchant's bank account,
 - `transfer_time`: Real field name in `2025-01-01` for the order-level settlement execution time (NOT `settled_at`).
 - `adjustment`: Order-level deduction/addition if a partial refund or dispute was netted directly against the order.
 
-**Forward Compatibility Note (`2026-01-01` Nested Entity):**
-In `2026-01-01`, Cashfree nested these properties under `order_details`, `payment_details`, and `settlement_details`. Our deserializer will inspect both flat top-level fields and nested sub-objects to remain forward-resilient.
+### C. Cashfree Dashboard CSV Report Shapes
+Cashfree provides two distinct CSV reports:
+1. **Settlement Summary Export** (Dashboard > Payment Gateway > Settlements > Export):
+   A batch-level summary with one row per settlement: `settlement_id`, `settlement_amount`, `gross_amount` (or `payment_amount`), `service_charge`, `service_tax`, `adjustment`, `transfer_utr`, `transfer_time`. This is the exact format parsed by `ParseAndImportSettlementCSV`.
+2. **Settlement Recon Report** (Dashboard > Reports > Settlement Recon):
+   A multi-tier transactional ledger report with event-level rows (`PAYMENT`, `REFUND`, `DISPUTE`, etc.) with `Sale Type: CREDIT / DEBIT`.
+   *(Scope: Stream 3 Layer 1 implements the Settlement Summary CSV format, while multi-event recon summing is earmarked for Layer 3).*
 
 ---
 
@@ -106,6 +114,8 @@ CREATE TABLE gateway_settlements (
     cf_payment_id TEXT,                                 -- Gateway payment ID
     payment_intent_id UUID REFERENCES payment_intents(id) ON DELETE SET NULL,
     payment_id UUID REFERENCES payments(id) ON DELETE SET NULL,
+    ingestion_source VARCHAR(20) NOT NULL DEFAULT 'webhook'
+        CHECK (ingestion_source IN ('webhook', 'order_fetch', 'csv_import')),
     utr TEXT NOT NULL DEFAULT '',                       -- Bank reference / UTR / transfer_id
     currency VARCHAR(3) NOT NULL DEFAULT 'INR',
     gross_amount_paise BIGINT NOT NULL,                -- Payment amount collected from tenant
@@ -126,9 +136,11 @@ CREATE TABLE gateway_settlements (
     resolved_at TIMESTAMPTZ,
     raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_gateway_settlement_record UNIQUE (cf_settlement_id, COALESCE(order_id, ''), COALESCE(cf_payment_id, ''))
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE UNIQUE INDEX uq_gateway_settlement_record 
+    ON gateway_settlements (cf_settlement_id, COALESCE(order_id, ''), COALESCE(cf_payment_id, ''));
 
 CREATE INDEX idx_gateway_settlements_prop_status 
     ON gateway_settlements (property_id, reconciliation_status);
@@ -170,64 +182,35 @@ Balance holds strictly for all cases, including settlements with refunds or char
 
 ---
 
-## 5. Architecture & Go Types
+## 5. Architectural Contracts & Layer Responsibilities
 
-### A. Ingress Go Models (`internal/cashfree/settlement.go`)
+### A. Pure Accounting Posting (`ProcessSettlement` in `internal/finance/settlement.go`)
+- `ProcessSettlement` remains a pure accounting function.
+- It validates the conservation equation $\text{Gross} == \text{Net} + \text{Fee} + \text{Tax} + \text{Adjustment}$.
+- If balanced: posts deterministic journal lines (`source_id = "cashfree_settlement:<settlement_id>"`) and returns `nil`.
+- If unbalanced or invalid: returns typed errors (`ErrSettlementUnbalanced`, `ErrInvalidSettlementData`).
+- **No side-effects on error**: It never writes partial or speculative rows to the database.
 
-```go
-// OrderSettlementRecord represents an order-level settlement from GET /pg/orders/{order_id}/settlements
-type OrderSettlementRecord struct {
-    CFSettlementID      string    `json:"cf_settlement_id"`
-    CFPaymentID         string    `json:"cf_payment_id"`
-    OrderID             string    `json:"order_id"`
-    GrossAmountPaise    int64     `json:"gross_amount_paise"`
-    NetAmountPaise      int64     `json:"net_amount_paise"`
-    ServiceChargePaise  int64     `json:"service_charge_paise"`
-    ServiceTaxPaise     int64     `json:"service_tax_paise"`
-    AdjustmentPaise     int64     `json:"adjustment_paise"`
-    UTR                 string    `json:"transfer_id"`
-    TransferTime        time.Time `json:"transfer_time"`
-    Status              string    `json:"status"`
-}
+### B. Ingress Caller Responsibilities (Discrepancy Persistence & Parity)
+The caller layer (`WebhookHandler`, `OrderReconciler`, or `CSVImportHandler`) owns database persistence:
+1. **Durable Ingestion Row**: Before or alongside posting, the caller creates/updates the record in `gateway_settlements` with `ingestion_source` (`webhook`, `order_fetch`, or `csv_import`).
+2. **Success Path**: On successful journal posting, the caller links `journal_entry_id` and sets `reconciliation_status = 'matched'`.
+3. **Discrepancy Path**: When `ProcessSettlement` or intent matching fails, the caller catches the error and persists:
+   - `reconciliation_status = 'discrepancy'`
+   - `discrepancy_reason = err.Error()`
+   - `journal_entry_id = NULL`
+   This guarantees that no failed settlement vanishes into logs; every rejected or imbalanced settlement immediately surfaces in the property owner's exception queue.
 
-// SettlementWebhookPayload represents SETTLEMENT_SUCCESS from Cashfree webhook
-type SettlementWebhookPayload struct {
-    Data struct {
-        Settlement struct {
-            SettlementID          any     `json:"settlement_id"` // string or int64
-            Status                string  `json:"status"`
-            AmountSettled         float64 `json:"amount_settled"`
-            UTR                   any     `json:"utr"`           // string or int64
-            SettledOn             string  `json:"settled_on"`
-            SettlementType        string  `json:"settlement_type"`
-            PaymentAmount         float64 `json:"payment_amount"`
-            ServiceCharge         float64 `json:"service_charge"`
-            ServiceTax            float64 `json:"service_tax"`
-            Adjustment            float64 `json:"adjustment"`
-            SettlementInitiatedOn string  `json:"settlement_initiated_on"`
-        } `json:"settlement"`
-    } `json:"data"`
-    EventTime string `json:"event_time"`
-    Type      string `json:"type"`
-}
-```
-
-### B. Reconciliation Engine (`internal/finance/settlement_recon.go`)
-- **Matching Algorithm**:
-  1. Look up `payment_intent` by `order_id = rec.OrderID` (or search `payments` by `cf_payment_id = rec.CFPaymentID`).
-  2. If intent not found:
-     - Set `reconciliation_status = 'unmatched'`, `discrepancy_reason = 'intent_not_found'`. Zero ledger mutation.
-  3. Validate Gross Amount:
-     - Assert `rec.GrossAmountPaise == intent.AmountPaise`.
-     - If mismatch: set `reconciliation_status = 'discrepancy'`, `discrepancy_reason = 'intent_amount_mismatch'`. Zero ledger mutation.
-  4. Validate Invariant Equation:
-     - Assert `rec.GrossAmountPaise == rec.NetAmountPaise + rec.ServiceChargePaise + rec.ServiceTaxPaise + rec.AdjustmentPaise`.
-     - If mismatch: set `reconciliation_status = 'discrepancy'`, `discrepancy_reason = 'arithmetic_imbalance'`. Zero ledger mutation.
-  5. Validate Associated Internal Payment:
-     - Locate `payments` record for this intent/order, link `payment_id`.
-  6. Atomic Double-Entry Posting:
-     - On `matched`, insert balanced journal entry (`AcctBank`, `AcctPaymentProcessingExpense`, `AcctGatewayAdjustment`, `AcctGatewayClearing`).
-     - Update `reconciliation_status = 'matched'` and link `journal_entry_id`.
+### C. CSV Column Mapping & Alias Support
+In `ParseAndImportSettlementCSV`, the parser maps columns flexibly:
+- `settlement_id`: `settlement_id`, `id`
+- `gross_amount`: `gross_amount`, `total_transaction_amount`, `payment_amount`
+- `settlement_amount`: `settlement_amount`, `amount_settled`
+- `service_charge`: `service_charge`, `fee`
+- `service_tax`: `service_tax`, `tax`
+- `adjustment`: `adjustment`, `other_deductions` (defaults to 0 if column absent)
+- `transfer_utr`: `transfer_utr`, `settlement_utr`, `utr`
+- `transfer_time`: `transfer_time`, `settlement_date`
 
 ---
 
@@ -240,9 +223,10 @@ type SettlementWebhookPayload struct {
    - Verify exact integer paise conversions for decimal fees and adjustments.
 2. **Reconciliation Invariant Tests (`internal/finance/settlement_recon_test.go`)**:
    - Verify conservation with non-zero adjustments ($\text{Gross} == \text{Net} + \text{Fee} + \text{Tax} + \text{Adjustment}$).
-   - Verify fail-closed behavior on intentional 1-paise arithmetic imbalances.
-   - Verify idempotent reprocessing of already-settled records.
+   - Verify caller discrepancy capture on intentional 1-paise arithmetic imbalances.
+   - Verify idempotent reprocessing of already-settled records (CSV vs Webhook race).
 3. **HTTP & Live DB Tests (`internal/api/handlers_settlement_test.go`, `internal/postgres/settlement_repo_live_test.go`)**:
    - Verify webhook ingress signature validation and idempotent deduplication.
+   - Verify CSV upload endpoint (`POST /api/owner/settlements/import-csv`) populates `gateway_settlements` with `ingestion_source = 'csv_import'`.
    - Verify IDOR isolation across properties on owner settlement query endpoints.
    - Full test suite sweep: `go test -count=1 ./internal/...`.
