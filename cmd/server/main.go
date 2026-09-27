@@ -18,6 +18,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
+	"github.com/pg-cashflow/pg-go/internal/attendance"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -253,6 +254,10 @@ func main() {
 		}()
 	}
 
+	payoutRepo := postgres.NewPayoutRepo(pool, financeSvc)
+	attendanceRepo := postgres.NewAttendanceRepo(pool)
+	attendanceSvc := attendance.NewService(pool, attendanceRepo, payoutRepo)
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -300,6 +305,9 @@ func main() {
 		Intelligence:        intelSvc,
 		FinanceEnabled:      cfg.FinanceEnabled,
 		IntelligenceEnabled: cfg.IntelligenceEnabled,
+		PayoutRepo:          payoutRepo,
+		AttendanceRepo:      attendanceRepo,
+		AttendanceSvc:       attendanceSvc,
 	})
 
 	srv := &http.Server{

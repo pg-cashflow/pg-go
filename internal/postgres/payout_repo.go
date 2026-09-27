@@ -275,13 +275,21 @@ func scanPayoutItem(row pgx.Row) (*domain.PayoutItem, error) {
 }
 
 func (r *PayoutRepo) CreatePayoutItem(ctx context.Context, it *domain.PayoutItem) error {
+	return r.CreatePayoutItemTx(ctx, nil, it)
+}
+
+func (r *PayoutRepo) CreatePayoutItemTx(ctx context.Context, tx pgx.Tx, it *domain.PayoutItem) error {
 	now := time.Now().UTC()
 	it.CreatedAt = now
 	it.UpdatedAt = now
 	if it.Status == "" {
 		it.Status = domain.PayoutPending
 	}
-	return r.pool.QueryRow(ctx, `
+	var runner DBTX = r.pool
+	if tx != nil {
+		runner = tx
+	}
+	return runner.QueryRow(ctx, `
 		INSERT INTO payout_items (
 			batch_id, payee_id, departure_id, reference_number,
 			amount_paise, purpose, period_label, status, utr, settled_at, failure_reason,

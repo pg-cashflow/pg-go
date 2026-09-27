@@ -1,7 +1,7 @@
 # Ticket 12: Track M — Staff Attendance & Wage-Calculation Engine
 
 - **Type**: `wayfinder:task`
-- **Status**: Frontier / Planned
+- **Status**: Resolved
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
 - **Prerequisite**: Track L (Cashfree Transfers V2 & Payout Batch Infrastructure) verified and committed.
 
@@ -192,8 +192,20 @@ All endpoints gated by `PropertyID` tenancy check and owner authentication (`Use
 
 ## 7. Verification Criteria
 
-- [ ] Zero floats in wage calculation; exact integer paise arithmetic.
-- [ ] Payout core packages remain completely untouched.
-- [ ] Invariant holds: $\text{NetWagePaise} + \text{TotalDeductionPaise} \le \text{BaseMonthlyWagePaise}$.
-- [ ] Finalized wage items generate valid unbatched `payout_items` that seamlessly feed into `CreateBatchFromUnbatchedItems` and maker-checker approval.
-- [ ] 100% test pass across `go test -p 2 ./internal/...`.
+- [x] Zero floats in wage calculation; exact integer paise arithmetic.
+- [x] Payout core packages remain completely untouched.
+- [x] Invariant holds: $\text{NetWagePaise} + \text{TotalDeductionPaise} \le \text{BaseMonthlyWagePaise}$.
+- [x] Finalized wage items generate valid unbatched `payout_items` that seamlessly feed into `CreateBatchFromUnbatchedItems` and maker-checker approval.
+- [x] 100% test pass across `go test -p 2 ./internal/...`.
+
+---
+
+## 8. Implementation Proof & Exact File References
+
+1. **Migration 025**: [migrations/025_staff_attendance_and_wages.sql](file:///c:/Users/divak/Downloads/pg-go/migrations/025_staff_attendance_and_wages.sql) (`staff_profiles`, `leave_policies`, `attendance_records`, `wage_calculations`).
+2. **Domain Models**: [internal/domain/attendance.go](file:///c:/Users/divak/Downloads/pg-go/internal/domain/attendance.go).
+3. **Calculation Engine**: [internal/attendance/calculator.go](file:///c:/Users/divak/Downloads/pg-go/internal/attendance/calculator.go), tested in [internal/attendance/calculator_test.go](file:///c:/Users/divak/Downloads/pg-go/internal/attendance/calculator_test.go).
+4. **Repository**: [internal/postgres/attendance_repo.go](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/attendance_repo.go), tested with live PostgreSQL in [internal/postgres/attendance_repo_live_test.go](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/attendance_repo_live_test.go).
+5. **Payout Bridge & Service**: [internal/attendance/service.go](file:///c:/Users/divak/Downloads/pg-go/internal/attendance/service.go), with `CreatePayoutItemTx` in [internal/postgres/payout_repo.go](file:///c:/Users/divak/Downloads/pg-go/internal/postgres/payout_repo.go).
+6. **API Handlers & Router**: [internal/api/handlers_attendance.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/handlers_attendance.go), wired in [internal/api/router.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/router.go) and [cmd/server/main.go](file:///c:/Users/divak/Downloads/pg-go/cmd/server/main.go), tested end-to-end in [internal/api/handlers_attendance_test.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/handlers_attendance_test.go).
+7. **Test Suite Status**: All 31 packages in `internal/...` pass 100% green with `go test -p 2 ./internal/...` and `go test -count=1`.

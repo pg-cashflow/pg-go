@@ -8,6 +8,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/attendance"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/events"
@@ -83,6 +84,9 @@ type Deps struct {
 	PayoutChecksumSecret        string
 	CashfreePayoutWebhookSecret string
 	PayoutDispatcher            *finance.PayoutDispatcher
+
+	AttendanceRepo *postgres.AttendanceRepo
+	AttendanceSvc  *attendance.Service
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
@@ -255,6 +259,19 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
 			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 			owner.POST("/payouts/batches/:id/dispatch", h.OwnerDispatchPayoutBatch)
+
+			// Staff Attendance & Wage-Calculation Engine (Track M)
+			owner.POST("/staff", h.OwnerCreateStaffProfile)
+			owner.GET("/staff", h.OwnerListStaffProfiles)
+			owner.PUT("/staff/:id/status", h.OwnerUpdateStaffProfileStatus)
+
+			owner.GET("/attendance/leave-policy", h.OwnerGetLeavePolicy)
+			owner.PUT("/attendance/leave-policy", h.OwnerUpdateLeavePolicy)
+			owner.POST("/attendance/daily", h.OwnerMarkDailyAttendance)
+			owner.GET("/attendance/monthly", h.OwnerListMonthlyAttendance)
+
+			owner.POST("/payroll/calculate", h.OwnerPreviewPayroll)
+			owner.POST("/payroll/finalize", h.OwnerFinalizePayroll)
 		}
 
 		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))
