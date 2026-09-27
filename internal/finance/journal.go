@@ -19,6 +19,9 @@ func MakeLines(propertyID, sourceID uuid.UUID, sourceType string, occurredAt tim
 	var debit, credit int64
 	out := make([]domain.JournalLine, 0, len(specs))
 	for _, s := range specs {
+		if s.Debit < 0 || s.Credit < 0 {
+			return nil, ErrUnbalancedJournal
+		}
 		if (s.Debit > 0 && s.Credit > 0) || (s.Debit == 0 && s.Credit == 0) {
 			return nil, ErrUnbalancedJournal
 		}

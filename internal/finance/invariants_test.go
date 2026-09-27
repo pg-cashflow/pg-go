@@ -174,6 +174,22 @@ func TestMoneyMath_LineDegeneracyAndNegativeEvals(t *testing.T) {
 			},
 		},
 		{
+			name: "three-line balanced with negative debit (net balanced)",
+			specs: []LineSpec{
+				{Account: domain.AcctBank, Debit: 1000, LineKind: "pos"},
+				{Account: domain.AcctDepositLiability, Debit: -500, LineKind: "neg"},
+				{Account: domain.AcctRentRevenue, Credit: 500, LineKind: "pos"},
+			},
+		},
+		{
+			name: "three-line balanced with negative credit (net balanced)",
+			specs: []LineSpec{
+				{Account: domain.AcctBank, Debit: 500, LineKind: "pos"},
+				{Account: domain.AcctDepositLiability, Credit: -500, LineKind: "neg"},
+				{Account: domain.AcctRentRevenue, Credit: 1000, LineKind: "pos"},
+			},
+		},
+		{
 			name:  "empty specs",
 			specs: []LineSpec{},
 		},
