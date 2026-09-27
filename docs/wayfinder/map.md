@@ -36,11 +36,12 @@
 
 ## Frontier (Open Tickets)
 
+- [Track M (Ticket 12): Staff Attendance & Wage-Calculation Engine](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_m_attendance_and_wage_calc.md): Frontier / Planned. Isolated upstream domain for per-property leave policies, daily attendance tracking, and integer-paise wage calculation, feeding into `payout_items` (`PayeeTypeStaff`) without altering the audited payout pipeline.
 - Stream 3 / Next Milestone: Financial Control Layer & Reconciliation (Cashfree Settlement report ingestion, bank statement feeds, and account reconciliation).
 
 ## Not yet specified
 
-- None remaining. All operational and money-handling tracks in Stream 2 fully specified and closed.
+- Stream 3 specific breakdown tickets (Layer 1, Layer 2, Layer 3).
 
 ## Out of scope
 
