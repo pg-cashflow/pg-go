@@ -14,9 +14,17 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
-type FinanceRepo struct{ db DBTX }
+type FinanceRepo struct {
+	pool *pgxpool.Pool
+	db   DBTX
+}
 
-func NewFinanceRepo(db DBTX) *FinanceRepo { return &FinanceRepo{db: db} }
+func NewFinanceRepo(pool *pgxpool.Pool) *FinanceRepo {
+	return &FinanceRepo{
+		pool: pool,
+		db:   pool,
+	}
+}
 
 func isUnique(err error) bool {
 	var e *pgconn.PgError
@@ -376,10 +384,13 @@ func (r *FinanceRepo) InsertJournal(ctx context.Context, lines []domain.JournalL
 	if len(lines) == 0 {
 		return nil
 	}
+	if r.pool == nil {
+		return fmt.Errorf("InsertJournal requires transactional pool access, got nil pool")
+	}
 
-	execLines := func(execer DBTX) error {
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		for _, l := range lines {
-			_, err := execer.Exec(ctx, `
+			_, err := tx.Exec(ctx, `
 				INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 				l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
@@ -391,14 +402,7 @@ func (r *FinanceRepo) InsertJournal(ctx context.Context, lines []domain.JournalL
 			}
 		}
 		return nil
-	}
-
-	if pool, ok := r.db.(*pgxpool.Pool); ok {
-		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
-			return execLines(tx)
-		})
-	}
-	return execLines(r.db)
+	})
 }
 
 func (r *FinanceRepo) ListJournal(ctx context.Context, propertyID uuid.UUID, from, to time.Time, account string) ([]domain.JournalLine, error) {
