@@ -47,16 +47,15 @@ func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, perio
 		Items:            items,
 		Status:           "open",
 	}
+	if prevPeriod, err := previousPeriodOf(period); err == nil {
+		if prev, err := s.Store.GetTieOut(ctx, propertyID, prevPeriod); err == nil && prev != nil {
+			t.Items = mergeInvestigateAging(prev.Items, items)
+		}
+	}
 	if existing != nil {
 		t.ID = existing.ID
 		t.Status = existing.Status
 		t.ClosedAt = existing.ClosedAt
-		t.Items = mergeInvestigateAging(existing.Items, items)
-	} else if prevT, err := time.Parse("2006-01", period); err == nil {
-		prevPeriod := prevT.AddDate(0, -1, 0).Format("2006-01")
-		if prev, err := s.Store.GetTieOut(ctx, propertyID, prevPeriod); err == nil && prev != nil {
-			t.Items = mergeInvestigateAging(prev.Items, items)
-		}
 	}
 	if err := s.Store.SaveTieOut(ctx, t); err != nil {
 		return nil, err
@@ -139,4 +138,12 @@ func (s *Service) RecurringTieOutAlert(ctx context.Context, propertyID uuid.UUID
 		}
 	}
 	return n >= 2
+}
+
+func previousPeriodOf(period string) (string, error) {
+	t, err := time.Parse("2006-01", period)
+	if err != nil {
+		return "", err
+	}
+	return t.AddDate(0, -1, 0).Format("2006-01"), nil
 }

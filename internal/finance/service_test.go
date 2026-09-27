@@ -233,6 +233,40 @@ func TestCriticalTieOutVarianceAlert(t *testing.T) {
 	}
 }
 
+func TestTieOutRecomputeSamePeriodDoesNotIncrementAging(t *testing.T) {
+	st := NewMemoryStore()
+	pub := &capturePublisher{}
+	svc := NewService(st, pub)
+	ctx := context.Background()
+	pid := uuid.New()
+
+	// First computation for 2026-07 with discrepancy below critical threshold
+	recon := &payment.ReconciliationSummary{RentCollected: 1000, Period: "2026-07"}
+	t1, err := svc.ComputeTieOut(ctx, pid, "2026-07", recon)
+	if err != nil || t1.DifferencePaise != 1000 {
+		t.Fatalf("first compute: %+v err: %v", t1, err)
+	}
+	if len(t1.Items) != 1 || t1.Items[0].UnresolvedMonths != 1 {
+		t.Fatalf("expected UnresolvedMonths=1 on initial run, got %+v", t1.Items)
+	}
+
+	// Recompute for the SAME period (e.g. owner re-run or client retry)
+	t2, err := svc.ComputeTieOut(ctx, pid, "2026-07", recon)
+	if err != nil || t2.DifferencePaise != 1000 {
+		t.Fatalf("second compute: %+v err: %v", t2, err)
+	}
+	if len(t2.Items) != 1 || t2.Items[0].UnresolvedMonths != 1 {
+		t.Fatalf("expected UnresolvedMonths to remain 1 after recompute of same period, got %+v", t2.Items)
+	}
+
+	// Assert EvtRecurringTieOutException was NOT fired
+	for _, e := range pub.events {
+		if e.EventType == domain.EvtRecurringTieOutException {
+			t.Fatalf("EvtRecurringTieOutException must NOT fire when recomputing same period: %+v", pub.events)
+		}
+	}
+}
+
 func TestIdempotencyDuplicates(t *testing.T) {
 	st := NewMemoryStore()
 	svc := NewService(st, nil)
