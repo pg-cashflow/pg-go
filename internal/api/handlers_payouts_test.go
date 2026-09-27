@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	defer pool.Close()
 
 	_, _ = pool.Exec(ctx, `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INT NOT NULL DEFAULT 1`)
+	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
 
 	propID := uuid.New()
 	inviteCode := fmt.Sprintf("E%s", uuid.New().String()[:7])

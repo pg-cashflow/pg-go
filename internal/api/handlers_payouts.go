@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"encoding/csv"
@@ -850,3 +851,65 @@ func (h *Handlers) getChecksumSecret() string {
 	}
 	return "payout_checksum_secret"
 }
+
+// OwnerDispatchPayoutBatch handles POST /owner/payouts/batches/:id/dispatch.
+// It initiates automated Cashfree Transfers V2 batch transfer for an approved batch.
+func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	batchID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid batch id"})
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "batch not found"})
+		return
+	}
+	if batch.PropertyID != pid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "batch does not belong to owner property"})
+		return
+	}
+
+	if batch.Status != domain.BatchApproved {
+		respondErr(c, clientErr(http.StatusConflict, fmt.Sprintf("payout batch is in status '%s'; only approved batches can be dispatched", batch.Status)))
+		return
+	}
+
+	// Atomically transitions batch and items to 'processing' and enqueues outbox event
+	updatedBatch, items, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	// Trigger inline dispatch if dispatcher is available (fast path)
+	if h.PayoutDispatcher != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
+				slog.Warn("inline payout batch dispatch failed, relying on ledger outbox worker",
+					"batch_id", batchID,
+					"err", dErr,
+				)
+			}
+		}()
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"batch": updatedBatch,
+		"items": items,
+	})
+}
+

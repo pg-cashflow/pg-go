@@ -291,3 +291,27 @@ func (s *Service) MirrorPayoutSettled(ctx context.Context, propertyID, payoutIte
 	return err
 }
 
+// MirrorPayoutReversed posts journal entry when a previously settled payout is reversed:
+// Dr bank (amountPaise)
+// Cr refund_payable (amountPaise)
+func (s *Service) MirrorPayoutReversed(ctx context.Context, propertyID, payoutItemID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, payoutItemID, "payout_reversal", at, []LineSpec{
+		{Account: domain.AcctBank, Debit: amountPaise, LineKind: "cash_in"},
+		{Account: domain.AcctRefundPayable, Credit: amountPaise, LineKind: "refund_reversal"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+

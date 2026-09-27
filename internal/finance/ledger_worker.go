@@ -26,10 +26,11 @@ type LedgerMirrorer interface {
 
 // LedgerOutboxWorker polls and processes pending ledger outbox events to ensure zero ledger desynchronization.
 type LedgerOutboxWorker struct {
-	pool     *pgxpool.Pool
-	repo     *postgres.LedgerOutboxRepo
-	mirrorer LedgerMirrorer
-	alerter  DeadLetterNotifier
+	pool             *pgxpool.Pool
+	repo             *postgres.LedgerOutboxRepo
+	mirrorer         LedgerMirrorer
+	alerter          DeadLetterNotifier
+	payoutDispatcher PayoutBatchDispatcher
 }
 
 func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, mirrorer LedgerMirrorer, alerter ...DeadLetterNotifier) *LedgerOutboxWorker {
@@ -43,6 +44,11 @@ func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, 
 		mirrorer: mirrorer,
 		alerter:  a,
 	}
+}
+
+// SetPayoutDispatcher sets the dispatcher for payout_batch_transfer events.
+func (w *LedgerOutboxWorker) SetPayoutDispatcher(d PayoutBatchDispatcher) {
+	w.payoutDispatcher = d
 }
 
 // SetAlerter sets or replaces the dead-letter notifier for this worker.
@@ -159,6 +165,15 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			p.ReceivableBalancePaise,
 			p.OccurredAt,
 		)
+	case "payout_batch_transfer":
+		if w.payoutDispatcher == nil {
+			return fmt.Errorf("payout batch dispatcher not configured")
+		}
+		batchID, err := UnmarshalPayoutBatchPayload(evt.Payload)
+		if err != nil {
+			return fmt.Errorf("unmarshal payout batch transfer payload: %w", err)
+		}
+		return w.payoutDispatcher.DispatchBatch(ctx, batchID)
 	default:
 		return fmt.Errorf("unrecognized ledger outbox event type '%s'", evt.EventType)
 	}

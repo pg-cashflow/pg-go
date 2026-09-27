@@ -54,9 +54,26 @@ func (c *Config) ValidateForRealDeployment() error {
 		errs = append(errs, "both CASHFREE_KYC_APP_ID and CASHFREE_KYC_SECRET_KEY must be provided")
 	}
 
+	// --- Cashfree Payout key pairs, fundsource, and webhook secret ---
+	payoutClientID := strings.TrimSpace(c.CashfreePayoutClientID)
+	payoutClientSecret := strings.TrimSpace(c.CashfreePayoutClientSecret)
+	if (payoutClientID != "" && payoutClientSecret == "") || (payoutClientID == "" && payoutClientSecret != "") {
+		errs = append(errs, "both CF_PAYOUT_CLIENT_ID and CF_PAYOUT_CLIENT_SECRET must be provided")
+	}
+	if payoutClientID != "" {
+		if strings.TrimSpace(c.CashfreePayoutWebhookSecret) == "" {
+			errs = append(errs, "CF_PAYOUT_WEBHOOK_SECRET is required whenever CF_PAYOUT_CLIENT_ID is set (any environment)")
+		} else if strings.HasPrefix(c.CashfreePayoutWebhookSecret, "change-me") {
+			errs = append(errs, "CF_PAYOUT_WEBHOOK_SECRET must not be a placeholder value (starts with 'change-me')")
+		}
+		if strings.TrimSpace(c.CashfreePayoutFundsourceID) == "" {
+			errs = append(errs, "CF_PAYOUT_FUNDSOURCE_ID is required whenever CF_PAYOUT_CLIENT_ID is set (Cashfree Transfers V2 requires debit fund source)")
+		}
+	}
+
 	// --- Cashfree webhook secret required whenever Cashfree keys are set ---
-	cashfreeEnabled := pgAppID != "" || pgSecret != ""
-	if cashfreeEnabled && strings.TrimSpace(c.CashfreeWebhookSecret) == "" {
+	cashfreeEnabled := pgAppID != "" || pgSecret != "" || payoutClientID != ""
+	if (pgAppID != "" || pgSecret != "") && strings.TrimSpace(c.CashfreeWebhookSecret) == "" {
 		errs = append(errs, "CASHFREE_WEBHOOK_SECRET is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
 	}
 

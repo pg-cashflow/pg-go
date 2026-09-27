@@ -258,14 +258,15 @@ func (r *PayoutRepo) ListDueAdjustments(ctx context.Context, departureID uuid.UU
 // ---------------------------------------------------------
 
 const itemCols = `id, batch_id, payee_id, departure_id, reference_number,
-	amount_paise, purpose, period_label, status, utr, settled_at, failure_reason, created_at, updated_at`
+	amount_paise, purpose, period_label, status, utr, settled_at, failure_reason,
+	cf_transfer_id, retry_of, created_at, updated_at`
 
 func scanPayoutItem(row pgx.Row) (*domain.PayoutItem, error) {
 	var it domain.PayoutItem
 	err := row.Scan(
 		&it.ID, &it.BatchID, &it.PayeeID, &it.DepartureID, &it.ReferenceNumber,
 		&it.AmountPaise, &it.Purpose, &it.PeriodLabel, &it.Status, &it.UTR, &it.SettledAt,
-		&it.FailureReason, &it.CreatedAt, &it.UpdatedAt,
+		&it.FailureReason, &it.CFTransferID, &it.RetryOf, &it.CreatedAt, &it.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -284,12 +285,12 @@ func (r *PayoutRepo) CreatePayoutItem(ctx context.Context, it *domain.PayoutItem
 		INSERT INTO payout_items (
 			batch_id, payee_id, departure_id, reference_number,
 			amount_paise, purpose, period_label, status, utr, settled_at, failure_reason,
-			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			cf_transfer_id, retry_of, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		RETURNING id`,
 		it.BatchID, it.PayeeID, it.DepartureID, it.ReferenceNumber,
 		it.AmountPaise, it.Purpose, it.PeriodLabel, it.Status, it.UTR, it.SettledAt, it.FailureReason,
-		it.CreatedAt, it.UpdatedAt,
+		it.CFTransferID, it.RetryOf, it.CreatedAt, it.UpdatedAt,
 	).Scan(&it.ID)
 }
 
@@ -301,7 +302,7 @@ func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, proper
 	rows, err := r.pool.Query(ctx, `
 		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
 		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
-		       pi.failure_reason, pi.created_at, pi.updated_at
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at
 		FROM payout_items pi
 		JOIN payout_payees pp ON pp.id = pi.payee_id
 		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'
@@ -395,7 +396,7 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 	rows, err := tx.Query(ctx, `
 		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
 		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
-		       pi.failure_reason, pi.created_at, pi.updated_at
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at
 		FROM payout_items pi
 		JOIN payout_payees pp ON pp.id = pi.payee_id
 		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'
@@ -499,6 +500,228 @@ func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.
 		return nil, err
 	}
 	return b, nil
+}
+
+// InitiateBatchTransferTx atomically transitions an approved batch and its pending items to 'processing'
+// and enqueues a durable outbox event for asynchronous Cashfree dispatch.
+func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.UUID) (*domain.PayoutBatch, []domain.PayoutItem, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin batch transfer tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock batch FOR UPDATE
+	row := tx.QueryRow(ctx, `
+		SELECT `+batchCols+`
+		FROM payout_batches
+		WHERE id = $1
+		FOR UPDATE`, batchID,
+	)
+	batch, err := scanBatch(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, domain.ErrNotFound
+		}
+		return nil, nil, fmt.Errorf("lock batch: %w", err)
+	}
+
+	if batch.Status != domain.BatchApproved {
+		return nil, nil, fmt.Errorf("cannot initiate transfer: batch status is '%s', must be 'approved'", batch.Status)
+	}
+
+	// 2. Lock items FOR UPDATE
+	rows, err := tx.Query(ctx, `
+		SELECT `+itemCols+`
+		FROM payout_items
+		WHERE batch_id = $1
+		FOR UPDATE`, batchID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lock batch items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []domain.PayoutItem
+	for rows.Next() {
+		it, err := scanPayoutItem(rows)
+		if err != nil {
+			return nil, nil, fmt.Errorf("scan item: %w", err)
+		}
+		if it.Status != domain.PayoutPending && it.Status != domain.PayoutProcessing {
+			return nil, nil, fmt.Errorf("item %s has invalid status '%s' for batch transfer", it.ID, it.Status)
+		}
+		items = append(items, *it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil, errors.New("no items found in batch")
+	}
+
+	now := time.Now().UTC()
+
+	// 3. Flip batch -> processing
+	_, err = tx.Exec(ctx, `
+		UPDATE payout_batches
+		SET status = 'processing', updated_at = $2
+		WHERE id = $1`, batchID, now,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("update batch to processing: %w", err)
+	}
+	batch.Status = domain.BatchProcessing
+	batch.UpdatedAt = now
+
+	// 4. Flip items -> processing
+	_, err = tx.Exec(ctx, `
+		UPDATE payout_items
+		SET status = 'processing', updated_at = $2
+		WHERE batch_id = $1`, batchID, now,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("update items to processing: %w", err)
+	}
+	for i := range items {
+		items[i].Status = domain.PayoutProcessing
+		items[i].UpdatedAt = now
+	}
+
+	// 5. Transactional outbox event enqueue
+	payload, _ := json.Marshal(map[string]any{
+		"batch_id": batch.ID,
+	})
+	outboxEvt := &domain.LedgerOutboxEvent{
+		EventType:      "payout_batch_transfer",
+		PropertyID:     batch.PropertyID,
+		SourceID:       batch.ID,
+		Payload:        payload,
+		IdempotencyKey: fmt.Sprintf("payout_batch_transfer:%s", batch.ID),
+		MaxAttempts:    5,
+	}
+	if r.outbox != nil {
+		if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+			return nil, nil, fmt.Errorf("enqueue payout outbox event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit batch transfer: %w", err)
+	}
+
+	return batch, items, nil
+}
+
+// SetBatchDispatchUnknown sets batch status to dispatch_unknown on ambiguous 5xx or transport timeouts.
+func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE payout_batches
+		SET status = 'dispatch_unknown',
+		    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, reason,
+	)
+	return err
+}
+
+// UpdatePayoutItemStatusTx updates status, UTR, settled_at, and failure reason on a payout item.
+func (r *PayoutRepo) UpdatePayoutItemStatusTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	itemID uuid.UUID,
+	status domain.PayoutItemStatus,
+	cfTransferID *string,
+	utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+) error {
+	var runner DBTX = r.pool
+	if tx != nil {
+		runner = tx
+	}
+	_, err := runner.Exec(ctx, `
+		UPDATE payout_items
+		SET status = $2,
+		    cf_transfer_id = COALESCE($3, cf_transfer_id),
+		    utr = COALESCE($4, utr),
+		    settled_at = COALESCE($5, settled_at),
+		    failure_reason = COALESCE($6, failure_reason),
+		    updated_at = NOW()
+		WHERE id = $1`,
+		itemID, status, cfTransferID, utr, settledAt, failureReason,
+	)
+	return err
+}
+
+// UpdateBatchStatusFromItemsTx evaluates all items in a batch and transitions the batch status.
+//
+// Rules:
+// - All items succeeded -> 'completed'
+// - All items failed/rejected -> 'failed'
+// - Mixed terminal outcomes -> 'partially_failed'
+// - Any item in-flight (pending, processing, cashfree_approval_pending, retriable_failed) -> 'processing'
+func (r *PayoutRepo) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error) {
+	var runner DBTX = r.pool
+	if tx != nil {
+		runner = tx
+	}
+
+	rows, err := runner.Query(ctx, `SELECT status FROM payout_items WHERE batch_id = $1`, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("query item statuses: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		totalCount     int
+		succeededCount int
+		failedCount    int
+		inFlightCount  int
+	)
+
+	for rows.Next() {
+		var st domain.PayoutItemStatus
+		if err := rows.Scan(&st); err != nil {
+			return nil, err
+		}
+		totalCount++
+		switch st {
+		case domain.PayoutSucceeded:
+			succeededCount++
+		case domain.PayoutFailed, domain.PayoutRejected:
+			failedCount++
+		default:
+			inFlightCount++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if totalCount == 0 {
+		return nil, errors.New("batch has no items")
+	}
+
+	var newStatus domain.PayoutBatchStatus
+	if inFlightCount > 0 {
+		newStatus = domain.BatchProcessing
+	} else if succeededCount == totalCount {
+		newStatus = domain.BatchCompleted
+	} else if failedCount == totalCount {
+		newStatus = domain.BatchFailed
+	} else {
+		newStatus = domain.BatchPartiallyFailed
+	}
+
+	row := runner.QueryRow(ctx, `
+		UPDATE payout_batches
+		SET status = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING `+batchCols,
+		batchID, newStatus,
+	)
+	return scanBatch(row)
 }
 
 type SettleDepartureParams struct {

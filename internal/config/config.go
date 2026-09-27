@@ -47,6 +47,12 @@ type Config struct {
 	AadhaarQRPublicKeyPEM        string
 	KYCIdentitySecret            string
 	KYCDigiLockerRedirectURL     string
+	CashfreePayoutClientID      string
+	CashfreePayoutClientSecret  string
+	CashfreePayoutAPIVersion    string
+	CashfreePayoutFundsourceID  string
+	CashfreePayoutWebhookSecret string
+	CashfreePayoutEnv           string
 	FinanceEnabled               bool
 	IntelligenceEnabled          bool
 	AdminEmail                   string
@@ -86,6 +92,12 @@ func Load() (*Config, error) {
 		CashfreeKYCSecretKey:         os.Getenv("CASHFREE_KYC_SECRET_KEY"),
 		CashfreeEnv:                  envOr("CASHFREE_ENV", "sandbox"),
 		CashfreeWebhookSecret:        envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),
+		CashfreePayoutClientID:      os.Getenv("CF_PAYOUT_CLIENT_ID"),
+		CashfreePayoutClientSecret:  os.Getenv("CF_PAYOUT_CLIENT_SECRET"),
+		CashfreePayoutAPIVersion:    envOr("CF_PAYOUT_API_VERSION", "2024-01-01"),
+		CashfreePayoutFundsourceID:  os.Getenv("CF_PAYOUT_FUNDSOURCE_ID"),
+		CashfreePayoutWebhookSecret: os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
+		CashfreePayoutEnv:           envOr("CF_PAYOUT_ENV", "sandbox"),
 		WebhookTimestampToleranceSec: envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
 		OrderExpiryDuration:          envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
 		OrderPollerBufferDuration:    envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),

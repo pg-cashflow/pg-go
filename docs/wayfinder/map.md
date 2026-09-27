@@ -32,14 +32,15 @@
 - [Track I (Ticket 8): Gateway Dispute & Chargeback Webhook Fail-Safe Handling](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_i_gateway_dispute_handling.md): Resolved. Added Cashfree dispute webhook parser (`DISPUTE_CREATED_WEBHOOK`, `PAYMENT_DISPUTE_CREATED_WEBHOOK`, `DISPUTE_STATUS_UPDATE_WEBHOOK`) with flexible alphanumeric ID deserialization. Integrated fail-safe handler recording `dispute_action_required` in `webhook_events`, loud operator alert via `slog.Error`, and property-scoped in-app notification `EvtPaymentDisputed`. Enforces strict fail-safe isolation and zero automated ledger reversal invariant (a dispute is a contested claim, not an approved refund) while responding HTTP 200 OK to prevent gateway retry storms. Operational response procedure documented in [Dispute & Chargeback Operational Runbook](file:///c:/Users/divak/Downloads/pg-go/docs/runbooks/dispute_chargeback_runbook.md).
 - [Track J (Ticket 9): Ledger Outbox Dead-Letter Active Operator Alerting](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_j_ledger_outbox_dead_letter_alerting.md): Resolved. Added `DeadLetterNotifier` interface and `EmailDeadLetterNotifier` in `internal/finance/alert.go` using `mailer.Mailer` with structured HTML forensic metadata and instant SMS backstop (`WithSMSBackstop`). Integrated active escalation into `LedgerOutboxWorker` in `internal/finance/ledger_worker.go`, triggering loud `slog.Error` and dual-channel notifications when events exceed `MaxAttempts`. Enforced boot-time presence via `ValidateForRealDeployment()` in `internal/config/validate.go`. Verified via unit tests in `alert_test.go`, `validate_test.go`, and `ledger_worker_test.go`.
 - [Track K (Ticket 10): Continuous Money-Math Invariants & Fuzzing Evals](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_k_money_math_invariants_evals.md): Resolved. Added comprehensive property-based and fuzzing evaluations in `internal/finance/invariants_test.go`. Verified double-entry conservation ($\sum \text{Debits} == \sum \text{Credits}$) across 10,000 randomized departure settlements, 100% fail-closed rejection across 5,000 imbalanced perturbations ($\pm 1$ paise), line degeneracy/negative-paise guards, and exact integer-paise conservation across partial payment decomposition.
+- [Track L (Ticket 11): Payout Phase 2 — Cashfree Transfers V2 Integration](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_l_payout_phase_2_cashfree_transfers_v2.md): Resolved. Automated Cashfree Transfers V2 integration (Batch Transfer V2, Beneficiary V2 with account-hash derivation, fundsource_id wiring, dispatch_unknown ambiguous timeout handling, Cashfree approval pending bucket, and ledger mirror reversal). Verified via live database tests and 100% green test suite across all 30 internal packages.
 
 ## Frontier (Open Tickets)
 
-- None currently active. All production-readiness roadmap tickets (Tracks 0 through K / Tickets 1 through 10) are resolved and verified with 100% green tests.
+- Stream 3 / Next Milestone: Financial Control Layer & Reconciliation (Cashfree Settlement report ingestion, bank statement feeds, and account reconciliation).
 
 ## Not yet specified
 
-- None remaining. All operational and money-handling tracks fully specified and closed.
+- None remaining. All operational and money-handling tracks in Stream 2 fully specified and closed.
 
 ## Out of scope
 

@@ -79,8 +79,10 @@ type Deps struct {
 	FinanceEnabled       bool
 	IntelligenceEnabled  bool
 
-	PayoutRepo           *postgres.PayoutRepo
-	PayoutChecksumSecret string
+	PayoutRepo                  *postgres.PayoutRepo
+	PayoutChecksumSecret        string
+	CashfreePayoutWebhookSecret string
+	PayoutDispatcher            *finance.PayoutDispatcher
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
@@ -126,6 +128,7 @@ func NewRouter(d Deps) *gin.Engine {
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
 	// Data API routes (Namespaced under /api to avoid SPA collisions)
 	api := r.Group("/api")
@@ -251,6 +254,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
 			owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
 			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
+			owner.POST("/payouts/batches/:id/dispatch", h.OwnerDispatchPayoutBatch)
 		}
 
 		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))

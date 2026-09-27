@@ -105,8 +105,10 @@ const (
 	BatchDraft           PayoutBatchStatus = "draft"
 	BatchApproved        PayoutBatchStatus = "approved"
 	BatchProcessing      PayoutBatchStatus = "processing"
+	BatchDispatchUnknown PayoutBatchStatus = "dispatch_unknown"
 	BatchCompleted       PayoutBatchStatus = "completed"
 	BatchPartiallyFailed PayoutBatchStatus = "partially_failed"
+	BatchFailed          PayoutBatchStatus = "failed"
 	BatchCancelled       PayoutBatchStatus = "cancelled"
 )
 
@@ -130,11 +132,15 @@ type PayoutBatch struct {
 type PayoutItemStatus string
 
 const (
-	PayoutPending   PayoutItemStatus = "pending"
-	PayoutSucceeded PayoutItemStatus = "succeeded"
-	PayoutFailed    PayoutItemStatus = "failed"
-	PayoutRejected  PayoutItemStatus = "rejected"
-	PayoutCancelled PayoutItemStatus = "cancelled"
+	PayoutPending                 PayoutItemStatus = "pending"
+	PayoutProcessing              PayoutItemStatus = "processing"
+	PayoutCashfreeApprovalPending PayoutItemStatus = "cashfree_approval_pending"
+	PayoutSucceeded               PayoutItemStatus = "succeeded"
+	PayoutFailed                  PayoutItemStatus = "failed"
+	PayoutRetriableFailed         PayoutItemStatus = "retriable_failed"
+	PayoutRejected                PayoutItemStatus = "rejected"
+	PayoutReversed                PayoutItemStatus = "reversed"
+	PayoutCancelled               PayoutItemStatus = "cancelled"
 )
 
 type PayoutItem struct {
@@ -150,6 +156,8 @@ type PayoutItem struct {
 	UTR             *string          `json:"utr,omitempty"`
 	SettledAt       *time.Time       `json:"settled_at,omitempty"`
 	FailureReason   *string          `json:"failure_reason,omitempty"`
+	CFTransferID    *string          `json:"cf_transfer_id,omitempty"`
+	RetryOf         *uuid.UUID       `json:"retry_of,omitempty"`
 	CreatedAt       time.Time        `json:"created_at"`
 	UpdatedAt       time.Time        `json:"updated_at"`
 }

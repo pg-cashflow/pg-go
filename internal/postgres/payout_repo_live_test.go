@@ -69,12 +69,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Ensure migration 022 applied
-	mPath := filepath.Join("..", "..", "migrations", "022_payout_batches_and_payees.sql")
-	mBytes, err := os.ReadFile(mPath)
-	if err == nil {
-		_, _ = pool.Exec(ctx, string(mBytes))
-	}
+	// Ensure all project migrations applied
+	_ = Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
 
 	mirror := &testMirrorer{}
 	payoutRepo := NewPayoutRepo(pool, mirror)
