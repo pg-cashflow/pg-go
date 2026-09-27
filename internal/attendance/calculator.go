@@ -105,7 +105,7 @@ func CalculateMonthlyWage(params CalculationParams) (*domain.WageCalculation, er
 		holidaySet[h] = true
 	}
 
-	var daysPresent, daysPaidLeave, daysHoliday, daysAbsent float64
+	var daysPresent, daysPaidLeave, daysHoliday, daysAbsent, daysUnrecorded float64
 
 	// Walk every calendar day in the employed window
 	curr := windowStart
@@ -136,8 +136,9 @@ func CalculateMonthlyWage(params CalculationParams) (*domain.WageCalculation, er
 			} else if params.Policy.WorkingDaysBasis == domain.WorkingDaysBasisExcludingSundays && curr.Weekday() == time.Sunday {
 				// Sunday rest day under excluding_sundays basis: not counted as absent
 			} else {
-				// Absence if not recorded
+				// Absence if not recorded — tracked explicitly as unrecorded so owner has visibility
 				daysAbsent += 1.0
+				daysUnrecorded += 1.0
 			}
 		}
 
@@ -157,8 +158,10 @@ func CalculateMonthlyWage(params CalculationParams) (*domain.WageCalculation, er
 		excessAbsentDays = daysAbsent - freeLeaveDaysAllowed
 	}
 
-	// 8. Deductions and Net Wage with integer paise conservation
-	totalDeductionPaise := int64(math.Floor(excessAbsentDays * float64(perDayRatePaise)))
+	// 8. Deductions and Net Wage with pure integer half-day arithmetic (Zero Floats in money calculations)
+	// Half-days are converted to an integer half-day count (2 units per day).
+	excessHalfDays := int64(math.Round(excessAbsentDays * 2))
+	totalDeductionPaise := (excessHalfDays * perDayRatePaise) / 2
 	if totalDeductionPaise > proratedBaseWagePaise {
 		totalDeductionPaise = proratedBaseWagePaise
 	}
@@ -180,6 +183,7 @@ func CalculateMonthlyWage(params CalculationParams) (*domain.WageCalculation, er
 		DaysPaidLeave:         daysPaidLeave,
 		DaysHoliday:           daysHoliday,
 		DaysAbsent:            daysAbsent,
+		DaysUnrecorded:        daysUnrecorded,
 		FreeLeaveDaysAllowed:  freeLeaveDaysAllowed,
 		ExcessAbsentDays:      excessAbsentDays,
 		PerDayRatePaise:       perDayRatePaise,

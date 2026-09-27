@@ -375,3 +375,70 @@ func TestCalculateMonthlyWage_PaidHolidaysAndHalfDays(t *testing.T) {
 		t.Errorf("expected full wage 3000000, got %d", calc.NetWagePaise)
 	}
 }
+
+func TestCalculateMonthlyWage_UnrecordedDaysTrackingAndIntegerHalfDayMath(t *testing.T) {
+	staffID := uuid.New()
+	propID := uuid.New()
+
+	staff := domain.StaffProfile{
+		ID:                   staffID,
+		PropertyID:           propID,
+		Name:                 "Gopal",
+		Role:                 "Gardener",
+		BaseMonthlyWagePaise: 1500000, // Rs 15,000 / 30 = Rs 500/day = 50,000 paise/day
+		EffectiveFrom:        time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Status:               domain.StaffActive,
+	}
+
+	policy := domain.LeavePolicy{
+		PropertyID:           propID,
+		MonthlyFreeLeaveDays: 1, // 1 free leave
+		WorkingDaysBasis:     domain.WorkingDaysBasisCalendarDays,
+	}
+
+	// 25 days marked present. 5 days completely omitted (unrecorded).
+	var records []domain.AttendanceRecord
+	for day := 1; day <= 25; day++ {
+		records = append(records, domain.AttendanceRecord{
+			WorkDate: time.Date(2026, 9, day, 0, 0, 0, 0, time.UTC),
+			Status:   domain.AttendancePresent,
+		})
+	}
+
+	calc, err := CalculateMonthlyWage(CalculationParams{
+		Staff:      staff,
+		Policy:     policy,
+		CycleMonth: "2026-09",
+		Records:    records,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 5 omitted days must be captured in DaysUnrecorded AND DaysAbsent
+	if calc.DaysUnrecorded != 5 {
+		t.Errorf("expected 5 unrecorded days, got %f", calc.DaysUnrecorded)
+	}
+	if calc.DaysAbsent != 5 {
+		t.Errorf("expected 5 absent days, got %f", calc.DaysAbsent)
+	}
+	// 5 absent - 1 free leave = 4 excess absent days = 8 half-days
+	if calc.ExcessAbsentDays != 4 {
+		t.Errorf("expected 4 excess absent days, got %f", calc.ExcessAbsentDays)
+	}
+
+	// Pure integer math: (8 half-days * 50,000 paise/day) / 2 = 200,000 paise deduction
+	expectedDeduction := int64(200000)
+	if calc.TotalDeductionPaise != expectedDeduction {
+		t.Errorf("expected %d deduction, got %d", expectedDeduction, calc.TotalDeductionPaise)
+	}
+	expectedNet := int64(1500000 - 200000)
+	if calc.NetWagePaise != expectedNet {
+		t.Errorf("expected %d net wage, got %d", expectedNet, calc.NetWagePaise)
+	}
+
+	// Invariant holds
+	if calc.NetWagePaise+calc.TotalDeductionPaise != calc.ProratedBaseWagePaise {
+		t.Errorf("invariant violated: %d + %d != %d", calc.NetWagePaise, calc.TotalDeductionPaise, calc.ProratedBaseWagePaise)
+	}
+}

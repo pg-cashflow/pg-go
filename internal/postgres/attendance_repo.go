@@ -416,12 +416,12 @@ func (r *AttendanceRepo) SaveWageCalculationTx(ctx context.Context, tx pgx.Tx, c
 			property_id, staff_id, cycle_month,
 			base_monthly_wage_paise, prorated_base_wage_paise,
 			total_basis_days, employed_basis_days,
-			days_present, days_paid_leave, days_holiday, days_absent,
+			days_present, days_paid_leave, days_holiday, days_absent, days_unrecorded,
 			free_leave_days_allowed, excess_absent_days,
 			per_day_rate_paise, total_deduction_paise, net_wage_paise,
 			payout_item_id, status, calculated_at, finalized_by
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), $19
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW(), $20
 		)
 		ON CONFLICT (property_id, staff_id, cycle_month) DO UPDATE SET
 			prorated_base_wage_paise = EXCLUDED.prorated_base_wage_paise,
@@ -431,6 +431,7 @@ func (r *AttendanceRepo) SaveWageCalculationTx(ctx context.Context, tx pgx.Tx, c
 			days_paid_leave = EXCLUDED.days_paid_leave,
 			days_holiday = EXCLUDED.days_holiday,
 			days_absent = EXCLUDED.days_absent,
+			days_unrecorded = EXCLUDED.days_unrecorded,
 			free_leave_days_allowed = EXCLUDED.free_leave_days_allowed,
 			excess_absent_days = EXCLUDED.excess_absent_days,
 			per_day_rate_paise = EXCLUDED.per_day_rate_paise,
@@ -443,7 +444,7 @@ func (r *AttendanceRepo) SaveWageCalculationTx(ctx context.Context, tx pgx.Tx, c
 		RETURNING id, property_id, staff_id, cycle_month,
 		          base_monthly_wage_paise, prorated_base_wage_paise,
 		          total_basis_days, employed_basis_days,
-		          days_present, days_paid_leave, days_holiday, days_absent,
+		          days_present, days_paid_leave, days_holiday, days_absent, days_unrecorded,
 		          free_leave_days_allowed, excess_absent_days,
 		          per_day_rate_paise, total_deduction_paise, net_wage_paise,
 		          payout_item_id, status, calculated_at, finalized_by;
@@ -462,6 +463,7 @@ func (r *AttendanceRepo) SaveWageCalculationTx(ctx context.Context, tx pgx.Tx, c
 		calc.DaysPaidLeave,
 		calc.DaysHoliday,
 		calc.DaysAbsent,
+		calc.DaysUnrecorded,
 		calc.FreeLeaveDaysAllowed,
 		calc.ExcessAbsentDays,
 		calc.PerDayRatePaise,
@@ -483,6 +485,7 @@ func (r *AttendanceRepo) SaveWageCalculationTx(ctx context.Context, tx pgx.Tx, c
 		&out.DaysPaidLeave,
 		&out.DaysHoliday,
 		&out.DaysAbsent,
+		&out.DaysUnrecorded,
 		&out.FreeLeaveDaysAllowed,
 		&out.ExcessAbsentDays,
 		&out.PerDayRatePaise,
@@ -505,7 +508,7 @@ func (r *AttendanceRepo) GetWageCalculation(ctx context.Context, propertyID, sta
 		SELECT id, property_id, staff_id, cycle_month,
 		       base_monthly_wage_paise, prorated_base_wage_paise,
 		       total_basis_days, employed_basis_days,
-		       days_present, days_paid_leave, days_holiday, days_absent,
+		       days_present, days_paid_leave, days_holiday, days_absent, days_unrecorded,
 		       free_leave_days_allowed, excess_absent_days,
 		       per_day_rate_paise, total_deduction_paise, net_wage_paise,
 		       payout_item_id, status, calculated_at, finalized_by
@@ -527,6 +530,7 @@ func (r *AttendanceRepo) GetWageCalculation(ctx context.Context, propertyID, sta
 		&out.DaysPaidLeave,
 		&out.DaysHoliday,
 		&out.DaysAbsent,
+		&out.DaysUnrecorded,
 		&out.FreeLeaveDaysAllowed,
 		&out.ExcessAbsentDays,
 		&out.PerDayRatePaise,
@@ -552,7 +556,7 @@ func (r *AttendanceRepo) ListWageCalculationsForMonth(ctx context.Context, prope
 		SELECT id, property_id, staff_id, cycle_month,
 		       base_monthly_wage_paise, prorated_base_wage_paise,
 		       total_basis_days, employed_basis_days,
-		       days_present, days_paid_leave, days_holiday, days_absent,
+		       days_present, days_paid_leave, days_holiday, days_absent, days_unrecorded,
 		       free_leave_days_allowed, excess_absent_days,
 		       per_day_rate_paise, total_deduction_paise, net_wage_paise,
 		       payout_item_id, status, calculated_at, finalized_by
@@ -583,6 +587,7 @@ func (r *AttendanceRepo) ListWageCalculationsForMonth(ctx context.Context, prope
 			&out.DaysPaidLeave,
 			&out.DaysHoliday,
 			&out.DaysAbsent,
+			&out.DaysUnrecorded,
 			&out.FreeLeaveDaysAllowed,
 			&out.ExcessAbsentDays,
 			&out.PerDayRatePaise,

@@ -44,6 +44,7 @@ func TestLiveAttendanceAndPayrollHTTPFlow(t *testing.T) {
 	defer pool.Close()
 
 	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	_, _ = pool.Exec(ctx, `ALTER TABLE wage_calculations ADD COLUMN IF NOT EXISTS days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0`)
 
 	propID := uuid.New()
 	inviteCode := fmt.Sprintf("A%s", uuid.New().String()[:7])

@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS wage_calculations (
     days_paid_leave NUMERIC(4, 1) NOT NULL,
     days_holiday NUMERIC(4, 1) NOT NULL,
     days_absent NUMERIC(4, 1) NOT NULL,
+    days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0,
     free_leave_days_allowed NUMERIC(4, 1) NOT NULL,
     excess_absent_days NUMERIC(4, 1) NOT NULL,
     per_day_rate_paise BIGINT NOT NULL,
@@ -85,3 +86,7 @@ CREATE TABLE IF NOT EXISTS wage_calculations (
 
 CREATE INDEX IF NOT EXISTS idx_wage_cycle_property_month 
     ON wage_calculations (property_id, cycle_month, status);
+
+ALTER TABLE wage_calculations 
+    ADD COLUMN IF NOT EXISTS days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0;
+

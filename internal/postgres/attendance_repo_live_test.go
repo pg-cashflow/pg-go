@@ -37,6 +37,7 @@ func TestLiveAttendanceRepo(t *testing.T) {
 
 	// Ensure all project migrations applied including 025
 	_ = Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	_, _ = pool.Exec(ctx, `ALTER TABLE wage_calculations ADD COLUMN IF NOT EXISTS days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0`)
 
 	repo := NewAttendanceRepo(pool)
 
@@ -190,6 +191,7 @@ func TestLiveAttendanceRepo(t *testing.T) {
 		DaysPaidLeave:         0,
 		DaysHoliday:           2,
 		DaysAbsent:            0,
+		DaysUnrecorded:        0,
 		FreeLeaveDaysAllowed:  3,
 		ExcessAbsentDays:      0,
 		PerDayRatePaise:       60000,

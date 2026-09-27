@@ -109,6 +109,7 @@ CREATE TABLE wage_calculations (
     days_paid_leave NUMERIC(4, 1) NOT NULL,
     days_holiday NUMERIC(4, 1) NOT NULL,
     days_absent NUMERIC(4, 1) NOT NULL,
+    days_unrecorded NUMERIC(4, 1) NOT NULL DEFAULT 0,
     free_leave_days_allowed NUMERIC(4, 1) NOT NULL,
     excess_absent_days NUMERIC(4, 1) NOT NULL,
     per_day_rate_paise BIGINT NOT NULL,
@@ -144,16 +145,20 @@ CREATE TABLE wage_calculations (
        $$\text{FreeLeaveDaysAllowed} = \frac{\text{MonthlyFreeLeaveDays} \times D_{\text{employed}}}{D_{\text{basis}}}$$
 4. **Per-Day Rate ($R_{\text{day}}$)**:
    $$R_{\text{day}} = \left\lfloor \frac{\text{BaseMonthlyWagePaise}}{D_{\text{basis}}} \right\rfloor$$
-5. **Attendance Accounting**:
+5. **Attendance Accounting & Missing Data Visibility**:
    - $\text{Present} = \text{Count}(\text{present}) + 0.5 \times \text{Count}(\text{half\_day})$
    - $\text{Absent} = \text{Count}(\text{absent}) + 0.5 \times \text{Count}(\text{half\_day})$
    - $\text{PaidLeave} = \text{Count}(\text{paid\_leave})$
    - $\text{Holidays} = \text{Count}(\text{holiday})$
+   - **Unrecorded Days Visibility**: If an owner or manager forgets to log attendance on a working day, it defaults to absent but is explicitly tracked and surfaced in $\text{DaysUnrecorded}$. This field is saved in `wage_calculations.days_unrecorded` and displayed in the `/payroll/calculate` preview so owners see missing check-ins before finalizing.
 6. **Excess Absent Days**:
    $$\text{ExcessAbsentDays} = \max\left(0, \text{Absent} - \text{FreeLeaveDaysAllowed}\right)$$
-7. **Total Deduction**:
-   $$\text{TotalDeductionPaise} = \left\lfloor \text{ExcessAbsentDays} \times R_{\text{day}} \right\rfloor$$
-8. **Net Wage (Floor Guard)**:
+7. **Total Deduction (Pure Integer Half-Day Arithmetic)**:
+   To eliminate any floating-point arithmetic in currency calculations, excess absences are scaled to integer half-days (2 units per day):
+   $$\text{ExcessHalfDays} = \text{int64}\left(\text{round}\left(\text{ExcessAbsentDays} \times 2\right)\right)$$
+   $$\text{TotalDeductionPaise} = \frac{\text{ExcessHalfDays} \times R_{\text{day}}}{2}$$
+   *(100% pure integer paise math; zero floating-point operations in monetary computation).*
+8. **Net Wage (Floor Guard & Clamping)**:
    $$\text{NetWagePaise} = \max\left(0, \text{ProratedBasePaise} - \text{TotalDeductionPaise}\right)$$
    *(Net wage can never be negative; excess absences cannot create a debt to the employer).*
 

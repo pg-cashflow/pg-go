@@ -97,6 +97,7 @@ type WageCalculation struct {
 	DaysPaidLeave         float64               `json:"days_paid_leave"`
 	DaysHoliday           float64               `json:"days_holiday"`
 	DaysAbsent            float64               `json:"days_absent"`
+	DaysUnrecorded        float64               `json:"days_unrecorded"`
 	FreeLeaveDaysAllowed  float64               `json:"free_leave_days_allowed"`
 	ExcessAbsentDays      float64               `json:"excess_absent_days"`
 	PerDayRatePaise       int64                 `json:"per_day_rate_paise"`
