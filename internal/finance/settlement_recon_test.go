@@ -83,6 +83,17 @@ func (m *mockIntentStore) GetByOrderID(_ context.Context, orderID string) (*doma
 	return nil, nil
 }
 
+type mockDueStore struct {
+	dues map[uuid.UUID]*domain.Due
+}
+
+func (m *mockDueStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Due, error) {
+	if v, ok := m.dues[id]; ok {
+		return v, nil
+	}
+	return nil, nil
+}
+
 type mockPaymentStore struct {
 	payments map[string]*domain.Payment
 }
@@ -101,16 +112,27 @@ func TestSettlementReconciler_Success(t *testing.T) {
 	store := newMockSettlementStore()
 
 	pid := uuid.New()
+	dueID := uuid.New()
 	intentID := uuid.New()
 	orderID := "order_123"
+
+	dues := &mockDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				PropertyID: pid,
+			},
+		},
+	}
+
 	intents := &mockIntentStore{
 		intents: map[string]*domain.PaymentIntent{
 			orderID: {
-				ID:          intentID,
-				PropertyID:  pid,
-				OrderID:     orderID,
-				AmountPaise: 550000,
-				Status:      domain.IntentSuccess,
+				ID:              intentID,
+				DueID:           dueID,
+				ProviderOrderID: orderID,
+				AmountPaise:     550000,
+				Status:          domain.IntentPaid,
 			},
 		},
 	}
@@ -120,13 +142,14 @@ func TestSettlementReconciler_Success(t *testing.T) {
 		payments: map[string]*domain.Payment{
 			cfPayID: {
 				ID:          paymentID,
+				DueID:       dueID,
 				CFPaymentID: &cfPayID,
 				Amount:      550000,
 			},
 		},
 	}
 
-	reconciler := NewSettlementReconciler(store, intents, payments, financeSvc)
+	reconciler := NewSettlementReconciler(store, intents, dues, payments, financeSvc)
 
 	rec := cashfree.OrderSettlementRecord{
 		CFSettlementID:     "STLM_101",
@@ -177,18 +200,30 @@ func TestSettlementReconciler_Discrepancies(t *testing.T) {
 	store := newMockSettlementStore()
 
 	pid := uuid.New()
+	dueID := uuid.New()
 	orderID := "order_valid"
-	intents := &mockIntentStore{
-		intents: map[string]*domain.PaymentIntent{
-			orderID: {
-				ID:          uuid.New(),
-				PropertyID:  pid,
-				OrderID:     orderID,
-				AmountPaise: 500000,
+
+	dues := &mockDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				PropertyID: pid,
 			},
 		},
 	}
-	reconciler := NewSettlementReconciler(store, intents, &mockPaymentStore{}, financeSvc)
+
+	intents := &mockIntentStore{
+		intents: map[string]*domain.PaymentIntent{
+			orderID: {
+				ID:              uuid.New(),
+				DueID:           dueID,
+				ProviderOrderID: orderID,
+				AmountPaise:     500000,
+				Status:          domain.IntentPaid,
+			},
+		},
+	}
+	reconciler := NewSettlementReconciler(store, intents, dues, &mockPaymentStore{}, financeSvc)
 
 	// 1. Missing Intent
 	res1, err := reconciler.ReconcileOrderSettlement(ctx, cashfree.OrderSettlementRecord{

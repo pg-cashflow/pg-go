@@ -16,6 +16,7 @@ var (
 	ErrInvalidSettlementData       = errors.New("finance: invalid settlement record")
 	ErrSettlementUnbalanced        = errors.New("finance: settlement gross does not equal net plus charges")
 	ErrSettlementCSVNotImplemented = errors.New("finance: settlement csv import awaiting cashfree report schema grounding")
+	ErrSettlementNotFound          = errors.New("finance: settlement not found")
 )
 
 // SettlementRecord represents an individual settlement line item from Cashfree.

@@ -109,7 +109,11 @@ func (r *SettlementReconciler) ReconcileOrderSettlement(
 	// 2. Lookup Payment Intent
 	var intent *domain.PaymentIntent
 	if rec.OrderID != "" && r.Intents != nil {
-		intent, _ = r.Intents.GetByOrderID(ctx, rec.OrderID)
+		var err error
+		intent, err = r.Intents.GetByOrderID(ctx, rec.OrderID)
+		if err != nil {
+			return nil, fmt.Errorf("lookup payment intent: %w", err)
+		}
 	}
 
 	if intent == nil {
@@ -125,7 +129,10 @@ func (r *SettlementReconciler) ReconcileOrderSettlement(
 	// Resolve Property ID via Due
 	var propertyID uuid.UUID
 	if r.Dues != nil && intent.DueID != uuid.Nil {
-		due, _ := r.Dues.GetByID(ctx, intent.DueID)
+		due, err := r.Dues.GetByID(ctx, intent.DueID)
+		if err != nil {
+			return nil, fmt.Errorf("lookup due: %w", err)
+		}
 		if due != nil {
 			propertyID = due.PropertyID
 			stlm.PropertyID = &due.PropertyID
@@ -144,7 +151,10 @@ func (r *SettlementReconciler) ReconcileOrderSettlement(
 
 	// 4. Lookup associated internal payment record
 	if rec.CFPaymentID != "" && r.Payments != nil {
-		p, _ := r.Payments.GetByCFPaymentID(ctx, rec.CFPaymentID)
+		p, err := r.Payments.GetByCFPaymentID(ctx, rec.CFPaymentID)
+		if err != nil {
+			return nil, fmt.Errorf("lookup payment: %w", err)
+		}
 		if p != nil {
 			stlm.PaymentID = &p.ID
 		}
