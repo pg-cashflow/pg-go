@@ -88,9 +88,13 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtRewardRedeemed):
 		return r.toTenant(ctx, evt, "reward_redeemed", "🎁 Your reward redemption is confirmed.", "/tenant/rewards")
 
-	// Owner-directed: recurring tie-out exception across 3 consecutive months (ADR-1 Level 3 alert)
+	// Owner-directed: recurring tie-out exception across 2 consecutive months (ADR-1 Level 3 alert)
 	case string(domain.EvtRecurringTieOutException):
-		return r.toOwner(ctx, evt, "recurring_tie_out_exception", "⚠️ Recurring tie-out exception across 3 consecutive months", "/owner/finance/tie-out")
+		return r.toOwner(ctx, evt, "recurring_tie_out_exception", "⚠️ Recurring tie-out exception across 2 consecutive months", "/owner/finance/tie-out")
+
+	// Owner-directed: critical tie-out variance detected in single period
+	case string(domain.EvtCriticalTieOutVariance):
+		return r.toOwner(ctx, evt, "critical_tie_out_variance", "🚨 URGENT: Critical tie-out variance detected in collections vs ledger", "/owner/finance/tie-out")
 
 	// Owner-directed: period tie-out blocked due to unexplained discrepancy
 	case string(domain.EvtPeriodTieOutBlocked):

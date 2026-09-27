@@ -69,6 +69,7 @@ const (
 	EvtFinancePolicyChanged     EventType = "FinancePolicyChanged"
 	EvtPeriodTieOutBlocked      EventType = "PeriodTieOutBlocked"
 	EvtRecurringTieOutException EventType = "RecurringTieOutException"
+	EvtCriticalTieOutVariance   EventType = "CriticalTieOutVariance"
 	EvtPaymentReconciled        EventType = "PaymentReconciled"
 )
 

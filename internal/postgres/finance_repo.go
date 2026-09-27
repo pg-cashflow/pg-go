@@ -16,13 +16,11 @@ import (
 
 type FinanceRepo struct {
 	pool *pgxpool.Pool
-	db   DBTX
 }
 
 func NewFinanceRepo(pool *pgxpool.Pool) *FinanceRepo {
 	return &FinanceRepo{
 		pool: pool,
-		db:   pool,
 	}
 }
 
@@ -32,11 +30,11 @@ func isUnique(err error) bool {
 }
 
 func (r *FinanceRepo) EnsureDefaults(ctx context.Context, propertyID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `INSERT INTO property_finance_settings (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
+	_, err := r.pool.Exec(ctx, `INSERT INTO property_finance_settings (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.Exec(ctx, `INSERT INTO approval_policies (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
+	_, err = r.pool.Exec(ctx, `INSERT INTO approval_policies (property_id) VALUES ($1) ON CONFLICT DO NOTHING`, propertyID)
 	return err
 }
 
@@ -44,7 +42,7 @@ func (r *FinanceRepo) GetPolicy(ctx context.Context, propertyID uuid.UUID) (doma
 	_ = r.EnsureDefaults(ctx, propertyID)
 	var p domain.ApprovalPolicy
 	p.PropertyID = propertyID
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT manager_daily_limit_paise, single_expense_limit_paise, manager_monthly_limit_paise,
 		       owner_approval_threshold_paise, reimbursement_threshold_paise, emergency_bypass_enabled
 		FROM approval_policies WHERE property_id=$1`, propertyID).Scan(
@@ -54,7 +52,7 @@ func (r *FinanceRepo) GetPolicy(ctx context.Context, propertyID uuid.UUID) (doma
 }
 
 func (r *FinanceRepo) SavePolicy(ctx context.Context, p domain.ApprovalPolicy) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO approval_policies (property_id, manager_daily_limit_paise, single_expense_limit_paise,
 			manager_monthly_limit_paise, owner_approval_threshold_paise, reimbursement_threshold_paise, emergency_bypass_enabled, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
@@ -75,7 +73,7 @@ func (r *FinanceRepo) GetSettings(ctx context.Context, propertyID uuid.UUID) (do
 	_ = r.EnsureDefaults(ctx, propertyID)
 	var s domain.PropertyFinanceSettings
 	s.PropertyID = propertyID
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT fiscal_month_start_day, manager_can_view_capital, manager_can_view_roi, manager_can_view_leakage,
 		       tdr_effective_bps, tdr_is_estimated
 		FROM property_finance_settings WHERE property_id=$1`, propertyID).Scan(
@@ -85,7 +83,7 @@ func (r *FinanceRepo) GetSettings(ctx context.Context, propertyID uuid.UUID) (do
 }
 
 func (r *FinanceRepo) SaveSettings(ctx context.Context, s domain.PropertyFinanceSettings) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO property_finance_settings (property_id, fiscal_month_start_day, manager_can_view_capital,
 			manager_can_view_roi, manager_can_view_leakage, tdr_effective_bps, tdr_is_estimated, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
@@ -103,8 +101,8 @@ func (r *FinanceRepo) SaveSettings(ctx context.Context, s domain.PropertyFinance
 }
 
 func (r *FinanceRepo) SaveUnifiedSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy, loyalty *domain.PropertyGamificationSettings) error {
-	type txBeginner interface {
-		Begin(ctx context.Context) (pgx.Tx, error)
+	if r.pool == nil {
+		return fmt.Errorf("SaveUnifiedSettings requires transactional pool access, got nil pool")
 	}
 
 	exec := func(tx DBTX) error {
@@ -176,23 +174,13 @@ func (r *FinanceRepo) SaveUnifiedSettings(ctx context.Context, propertyID uuid.U
 		return nil
 	}
 
-	if b, ok := r.db.(txBeginner); ok {
-		tx, err := b.Begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if err := exec(tx); err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	}
-
-	return exec(r.db)
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		return exec(tx)
+	})
 }
 
 func (r *FinanceRepo) InsertCapital(ctx context.Context, tx *domain.CapitalTransaction) error {
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		INSERT INTO capital_transactions (id, property_id, owner_user_id, kind, amount_paise, purpose, reference, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING created_at`,
 		tx.ID, tx.PropertyID, tx.OwnerUserID, tx.Kind, tx.AmountPaise, tx.Purpose, tx.Reference, tx.IdempotencyKey, tx.OccurredAt,
@@ -204,7 +192,7 @@ func (r *FinanceRepo) InsertCapital(ctx context.Context, tx *domain.CapitalTrans
 }
 
 func (r *FinanceRepo) ListCapital(ctx context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, owner_user_id, kind, amount_paise, COALESCE(purpose,''), reference, occurred_at, created_at
 		FROM capital_transactions WHERE property_id=$1 ORDER BY occurred_at`, propertyID)
 	if err != nil {
@@ -224,12 +212,12 @@ func (r *FinanceRepo) ListCapital(ctx context.Context, propertyID uuid.UUID) ([]
 
 func (r *FinanceRepo) CountCapital(ctx context.Context, propertyID uuid.UUID) (int, error) {
 	var n int
-	err := r.db.QueryRow(ctx, `SELECT COUNT(*) FROM capital_transactions WHERE property_id=$1`, propertyID).Scan(&n)
+	err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM capital_transactions WHERE property_id=$1`, propertyID).Scan(&n)
 	return n, err
 }
 
 func (r *FinanceRepo) InsertExpense(ctx context.Context, e *domain.Expense) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO expenses (id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		e.ID, e.PropertyID, e.CategoryCode, nullIfEmpty(e.VendorName), nullIfEmpty(e.Description), e.AmountPaise, e.Status, e.Emergency, e.RoomID, e.CreatedBy, e.CreatedByRole, e.IdempotencyKey, e.OccurredAt)
@@ -242,7 +230,7 @@ func (r *FinanceRepo) InsertExpense(ctx context.Context, e *domain.Expense) erro
 func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error) {
 	e := &domain.Expense{}
 	var vendor, desc *string
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
 		FROM expenses WHERE id=$1`, id).Scan(
 		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt)
@@ -259,7 +247,7 @@ func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Exp
 }
 
 func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, category_code, COALESCE(vendor_name,''), COALESCE(description,''), amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
 		FROM expenses WHERE property_id=$1 ORDER BY occurred_at DESC`, propertyID)
 	if err != nil {
@@ -278,12 +266,12 @@ func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([
 }
 
 func (r *FinanceRepo) UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error {
-	_, err := r.db.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, id, status)
+	_, err := r.pool.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, id, status)
 	return err
 }
 
 func (r *FinanceRepo) InsertExpensePayment(ctx context.Context, p *domain.ExpensePayment) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO expense_payments (id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		p.ID, p.ExpenseID, p.PropertyID, p.AmountPaise, p.PayerRole, p.PayerUserID, p.Method, p.IdempotencyKey, p.OccurredAt)
@@ -294,7 +282,7 @@ func (r *FinanceRepo) InsertExpensePayment(ctx context.Context, p *domain.Expens
 }
 
 func (r *FinanceRepo) ListExpensePayments(ctx context.Context, expenseID uuid.UUID) ([]domain.ExpensePayment, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, occurred_at
 		FROM expense_payments WHERE expense_id=$1 ORDER BY occurred_at`, expenseID)
 	if err != nil {
@@ -314,13 +302,13 @@ func (r *FinanceRepo) ListExpensePayments(ctx context.Context, expenseID uuid.UU
 
 func (r *FinanceRepo) SumExpensePayments(ctx context.Context, expenseID uuid.UUID) (int64, error) {
 	var s int64
-	err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments WHERE expense_id=$1`, expenseID).Scan(&s)
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments WHERE expense_id=$1`, expenseID).Scan(&s)
 	return s, err
 }
 
 func (r *FinanceRepo) SumManagerSpend(ctx context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error) {
 	var s int64
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments
 		WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager' AND occurred_at >= $3 AND occurred_at < $4`,
 		propertyID, managerID, from, to).Scan(&s)
@@ -329,7 +317,7 @@ func (r *FinanceRepo) SumManagerSpend(ctx context.Context, propertyID, managerID
 
 func (r *FinanceRepo) InsertAdvance(ctx context.Context, a *domain.ManagerAdvance) error {
 	key := a.ExpensePaymentID.String()
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO manager_advances (id, property_id, manager_user_id, expense_payment_id, amount_paise, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		a.ID, a.PropertyID, a.ManagerUserID, a.ExpensePaymentID, a.AmountPaise, key, a.OccurredAt)
@@ -340,7 +328,7 @@ func (r *FinanceRepo) InsertAdvance(ctx context.Context, a *domain.ManagerAdvanc
 }
 
 func (r *FinanceRepo) InsertReimbursement(ctx context.Context, rm *domain.ManagerReimbursement) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO manager_reimbursements (id, property_id, manager_user_id, amount_paise, recorded_by, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		rm.ID, rm.PropertyID, rm.ManagerUserID, rm.AmountPaise, rm.RecordedBy, rm.IdempotencyKey, rm.OccurredAt)
@@ -352,17 +340,17 @@ func (r *FinanceRepo) InsertReimbursement(ctx context.Context, rm *domain.Manage
 
 func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UUID) (int64, error) {
 	var adv, re int64
-	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1`, propertyID).Scan(&adv); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1`, propertyID).Scan(&adv); err != nil {
 		return 0, err
 	}
-	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1`, propertyID).Scan(&re); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1`, propertyID).Scan(&re); err != nil {
 		return 0, err
 	}
 	return adv - re, nil
 }
 
 func (r *FinanceRepo) ListAdvances(ctx context.Context, propertyID uuid.UUID) ([]domain.ManagerAdvance, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, manager_user_id, expense_payment_id, amount_paise, occurred_at
 		FROM manager_advances WHERE property_id=$1 ORDER BY occurred_at DESC`, propertyID)
 	if err != nil {
@@ -425,7 +413,7 @@ func (r *FinanceRepo) ListJournal(ctx context.Context, propertyID uuid.UUID, fro
 		args = append(args, account)
 	}
 	q += ` ORDER BY occurred_at`
-	rows, err := r.db.Query(ctx, q, args...)
+	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +431,7 @@ func (r *FinanceRepo) ListJournal(ctx context.Context, propertyID uuid.UUID, fro
 
 func (r *FinanceRepo) SumAccount(ctx context.Context, propertyID uuid.UUID, account string, from, to time.Time) (int64, int64, error) {
 	var d, c int64
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(debit_paise),0), COALESCE(SUM(credit_paise),0)
 		FROM financial_journal_entries
 		WHERE property_id=$1 AND account_code=$2 AND occurred_at >= $3 AND occurred_at < $4`,
@@ -460,7 +448,7 @@ func (r *FinanceRepo) UpsertBudget(ctx context.Context, b *domain.Budget) error 
 	if b.ID == uuid.Nil {
 		b.ID = uuid.New()
 	}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		INSERT INTO budgets (id, property_id, category_code, period_month, amount_paise)
 		VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (property_id, category_code, period_month) DO UPDATE SET amount_paise=EXCLUDED.amount_paise, updated_at=NOW()
@@ -470,7 +458,7 @@ func (r *FinanceRepo) UpsertBudget(ctx context.Context, b *domain.Budget) error 
 
 func (r *FinanceRepo) GetBudget(ctx context.Context, propertyID uuid.UUID, category, period string) (*domain.Budget, error) {
 	b := &domain.Budget{}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, category_code, period_month, amount_paise FROM budgets
 		WHERE property_id=$1 AND category_code=$2 AND period_month=$3`, propertyID, category, period).
 		Scan(&b.ID, &b.PropertyID, &b.CategoryCode, &b.PeriodMonth, &b.AmountPaise)
@@ -481,7 +469,7 @@ func (r *FinanceRepo) GetBudget(ctx context.Context, propertyID uuid.UUID, categ
 }
 
 func (r *FinanceRepo) ListBudgets(ctx context.Context, propertyID uuid.UUID, period string) ([]domain.Budget, error) {
-	rows, err := r.db.Query(ctx, `SELECT id, property_id, category_code, period_month, amount_paise FROM budgets WHERE property_id=$1 AND ($2='' OR period_month=$2)`, propertyID, period)
+	rows, err := r.pool.Query(ctx, `SELECT id, property_id, category_code, period_month, amount_paise FROM budgets WHERE property_id=$1 AND ($2='' OR period_month=$2)`, propertyID, period)
 	if err != nil {
 		return nil, err
 	}
@@ -498,7 +486,7 @@ func (r *FinanceRepo) ListBudgets(ctx context.Context, propertyID uuid.UUID, per
 }
 
 func (r *FinanceRepo) InsertRewardLiability(ctx context.Context, t *domain.RewardLiabilityTxn) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO reward_liability_transactions (id, property_id, tenant_id, kind, points, amount_paise, source_type, source_id, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		t.ID, t.PropertyID, t.TenantID, t.Kind, t.Points, t.AmountPaise, t.SourceType, t.SourceID, t.OccurredAt)
@@ -510,7 +498,7 @@ func (r *FinanceRepo) InsertRewardLiability(ctx context.Context, t *domain.Rewar
 
 func (r *FinanceRepo) SumRewardLiability(ctx context.Context, propertyID uuid.UUID, kind string, from, to time.Time) (int64, error) {
 	var s int64
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_paise),0) FROM reward_liability_transactions
 		WHERE property_id=$1 AND ($2='' OR kind=$2) AND occurred_at >= $3 AND occurred_at < $4`,
 		propertyID, kind, from, to).Scan(&s)
@@ -519,7 +507,7 @@ func (r *FinanceRepo) SumRewardLiability(ctx context.Context, propertyID uuid.UU
 
 func (r *FinanceRepo) SumRewardPointsIssued(ctx context.Context, propertyID uuid.UUID, from, to time.Time) (int, error) {
 	var s int
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(points),0) FROM reward_liability_transactions
 		WHERE property_id=$1 AND kind='issued' AND occurred_at >= $2 AND occurred_at < $3`,
 		propertyID, from, to).Scan(&s)
@@ -529,7 +517,7 @@ func (r *FinanceRepo) SumRewardPointsIssued(ctx context.Context, propertyID uuid
 func (r *FinanceRepo) GetTieOut(ctx context.Context, propertyID uuid.UUID, period string) (*domain.PeriodTieOut, error) {
 	t := &domain.PeriodTieOut{}
 	var raw []byte
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, period_month, recon_total_paise, ledger_total_paise, difference_paise, bridge_json, status, closed_at
 		FROM period_tie_outs WHERE property_id=$1 AND period_month=$2`, propertyID, period).
 		Scan(&t.ID, &t.PropertyID, &t.PeriodMonth, &t.ReconTotalPaise, &t.LedgerTotalPaise, &t.DifferencePaise, &raw, &t.Status, &t.ClosedAt)
@@ -548,7 +536,7 @@ func (r *FinanceRepo) SaveTieOut(ctx context.Context, t *domain.PeriodTieOut) er
 		t.ID = uuid.New()
 	}
 	b, _ := json.Marshal(t.Items)
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO period_tie_outs (id, property_id, period_month, recon_total_paise, ledger_total_paise, difference_paise, bridge_json, status, closed_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
 		ON CONFLICT (property_id, period_month) DO UPDATE SET
@@ -567,7 +555,7 @@ func (r *FinanceRepo) ListTieOuts(ctx context.Context, propertyID uuid.UUID, lim
 	if limit <= 0 {
 		limit = 12
 	}
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, period_month, recon_total_paise, ledger_total_paise, difference_paise, bridge_json, status, closed_at
 		FROM period_tie_outs WHERE property_id=$1 ORDER BY period_month DESC LIMIT $2`, propertyID, limit)
 	if err != nil {
@@ -588,7 +576,7 @@ func (r *FinanceRepo) ListTieOuts(ctx context.Context, propertyID uuid.UUID, lim
 }
 
 func (r *FinanceRepo) InsertApproval(ctx context.Context, a *domain.ApprovalRequest) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO approval_requests (id, property_id, kind, subject_id, amount_paise, requested_by, status, note)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		a.ID, a.PropertyID, a.Kind, a.SubjectID, a.AmountPaise, a.RequestedBy, a.Status, nullIfEmpty(a.Note))
@@ -598,7 +586,7 @@ func (r *FinanceRepo) InsertApproval(ctx context.Context, a *domain.ApprovalRequ
 func (r *FinanceRepo) GetApproval(ctx context.Context, id uuid.UUID) (*domain.ApprovalRequest, error) {
 	a := &domain.ApprovalRequest{}
 	var note *string
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, kind, subject_id, amount_paise, requested_by, status, decided_by, decided_at, note, created_at
 		FROM approval_requests WHERE id=$1`, id).Scan(
 		&a.ID, &a.PropertyID, &a.Kind, &a.SubjectID, &a.AmountPaise, &a.RequestedBy, &a.Status, &a.DecidedBy, &a.DecidedAt, &note, &a.CreatedAt)
@@ -612,7 +600,7 @@ func (r *FinanceRepo) GetApproval(ctx context.Context, id uuid.UUID) (*domain.Ap
 }
 
 func (r *FinanceRepo) ListApprovals(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.ApprovalRequest, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, kind, subject_id, amount_paise, requested_by, status, decided_by, decided_at, COALESCE(note,''), created_at
 		FROM approval_requests WHERE property_id=$1 AND ($2='' OR status=$2) ORDER BY created_at DESC`, propertyID, status)
 	if err != nil {
@@ -631,14 +619,14 @@ func (r *FinanceRepo) ListApprovals(ctx context.Context, propertyID uuid.UUID, s
 }
 
 func (r *FinanceRepo) UpdateApproval(ctx context.Context, a *domain.ApprovalRequest) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		UPDATE approval_requests SET status=$2, decided_by=$3, decided_at=$4, note=$5 WHERE id=$1`,
 		a.ID, a.Status, a.DecidedBy, a.DecidedAt, nullIfEmpty(a.Note))
 	return err
 }
 
 func (r *FinanceRepo) InsertKPI(ctx context.Context, s *domain.KPISnapshot) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO kpi_snapshots (property_id, period_month, snapshot_date, occupancy_bps, occupied_beds, capacity_beds,
 			contribution_per_bed_paise, opex_paise, ocf_paise, leakage_total_paise, variance_bridge_json)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -652,7 +640,7 @@ func (r *FinanceRepo) InsertKPI(ctx context.Context, s *domain.KPISnapshot) erro
 }
 
 func (r *FinanceRepo) InsertROI(ctx context.Context, s *domain.ROISnapshot) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO roi_snapshots (property_id, period_month, snapshot_date, capital_invested_paise, capital_recovered_paise,
 			unrecovered_paise, tbe_months_milli, break_even_occupancy_bps, official)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -667,7 +655,7 @@ func (r *FinanceRepo) InsertROI(ctx context.Context, s *domain.ROISnapshot) erro
 
 func (r *FinanceRepo) LatestROI(ctx context.Context, propertyID uuid.UUID) (*domain.ROISnapshot, error) {
 	s := &domain.ROISnapshot{}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT property_id, period_month, snapshot_date, capital_invested_paise, capital_recovered_paise, unrecovered_paise,
 			tbe_months_milli, break_even_occupancy_bps, official
 		FROM roi_snapshots WHERE property_id=$1 ORDER BY snapshot_date DESC LIMIT 1`, propertyID).
@@ -683,7 +671,7 @@ func (r *FinanceRepo) InsertLeakage(ctx context.Context, e *domain.LeakageEvent)
 	if e.ID == uuid.Nil {
 		e.ID = uuid.New()
 	}
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO leakage_events (id, property_id, category, estimated_paise, confidence_bps, evidence_json, severity, status, detected_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		e.ID, e.PropertyID, e.Category, e.EstimatedPaise, e.ConfidenceBPS, nullJSON(e.Evidence), e.Severity, e.Status, e.DetectedAt)
@@ -691,7 +679,7 @@ func (r *FinanceRepo) InsertLeakage(ctx context.Context, e *domain.LeakageEvent)
 }
 
 func (r *FinanceRepo) ListLeakage(ctx context.Context, propertyID uuid.UUID) ([]domain.LeakageEvent, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, category, estimated_paise, confidence_bps, evidence_json, severity, status, detected_at
 		FROM leakage_events WHERE property_id=$1 ORDER BY detected_at DESC LIMIT 100`, propertyID)
 	if err != nil {
@@ -711,7 +699,7 @@ func (r *FinanceRepo) ListLeakage(ctx context.Context, propertyID uuid.UUID) ([]
 
 func (r *FinanceRepo) GetLeakage(ctx context.Context, id uuid.UUID) (*domain.LeakageEvent, error) {
 	e := &domain.LeakageEvent{}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, category, estimated_paise, confidence_bps, evidence_json, severity, status, detected_at
 		FROM leakage_events WHERE id=$1`, id).Scan(
 		&e.ID, &e.PropertyID, &e.Category, &e.EstimatedPaise, &e.ConfidenceBPS, &e.Evidence, &e.Severity, &e.Status, &e.DetectedAt)
@@ -725,7 +713,7 @@ func (r *FinanceRepo) InsertRecommendation(ctx context.Context, rec *domain.Reco
 	if rec.ID == uuid.Nil {
 		rec.ID = uuid.New()
 	}
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO recommendations (id, property_id, leakage_event_id, issue, suggested_action, expected_savings_paise,
 			effort, risk, confidence_bps, safety_ok, quality_ok, status)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
@@ -735,7 +723,7 @@ func (r *FinanceRepo) InsertRecommendation(ctx context.Context, rec *domain.Reco
 }
 
 func (r *FinanceRepo) ListRecommendations(ctx context.Context, propertyID uuid.UUID) ([]domain.Recommendation, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, leakage_event_id, issue, suggested_action, expected_savings_paise, effort, risk,
 			confidence_bps, safety_ok, quality_ok, status, realized_savings_paise, created_at
 		FROM recommendations WHERE property_id=$1 ORDER BY created_at DESC LIMIT 100`, propertyID)
@@ -757,7 +745,7 @@ func (r *FinanceRepo) ListRecommendations(ctx context.Context, propertyID uuid.U
 
 func (r *FinanceRepo) GetRecommendation(ctx context.Context, id uuid.UUID) (*domain.Recommendation, error) {
 	rec := &domain.Recommendation{}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT id, property_id, leakage_event_id, issue, suggested_action, expected_savings_paise, effort, risk,
 			confidence_bps, safety_ok, quality_ok, status, realized_savings_paise, created_at
 		FROM recommendations WHERE id=$1`, id).Scan(
@@ -770,14 +758,14 @@ func (r *FinanceRepo) GetRecommendation(ctx context.Context, id uuid.UUID) (*dom
 }
 
 func (r *FinanceRepo) UpdateRecommendation(ctx context.Context, rec *domain.Recommendation) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		UPDATE recommendations SET status=$2, realized_savings_paise=$3, accepted_at=$4, completed_at=$5 WHERE id=$1`,
 		rec.ID, rec.Status, rec.RealizedSavingsPaise, rec.AcceptedAt, rec.CompletedAt)
 	return err
 }
 
 func (r *FinanceRepo) InsertForecast(ctx context.Context, f *domain.ForecastSnapshot) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO forecast_snapshots (property_id, horizon_days, as_of, payload_json)
 		VALUES ($1,$2,$3,$4)
 		ON CONFLICT (property_id, horizon_days, as_of) DO UPDATE SET payload_json=EXCLUDED.payload_json`,
@@ -787,7 +775,7 @@ func (r *FinanceRepo) InsertForecast(ctx context.Context, f *domain.ForecastSnap
 
 func (r *FinanceRepo) LatestForecast(ctx context.Context, propertyID uuid.UUID, horizon int) (*domain.ForecastSnapshot, error) {
 	f := &domain.ForecastSnapshot{}
-	err := r.db.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT property_id, horizon_days, as_of, payload_json FROM forecast_snapshots
 		WHERE property_id=$1 AND horizon_days=$2 ORDER BY as_of DESC LIMIT 1`, propertyID, horizon).
 		Scan(&f.PropertyID, &f.HorizonDays, &f.AsOf, &f.Payload)
@@ -801,7 +789,7 @@ func (r *FinanceRepo) UpsertImportSuggestion(ctx context.Context, s *domain.Expe
 	if s.ID == uuid.Nil {
 		s.ID = uuid.New()
 	}
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO expense_import_suggestions (id, property_id, txn_id, amount_paise, txn_date, note, status)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)
 		ON CONFLICT (property_id, txn_id) DO UPDATE SET amount_paise=EXCLUDED.amount_paise, note=EXCLUDED.note`,
@@ -810,7 +798,7 @@ func (r *FinanceRepo) UpsertImportSuggestion(ctx context.Context, s *domain.Expe
 }
 
 func (r *FinanceRepo) ListImportSuggestions(ctx context.Context, propertyID uuid.UUID) ([]domain.ExpenseImportSuggestion, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, txn_id, amount_paise, txn_date, COALESCE(note,''), status
 		FROM expense_import_suggestions WHERE property_id=$1 AND status='pending'`, propertyID)
 	if err != nil {
@@ -829,7 +817,7 @@ func (r *FinanceRepo) ListImportSuggestions(ctx context.Context, propertyID uuid
 }
 
 func (r *FinanceRepo) UpsertMealPrep(ctx context.Context, m *domain.MealPrepActual) error {
-	_, err := r.db.Exec(ctx, `
+	_, err := r.pool.Exec(ctx, `
 		INSERT INTO meal_prep_actuals (property_id, meal_date, meal_slot, prepared_count, discarded_count)
 		VALUES ($1,$2,$3,$4,$5)
 		ON CONFLICT (property_id, meal_date, meal_slot) DO UPDATE SET prepared_count=EXCLUDED.prepared_count, discarded_count=EXCLUDED.discarded_count`,
@@ -838,7 +826,7 @@ func (r *FinanceRepo) UpsertMealPrep(ctx context.Context, m *domain.MealPrepActu
 }
 
 func (r *FinanceRepo) GetMealPrep(ctx context.Context, propertyID uuid.UUID, date time.Time) ([]domain.MealPrepActual, error) {
-	rows, err := r.db.Query(ctx, `
+	rows, err := r.pool.Query(ctx, `
 		SELECT property_id, meal_date, meal_slot, prepared_count, discarded_count
 		FROM meal_prep_actuals WHERE property_id=$1 AND meal_date=$2`, propertyID, date)
 	if err != nil {

@@ -190,18 +190,11 @@ func TestRecurringTieOutAging(t *testing.T) {
 		t.Fatalf("m1: %+v err: %v", t1, err)
 	}
 
-	// Month 2 - aging increments to 2
+	// Month 2 - reaching 2 consecutive unresolved periods now triggers EvtRecurringTieOutException
 	recon2 := &payment.ReconciliationSummary{RentCollected: 1000, Period: "2026-08"}
 	t2, err := svc.ComputeTieOut(ctx, pid, "2026-08", recon2)
 	if err != nil || t2.DifferencePaise != 1000 {
 		t.Fatalf("m2: %+v err: %v", t2, err)
-	}
-
-	// Month 3 - reaching 3 unresolved periods triggers EvtRecurringTieOutException
-	recon3 := &payment.ReconciliationSummary{RentCollected: 1000, Period: "2026-09"}
-	t3, err := svc.ComputeTieOut(ctx, pid, "2026-09", recon3)
-	if err != nil {
-		t.Fatalf("m3: %v", err)
 	}
 
 	foundAging := false
@@ -211,7 +204,32 @@ func TestRecurringTieOutAging(t *testing.T) {
 		}
 	}
 	if !foundAging {
-		t.Fatalf("expected EvtRecurringTieOutException on month 3 aging, got: %+v (items: %+v)", pub.events, t3.Items)
+		t.Fatalf("expected EvtRecurringTieOutException on month 2 aging, got: %+v (items: %+v)", pub.events, t2.Items)
+	}
+}
+
+func TestCriticalTieOutVarianceAlert(t *testing.T) {
+	st := NewMemoryStore()
+	pub := &capturePublisher{}
+	svc := NewService(st, pub)
+	ctx := context.Background()
+	pid := uuid.New()
+
+	// Single period variance of ₹6,000 (600,000 paise) >= ₹5,000 threshold
+	recon := &payment.ReconciliationSummary{RentCollected: 600000, Period: "2026-07"}
+	t1, err := svc.ComputeTieOut(ctx, pid, "2026-07", recon)
+	if err != nil || t1.DifferencePaise != 600000 {
+		t.Fatalf("m1: %+v err: %v", t1, err)
+	}
+
+	foundCritical := false
+	for _, e := range pub.events {
+		if e.EventType == domain.EvtCriticalTieOutVariance {
+			foundCritical = true
+		}
+	}
+	if !foundCritical {
+		t.Fatalf("expected EvtCriticalTieOutVariance for single-month variance exceeding ₹5,000 threshold, got: %+v", pub.events)
 	}
 }
 

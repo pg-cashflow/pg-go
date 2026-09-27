@@ -10,6 +10,10 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/payment"
 )
 
+// CriticalTieOutVarianceThresholdPaise defines the magnitude (₹5,000 / 500,000 paise)
+// where any single period's unreconciled variance immediately escalates to the operator.
+const CriticalTieOutVarianceThresholdPaise int64 = 500_000 // ₹5,000.00
+
 // ComputeTieOut compares collections control (reconciliation) to ledger rent_revenue credits.
 func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, period string, recon *payment.ReconciliationSummary) (*domain.PeriodTieOut, error) {
 	from, to, err := PeriodBounds(period)
@@ -57,7 +61,14 @@ func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, perio
 	if err := s.Store.SaveTieOut(ctx, t); err != nil {
 		return nil, err
 	}
-	if aging := maxInvestigateMonths(t.Items); aging >= 3 {
+	absDiff := diff
+	if absDiff < 0 {
+		absDiff = -absDiff
+	}
+	if absDiff >= CriticalTieOutVarianceThresholdPaise {
+		s.publish(ctx, propertyID, domain.EvtCriticalTieOutVariance, t)
+	}
+	if aging := maxInvestigateMonths(t.Items); aging >= 2 {
 		s.publish(ctx, propertyID, domain.EvtRecurringTieOutException, t)
 	}
 	return t, nil
@@ -127,5 +138,5 @@ func (s *Service) RecurringTieOutAlert(ctx context.Context, propertyID uuid.UUID
 			n++
 		}
 	}
-	return n >= 3
+	return n >= 2
 }

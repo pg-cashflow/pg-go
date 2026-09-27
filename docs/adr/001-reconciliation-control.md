@@ -27,9 +27,10 @@ Introducing operating cashflow (OCF), break-even, and ROI calculations requires 
    - `POST /api/owner/finance/tie-out/close` strictly blocks with an error (`ErrPeriodNotCloseable`) if there is any unexplained difference (`difference_paise != 0`).
    - Categorized bridge items (`timing`, `adjustment`, `proration`, `reward_credit`, `investigate`) account for expected deviations.
 
-4. **Recurring Exception Aging Escalation**:
-   - Bridge line items categorized as `investigate` (or recurring unexplained discrepancies from the same source) that persist unresolved across 3 consecutive closed monthly periods trigger an automatic Level 3 alert (`EvtRecurringTieOutException`).
-   - This publishes an in-app notification with `is_action_required: true` directing the owner to `/owner/finance/tie-out`. It does not auto-close periods.
+4. **Dual-Signal Discrepancy Escalation**:
+   - **Immediate Magnitude Alert**: Any single monthly period where unreconciled difference `|difference_paise| >= ₹5,000` (500,000 paise) immediately triggers an urgent operator alert (`EvtCriticalTieOutVariance`) directing the owner to `/owner/finance/tie-out`.
+   - **Chronic Recurrence Escalation**: Bridge line items categorized as `investigate` (or recurring unexplained discrepancies from the same source) that persist unresolved across 2 consecutive closed monthly periods trigger an automatic Level 3 alert (`EvtRecurringTieOutException`).
+   - These alerts publish actionable notifications with `is_action_required: true` directing the owner to `/owner/finance/tie-out`. Neither auto-closes periods.
 
 5. **Official ROI Snapshot Pre-requisite**:
    - An ROI snapshot for a period is only marked `official: true` after the corresponding monthly tie-out is successfully closed.
