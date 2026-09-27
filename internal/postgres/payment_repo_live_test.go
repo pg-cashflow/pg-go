@@ -241,6 +241,16 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 		t.Fatalf("expected SQLSTATE 23505 on overlapping multi-due intent due_id, got: %v", err)
 	}
 
+	// Verify atomicity rollback: parent payment_intent row must NOT exist
+	var mIntent2Count int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM payment_intents WHERE id = $1`, mIntent2.ID).Scan(&mIntent2Count)
+	if err != nil {
+		t.Fatalf("query mIntent2 count: %v", err)
+	}
+	if mIntent2Count != 0 {
+		t.Fatalf("atomicity violation: failed CreateWithDues left orphaned parent payment_intent %v in database", mIntent2.ID)
+	}
+
 	// Supersede parent intent 1 -> Trigger sync_payment_intent_dues_status automatically updates child rows
 	_, err = pool.Exec(ctx, `UPDATE payment_intents SET status = 'superseded' WHERE id = $1`, mIntent1.ID)
 	if err != nil {

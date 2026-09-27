@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -104,28 +105,37 @@ func (r *PaymentIntentRepo) RecencyForDue(ctx context.Context, dueID uuid.UUID) 
 }
 
 func (r *PaymentIntentRepo) CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error {
-	if err := r.Create(ctx, p); err != nil {
-		return err
-	}
-	for i, did := range dueIDs {
-		amt := int64(p.AmountPaise)
-		if i < len(amounts) && amounts[i] > 0 {
-			amt = amounts[i]
-		}
-		status := p.Status
-		if status == "" {
-			status = domain.IntentCreated
-		}
-		_, err := r.db.Exec(ctx, `
-			INSERT INTO payment_intent_dues (payment_intent_id, due_id, amount_paise, status)
-			VALUES ($1, $2, $3, $4)
-			ON CONFLICT (payment_intent_id, due_id) DO UPDATE SET amount_paise = EXCLUDED.amount_paise, status = EXCLUDED.status`,
-			p.ID, did, amt, status)
-		if err != nil {
+	insertAll := func(repo *PaymentIntentRepo) error {
+		if err := repo.Create(ctx, p); err != nil {
 			return err
 		}
+		for i, did := range dueIDs {
+			amt := int64(p.AmountPaise)
+			if i < len(amounts) && amounts[i] > 0 {
+				amt = amounts[i]
+			}
+			status := p.Status
+			if status == "" {
+				status = domain.IntentCreated
+			}
+			_, err := repo.db.Exec(ctx, `
+				INSERT INTO payment_intent_dues (payment_intent_id, due_id, amount_paise, status)
+				VALUES ($1, $2, $3, $4)
+				ON CONFLICT (payment_intent_id, due_id) DO UPDATE SET amount_paise = EXCLUDED.amount_paise, status = EXCLUDED.status`,
+				p.ID, did, amt, status)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return nil
+
+	if pool, ok := r.db.(*pgxpool.Pool); ok {
+		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
+			return insertAll(r.WithTx(tx))
+		})
+	}
+	return insertAll(r)
 }
 
 func (r *PaymentIntentRepo) GetDuesSnapshot(ctx context.Context, intentID uuid.UUID) ([]domain.PaymentIntentDue, error) {
