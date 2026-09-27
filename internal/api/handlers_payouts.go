@@ -582,6 +582,26 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		"approval_mode", approvalMode,
 	)
 
+	// Automated Payout Dispatch: if automated payout dispatcher is active (CF_PAYOUT_AUTO_DISPATCH_ENABLED),
+	// automatically initiate batch transfer and dispatch inline with background outbox fallback.
+	if h.PayoutDispatcher != nil {
+		if updatedBatch, _, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID); err == nil {
+			approvedBatch = updatedBatch
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
+					slog.Warn("auto-dispatch payout batch transfer failed inline, relying on ledger outbox worker",
+						"batch_id", batchID,
+						"err", dErr,
+					)
+				}
+			}()
+		} else {
+			slog.Error("failed to initiate auto-dispatch transfer for approved batch", "batch_id", batchID, "err", err)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"batch":         approvedBatch,
 		"approval_mode": approvalMode,

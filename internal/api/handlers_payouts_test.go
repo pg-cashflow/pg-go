@@ -17,8 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -736,5 +738,178 @@ func TestCSVExportSanitizationAndFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestPayoutAutoDispatchOnApproval(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set, skipping live Postgres test")
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skip("config load failed, skipping live Postgres test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+	}
+	defer pool.Close()
+
+	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+
+	propID := uuid.New()
+	ownerPhone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+77)%10000000000)
+	inviteCode := fmt.Sprintf("E%s", uuid.New().String()[:7])
+	_, err = pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+		VALUES ($1, 'Auto-Dispatch Test PG', '789 Auto St', $2, 'owner@upi', 'Owner', 'owner@auto.com', $3)`,
+		propID, ownerPhone, inviteCode,
+	)
+	if err != nil {
+		t.Fatalf("insert property: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID) }()
+
+	ownerID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (id, phone, role, property_id)
+		VALUES ($1, $2, 'owner', $3)`, ownerID, ownerPhone, propID)
+	if err != nil {
+		t.Fatalf("insert owner: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, ownerID) }()
+
+	payoutRepo := postgres.NewPayoutRepo(pool)
+
+	// Mock Cashfree server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/beneficiary" {
+			_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{Status: "ACTIVE"})
+			return
+		}
+		if r.URL.Path == "/transfers/batch" {
+			var req cashfree.BatchTransferRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(cashfree.BatchTransferResponse{
+				BatchTransferID:   req.BatchTransferID,
+				CFBatchTransferID: "cf_mock_auto_batch",
+				Status:            "RECEIVED",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	cfPayoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+		ClientID:     "mock_cid",
+		ClientSecret: "mock_csec",
+		FundsourceID: "fund_01",
+	})
+	cfPayoutClient.SetBaseOverride(srv.URL)
+	dispatcher := finance.NewPayoutDispatcher(payoutRepo, cfPayoutClient, "fund_01")
+
+	// Insert Payee directly
+	payeeID := uuid.New()
+	vpa := "vendor@upi"
+	hash := "mock_hash_1234"
+	last4 := "1234"
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa)
+		VALUES ($1, $2, 'vendor', 'Auto Vendor', $3, $4, $5)`, payeeID, propID, hash, last4, vpa)
+	if err != nil {
+		t.Fatalf("insert payee: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_payees WHERE id = $1`, payeeID) }()
+
+	// Insert Payout Item
+	piID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
+		VALUES ($1, $2, 'REF-AUTODISP-01', 500000, 'Vendor Supply', '2026-09', 'pending')`, piID, payeeID)
+	if err != nil {
+		t.Fatalf("insert payout item: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID) }()
+
+	// Create Batch via HTTP
+	h := &Handlers{
+		Deps: Deps{
+			Pool:                 pool,
+			PayoutRepo:           payoutRepo,
+			PayoutDispatcher:     dispatcher,
+			PayoutChecksumSecret: "test_secret",
+		},
+	}
+
+	router := gin.New()
+	ownerGroup := router.Group("/owner", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+	})
+	ownerGroup.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
+	ownerGroup.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
+
+	w := httptest.NewRecorder()
+	createReq, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Auto test"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, createReq)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created creating batch, got %d: %s", w.Code, w.Body.String())
+	}
+	var createResp struct {
+		Batch domain.PayoutBatch `json:"batch"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &createResp)
+	batchID := createResp.Batch.ID
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, batchID) }()
+
+	// Approve batch with affirmative match
+	approveBody := map[string]interface{}{
+		"expected_item_count":  1,
+		"expected_total_paise": 500000,
+	}
+	bodyJSON, _ := json.Marshal(approveBody)
+	w = httptest.NewRecorder()
+	approveReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID), bytes.NewReader(bodyJSON))
+	approveReq.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, approveReq)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK approving batch with auto-dispatch, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Batch        domain.PayoutBatch `json:"batch"`
+		ApprovalMode string             `json:"approval_mode"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal approve response: %v", err)
+	}
+
+	// Batch in response MUST be in 'processing' status because dispatcher auto-initiated transfer!
+	if resp.Batch.Status != domain.BatchProcessing {
+		t.Errorf("expected batch status 'processing' on auto-dispatch, got '%s'", resp.Batch.Status)
+	}
+
+	// Verify DB state
+	dbBatch, err := payoutRepo.GetBatchByID(ctx, batchID)
+	if err != nil {
+		t.Fatalf("get batch from db: %v", err)
+	}
+	if dbBatch.Status != domain.BatchProcessing {
+		t.Errorf("expected DB batch status 'processing', got '%s'", dbBatch.Status)
+	}
+}
+
 
 
