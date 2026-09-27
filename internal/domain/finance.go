@@ -303,3 +303,60 @@ type ForecastSnapshot struct {
 	AsOf        time.Time       `json:"as_of"`
 	Payload     json.RawMessage `json:"payload"`
 }
+
+type IngestionSource string
+
+const (
+	IngestionWebhook    IngestionSource = "webhook"
+	IngestionOrderFetch IngestionSource = "order_fetch"
+	IngestionCSVImport  IngestionSource = "csv_import"
+)
+
+type SettlementReconStatus string
+
+const (
+	ReconMatched            SettlementReconStatus = "matched"
+	ReconUnmatched          SettlementReconStatus = "unmatched"
+	ReconDiscrepancy        SettlementReconStatus = "discrepancy"
+	ReconManuallyReconciled SettlementReconStatus = "manually_reconciled"
+)
+
+type GatewaySettlement struct {
+	ID                    uuid.UUID             `json:"id"`
+	PropertyID            *uuid.UUID            `json:"property_id,omitempty"`
+	CFSettlementID        string                `json:"cf_settlement_id"`
+	OrderID               *string               `json:"order_id,omitempty"`
+	CFPaymentID           *string               `json:"cf_payment_id,omitempty"`
+	PaymentIntentID       *uuid.UUID            `json:"payment_intent_id,omitempty"`
+	PaymentID             *uuid.UUID            `json:"payment_id,omitempty"`
+	IngestionSource       IngestionSource       `json:"ingestion_source"`
+	UTR                   string                `json:"utr"`
+	Currency              string                `json:"currency"`
+	GrossAmountPaise      int64                 `json:"gross_amount_paise"`
+	ServiceChargePaise    int64                 `json:"service_charge_paise"`
+	ServiceTaxPaise       int64                 `json:"service_tax_paise"`
+	AdjustmentPaise       int64                 `json:"adjustment_paise"`
+	NetAmountPaise        int64                 `json:"net_amount_paise"`
+	SettlementStatus      string                `json:"settlement_status"`
+	SettledOn             *time.Time            `json:"settled_on,omitempty"`
+	SettlementInitiatedOn *time.Time            `json:"settlement_initiated_on,omitempty"`
+	TransferTime          *time.Time            `json:"transfer_time,omitempty"`
+	ReconciliationStatus  SettlementReconStatus `json:"reconciliation_status"`
+	DiscrepancyReason     *string               `json:"discrepancy_reason,omitempty"`
+	JournalEntryID        *uuid.UUID            `json:"journal_entry_id,omitempty"`
+	ResolutionNotes       *string               `json:"resolution_notes,omitempty"`
+	ResolvedBy            *uuid.UUID            `json:"resolved_by,omitempty"`
+	ResolvedAt            *time.Time            `json:"resolved_at,omitempty"`
+	RawPayload            json.RawMessage       `json:"raw_payload"`
+	CreatedAt             time.Time             `json:"created_at"`
+	UpdatedAt             time.Time             `json:"updated_at"`
+}
+
+type SettlementFilter struct {
+	Status    *SettlementReconStatus
+	FromDate  *time.Time
+	ToDate    *time.Time
+	Limit     int
+	Offset    int
+}
+

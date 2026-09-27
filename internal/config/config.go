@@ -52,8 +52,9 @@ type Config struct {
 	CashfreePayoutAPIVersion    string
 	CashfreePayoutFundsourceID  string
 	CashfreePayoutWebhookSecret string
-	CashfreePayoutEnv           string
-	FinanceEnabled               bool
+	CashfreePayoutEnv                 string
+	CashfreePayoutAutoDispatchEnabled bool
+	FinanceEnabled                     bool
 	IntelligenceEnabled          bool
 	AdminEmail                   string
 	AdminPhone                   string
@@ -98,6 +99,7 @@ func Load() (*Config, error) {
 		CashfreePayoutFundsourceID:  os.Getenv("CF_PAYOUT_FUNDSOURCE_ID"),
 		CashfreePayoutWebhookSecret: os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
 		CashfreePayoutEnv:           envOr("CF_PAYOUT_ENV", "sandbox"),
+		CashfreePayoutAutoDispatchEnabled: envBoolDefaultFalse("CF_PAYOUT_AUTO_DISPATCH_ENABLED"),
 		WebhookTimestampToleranceSec: envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
 		OrderExpiryDuration:          envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
 		OrderPollerBufferDuration:    envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
@@ -148,6 +150,14 @@ func envBoolDefaultTrue(k string) bool {
 		return true
 	}
 	return v != "0" && v != "false" && v != "no"
+}
+
+func envBoolDefaultFalse(k string) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(k)))
+	if v == "" {
+		return false
+	}
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func envOr(k, def string) string {

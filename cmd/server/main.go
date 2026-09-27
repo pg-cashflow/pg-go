@@ -258,6 +258,20 @@ func main() {
 	attendanceRepo := postgres.NewAttendanceRepo(pool)
 	attendanceSvc := attendance.NewService(pool, attendanceRepo, payoutRepo)
 
+	var payoutDispatcher *finance.PayoutDispatcher
+	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
+		payoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID:     cfg.CashfreePayoutClientID,
+			ClientSecret: cfg.CashfreePayoutClientSecret,
+			APIVersion:   cfg.CashfreePayoutAPIVersion,
+			Env:          cfg.CashfreePayoutEnv,
+		})
+		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID)
+		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
+	} else if cfg.CashfreePayoutAutoDispatchEnabled {
+		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
+	}
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:          cfg.JWTSecret,
 		Auth:               authSvc,
@@ -306,6 +320,8 @@ func main() {
 		FinanceEnabled:      cfg.FinanceEnabled,
 		IntelligenceEnabled: cfg.IntelligenceEnabled,
 		PayoutRepo:          payoutRepo,
+		PayoutDispatcher:    payoutDispatcher,
+		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
 		AttendanceRepo:      attendanceRepo,
 		AttendanceSvc:       attendanceSvc,
 	})
@@ -357,6 +373,9 @@ func main() {
 			deadLetterAlerter.WithSMSBackstop(gateway, cfg.AdminPhone)
 		}
 		ledgerWorker := finance.NewLedgerOutboxWorker(pool, ledgerOutboxRepo, financeSvc, deadLetterAlerter)
+		if payoutDispatcher != nil {
+			ledgerWorker.SetPayoutDispatcher(payoutDispatcher)
+		}
 
 		go func() {
 			ticker := time.NewTicker(30 * time.Second)

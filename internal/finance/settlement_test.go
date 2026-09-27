@@ -40,20 +40,23 @@ func TestSettlementImportAndJournalBalance(t *testing.T) {
 		t.Fatalf("expected net uncleared 550000, got %d", driftRep.NetUnclearedPaise)
 	}
 
-	// 2. Process Cashfree Settlement:
+	// 2. Process Cashfree Settlement via ProcessSettlement:
 	// Gross: ₹5,500.00 (550000 paise)
 	// MDR Service Charge: ₹80.00 (8000 paise)
 	// GST on MDR: ₹14.40 (1440 paise)
 	// Net Settled to Bank: ₹5,405.60 (540560 paise)
-	csvData := `settlement_id,settlement_amount,gross_amount,service_charge,service_tax,transfer_utr,transfer_time
-SETTLE_001,5405.60,5500.00,80.00,14.40,UTR12345678,2026-09-22T12:00:00Z
-`
-	res, err := svc.ParseAndImportSettlementCSV(ctx, pid, strings.NewReader(csvData))
-	if err != nil {
-		t.Fatalf("import settlement csv: %v", err)
+	rec := SettlementRecord{
+		SettlementID:     "SETTLE_001",
+		TransferUTR:      "UTR12345678",
+		TransferTime:     time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC),
+		GrossAmountPaise: 550000,
+		NetAmountPaise:   540560,
+		ServiceFeePaise:  8000,
+		ServiceTaxPaise:  1440,
+		AdjustmentPaise:  0,
 	}
-	if res.TotalSucceeded != 1 || res.NetBankPaise != 540560 || res.FeeExpensePaise != 9440 {
-		t.Fatalf("unexpected import result: %+v", res)
+	if err := svc.ProcessSettlement(ctx, pid, rec); err != nil {
+		t.Fatalf("process settlement: %v", err)
 	}
 
 	// Verify clearing account is fully cleared (0 remaining)
@@ -77,22 +80,47 @@ SETTLE_001,5405.60,5500.00,80.00,14.40,UTR12345678,2026-09-22T12:00:00Z
 		t.Fatalf("expected fee expense 9440, got %d", feeDr)
 	}
 
-	// 3. Test Idempotency Replay (Importing identical CSV again skips gracefully)
-	res2, err := svc.ParseAndImportSettlementCSV(ctx, pid, strings.NewReader(csvData))
-	if err != nil {
-		t.Fatalf("re-import settlement csv: %v", err)
-	}
-	if res2.TotalSkipped != 1 || res2.TotalSucceeded != 0 {
-		t.Fatalf("expected duplicate settlement to be skipped, got: %+v", res2)
+	// 3. Test Idempotency Replay (Processing identical settlement returns ErrDuplicateSettlement)
+	if err := svc.ProcessSettlement(ctx, pid, rec); err != ErrDuplicateSettlement {
+		t.Fatalf("expected ErrDuplicateSettlement, got: %v", err)
 	}
 
-	// 4. Test Unbalanced Settlement Rejection
-	badCSV := `settlement_id,settlement_amount,gross_amount,service_charge,service_tax
-SETTLE_BAD,5000.00,5500.00,10.00,0.00
-`
-	_, err = svc.ParseAndImportSettlementCSV(ctx, pid, strings.NewReader(badCSV))
-	if err == nil {
+	// 4. Test Settlement with Positive Adjustment (Netted refund)
+	recWithAdj := SettlementRecord{
+		SettlementID:     "SETTLE_002",
+		TransferUTR:      "UTR87654321",
+		TransferTime:     time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
+		GrossAmountPaise: 500000,
+		NetAmountPaise:   390560,
+		ServiceFeePaise:  8000,
+		ServiceTaxPaise:  1440,
+		AdjustmentPaise:  100000, // ₹1,000 refund deducted from settlement
+	}
+	if err := svc.ProcessSettlement(ctx, pid, recWithAdj); err != nil {
+		t.Fatalf("process settlement with adjustment: %v", err)
+	}
+	adjDr, _, _ := st.SumAccount(ctx, pid, domain.AcctGatewayAdjustment, time.Time{}, time.Now().Add(24*time.Hour))
+	if adjDr != 100000 {
+		t.Fatalf("expected gateway adjustment Dr 100000, got %d", adjDr)
+	}
+
+	// 5. Test Unbalanced Settlement Rejection
+	badRec := SettlementRecord{
+		SettlementID:     "SETTLE_BAD",
+		GrossAmountPaise: 550000,
+		NetAmountPaise:   500000,
+		ServiceFeePaise:  1000,
+		ServiceTaxPaise:  0,
+		AdjustmentPaise:  0,
+	}
+	if err := svc.ProcessSettlement(ctx, pid, badRec); err == nil {
 		t.Fatalf("expected unbalanced settlement to fail, got nil err")
+	}
+
+	// 6. Test CSV Stub returns ErrSettlementCSVNotImplemented
+	_, err = svc.ParseAndImportSettlementCSV(ctx, pid, strings.NewReader("dummy"))
+	if err != ErrSettlementCSVNotImplemented {
+		t.Fatalf("expected ErrSettlementCSVNotImplemented, got: %v", err)
 	}
 }
 
