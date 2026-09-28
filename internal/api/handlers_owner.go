@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -632,39 +633,128 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 	rows, err := csv.Parse(limited)
 	if err != nil {
 		if errors.Is(err, csv.ErrUnknownSchema) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown CSV schema — required columns: txn_id, amount, date, note"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown CSV schema — required columns: date, note, and amount (or deposit/withdrawal)"})
 			return
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "csv parse error: unsupported format"})
 		return
 	}
 
-	matched, failed := 0, 0
+	var (
+		matched    int
+		suggested  int
+		unmatched  int
+		duplicates int
+		debits     int
+	)
+
 	for _, row := range rows {
-		if _, err := h.Payments.MatchPayment(c.Request.Context(), pid, row.TxnID, row.AmountPaise, row.Date, row.Note); err != nil {
-			failed++
-			if h.Finance != nil && h.FinanceEnabled {
-				_ = h.Finance.SuggestCSVDebit(c.Request.Context(), pid, row.TxnID, row.AmountPaise, row.Date, row.Note)
+		// 1. Debits: Outflows stored for statement reconciliation tie-out, but never matched to dues or credited to ledger
+		if row.Type == csv.RowTypeDebit {
+			debitTxn := &domain.BankTransaction{
+				PropertyID:          pid,
+				TxnID:               row.TxnID,
+				AmountPaise:         int64(row.AmountPaise),
+				RowType:             "debit",
+				TxnDate:             row.Date,
+				Narration:           row.Note,
+				ClosingBalancePaise: row.BalancePaise,
+				OccurrenceIndex:     row.Occurrence,
+				Status:              domain.BankTxnIgnoredDebit,
 			}
+			if h.BankTxnRepo != nil {
+				inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, debitTxn)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("database error saving debit transaction: %v", err)})
+					return
+				}
+				if !inserted {
+					duplicates++
+					continue
+				}
+			}
+			debits++
 			continue
 		}
-		matched++
-	}
-	if matched > 0 {
-		if err := h.ImportStore.Create(c.Request.Context(), &postgres.ImportLog{
-			PropertyID: pid,
-			Filename:   hdr.Filename,
-			RowCount:   len(rows),
-			ImportedBy: uid,
-		}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "import log failed", "matched": matched, "failed": failed})
-			return
+
+		// 2. Credits: Inflow handling with idempotent deduplication and double-entry quarantine
+		creditTxn := &domain.BankTransaction{
+			PropertyID:          pid,
+			TxnID:               row.TxnID,
+			AmountPaise:         int64(row.AmountPaise),
+			RowType:             "credit",
+			TxnDate:             row.Date,
+			Narration:           row.Note,
+			ClosingBalancePaise: row.BalancePaise,
+			OccurrenceIndex:     row.Occurrence,
+			Status:              domain.BankTxnUnmatched,
+		}
+
+		if h.BankTxnRepo != nil {
+			inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, creditTxn)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("database error inserting bank transaction: %v", err)})
+				return
+			}
+			if !inserted {
+				// Explicit duplicate skipping
+				duplicates++
+				continue
+			}
+		}
+
+		// Fail-fast double-entry quarantine: Dr bank / Cr unapplied_receipts
+		if h.Finance != nil && h.FinanceEnabled {
+			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, creditTxn.ID, int64(row.AmountPaise), row.Date); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("ledger mirror quarantine failed: %v", err)})
+				return
+			}
+		}
+
+		// Evaluate match candidates without auto-settling (Tier 1 auto-posting is held OFF until verified against live statement)
+		matchRes, err := h.Payments.SuggestMatch(c.Request.Context(), pid, row.AmountPaise, row.Date, row.Note)
+		if err == nil && matchRes != nil && matchRes.Due != nil {
+			suggested++
+			creditTxn.Status = domain.BankTxnSuggestedMatch
+			creditTxn.SuggestedDueID = &matchRes.Due.ID
+			if matchRes.IsDeterministic {
+				creditTxn.ConfidenceScore = 1.00
+			} else {
+				creditTxn.ConfidenceScore = 0.80
+			}
+			if h.BankTxnRepo != nil {
+				if err := h.BankTxnRepo.UpdateStatus(c.Request.Context(), nil, creditTxn.ID, creditTxn.Status, nil, nil, nil, nil); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed updating transaction status: %v", err)})
+					return
+				}
+			}
+		} else {
+			unmatched++
 		}
 	}
+
+	if (matched + suggested + unmatched + debits) > 0 {
+		if h.ImportStore != nil {
+			if err := h.ImportStore.Create(c.Request.Context(), &postgres.ImportLog{
+				PropertyID: pid,
+				Filename:   hdr.Filename,
+				RowCount:   len(rows),
+				ImportedBy: uid,
+			}); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "import log failed", "matched": matched, "failed": unmatched})
+				return
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"row_count": len(rows),
-		"matched":   matched,
-		"failed":    failed,
+		"row_count":  len(rows),
+		"matched":    matched,
+		"suggested":  suggested,
+		"unmatched":  unmatched,
+		"duplicates": duplicates,
+		"debits":     debits,
+		"failed":     unmatched,
 	})
 }
 

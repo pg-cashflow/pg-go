@@ -174,6 +174,9 @@ type dedupStubPay struct {
 func (s *dedupStubPay) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
 	panic("unused")
 }
+func (s *dedupStubPay) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+	panic("unused")
+}
 func (s *dedupStubPay) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
 	panic("unused")
 }

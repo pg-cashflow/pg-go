@@ -257,6 +257,7 @@ func main() {
 	payoutRepo := postgres.NewPayoutRepo(pool, financeSvc)
 	attendanceRepo := postgres.NewAttendanceRepo(pool)
 	attendanceSvc := attendance.NewService(pool, attendanceRepo, payoutRepo)
+	bankTxnRepo := postgres.NewBankTransactionRepo(pool)
 
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
@@ -324,6 +325,7 @@ func main() {
 		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
 		AttendanceRepo:      attendanceRepo,
 		AttendanceSvc:       attendanceSvc,
+		BankTxnRepo:         bankTxnRepo,
 	})
 
 	srv := &http.Server{

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -74,6 +75,7 @@ type BillingService interface {
 // PaymentService matches payments and cash/deposit settlement.
 type PaymentService interface {
 	MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int, date time.Time, note string) (*domain.Payment, error)
+	SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*payment.MatchResult, error)
 	ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
 	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int, recordedBy uuid.UUID, note string) (*domain.Payment, error)
 	SettleDeposit(ctx context.Context, tenantID uuid.UUID, refundedPaise int64, reason string) error
@@ -209,3 +211,12 @@ type CashfreeClient interface {
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC
 // routes respond 503 with a clear message so the rest of the app keeps running.
 // (Field declaration only; the interface is defined above.)
+
+type BankTransactionStore interface {
+	InsertTransaction(ctx context.Context, tx pgx.Tx, txn *domain.BankTransaction) (bool, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.BankTransaction, error)
+	GetByPropertyAndID(ctx context.Context, propertyID, id uuid.UUID) (*domain.BankTransaction, error)
+	ListByProperty(ctx context.Context, propertyID uuid.UUID, filter domain.BankTransactionFilter) ([]*domain.BankTransaction, int, error)
+	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.BankTransactionStatus, matchedDueID *uuid.UUID, matchedBy *uuid.UUID, matchedAt *time.Time, journalEntryID *uuid.UUID) error
+}
+

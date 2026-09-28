@@ -91,6 +91,8 @@ type Deps struct {
 	SettlementRepo       *postgres.SettlementRepo
 	SettlementReconciler *finance.SettlementReconciler
 
+	BankTxnRepo BankTransactionStore
+
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
 
