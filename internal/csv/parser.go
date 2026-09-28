@@ -33,22 +33,38 @@ type Row struct {
 	Occurrence   int // 1-based index for identical same-day transactions within the file
 }
 
+// ParseResult holds parsed statement rows and opening balance anchor if available.
+type ParseResult struct {
+	Rows                []Row
+	OpeningBalancePaise *int64
+}
+
 var (
-	txnIDAliases      = []string{"txn_id", "txnid", "transaction_id", "transactionid", "utr", "ref_no", "refno", "reference", "upi_ref", "upiref", "upi_txn_id", "transaction_ref", "chq_ref_no", "chq_ref", "chqno", "chq_no", "cheque_no", "cheque_number", "ref_no_cheque_no"}
+	txnIDAliases      = []string{"txn_id", "txnid", "transaction_id", "transactionid", "utr", "ref_no", "refno", "reference", "upi_ref", "upiref", "upi_txn_id", "transaction_ref", "chq_ref_no", "chq_ref", "chqno", "chq_no", "cheque_no", "cheque_number", "ref_no_cheque_no", "ref_no_chq_no", "chq_no_ref_no"}
 	depositAliases    = []string{"deposit_amt", "deposit_amount", "deposit", "credit_amt", "credit_amount", "credit", "cr", "deposit_amount_inr", "cr_amt"}
 	withdrawalAliases = []string{"withdrawal_amt", "withdrawal_amount", "withdrawal", "debit_amt", "debit_amount", "debit", "dr", "withdrawal_amount_inr", "dr_amt"}
 	amountAliases     = []string{"amount", "amt", "transaction_amount", "txn_amount", "net_amount"}
 	indicatorAliases  = []string{"type", "txn_type", "transaction_type", "dr_cr", "cr_dr", "indicator", "drcr"}
 	dateAliases       = []string{"date", "txn_date", "txndate", "transaction_date", "value_date", "valuedate", "posting_date", "tran_date", "value_dt", "post_date"}
-	noteAliases       = []string{"note", "narration", "remarks", "description", "particular", "particulars", "details", "memo", "transaction_remarks"}
+	noteAliases       = []string{"note", "narration", "remarks", "description", "particular", "particulars", "details", "memo", "transaction_remarks", "transaction_reference", "txn_reference", "txn_ref"}
 	balanceAliases    = []string{"closing_balance", "balance", "bal", "closing_bal", "balance_inr"}
 )
 
-// Parse reads a bank statement CSV. It scans initial rows to locate the header row,
+// Parse reads a bank statement CSV and returns sanitized transaction rows.
+// Backward-compatible wrapper for ParseWithMeta.
+func Parse(r io.Reader) ([]Row, error) {
+	res, err := ParseWithMeta(r)
+	if err != nil {
+		return nil, err
+	}
+	return res.Rows, nil
+}
+
+// ParseWithMeta reads a bank statement CSV. It scans initial rows to locate the header row,
 // safely skipping account preamble/metadata lines common in bank exports (e.g. SBI).
 // All required columns must be present in the detected header or ErrUnknownSchema is returned.
-// Footer and summary rows after data rows begin are gracefully tolerated (end-of-table detection).
-func Parse(r io.Reader) ([]Row, error) {
+// Footer, summary, and opening-balance pre-data rows without populated money cells are tolerated.
+func ParseWithMeta(r io.Reader) (ParseResult, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
 	cr.ReuseRecord = true
@@ -66,7 +82,7 @@ func Parse(r io.Reader) ([]Row, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("csv: read header error: %w", err)
+			return ParseResult{}, fmt.Errorf("csv: read header error: %w", err)
 		}
 		line++
 		if isBlank(rec) {
@@ -84,23 +100,29 @@ func Parse(r io.Reader) ([]Row, error) {
 	}
 
 	if !headerFound {
-		return nil, ErrUnknownSchema
+		return ParseResult{}, ErrUnknownSchema
 	}
 
+	var openingBalance *int64
 	occurrenceMap := make(map[string]int)
 	var out []Row
+
 	for {
 		rec, err := cr.Read()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("csv: line %d: %w", line+1, err)
+			return ParseResult{}, fmt.Errorf("csv: line %d: %w", line+1, err)
 		}
 		line++
 		if isBlank(rec) {
 			continue
 		}
+
+		hasDep := idx.deposit >= 0 && idx.deposit < len(rec) && strings.TrimSpace(StripFormulaChars(rec[idx.deposit])) != ""
+		hasWdl := idx.withdrawal >= 0 && idx.withdrawal < len(rec) && strings.TrimSpace(StripFormulaChars(rec[idx.withdrawal])) != ""
+		hasAmt := idx.amount >= 0 && idx.amount < len(rec) && strings.TrimSpace(StripFormulaChars(rec[idx.amount])) != ""
 
 		// Check if row has enough columns for date
 		if len(rec) <= idx.date {
@@ -108,7 +130,14 @@ func Parse(r io.Reader) ([]Row, error) {
 				// Reached footer/summary notes at end of table
 				break
 			}
-			return nil, fmt.Errorf("csv: line %d: too few columns", line)
+			// Pre-data row with no deposit/withdrawal/amount (e.g. opening balance banner)
+			if !hasDep && !hasWdl && !hasAmt {
+				if ob := tryExtractOpeningBalance(rec, idx); ob != nil && openingBalance == nil {
+					openingBalance = ob
+				}
+				continue
+			}
+			return ParseResult{}, fmt.Errorf("csv: line %d: too few columns", line)
 		}
 
 		dateRaw := StripFormulaChars(rec[idx.date])
@@ -118,13 +147,36 @@ func Parse(r io.Reader) ([]Row, error) {
 				// End-of-table summary/footer notes reached (e.g. "** Computer generated **", "Total:")
 				break
 			}
-			return nil, fmt.Errorf("csv: line %d: %w", line, dateErr)
+			// Pre-data row with non-date text (e.g. "Your Opening Balance on 01-08-26: ₹0.81")
+			if !hasDep && !hasWdl && !hasAmt {
+				if ob := tryExtractOpeningBalance(rec, idx); ob != nil && openingBalance == nil {
+					openingBalance = ob
+				}
+				continue // Safely skip pre-data descriptive row
+			}
+			// If any money cell is populated, reject fail-closed!
+			return ParseResult{}, fmt.Errorf("csv: line %d: %w", line, dateErr)
 		}
 
-		// Row has a valid date — must parse valid amount and note (fail-closed for money)
+		// If date parses, but before data rows start and all money cells are empty:
+		if len(out) == 0 && !hasDep && !hasWdl && !hasAmt {
+			noteText := ""
+			if idx.note >= 0 && idx.note < len(rec) {
+				noteText = strings.ToUpper(strings.TrimSpace(StripFormulaChars(rec[idx.note])))
+			}
+			if strings.Contains(noteText, "OPENING") || strings.Contains(noteText, "B/F") ||
+				strings.Contains(noteText, "BROUGHT FORWARD") || strings.Contains(noteText, "BALANCE") {
+				if ob := tryExtractOpeningBalance(rec, idx); ob != nil && openingBalance == nil {
+					openingBalance = ob
+				}
+				continue
+			}
+		}
+
+		// Row has a valid date and is a data candidate — must parse valid amount and note (fail-closed for money)
 		row, err := parseRowWithDate(rec, idx, dt)
 		if err != nil {
-			return nil, fmt.Errorf("csv: line %d: %w", line, err)
+			return ParseResult{}, fmt.Errorf("csv: line %d: %w", line, err)
 		}
 
 		// Calculate occurrence index for identical entries within this file
@@ -134,7 +186,11 @@ func Parse(r io.Reader) ([]Row, error) {
 
 		out = append(out, row)
 	}
-	return out, nil
+
+	return ParseResult{
+		Rows:                out,
+		OpeningBalancePaise: openingBalance,
+	}, nil
 }
 
 type colIndex struct {
@@ -239,24 +295,39 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 	// Split column resolution takes priority over unified amount
 	if idx.deposit >= 0 || idx.withdrawal >= 0 {
 		var depRaw, wdlRaw string
-		if idx.deposit >= 0 {
-			depRaw = StripFormulaChars(rec[idx.deposit])
+		if idx.deposit >= 0 && idx.deposit < len(rec) {
+			depRaw = strings.TrimSpace(StripFormulaChars(rec[idx.deposit]))
 		}
-		if idx.withdrawal >= 0 {
-			wdlRaw = StripFormulaChars(rec[idx.withdrawal])
+		if idx.withdrawal >= 0 && idx.withdrawal < len(rec) {
+			wdlRaw = strings.TrimSpace(StripFormulaChars(rec[idx.withdrawal]))
 		}
 
-		depPaise, depErr := parseAmountPaise(depRaw)
-		wdlPaise, wdlErr := parseAmountPaise(wdlRaw)
+		if depRaw != "" {
+			depPaise, depErr := parseAmountPaise(depRaw)
+			if depErr != nil {
+				return Row{}, fmt.Errorf("invalid deposit amount %q: %w", depRaw, depErr)
+			}
+			if depPaise > 0 {
+				rowType = RowTypeCredit
+				amountPaise = depPaise
+			}
+		}
 
-		if depErr == nil && depPaise > 0 {
-			rowType = RowTypeCredit
-			amountPaise = depPaise
-		} else if wdlErr == nil && wdlPaise > 0 {
-			rowType = RowTypeDebit
-			amountPaise = wdlPaise
-		} else {
-			// Row has neither valid deposit nor withdrawal
+		if wdlRaw != "" {
+			wdlPaise, wdlErr := parseAmountPaise(wdlRaw)
+			if wdlErr != nil {
+				return Row{}, fmt.Errorf("invalid withdrawal amount %q: %w", wdlRaw, wdlErr)
+			}
+			if wdlPaise > 0 {
+				if rowType == RowTypeCredit {
+					return Row{}, fmt.Errorf("row has both deposit and withdrawal amounts")
+				}
+				rowType = RowTypeDebit
+				amountPaise = wdlPaise
+			}
+		}
+
+		if amountPaise == 0 {
 			return Row{}, fmt.Errorf("row has no positive deposit or withdrawal amount")
 		}
 	} else if idx.amount >= 0 {
@@ -326,7 +397,41 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 	}, nil
 }
 
+func tryExtractOpeningBalance(rec []string, idx colIndex) *int64 {
+	// 1. If balance column has a value
+	if idx.balance >= 0 && idx.balance < len(rec) {
+		balRaw := StripFormulaChars(rec[idx.balance])
+		if balRaw != "" {
+			if bal, err := parseSignedAmountPaise(balRaw); err == nil {
+				return &bal
+			}
+		}
+	}
+	// 2. Otherwise scan across all cells for currency amount
+	for _, cell := range rec {
+		s := strings.TrimSpace(cell)
+		upper := strings.ToUpper(s)
+		if strings.Contains(upper, "OPENING BALANCE") || strings.Contains(upper, "BALANCE AS ON") {
+			idxColon := strings.LastIndex(s, ":")
+			candidate := s
+			if idxColon >= 0 && idxColon < len(s)-1 {
+				candidate = strings.TrimSpace(s[idxColon+1:])
+			} else {
+				words := strings.Fields(s)
+				if len(words) > 0 {
+					candidate = words[len(words)-1]
+				}
+			}
+			if bal, err := parseSignedAmountPaise(candidate); err == nil {
+				return &bal
+			}
+		}
+	}
+	return nil
+}
+
 // parseSignedAmountPaise parses decimal amounts into integer paise without floating point drift.
+// Rejects amounts with more than 2 decimal places (fail-closed for money).
 // Tolerates Indian comma formatting (e.g. 1,26,948.00) and trailing/leading Cr/Dr indicators.
 func parseSignedAmountPaise(s string) (int64, error) {
 	s = strings.TrimSpace(s)
@@ -378,7 +483,7 @@ func parseSignedAmountPaise(s string) (int64, error) {
 		if len(dec) == 1 {
 			dec += "0"
 		} else if len(dec) > 2 {
-			dec = dec[:2]
+			return 0, fmt.Errorf("amount %q has more than 2 decimal places", s)
 		}
 		p, err := strconv.ParseInt(dec, 10, 64)
 		if err != nil {

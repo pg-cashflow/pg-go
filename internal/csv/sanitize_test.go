@@ -295,5 +295,95 @@ func TestParse_UnifiedAmount_WithDrCrIndicator(t *testing.T) {
 	}
 }
 
+// Assumed-layout fixture derived from screenshot:
+// Date | Transaction Reference | Ref.No./Chq.No. | Credit | Debit | Balance
+// Followed by pre-data opening balance banner: "Your Opening Balance on 01-08-26: ₹0.81"
+func TestParse_SBI_ScreenshotLayout_WithOpeningBalance(t *testing.T) {
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"Your Opening Balance on 01-08-26: ₹0.81,,,,,\n" +
+		"01-08-26,RENT PAYMENT FROM TENANT,UPI12345678,15000.00,,15000.81\n" +
+		"02-08-26,MAINTENANCE EXPENSE,CHQ0001,,2500.00,12500.81\n"
+
+	res, err := ParseWithMeta(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("screenshot layout parse failed: %v", err)
+	}
+
+	// 1. Verify opening balance anchor
+	if res.OpeningBalancePaise == nil {
+		t.Fatalf("expected opening balance anchor to be captured, got nil")
+	}
+	if *res.OpeningBalancePaise != 81 {
+		t.Errorf("expected opening balance 81 paise, got %d", *res.OpeningBalancePaise)
+	}
+
+	// 2. Verify rows
+	if len(res.Rows) != 2 {
+		t.Fatalf("expected 2 transaction rows, got %d", len(res.Rows))
+	}
+
+	// Row 0: Credit
+	r0 := res.Rows[0]
+	if r0.Type != RowTypeCredit || r0.AmountPaise != 1500000 {
+		t.Errorf("row0: expected Credit 1500000 paise, got %s %d", r0.Type, r0.AmountPaise)
+	}
+	if r0.TxnID != "UPI12345678" {
+		t.Errorf("row0: expected TxnID UPI12345678, got %q", r0.TxnID)
+	}
+	if r0.Note != "RENT PAYMENT FROM TENANT" {
+		t.Errorf("row0: expected note 'RENT PAYMENT FROM TENANT', got %q", r0.Note)
+	}
+	if r0.Date.Day() != 1 || r0.Date.Month() != 8 || r0.Date.Year() != 2026 {
+		t.Errorf("row0: expected 2026-08-01, got %v", r0.Date)
+	}
+	if r0.BalancePaise == nil || *r0.BalancePaise != 1500081 {
+		t.Errorf("row0: expected balance 1500081 paise, got %v", r0.BalancePaise)
+	}
+
+	// Row 1: Debit
+	r1 := res.Rows[1]
+	if r1.Type != RowTypeDebit || r1.AmountPaise != 250000 {
+		t.Errorf("row1: expected Debit 250000 paise, got %s %d", r1.Type, r1.AmountPaise)
+	}
+	if r1.TxnID != "CHQ0001" {
+		t.Errorf("row1: expected TxnID CHQ0001, got %q", r1.TxnID)
+	}
+	if r1.Note != "MAINTENANCE EXPENSE" {
+		t.Errorf("row1: expected note 'MAINTENANCE EXPENSE', got %q", r1.Note)
+	}
+	if r1.Date.Day() != 2 || r1.Date.Month() != 8 || r1.Date.Year() != 2026 {
+		t.Errorf("row1: expected 2026-08-02, got %v", r1.Date)
+	}
+	if r1.BalancePaise == nil || *r1.BalancePaise != 1250081 {
+		t.Errorf("row1: expected balance 1250081 paise, got %v", r1.BalancePaise)
+	}
+}
+
+func TestParse_RejectMoreThanTwoDecimals(t *testing.T) {
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"01-08-26,TEST FRACTIONAL PAISE,REF100,12.999,,100.00\n"
+
+	_, err := Parse(strings.NewReader(in))
+	if err == nil {
+		t.Fatalf("expected error rejecting >2 decimal places, got nil")
+	}
+	if !strings.Contains(err.Error(), "more than 2 decimal places") {
+		t.Errorf("expected 'more than 2 decimal places' error, got %v", err)
+	}
+}
+
+func TestParse_PreDataRowWithAmount_FailsClosed(t *testing.T) {
+	// A pre-data row before first valid row that has populated money cells but invalid date must fail closed
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"Corrupted Pre-Data Banner,Some Ref,REF999,1000.00,,1000.00\n" +
+		"01-08-26,RENT PAYMENT,REF101,15000.00,,16000.00\n"
+
+	_, err := Parse(strings.NewReader(in))
+	if err == nil {
+		t.Fatalf("expected fail-closed error when pre-data row has populated amount cells, got nil")
+	}
+}
+
+
 
 
