@@ -149,3 +149,38 @@ func TestParse_DayFirstDateDisambiguation(t *testing.T) {
 	}
 }
 
+func TestParse_SBI_PreambleMetadata_HeaderDetection(t *testing.T) {
+	// SBI export format typically begins with account information prelude before table header
+	in := "Account Name: Ramesh Kumar\n" +
+		"Account Number: 00000012345678901\n" +
+		"Branch: KORAMANGALA BANGALORE\n" +
+		"Drawing Power: 0.00\n" +
+		"Interest Rate: 0.00 % p.a.\n" +
+		"MOD Balance: 0.00\n" +
+		"CIF No: 88990011223\n" +
+		"IFS Code: SBIN0001234\n" +
+		"(Amounts in INR)\n" +
+		"\n" +
+		"Txn Date,Value Date,Description,Ref No./Cheque No.,Debit,Credit,Balance\n" +
+		"01/09/2026,01/09/2026,TRANSFER FROM RAMESH KUMAR - RENT,TRANSFER424512,,15000.00,85000.00\n" +
+		"02/09/2026,02/09/2026,ATM WDL-KORAMANGALA,ATM998877,2000.00,,83000.00\n"
+
+	rows, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("SBI preamble parse failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0].Type != RowTypeCredit || rows[0].AmountPaise != 1500000 {
+		t.Errorf("row0: expected Credit 1500000 paise, got type=%s amt=%d", rows[0].Type, rows[0].AmountPaise)
+	}
+	if rows[0].TxnID != "TRANSFER424512" {
+		t.Errorf("row0: expected TxnID TRANSFER424512, got %q", rows[0].TxnID)
+	}
+	if rows[1].Type != RowTypeDebit || rows[1].AmountPaise != 200000 {
+		t.Errorf("row1: expected Debit 200000 paise, got type=%s amt=%d", rows[1].Type, rows[1].AmountPaise)
+	}
+}
+
+

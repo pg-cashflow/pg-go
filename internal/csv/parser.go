@@ -43,30 +43,50 @@ var (
 	balanceAliases    = []string{"closing_balance", "balance", "bal", "closing_bal", "balance_inr"}
 )
 
-// Parse reads a bank statement CSV. All required columns must be present or
-// ErrUnknownSchema is returned with no rows.
+// Parse reads a bank statement CSV. It scans initial rows to locate the header row,
+// safely skipping account preamble/metadata lines common in bank exports (e.g. SBI).
+// All required columns must be present in the detected header or ErrUnknownSchema is returned.
 func Parse(r io.Reader) ([]Row, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
 	cr.ReuseRecord = true
 	cr.LazyQuotes = true
+	cr.FieldsPerRecord = -1 // Allow variable columns for prelude metadata rows
 
-	header, err := cr.Read()
-	if err != nil {
+	var idx colIndex
+	var headerFound bool
+	line := 0
+
+	// Scan up to 50 rows looking for the header row
+	for {
+		rec, err := cr.Read()
 		if errors.Is(err, io.EOF) {
-			return nil, ErrUnknownSchema
+			break
 		}
-		return nil, fmt.Errorf("csv: read header: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("csv: read header error: %w", err)
+		}
+		line++
+		if isBlank(rec) {
+			continue
+		}
+		colIdx, err := mapHeaders(rec)
+		if err == nil {
+			idx = colIdx
+			headerFound = true
+			break
+		}
+		if line >= 50 {
+			break
+		}
 	}
 
-	idx, err := mapHeaders(header)
-	if err != nil {
-		return nil, err
+	if !headerFound {
+		return nil, ErrUnknownSchema
 	}
 
 	occurrenceMap := make(map[string]int)
 	var out []Row
-	line := 1
 	for {
 		rec, err := cr.Read()
 		if errors.Is(err, io.EOF) {

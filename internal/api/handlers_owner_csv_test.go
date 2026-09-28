@@ -393,3 +393,180 @@ func TestImportStatements_ICICI_AssumedLayoutFixture(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
+
+type failingFinanceStore struct {
+	*finance.MemoryStore
+	failJournal bool
+}
+
+func (f *failingFinanceStore) InsertJournal(ctx context.Context, lines []domain.JournalLine) error {
+	if f.failJournal {
+		return errors.New("simulated transient ledger database error")
+	}
+	return f.MemoryStore.InsertJournal(ctx, lines)
+}
+
+func TestImportStatements_MirrorFailsFirst_ThenRetryConverges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	propID := uuid.New()
+	userID := uuid.New()
+	bankStore := newMockBankTxnStore()
+	memFinStore := finance.NewMemoryStore()
+	failingStore := &failingFinanceStore{
+		MemoryStore: memFinStore,
+		failJournal: true, // Step 1: Force ledger mirror failure
+	}
+	finSvc := finance.NewService(failingStore, nil)
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+			Payments:       &mockCSVPaymentService{},
+			ImportStore:    &mockCSVImportStore{},
+		},
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+	})
+	r.POST("/owner/statements/import", h.ImportStatements)
+
+	csvContent := "Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance\n" +
+		"01/09/26,UPI-RAMESH KUMAR,424512345678,01/09/26,,15000.00,125000.50\n"
+
+	// Attempt 1: Ledger fails
+	req1, _ := createMultipartRequest("/owner/statements/import", "file", "statement.csv", []byte(csvContent))
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusInternalServerError {
+		t.Fatalf("attempt 1 expected HTTP 500, got %d", w1.Code)
+	}
+
+	// Verify bank_transactions row was NOT committed before the ledger failure!
+	if bankStore.inserted != 0 {
+		t.Fatalf("bank transaction was committed before ledger succeeded! inserted=%d", bankStore.inserted)
+	}
+
+	// Attempt 2: Ledger issue resolved -> Retry must succeed and post exactly 1 journal entry
+	failingStore.failJournal = false
+	req2, _ := createMultipartRequest("/owner/statements/import", "file", "statement.csv", []byte(csvContent))
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("attempt 2 retry expected HTTP 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if bankStore.inserted != 1 {
+		t.Fatalf("expected 1 bank transaction inserted on retry, got %d", bankStore.inserted)
+	}
+
+	lines, err := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("failed listing journal: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected exactly 2 journal lines (1 entry) after retry, got %d", len(lines))
+	}
+
+	// Attempt 3: Immediate re-import of same file -> Duplicates skipped, exactly 2 journal lines remain
+	req3, _ := createMultipartRequest("/owner/statements/import", "file", "statement.csv", []byte(csvContent))
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Fatalf("attempt 3 re-import expected HTTP 200, got %d", w3.Code)
+	}
+	var resp3 struct {
+		Duplicates int `json:"duplicates"`
+	}
+	_ = json.Unmarshal(w3.Body.Bytes(), &resp3)
+	if resp3.Duplicates != 1 {
+		t.Fatalf("expected 1 skipped duplicate on attempt 3, got %d", resp3.Duplicates)
+	}
+
+	linesAfterThird, _ := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if len(linesAfterThird) != 2 {
+		t.Fatalf("re-import generated duplicate journal entries! lines=%d", len(linesAfterThird))
+	}
+}
+
+func TestImportStatements_SBI_PreambleMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	propID := uuid.New()
+	userID := uuid.New()
+	bankStore := newMockBankTxnStore()
+	memFinStore := finance.NewMemoryStore()
+	finSvc := finance.NewService(memFinStore, nil)
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+			Payments:       &mockCSVPaymentService{},
+			ImportStore:    &mockCSVImportStore{},
+		},
+	}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+	})
+	r.POST("/owner/statements/import", h.ImportStatements)
+
+	sbiCSV := "Account Name: Ramesh Kumar\n" +
+		"Account Number: 00000012345678901\n" +
+		"Branch: KORAMANGALA BANGALORE\n" +
+		"(Amounts in INR)\n" +
+		"\n" +
+		"Txn Date,Value Date,Description,Ref No./Cheque No.,Debit,Credit,Balance\n" +
+		"01/09/2026,01/09/2026,TRANSFER FROM RAMESH KUMAR - RENT,TRANSFER424512,,15000.00,85000.00\n" +
+		"02/09/2026,02/09/2026,ATM WDL-KORAMANGALA,ATM998877,2000.00,,83000.00\n"
+
+	req, _ := createMultipartRequest("/owner/statements/import", "file", "sbi.csv", []byte(sbiCSV))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		RowCount   int `json:"row_count"`
+		Debits     int `json:"debits"`
+		Unmatched  int `json:"unmatched"`
+		Duplicates int `json:"duplicates"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if resp.RowCount != 2 || resp.Debits != 1 || resp.Unmatched != 1 {
+		t.Fatalf("unexpected response from SBI preamble: %+v", resp)
+	}
+
+	// Verify quarantine Dr bank / Cr unapplied_receipts for 15,000 INR
+	lines, err := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("failed listing journal: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 journal lines, got %d", len(lines))
+	}
+	if lines[0].DebitPaise != 1500000 && lines[1].DebitPaise != 1500000 {
+		t.Fatalf("expected 1,500,000 paise debit, got %v", lines)
+	}
+}
+

@@ -3,8 +3,8 @@ package api
 import (
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -651,7 +651,17 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 	for _, row := range rows {
 		// 1. Debits: Outflows stored for statement reconciliation tie-out, but never matched to dues or credited to ledger
 		if row.Type == csv.RowTypeDebit {
+			debitHash := domain.ComputeBankTxnDedupHash(
+				pid,
+				row.Date,
+				int64(row.AmountPaise),
+				"debit",
+				row.TxnID,
+				row.BalancePaise,
+				row.Occurrence,
+			)
 			debitTxn := &domain.BankTransaction{
+				ID:                  uuid.NewSHA1(uuid.NameSpaceOID, []byte(debitHash)),
 				PropertyID:          pid,
 				TxnID:               row.TxnID,
 				AmountPaise:         int64(row.AmountPaise),
@@ -660,12 +670,14 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				Narration:           row.Note,
 				ClosingBalancePaise: row.BalancePaise,
 				OccurrenceIndex:     row.Occurrence,
+				DedupHash:           debitHash,
 				Status:              domain.BankTxnIgnoredDebit,
 			}
 			if h.BankTxnRepo != nil {
 				inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, debitTxn)
 				if err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("database error saving debit transaction: %v", err)})
+					log.Printf("ERROR: ImportStatements saving debit transaction failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record debit transaction"})
 					return
 				}
 				if !inserted {
@@ -678,7 +690,19 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		}
 
 		// 2. Credits: Inflow handling with idempotent deduplication and double-entry quarantine
+		dedupHash := domain.ComputeBankTxnDedupHash(
+			pid,
+			row.Date,
+			int64(row.AmountPaise),
+			"credit",
+			row.TxnID,
+			row.BalancePaise,
+			row.Occurrence,
+		)
+		sourceID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(dedupHash))
+
 		creditTxn := &domain.BankTransaction{
+			ID:                  sourceID,
 			PropertyID:          pid,
 			TxnID:               row.TxnID,
 			AmountPaise:         int64(row.AmountPaise),
@@ -687,27 +711,33 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			Narration:           row.Note,
 			ClosingBalancePaise: row.BalancePaise,
 			OccurrenceIndex:     row.Occurrence,
+			DedupHash:           dedupHash,
 			Status:              domain.BankTxnUnmatched,
+		}
+
+		// Fail-fast double-entry quarantine posted FIRST: Dr bank / Cr unapplied_receipts.
+		// Posting the journal entry with deterministic sourceID first guarantees that if this step fails,
+		// the bank_transaction row has not committed, allowing safe retry. On retry, the journal's
+		// unique constraint (source_type, source_id, line_kind) makes the entry idempotent.
+		if h.Finance != nil && h.FinanceEnabled {
+			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, sourceID, int64(row.AmountPaise), row.Date); err != nil {
+				log.Printf("ERROR: ImportStatements ledger mirror quarantine failed: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial entry"})
+				return
+			}
 		}
 
 		if h.BankTxnRepo != nil {
 			inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, creditTxn)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("database error inserting bank transaction: %v", err)})
+				log.Printf("ERROR: ImportStatements inserting bank transaction failed: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record bank transaction"})
 				return
 			}
 			if !inserted {
 				// Explicit duplicate skipping
 				duplicates++
 				continue
-			}
-		}
-
-		// Fail-fast double-entry quarantine: Dr bank / Cr unapplied_receipts
-		if h.Finance != nil && h.FinanceEnabled {
-			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, creditTxn.ID, int64(row.AmountPaise), row.Date); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("ledger mirror quarantine failed: %v", err)})
-				return
 			}
 		}
 
@@ -724,7 +754,8 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			}
 			if h.BankTxnRepo != nil {
 				if err := h.BankTxnRepo.UpdateStatus(c.Request.Context(), nil, creditTxn.ID, creditTxn.Status, nil, nil, nil, nil); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed updating transaction status: %v", err)})
+					log.Printf("ERROR: ImportStatements updating transaction status failed: %v", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update transaction status"})
 					return
 				}
 			}
@@ -741,7 +772,8 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				RowCount:   len(rows),
 				ImportedBy: uid,
 			}); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "import log failed", "matched": matched, "failed": unmatched})
+				log.Printf("ERROR: ImportStatements recording import log failed: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record import log"})
 				return
 			}
 		}
@@ -749,12 +781,12 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"row_count":  len(rows),
-		"matched":    matched,
-		"suggested":  suggested,
-		"unmatched":  unmatched,
+		"matched":    matched,   // 0 while Tier 1 auto-posting is held off for verification
+		"suggested":  suggested, // candidate matches staged for owner confirmation
+		"unmatched":  unmatched, // credits requiring manual allocation or refund
 		"duplicates": duplicates,
-		"debits":     debits,
-		"failed":     unmatched,
+		"debits":     debits,    // tagged outflows stored for statement reconciliation tie-out
+		"failed":     unmatched, // backward-compatibility alias
 	})
 }
 
