@@ -183,4 +183,117 @@ func TestParse_SBI_PreambleMetadata_HeaderDetection(t *testing.T) {
 	}
 }
 
+// Assumed-layout fixture derived from SBI PDF export
+func TestParse_SBI_UnpaddedDate_And_CrSuffix_DerivedFromPDF(t *testing.T) {
+	in := "Txn Date,Value Date,Description,Ref No./Cheque No.,Debit,Credit,Balance\n" +
+		"1 Jun 2020,1 Jun 2020,TRANSFER FROM RAMESH KUMAR - RENT,424512345678,,15000.00,\"1,26,948.00 Cr\"\n" +
+		"15 Jun 2020,15 Jun 2020,ATM CASH WDL,ATM445566,2000.00,,\"1,24,948.00 Cr\"\n"
+
+	rows, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+
+	// Verify unpadded day parsed correctly (1 Jun 2020 -> Day 1, Month 6, Year 2020)
+	if rows[0].Date.Day() != 1 || rows[0].Date.Month() != 6 || rows[0].Date.Year() != 2020 {
+		t.Errorf("row0: unexpected date %v", rows[0].Date)
+	}
+	if rows[0].Type != RowTypeCredit || rows[0].AmountPaise != 1500000 {
+		t.Errorf("row0: unexpected type=%s amount=%d", rows[0].Type, rows[0].AmountPaise)
+	}
+	// Verify integer balance parsing with Indian grouping commas and Cr suffix
+	if rows[0].BalancePaise == nil || *rows[0].BalancePaise != 12694800 {
+		t.Errorf("row0: expected balance 12694800 paise, got %v (deref=%d)", rows[0].BalancePaise, *rows[0].BalancePaise)
+	}
+
+	if rows[1].Date.Day() != 15 || rows[1].Date.Month() != 6 || rows[1].Date.Year() != 2020 {
+		t.Errorf("row1: unexpected date %v", rows[1].Date)
+	}
+	if rows[1].Type != RowTypeDebit || rows[1].AmountPaise != 200000 {
+		t.Errorf("row1: unexpected type=%s amount=%d", rows[1].Type, rows[1].AmountPaise)
+	}
+	if rows[1].BalancePaise == nil || *rows[1].BalancePaise != 12494800 {
+		t.Errorf("row1: expected balance 12494800 paise, got %v (deref=%d)", rows[1].BalancePaise, *rows[1].BalancePaise)
+	}
+}
+
+// Assumed-layout fixture derived from older SBI export layout
+func TestParse_SBI_OlderLayout_PostDate_ChqNo(t *testing.T) {
+	in := "Post Date,Details,Chq.No,Debit,Credit,Balance\n" +
+		"01/09/2026,UPI-PG RENT PAYMENT,9988776655,,10000.00,50000.00 Cr\n" +
+		"05/09/2026,BANK CHARGES,-,50.00,,49950.00 Cr\n"
+
+	rows, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("older SBI layout parse failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0].Type != RowTypeCredit || rows[0].AmountPaise != 1000000 {
+		t.Errorf("row0: expected Credit 1000000 paise, got %s %d", rows[0].Type, rows[0].AmountPaise)
+	}
+	if rows[0].TxnID != "9988776655" {
+		t.Errorf("row0: expected TxnID 9988776655, got %q", rows[0].TxnID)
+	}
+	if rows[1].Type != RowTypeDebit || rows[1].AmountPaise != 5000 {
+		t.Errorf("row1: expected Debit 5000 paise, got %s %d", rows[1].Type, rows[1].AmountPaise)
+	}
+}
+
+func TestParse_FooterSummaryTolerance(t *testing.T) {
+	in := "Txn Date,Description,Ref No.,Debit,Credit,Balance\n" +
+		"01/09/2026,RENT PAYMENT,REF101,,15000.00,100000.00\n" +
+		"02/09/2026,WATER BILL,REF102,1200.00,,98800.00\n" +
+		"** This is a computer generated statement and does not require signature **\n" +
+		"Statement Summary: Total Debits: 1200.00, Total Credits: 15000.00\n" +
+		"End of Statement\n"
+
+	rows, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("parse failed with footer rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected exactly 2 data rows, got %d", len(rows))
+	}
+	if rows[0].AmountPaise != 1500000 || rows[1].AmountPaise != 120000 {
+		t.Errorf("rows parsed incorrectly: %+v", rows)
+	}
+}
+
+func TestParse_ValidDateBadAmount_FailClosed(t *testing.T) {
+	// A row with a valid date but no valid deposit or withdrawal must fail-closed
+	in := "Txn Date,Description,Ref No.,Debit,Credit,Balance\n" +
+		"01/09/2026,CORRUPTED AMOUNT ROW,REF101,NOT_AN_AMOUNT,,100000.00\n"
+
+	_, err := Parse(strings.NewReader(in))
+	if err == nil {
+		t.Fatalf("expected fail-closed error on row with valid date but bad amount, got nil")
+	}
+}
+
+func TestParse_UnifiedAmount_WithDrCrIndicator(t *testing.T) {
+	in := "Txn Date,Description,Ref No.,Amount,Dr/Cr\n" +
+		"01/09/2026,RENT PAYMENT,REF101,15000.00,CR\n" +
+		"02/09/2026,EXPENSE,REF102,2500.00,DR\n"
+
+	rows, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("unified amount parse failed: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(rows))
+	}
+	if rows[0].Type != RowTypeCredit || rows[0].AmountPaise != 1500000 {
+		t.Errorf("row0: expected Credit 1500000 paise, got %s %d", rows[0].Type, rows[0].AmountPaise)
+	}
+	if rows[1].Type != RowTypeDebit || rows[1].AmountPaise != 250000 {
+		t.Errorf("row1: expected Debit 250000 paise, got %s %d", rows[1].Type, rows[1].AmountPaise)
+	}
+}
+
+
 

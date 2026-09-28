@@ -34,11 +34,12 @@ type Row struct {
 }
 
 var (
-	txnIDAliases      = []string{"txn_id", "txnid", "transaction_id", "transactionid", "utr", "ref_no", "refno", "reference", "upi_ref", "upiref", "upi_txn_id", "transaction_ref", "chq_ref_no", "chq_ref", "chqno", "cheque_no", "cheque_number", "ref_no_cheque_no"}
+	txnIDAliases      = []string{"txn_id", "txnid", "transaction_id", "transactionid", "utr", "ref_no", "refno", "reference", "upi_ref", "upiref", "upi_txn_id", "transaction_ref", "chq_ref_no", "chq_ref", "chqno", "chq_no", "cheque_no", "cheque_number", "ref_no_cheque_no"}
 	depositAliases    = []string{"deposit_amt", "deposit_amount", "deposit", "credit_amt", "credit_amount", "credit", "cr", "deposit_amount_inr", "cr_amt"}
 	withdrawalAliases = []string{"withdrawal_amt", "withdrawal_amount", "withdrawal", "debit_amt", "debit_amount", "debit", "dr", "withdrawal_amount_inr", "dr_amt"}
 	amountAliases     = []string{"amount", "amt", "transaction_amount", "txn_amount", "net_amount"}
-	dateAliases       = []string{"date", "txn_date", "txndate", "transaction_date", "value_date", "valuedate", "posting_date", "tran_date", "value_dt"}
+	indicatorAliases  = []string{"type", "txn_type", "transaction_type", "dr_cr", "cr_dr", "indicator", "drcr"}
+	dateAliases       = []string{"date", "txn_date", "txndate", "transaction_date", "value_date", "valuedate", "posting_date", "tran_date", "value_dt", "post_date"}
 	noteAliases       = []string{"note", "narration", "remarks", "description", "particular", "particulars", "details", "memo", "transaction_remarks"}
 	balanceAliases    = []string{"closing_balance", "balance", "bal", "closing_bal", "balance_inr"}
 )
@@ -46,6 +47,7 @@ var (
 // Parse reads a bank statement CSV. It scans initial rows to locate the header row,
 // safely skipping account preamble/metadata lines common in bank exports (e.g. SBI).
 // All required columns must be present in the detected header or ErrUnknownSchema is returned.
+// Footer and summary rows after data rows begin are gracefully tolerated (end-of-table detection).
 func Parse(r io.Reader) ([]Row, error) {
 	cr := csv.NewReader(r)
 	cr.TrimLeadingSpace = true
@@ -99,7 +101,28 @@ func Parse(r io.Reader) ([]Row, error) {
 		if isBlank(rec) {
 			continue
 		}
-		row, err := parseRow(rec, idx)
+
+		// Check if row has enough columns for date
+		if len(rec) <= idx.date {
+			if len(out) > 0 {
+				// Reached footer/summary notes at end of table
+				break
+			}
+			return nil, fmt.Errorf("csv: line %d: too few columns", line)
+		}
+
+		dateRaw := StripFormulaChars(rec[idx.date])
+		dt, dateErr := parseDate(dateRaw)
+		if dateErr != nil {
+			if len(out) > 0 {
+				// End-of-table summary/footer notes reached (e.g. "** Computer generated **", "Total:")
+				break
+			}
+			return nil, fmt.Errorf("csv: line %d: %w", line, dateErr)
+		}
+
+		// Row has a valid date — must parse valid amount and note (fail-closed for money)
+		row, err := parseRowWithDate(rec, idx, dt)
 		if err != nil {
 			return nil, fmt.Errorf("csv: line %d: %w", line, err)
 		}
@@ -117,6 +140,7 @@ func Parse(r io.Reader) ([]Row, error) {
 type colIndex struct {
 	txnID      int
 	amount     int // unified amount column, if present
+	indicator  int // transaction direction indicator column (Dr/Cr, Type), if present
 	deposit    int // separate deposit/credit column, if present
 	withdrawal int // separate withdrawal/debit column, if present
 	date       int
@@ -142,6 +166,7 @@ func mapHeaders(header []string) (colIndex, error) {
 	idx := colIndex{
 		txnID:      find(txnIDAliases),
 		amount:     find(amountAliases),
+		indicator:  find(indicatorAliases),
 		deposit:    find(depositAliases),
 		withdrawal: find(withdrawalAliases),
 		date:       find(dateAliases),
@@ -171,13 +196,16 @@ func normalizeHeader(h string) string {
 	return strings.Trim(h, "_")
 }
 
-func parseRow(rec []string, idx colIndex) (Row, error) {
+func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 	requiredIndices := []int{idx.date, idx.note}
 	if idx.txnID >= 0 {
 		requiredIndices = append(requiredIndices, idx.txnID)
 	}
 	if idx.amount >= 0 {
 		requiredIndices = append(requiredIndices, idx.amount)
+	}
+	if idx.indicator >= 0 {
+		requiredIndices = append(requiredIndices, idx.indicator)
 	}
 	if idx.deposit >= 0 {
 		requiredIndices = append(requiredIndices, idx.deposit)
@@ -204,12 +232,6 @@ func parseRow(rec []string, idx colIndex) (Row, error) {
 		txnID = StripFormulaChars(rec[idx.txnID])
 	}
 	note := StripFormulaChars(rec[idx.note])
-	dateRaw := StripFormulaChars(rec[idx.date])
-
-	dt, err := parseDate(dateRaw)
-	if err != nil {
-		return Row{}, err
-	}
 
 	var rowType RowType
 	var amountPaise int
@@ -237,14 +259,51 @@ func parseRow(rec []string, idx colIndex) (Row, error) {
 			// Row has neither valid deposit nor withdrawal
 			return Row{}, fmt.Errorf("row has no positive deposit or withdrawal amount")
 		}
-	} else {
+	} else if idx.amount >= 0 {
 		amtRaw := StripFormulaChars(rec[idx.amount])
-		amt, err := parseAmountPaise(amtRaw)
-		if err != nil {
-			return Row{}, err
+		if amtRaw == "" {
+			return Row{}, fmt.Errorf("empty amount")
 		}
-		rowType = RowTypeCredit
-		amountPaise = amt
+
+		if idx.indicator >= 0 {
+			ind := strings.ToUpper(strings.TrimSpace(StripFormulaChars(rec[idx.indicator])))
+			amt, err := parseAmountPaise(amtRaw)
+			if err != nil {
+				return Row{}, err
+			}
+			if ind == "CR" || ind == "CREDIT" {
+				rowType = RowTypeCredit
+				amountPaise = amt
+			} else if ind == "DR" || ind == "DEBIT" {
+				rowType = RowTypeDebit
+				amountPaise = amt
+			} else {
+				return Row{}, fmt.Errorf("unrecognized transaction direction indicator %q", ind)
+			}
+		} else {
+			upperAmt := strings.ToUpper(amtRaw)
+			isDr := strings.Contains(upperAmt, "DR") || strings.HasPrefix(strings.TrimSpace(amtRaw), "-")
+			isCr := strings.Contains(upperAmt, "CR") || strings.HasPrefix(strings.TrimSpace(amtRaw), "+")
+
+			amtSigned, err := parseSignedAmountPaise(amtRaw)
+			if err != nil {
+				return Row{}, err
+			}
+			if isDr {
+				rowType = RowTypeDebit
+				if amtSigned < 0 {
+					amtSigned = -amtSigned
+				}
+				amountPaise = int(amtSigned)
+			} else if isCr {
+				rowType = RowTypeCredit
+				amountPaise = int(amtSigned)
+			} else {
+				// Default unsigned positive unified amounts to credit
+				rowType = RowTypeCredit
+				amountPaise = int(amtSigned)
+			}
+		}
 	}
 
 	var balancePaise *int64
@@ -267,44 +326,87 @@ func parseRow(rec []string, idx colIndex) (Row, error) {
 	}, nil
 }
 
-func parseAmountPaise(s string) (int, error) {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.TrimPrefix(s, "₹")
-	s = strings.TrimPrefix(s, "Rs.")
-	s = strings.TrimPrefix(s, "INR")
+// parseSignedAmountPaise parses decimal amounts into integer paise without floating point drift.
+// Tolerates Indian comma formatting (e.g. 1,26,948.00) and trailing/leading Cr/Dr indicators.
+func parseSignedAmountPaise(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty amount")
 	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, fmt.Errorf("amount: %w", err)
-	}
-	if f < 0 {
-		f = -f
-	}
-	return int(f*100 + 0.5), nil
-}
 
-func parseSignedAmountPaise(s string) (int64, error) {
-	s = strings.TrimSpace(s)
+	upper := strings.ToUpper(s)
+	isCreditSuffix := strings.HasSuffix(upper, "CR")
+	isDebitSuffix := strings.HasSuffix(upper, "DR")
+
+	s = strings.TrimSuffix(upper, "CR")
+	s = strings.TrimSuffix(s, "DR")
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.TrimPrefix(s, "₹")
-	s = strings.TrimPrefix(s, "Rs.")
+	s = strings.TrimPrefix(s, "RS.")
 	s = strings.TrimPrefix(s, "INR")
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, fmt.Errorf("empty balance")
+		return 0, fmt.Errorf("empty amount after stripping symbols")
 	}
-	f, err := strconv.ParseFloat(s, 64)
+
+	negative := false
+	if strings.HasPrefix(s, "-") {
+		negative = true
+		s = strings.TrimPrefix(s, "-")
+	} else if strings.HasPrefix(s, "+") {
+		s = strings.TrimPrefix(s, "+")
+	} else if isDebitSuffix {
+		negative = true
+	} else if isCreditSuffix {
+		negative = false
+	}
+
+	s = strings.TrimSpace(s)
+	parts := strings.Split(s, ".")
+	if len(parts) > 2 {
+		return 0, fmt.Errorf("invalid decimal format %q", s)
+	}
+
+	rupees, err := strconv.ParseInt(parts[0], 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("balance: %w", err)
+		return 0, fmt.Errorf("invalid rupees %q: %w", parts[0], err)
 	}
-	return int64(f*100 + 0.5), nil
+
+	var paise int64
+	if len(parts) == 2 {
+		dec := parts[1]
+		if len(dec) == 1 {
+			dec += "0"
+		} else if len(dec) > 2 {
+			dec = dec[:2]
+		}
+		p, err := strconv.ParseInt(dec, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid paise %q: %w", parts[1], err)
+		}
+		paise = p
+	}
+
+	total := rupees*100 + paise
+	if negative {
+		total = -total
+	}
+	return total, nil
+}
+
+func parseAmountPaise(s string) (int, error) {
+	paise, err := parseSignedAmountPaise(s)
+	if err != nil {
+		return 0, err
+	}
+	if paise < 0 {
+		paise = -paise
+	}
+	return int(paise), nil
 }
 
 // Indian commercial banking date formats (Day-first and ISO only; strictly NO US month-first).
+// Includes unpadded single-digit day formats (e.g. 1 Jun 2020) common in SBI exports.
 var dateLayouts = []string{
 	"2006-01-02",
 	"2006/01/02",
@@ -316,6 +418,10 @@ var dateLayouts = []string{
 	"02 Jan 2006",
 	"02-Jan-06",
 	"02 Jan 06",
+	"2-Jan-2006",
+	"2 Jan 2006",
+	"2-Jan-06",
+	"2 Jan 06",
 	"2-1-2006",
 	"2/1/2006",
 	"2-1-06",
