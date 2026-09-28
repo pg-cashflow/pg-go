@@ -347,3 +347,84 @@ func TestMirrorDepartureSettlement_WithPriorOverdueDues_Balances(t *testing.T) {
 	}
 }
 
+func TestMirrorBankStatement_QuarantineAndAllocation_Balances(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+	bankTxnID := uuid.New()
+	amt := int64(1500000) // ₹15,000
+
+	// 1. Initial Ingestion -> Quarantined to unapplied_receipts
+	err := svc.MirrorBankStatementCredit(ctx, pid, bankTxnID, amt, time.Now())
+	if err != nil {
+		t.Fatalf("MirrorBankStatementCredit failed: %v", err)
+	}
+
+	lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal failed: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	var bankDr, unappliedCr int64
+	for _, l := range lines {
+		if l.AccountCode == domain.AcctBank {
+			bankDr += l.DebitPaise
+		}
+		if l.AccountCode == domain.AcctUnappliedReceipts {
+			unappliedCr += l.CreditPaise
+		}
+	}
+	if bankDr != amt || unappliedCr != amt {
+		t.Fatalf("expected bankDr=%d unappliedCr=%d, got %d and %d", amt, amt, bankDr, unappliedCr)
+	}
+
+	// 2. Allocation to Rent Due -> Dr unapplied_receipts, Cr rent_revenue
+	err = svc.MirrorUnappliedAllocation(ctx, pid, bankTxnID, domain.DueKindRent, amt, time.Now())
+	if err != nil {
+		t.Fatalf("MirrorUnappliedAllocation failed: %v", err)
+	}
+
+	linesAll, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal all failed: %v", err)
+	}
+	if len(linesAll) != 4 {
+		t.Fatalf("expected 4 lines total, got %d", len(linesAll))
+	}
+
+	var totalDebits, totalCredits int64
+	for _, l := range linesAll {
+		totalDebits += l.DebitPaise
+		totalCredits += l.CreditPaise
+	}
+	if totalDebits != totalCredits || totalDebits != amt*2 {
+		t.Fatalf("unbalanced total journal: debits=%d credits=%d want=%d", totalDebits, totalCredits, amt*2)
+	}
+
+	// 3. Test Refund of Unidentified Deposit
+	refundTxnID := uuid.New()
+	refundAmt := int64(500000) // ₹5,000
+	err = svc.MirrorBankDepositRefund(ctx, pid, refundTxnID, refundAmt, time.Now())
+	if err != nil {
+		t.Fatalf("MirrorBankDepositRefund failed: %v", err)
+	}
+
+	linesWithRefund, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal after refund failed: %v", err)
+	}
+	totalDebits = 0
+	totalCredits = 0
+	for _, l := range linesWithRefund {
+		totalDebits += l.DebitPaise
+		totalCredits += l.CreditPaise
+	}
+	if totalDebits != totalCredits {
+		t.Fatalf("unbalanced journal after refund: debits=%d credits=%d", totalDebits, totalCredits)
+	}
+}
+
+

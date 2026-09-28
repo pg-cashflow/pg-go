@@ -64,3 +64,12 @@ func ComputeBankTxnDedupHash(propertyID uuid.UUID, txnDate time.Time, amountPais
 	h := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(h[:])
 }
+
+type BankTransactionFilter struct {
+	Status   *BankTransactionStatus
+	FromDate *time.Time
+	ToDate   *time.Time
+	Limit    int
+	Offset   int
+}
+

@@ -315,3 +315,85 @@ func (s *Service) MirrorPayoutReversed(ctx context.Context, propertyID, payoutIt
 	return err
 }
 
+// MirrorBankStatementCredit posts initial ingestion of cleared bank statement credit:
+// Dr bank (amountPaise)
+// Cr unapplied_receipts (amountPaise)
+func (s *Service) MirrorBankStatementCredit(ctx context.Context, propertyID, bankTxnID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, bankTxnID, "bank_statement_credit", at, []LineSpec{
+		{Account: domain.AcctBank, Debit: amountPaise, LineKind: "bank_deposit_dr"},
+		{Account: domain.AcctUnappliedReceipts, Credit: amountPaise, LineKind: "unapplied_receipt_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorUnappliedAllocation posts allocation of quarantined unapplied receipts to settled dues:
+// Dr unapplied_receipts (amountPaise)
+// Cr rent_revenue / deposit_liability / utility_recovery_revenue (amountPaise)
+func (s *Service) MirrorUnappliedAllocation(ctx context.Context, propertyID, bankTxnID uuid.UUID, dueKind domain.DueKind, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	var crAccount string
+	switch dueKind {
+	case domain.DueKindDeposit:
+		crAccount = domain.AcctDepositLiability
+	case domain.DueKindElectricity, domain.DueKindWater:
+		crAccount = domain.AcctUtilityRecoveryRevenue
+	default:
+		crAccount = domain.AcctRentRevenue
+	}
+	lines, err := MakeLines(propertyID, bankTxnID, "unapplied_allocation", at, []LineSpec{
+		{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "unapplied_receipt_allocated_dr"},
+		{Account: crAccount, Credit: amountPaise, LineKind: "due_earned_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorBankDepositRefund posts refund of unidentified bank deposit back to payer:
+// Dr unapplied_receipts (amountPaise)
+// Cr bank (amountPaise)
+func (s *Service) MirrorBankDepositRefund(ctx context.Context, propertyID, bankTxnID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, bankTxnID, "unapplied_deposit_refund", at, []LineSpec{
+		{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "unapplied_receipt_refund_dr"},
+		{Account: domain.AcctBank, Credit: amountPaise, LineKind: "bank_refund_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+
