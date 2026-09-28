@@ -22,6 +22,7 @@ var (
 	ErrDueNotOpen            = errors.New("payment: due is not open for payment")
 	ErrNoDepositDue          = errors.New("payment: no deposit due for tenant")
 	ErrEmptyTxnID            = errors.New("payment: upi txn id is required")
+	ErrRequiresConfirmation  = errors.New("payment: heuristic match requires owner confirmation")
 )
 
 // txFn runs work with optionally transactional repos.
@@ -98,6 +99,8 @@ func (s *Service) fireSettle(ctx context.Context, p *domain.Payment, dueID uuid.
 }
 
 // MatchPayment matches a CSV bank row to a due and records the payment.
+// Invariant: ONLY deterministic matches (DueCode) are auto-settled. Heuristic matches (AmountDateWindow)
+// return ErrRequiresConfirmation to prevent silent cross-attribution between identical due amounts.
 func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int, txnDate time.Time, note string) (*domain.Payment, error) {
 	if txnID != "" {
 		if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
@@ -113,6 +116,11 @@ func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID 
 		return nil, err
 	}
 
+	if !res.IsDeterministic {
+		_ = s.publishMatchFailed(ctx, propertyID, txnID, amountPaise, note, ErrRequiresConfirmation)
+		return nil, ErrRequiresConfirmation
+	}
+
 	var txnPtr *string
 	if txnID != "" {
 		txnPtr = &txnID
@@ -122,6 +130,11 @@ func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID 
 		notePtr = &note
 	}
 	return s.settleMatched(ctx, res.Due.ID, amountPaise, res.MatchedBy, txnPtr, nil, notePtr)
+}
+
+// SuggestMatch evaluates a bank statement row and returns candidate match results without mutating or settling the due.
+func (s *Service) SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*MatchResult, error) {
+	return s.matcher.Match(ctx, propertyID, amountPaise, txnDate, note)
 }
 
 // ManualMatch records an owner-confirmed match.

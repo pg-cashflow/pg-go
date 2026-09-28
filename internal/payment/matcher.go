@@ -96,11 +96,12 @@ func NewMatcher(dues DueRepository) *Matcher {
 
 // MatchResult is a resolved due with matched_by strategy.
 type MatchResult struct {
-	Due       *domain.Due
-	MatchedBy domain.MatchedBy
+	Due             *domain.Due
+	MatchedBy       domain.MatchedBy
+	IsDeterministic bool
 }
 
-// Match runs co-primary matching: due_code, then amount_date_window.
+// Match runs matching: due_code (deterministic), then amount_date_window (heuristic).
 func (m *Matcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*MatchResult, error) {
 	if due, err := m.dueCode.Match(ctx, note); err != nil {
 		return nil, err
@@ -111,14 +112,14 @@ func (m *Matcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise i
 		if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
 			return nil, ErrNoMatch
 		}
-		return &MatchResult{Due: due, MatchedBy: domain.MatchedByDueCode}, nil
+		return &MatchResult{Due: due, MatchedBy: domain.MatchedByDueCode, IsDeterministic: true}, nil
 	}
 
 	due, err := m.amountDate.Match(ctx, propertyID, amountPaise, txnDate)
 	if err != nil {
 		return nil, err
 	}
-	return &MatchResult{Due: due, MatchedBy: domain.MatchedByAmountDateWindow}, nil
+	return &MatchResult{Due: due, MatchedBy: domain.MatchedByAmountDateWindow, IsDeterministic: false}, nil
 }
 
 func dateOnly(t time.Time) time.Time {

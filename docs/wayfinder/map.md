@@ -38,11 +38,10 @@
 
 ## Frontier (Open Tickets)
 
-- Stream 3 Layer 2: Bank Statement Ingress & Unidentified Deposit Reconciliation.
+- [Track O (Ticket 14): Stream 3 Layer 2 — Bank Statement Ingress & Unidentified Deposit Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_o_bank_statement_ingress_layer2.md): Fix silent rent cross-attribution by demoting AmountDateWindowMatcher to Tier 2 heuristic staging; ingest bank statements via canonical CSV parser; enforce double-entry Dr bank / Cr unapplied_receipts quarantine; replace ExpenseImportSuggestion with durable bank_transactions table.
 
 ## Not yet specified
 
-- Stream 3 Layer 2: Bank Statement Ingress & Unidentified Deposit Reconciliation.
 - Stream 3 Layer 3: End-of-Day Multi-Way Settlement Balancer & Audit Trail.
 
 ## Out of scope
