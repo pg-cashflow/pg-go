@@ -221,3 +221,10 @@ type BankTransactionStore interface {
 	Reclassify(ctx context.Context, tx pgx.Tx, id uuid.UUID, classification string, journalEntryID *uuid.UUID) error
 }
 
+type BankAccountStore interface {
+	Create(ctx context.Context, acct *domain.BankAccount) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.BankAccount, error)
+	ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]*domain.BankAccount, error)
+	Deactivate(ctx context.Context, id uuid.UUID) error
+}
+

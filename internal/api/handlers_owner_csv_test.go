@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,14 +80,34 @@ func (m *mockBankTxnStore) GetByPropertyAndID(_ context.Context, propertyID, id 
 	return nil, errors.New("not found")
 }
 
-func (m *mockBankTxnStore) ListByProperty(_ context.Context, propertyID uuid.UUID, _ domain.BankTransactionFilter) ([]*domain.BankTransaction, int, error) {
+func (m *mockBankTxnStore) ListByProperty(_ context.Context, propertyID uuid.UUID, f domain.BankTransactionFilter) ([]*domain.BankTransaction, int, error) {
 	var list []*domain.BankTransaction
 	for _, item := range m.items {
 		if item.PropertyID == propertyID {
+			if f.Status != nil && item.Status != *f.Status {
+				continue
+			}
+			if f.FromDate != nil && item.TxnDate.Before(*f.FromDate) {
+				continue
+			}
+			if f.ToDate != nil && item.TxnDate.After(*f.ToDate) {
+				continue
+			}
 			list = append(list, item)
 		}
 	}
-	return list, len(list), nil
+	total := len(list)
+	if f.Offset > 0 {
+		if f.Offset >= len(list) {
+			list = []*domain.BankTransaction{}
+		} else {
+			list = list[f.Offset:]
+		}
+	}
+	if f.Limit > 0 && len(list) > f.Limit {
+		list = list[:f.Limit]
+	}
+	return list, total, nil
 }
 
 func (m *mockBankTxnStore) UpdateStatus(_ context.Context, _ pgx.Tx, id uuid.UUID, status domain.BankTransactionStatus, matchedDueID *uuid.UUID, matchedBy *uuid.UUID, matchedAt *time.Time, journalEntryID *uuid.UUID) error {
@@ -114,9 +135,70 @@ func (m *mockBankTxnStore) Reclassify(_ context.Context, _ pgx.Tx, id uuid.UUID,
 	return nil
 }
 
+type mockCSVDueStore struct {
+	dues map[uuid.UUID]*domain.Due
+}
+
+func (m *mockCSVDueStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Due, error) {
+	if d, ok := m.dues[id]; ok {
+		return d, nil
+	}
+	return nil, errors.New("due not found")
+}
+
+func (m *mockCSVDueStore) List(_ context.Context, _ postgres.DueListFilter) ([]domain.Due, error) {
+	return nil, nil
+}
+
+func (m *mockCSVDueStore) ListByTenant(_ context.Context, _ uuid.UUID) ([]domain.Due, error) {
+	return nil, nil
+}
+
+type mockBankAccountStore struct {
+	accounts map[uuid.UUID]*domain.BankAccount
+}
+
+func newMockBankAccountStore() *mockBankAccountStore {
+	return &mockBankAccountStore{accounts: make(map[uuid.UUID]*domain.BankAccount)}
+}
+
+func (m *mockBankAccountStore) Create(_ context.Context, acct *domain.BankAccount) error {
+	if acct.ID == uuid.Nil {
+		acct.ID = uuid.New()
+	}
+	m.accounts[acct.ID] = acct
+	return nil
+}
+
+func (m *mockBankAccountStore) GetByID(_ context.Context, id uuid.UUID) (*domain.BankAccount, error) {
+	if a, ok := m.accounts[id]; ok {
+		return a, nil
+	}
+	return nil, postgres.ErrBankAccountNotFound
+}
+
+func (m *mockBankAccountStore) ListByProperty(_ context.Context, propertyID uuid.UUID) ([]*domain.BankAccount, error) {
+	var list []*domain.BankAccount
+	for _, a := range m.accounts {
+		if a.PropertyID == propertyID && a.IsActive {
+			list = append(list, a)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockBankAccountStore) Deactivate(_ context.Context, id uuid.UUID) error {
+	if a, ok := m.accounts[id]; ok {
+		a.IsActive = false
+		return nil
+	}
+	return postgres.ErrBankAccountNotFound
+}
+
 type mockCSVPaymentService struct {
 	suggestResult *payment.MatchResult
 	suggestErr    error
+	manualMatchFn func(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
 }
 
 func (m *mockCSVPaymentService) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
@@ -127,8 +209,18 @@ func (m *mockCSVPaymentService) SuggestMatch(context.Context, uuid.UUID, int, ti
 	return m.suggestResult, m.suggestErr
 }
 
-func (m *mockCSVPaymentService) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
-	return nil, nil
+func (m *mockCSVPaymentService) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
+	if m.manualMatchFn != nil {
+		return m.manualMatchFn(ctx, dueID, amountPaise, txnID, recordedBy)
+	}
+	return &domain.Payment{
+		ID:         uuid.New(),
+		DueID:      dueID,
+		Amount:     amountPaise,
+		MatchedBy:  domain.MatchedByManual,
+		RecordedBy: &recordedBy,
+		MatchedAt:  time.Now(),
+	}, nil
 }
 func (m *mockCSVPaymentService) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
 	return nil, nil
@@ -727,6 +819,395 @@ func TestClassifyBankTransaction_Success(t *testing.T) {
 	}
 	if !foundDrUnapplied || !foundCrInterest {
 		t.Errorf("expected Dr unapplied_receipts and Cr interest_income, got %+v", lines)
+	}
+}
+
+func TestListBankTransactions_Filters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+
+	bankStore := newMockBankTxnStore()
+	txn1 := &domain.BankTransaction{
+		ID:          uuid.New(),
+		PropertyID:  propID,
+		AmountPaise: 10000,
+		RowType:     "credit",
+		TxnDate:     time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC),
+		Status:      domain.BankTxnUnmatched,
+	}
+	txn2 := &domain.BankTransaction{
+		ID:          uuid.New(),
+		PropertyID:  propID,
+		AmountPaise: 20000,
+		RowType:     "credit",
+		TxnDate:     time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC),
+		Status:      domain.BankTxnMatched,
+	}
+	txn3 := &domain.BankTransaction{
+		ID:          uuid.New(),
+		PropertyID:  propID,
+		AmountPaise: 30000,
+		RowType:     "debit",
+		TxnDate:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC),
+		Status:      domain.BankTxnIgnoredDebit,
+	}
+	bankStore.items["1"] = txn1
+	bankStore.items["2"] = txn2
+	bankStore.items["3"] = txn3
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo: bankStore,
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.GET("/owner/statements/transactions", h.ListBankTransactions)
+
+	// 1. Filter by status=unmatched
+	req := httptest.NewRequest(http.MethodGet, "/owner/statements/transactions?status=unmatched", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var res1 struct {
+		Transactions []*domain.BankTransaction `json:"transactions"`
+		Total        int                       `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res1); err != nil {
+		t.Fatalf("json decode failed: %v", err)
+	}
+	if res1.Total != 1 || len(res1.Transactions) != 1 || res1.Transactions[0].ID != txn1.ID {
+		t.Fatalf("expected 1 unmatched transaction, got %d", res1.Total)
+	}
+
+	// 2. Filter by date range (August only)
+	req2 := httptest.NewRequest(http.MethodGet, "/owner/statements/transactions?from_date=2026-08-01&to_date=2026-08-31", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	var res2 struct {
+		Transactions []*domain.BankTransaction `json:"transactions"`
+		Total        int                       `json:"total"`
+	}
+	_ = json.Unmarshal(w2.Body.Bytes(), &res2)
+	if res2.Total != 2 {
+		t.Fatalf("expected 2 August transactions, got %d", res2.Total)
+	}
+
+	// 3. Pagination limit & offset
+	req3 := httptest.NewRequest(http.MethodGet, "/owner/statements/transactions?limit=1&offset=0", nil)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+	var res3 struct {
+		Transactions []*domain.BankTransaction `json:"transactions"`
+		Total        int                       `json:"total"`
+	}
+	_ = json.Unmarshal(w3.Body.Bytes(), &res3)
+	if len(res3.Transactions) != 1 || res3.Total != 3 {
+		t.Fatalf("expected 1 paginated item out of 3 total, got %d and total %d", len(res3.Transactions), res3.Total)
+	}
+}
+
+func TestConfirmBankTransactionMatch_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+	txnID := uuid.New()
+	dueID := uuid.New()
+
+	bankStore := newMockBankTxnStore()
+	bankStore.items["test"] = &domain.BankTransaction{
+		ID:             txnID,
+		PropertyID:     propID,
+		AmountPaise:    1200000, // 12,000 INR rent
+		RowType:        "credit",
+		TxnDate:        time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC),
+		TxnID:          "UPI123456789012",
+		Status:         domain.BankTxnSuggestedMatch,
+		SuggestedDueID: &dueID,
+	}
+
+	dueStore := &mockCSVDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				PropertyID: propID,
+				TenantID:   uuid.New(),
+				Amount:     1200000,
+				Status:     domain.DueStatusPending,
+				Kind:       domain.DueKindRent,
+			},
+		},
+	}
+
+	memFinStore := finance.NewMemoryStore()
+	finSvc := finance.NewService(memFinStore, nil)
+	paySvc := &mockCSVPaymentService{}
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			DueStore:       dueStore,
+			Payments:       paySvc,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.POST("/owner/statements/transactions/:id/confirm", h.ConfirmBankTransactionMatch)
+
+	// Confirm without body -> uses suggested_due_id
+	req := httptest.NewRequest(http.MethodPost, "/owner/statements/transactions/"+txnID.String()+"/confirm", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify bank transaction updated
+	updatedTxn, err := bankStore.GetByPropertyAndID(context.Background(), propID, txnID)
+	if err != nil || updatedTxn.Status != domain.BankTxnMatched {
+		t.Fatalf("expected status matched, got %v", updatedTxn.Status)
+	}
+	if updatedTxn.MatchedDueID == nil || *updatedTxn.MatchedDueID != dueID {
+		t.Fatalf("expected matched_due_id to be %s", dueID)
+	}
+
+	// Verify financial allocation mirror: Dr unapplied_receipts / Cr rent_revenue
+	lines, err := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("failed listing journal: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 journal lines, got %d", len(lines))
+	}
+	foundDrUnapplied := false
+	foundCrRent := false
+	for _, l := range lines {
+		if l.AccountCode == domain.AcctUnappliedReceipts && l.DebitPaise == 1200000 {
+			foundDrUnapplied = true
+		}
+		if l.AccountCode == domain.AcctRentRevenue && l.CreditPaise == 1200000 {
+			foundCrRent = true
+		}
+	}
+	if !foundDrUnapplied || !foundCrRent {
+		t.Errorf("expected Dr unapplied_receipts and Cr rent_revenue, got %+v", lines)
+	}
+
+	// Test idempotency: re-confirming returns 200 with status "already_matched"
+	wRetry := httptest.NewRecorder()
+	r.ServeHTTP(wRetry, req)
+	if wRetry.Code != http.StatusOK {
+		t.Fatalf("expected idempotent 200, got %d: %s", wRetry.Code, wRetry.Body.String())
+	}
+	if !strings.Contains(wRetry.Body.String(), "already_matched") {
+		t.Fatalf("expected already_matched status in retry body, got: %s", wRetry.Body.String())
+	}
+}
+
+func TestRefundBankTransaction_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+	txnID := uuid.New()
+
+	bankStore := newMockBankTxnStore()
+	bankStore.items["refund_test"] = &domain.BankTransaction{
+		ID:          txnID,
+		PropertyID:  propID,
+		AmountPaise: 350000, // 3,500 INR unidentified deposit
+		RowType:     "credit",
+		TxnDate:     time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC),
+		Status:      domain.BankTxnUnmatched,
+	}
+
+	memFinStore := finance.NewMemoryStore()
+	finSvc := finance.NewService(memFinStore, nil)
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.POST("/owner/statements/transactions/:id/refund", h.RefundBankTransaction)
+
+	req := httptest.NewRequest(http.MethodPost, "/owner/statements/transactions/"+txnID.String()+"/refund", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify transaction status updated
+	txn, _ := bankStore.GetByPropertyAndID(context.Background(), propID, txnID)
+	if txn.Status != domain.BankTxnRefunded {
+		t.Fatalf("expected status refunded, got %v", txn.Status)
+	}
+
+	// Verify financial refund mirror: Dr unapplied_receipts / Cr bank
+	lines, err := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("failed listing journal: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 journal lines, got %d", len(lines))
+	}
+	foundDrUnapplied := false
+	foundCrBank := false
+	for _, l := range lines {
+		if l.AccountCode == domain.AcctUnappliedReceipts && l.DebitPaise == 350000 {
+			foundDrUnapplied = true
+		}
+		if l.AccountCode == domain.AcctBank && l.CreditPaise == 350000 {
+			foundCrBank = true
+		}
+	}
+	if !foundDrUnapplied || !foundCrBank {
+		t.Errorf("expected Dr unapplied_receipts and Cr bank, got %+v", lines)
+	}
+
+	// Cannot refund already matched transaction
+	matchedTxnID := uuid.New()
+	bankStore.items["matched_test"] = &domain.BankTransaction{
+		ID:          matchedTxnID,
+		PropertyID:  propID,
+		AmountPaise: 500000,
+		RowType:     "credit",
+		Status:      domain.BankTxnMatched,
+	}
+	reqMatched := httptest.NewRequest(http.MethodPost, "/owner/statements/transactions/"+matchedTxnID.String()+"/refund", nil)
+	wMatched := httptest.NewRecorder()
+	r.ServeHTTP(wMatched, reqMatched)
+	if wMatched.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when refunding matched txn, got %d: %s", wMatched.Code, wMatched.Body.String())
+	}
+}
+
+func TestBankAccountManagement_CRUD(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+	bankAcctStore := newMockBankAccountStore()
+
+	h := &Handlers{
+		Deps: Deps{
+			BankAccountRepo: bankAcctStore,
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.GET("/owner/bank-accounts", h.ListBankAccounts)
+	r.POST("/owner/bank-accounts", h.CreateBankAccount)
+	r.DELETE("/owner/bank-accounts/:id", h.DeactivateBankAccount)
+
+	// 1. Validation error: last4 must be 4 digits
+	invalidBody := bytes.NewBufferString(`{"bank_name":"State Bank of India","account_number_last4":"123"}`)
+	reqInv := httptest.NewRequest(http.MethodPost, "/owner/bank-accounts", invalidBody)
+	reqInv.Header.Set("Content-Type", "application/json")
+	wInv := httptest.NewRecorder()
+	r.ServeHTTP(wInv, reqInv)
+	if wInv.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for 3-digit last4, got %d: %s", wInv.Code, wInv.Body.String())
+	}
+
+	// 2. Successful creation
+	validBody := bytes.NewBufferString(`{
+		"bank_name": "State Bank of India",
+		"account_type": "savings",
+		"account_number_last4": "5678",
+		"label": "Primary Rent Account",
+		"statement_profile": "sbi"
+	}`)
+	reqCreate := httptest.NewRequest(http.MethodPost, "/owner/bank-accounts", validBody)
+	reqCreate.Header.Set("Content-Type", "application/json")
+	wCreate := httptest.NewRecorder()
+	r.ServeHTTP(wCreate, reqCreate)
+	if wCreate.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", wCreate.Code, wCreate.Body.String())
+	}
+
+	var created domain.BankAccount
+	if err := json.Unmarshal(wCreate.Body.Bytes(), &created); err != nil {
+		t.Fatalf("json decode failed: %v", err)
+	}
+	if created.BankName != "State Bank of India" || created.AccountNumberLast4 != "5678" || !created.IsActive {
+		t.Fatalf("unexpected account data: %+v", created)
+	}
+
+	// 3. List active bank accounts
+	reqList := httptest.NewRequest(http.MethodGet, "/owner/bank-accounts", nil)
+	wList := httptest.NewRecorder()
+	r.ServeHTTP(wList, reqList)
+	if wList.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", wList.Code, wList.Body.String())
+	}
+	var listRes struct {
+		BankAccounts []*domain.BankAccount `json:"bank_accounts"`
+	}
+	_ = json.Unmarshal(wList.Body.Bytes(), &listRes)
+	if len(listRes.BankAccounts) != 1 || listRes.BankAccounts[0].ID != created.ID {
+		t.Fatalf("expected 1 bank account in list, got %d", len(listRes.BankAccounts))
+	}
+
+	// 4. Deactivate bank account
+	reqDel := httptest.NewRequest(http.MethodDelete, "/owner/bank-accounts/"+created.ID.String(), nil)
+	wDel := httptest.NewRecorder()
+	r.ServeHTTP(wDel, reqDel)
+	if wDel.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", wDel.Code, wDel.Body.String())
+	}
+
+	// 5. Verify no longer in active list
+	wListAfter := httptest.NewRecorder()
+	r.ServeHTTP(wListAfter, reqList)
+	var listResAfter struct {
+		BankAccounts []*domain.BankAccount `json:"bank_accounts"`
+	}
+	_ = json.Unmarshal(wListAfter.Body.Bytes(), &listResAfter)
+	if len(listResAfter.BankAccounts) != 0 {
+		t.Fatalf("expected 0 active accounts after deactivation, got %d", len(listResAfter.BankAccounts))
 	}
 }
 

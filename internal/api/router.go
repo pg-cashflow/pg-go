@@ -91,7 +91,8 @@ type Deps struct {
 	SettlementRepo       *postgres.SettlementRepo
 	SettlementReconciler *finance.SettlementReconciler
 
-	BankTxnRepo BankTransactionStore
+	BankTxnRepo     BankTransactionStore
+	BankAccountRepo BankAccountStore
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 }
@@ -121,7 +122,7 @@ func NewRouter(d Deps) *gin.Engine {
 	if len(d.CORSAllowedOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
-			AllowMethods:     []string{"GET", "POST", "PATCH", "OPTIONS"},
+			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "Accept-Language"},
 			AllowCredentials: false,
 			MaxAge:           12 * time.Hour,
@@ -195,7 +196,14 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payment-reports/:id/reject", h.RejectPaymentReport)
 
 			owner.POST("/statements/import", h.ImportStatements)
+			owner.GET("/statements/transactions", h.ListBankTransactions)
+			owner.POST("/statements/transactions/:id/confirm", h.ConfirmBankTransactionMatch)
+			owner.POST("/statements/transactions/:id/refund", h.RefundBankTransaction)
 			owner.POST("/statements/transactions/:id/classify", h.ClassifyBankTransaction)
+
+			owner.GET("/bank-accounts", h.ListBankAccounts)
+			owner.POST("/bank-accounts", h.CreateBankAccount)
+			owner.DELETE("/bank-accounts/:id", h.DeactivateBankAccount)
 			owner.GET("/payments", h.ListPayments)
 			owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
 			owner.GET("/events", h.ListEvents)
