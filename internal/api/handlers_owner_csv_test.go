@@ -43,6 +43,7 @@ func (m *mockBankTxnStore) InsertTransaction(_ context.Context, _ pgx.Tx, txn *d
 	if txn.DedupHash == "" {
 		txn.DedupHash = domain.ComputeBankTxnDedupHash(
 			txn.PropertyID,
+			txn.BankAccountID,
 			txn.TxnDate,
 			txn.AmountPaise,
 			txn.RowType,
@@ -95,6 +96,17 @@ func (m *mockBankTxnStore) UpdateStatus(_ context.Context, _ pgx.Tx, id uuid.UUI
 			item.MatchedDueID = matchedDueID
 			item.MatchedBy = matchedBy
 			item.MatchedAt = matchedAt
+			item.JournalEntryID = journalEntryID
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *mockBankTxnStore) Reclassify(_ context.Context, _ pgx.Tx, id uuid.UUID, classification string, journalEntryID *uuid.UUID) error {
+	for _, item := range m.items {
+		if item.ID == id {
+			item.Classification = classification
 			item.JournalEntryID = journalEntryID
 			return nil
 		}
@@ -569,4 +581,154 @@ func TestImportStatements_SBI_PreambleMetadata(t *testing.T) {
 		t.Fatalf("expected 1,500,000 paise debit, got %v", lines)
 	}
 }
+
+func TestImportStatements_SBI_ReversalAndSweep_QuarantinedWithoutMatching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+	bankStore := newMockBankTxnStore()
+	memFinStore := finance.NewMemoryStore()
+	finSvc := finance.NewService(memFinStore, nil)
+
+	dueID := uuid.New()
+	paySvc := &mockCSVPaymentService{
+		suggestResult: &payment.MatchResult{
+			Due: &domain.Due{
+				ID:         dueID,
+				PropertyID: propID,
+				Amount:     200000,
+			},
+			IsDeterministic: false,
+		},
+	}
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+			Payments:       paySvc,
+			ImportStore:    &mockCSVImportStore{},
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.POST("/owner/statements/import", h.ImportStatements)
+
+	// A statement with 1 reversal credit and 1 sweep debit
+	csvContent := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"Your Opening Balance on 01-08-26:,₹0.81,,,,\n" +
+		"13-08-26,UPI/REV/424512345678/RAMESH K/SBIN/9876543210/REV,-,2000.00,,5000.00\n" +
+		"14-08-26,AUTO SWEEP TO MOD AC,-,,10000.00,40000.00\n"
+
+	req, _ := createMultipartRequest("/owner/statements/import", "file", "sbi_rev.csv", []byte(csvContent))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		RowCount  int      `json:"row_count"`
+		Matched   int      `json:"matched"`
+		Suggested int      `json:"suggested"`
+		Unmatched int      `json:"unmatched"`
+		Debits    int      `json:"debits"`
+		Warnings  []string `json:"warnings"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// Reversal credit must NOT be suggested despite amount match
+	if resp.Suggested != 0 {
+		t.Errorf("expected 0 suggested matches for reversal credit, got %d", resp.Suggested)
+	}
+	if resp.Unmatched != 1 {
+		t.Errorf("expected 1 unmatched (quarantined) credit, got %d", resp.Unmatched)
+	}
+	if resp.Debits != 1 {
+		t.Errorf("expected 1 debit row, got %d", resp.Debits)
+	}
+}
+
+func TestClassifyBankTransaction_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	propID := uuid.New()
+	userID := uuid.New()
+	txnID := uuid.New()
+
+	bankStore := newMockBankTxnStore()
+	bankStore.items[propID.String()+"|test_hash"] = &domain.BankTransaction{
+		ID:          txnID,
+		PropertyID:  propID,
+		AmountPaise: 50000, // 500 INR interest
+		RowType:     "credit",
+		TxnDate:     time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
+		Status:      domain.BankTxnUnmatched,
+	}
+
+	memFinStore := finance.NewMemoryStore()
+	finSvc := finance.NewService(memFinStore, nil)
+
+	h := &Handlers{
+		Deps: Deps{
+			BankTxnRepo:    bankStore,
+			Finance:        finSvc,
+			FinanceEnabled: true,
+		},
+	}
+
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+	})
+	r.POST("/owner/statements/transactions/:id/classify", h.ClassifyBankTransaction)
+
+	body := bytes.NewBufferString(`{"classification":"interest_income"}`)
+	req := httptest.NewRequest(http.MethodPost, "/owner/statements/transactions/"+txnID.String()+"/classify", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify journal reclassification: Dr unapplied_receipts / Cr interest_income
+	lines, err := memFinStore.ListJournal(context.Background(), propID, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("failed listing journal: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 journal lines, got %d", len(lines))
+	}
+	foundDrUnapplied := false
+	foundCrInterest := false
+	for _, l := range lines {
+		if l.AccountCode == domain.AcctUnappliedReceipts && l.DebitPaise == 50000 {
+			foundDrUnapplied = true
+		}
+		if l.AccountCode == domain.AcctInterestIncome && l.CreditPaise == 50000 {
+			foundCrInterest = true
+		}
+	}
+	if !foundDrUnapplied || !foundCrInterest {
+		t.Errorf("expected Dr unapplied_receipts and Cr interest_income, got %+v", lines)
+	}
+}
+
+
 

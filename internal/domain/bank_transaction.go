@@ -23,6 +23,7 @@ const (
 type BankTransaction struct {
 	ID                  uuid.UUID             `json:"id"`
 	PropertyID          uuid.UUID             `json:"property_id"`
+	BankAccountID       *uuid.UUID            `json:"bank_account_id,omitempty"`
 	TxnID               string                `json:"txn_id"`
 	AmountPaise         int64                 `json:"amount_paise"`
 	RowType             string                `json:"row_type"`
@@ -32,6 +33,11 @@ type BankTransaction struct {
 	OccurrenceIndex     int                   `json:"occurrence_index"`
 	DedupHash           string                `json:"dedup_hash"`
 	Status              BankTransactionStatus `json:"status"`
+	Classification      string                `json:"classification,omitempty"`
+	IsReversal          bool                  `json:"is_reversal"`
+	IsInternalTransfer  bool                  `json:"is_internal_transfer"`
+	PayerPhone          string                `json:"payer_phone,omitempty"`
+	PayerVPA            string                `json:"payer_vpa,omitempty"`
 	MatchedDueID        *uuid.UUID            `json:"matched_due_id,omitempty"`
 	SuggestedDueID      *uuid.UUID            `json:"suggested_due_id,omitempty"`
 	ConfidenceScore     float64               `json:"confidence_score"`
@@ -45,7 +51,8 @@ type BankTransaction struct {
 // ComputeBankTxnDedupHash generates a deterministic SHA-256 composite deduplication hash.
 // If closing balance is available, it forms the tie-breaker; otherwise, the occurrence index
 // within the statement file ensures legitimate same-day duplicate entries survive.
-func ComputeBankTxnDedupHash(propertyID uuid.UUID, txnDate time.Time, amountPaise int64, rowType string, txnID string, balancePaise *int64, occurrence int) string {
+// bankAccountID scopes the deduplication across multiple accounts under the same property.
+func ComputeBankTxnDedupHash(propertyID uuid.UUID, bankAccountID *uuid.UUID, txnDate time.Time, amountPaise int64, rowType string, txnID string, balancePaise *int64, occurrence int) string {
 	dateStr := txnDate.Format("2006-01-02")
 	var tieBreaker string
 	if balancePaise != nil {
@@ -53,7 +60,14 @@ func ComputeBankTxnDedupHash(propertyID uuid.UUID, txnDate time.Time, amountPais
 	} else {
 		tieBreaker = fmt.Sprintf("occ:%d", occurrence)
 	}
-	raw := fmt.Sprintf("%s|%s|%d|%s|%s|%s",
+	var acctStr string
+	if bankAccountID != nil && *bankAccountID != uuid.Nil {
+		acctStr = bankAccountID.String()
+	} else {
+		acctStr = "default"
+	}
+	raw := fmt.Sprintf("%s|%s|%s|%d|%s|%s|%s",
+		acctStr,
 		propertyID.String(),
 		dateStr,
 		amountPaise,

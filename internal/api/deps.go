@@ -218,5 +218,6 @@ type BankTransactionStore interface {
 	GetByPropertyAndID(ctx context.Context, propertyID, id uuid.UUID) (*domain.BankTransaction, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID, filter domain.BankTransactionFilter) ([]*domain.BankTransaction, int, error)
 	UpdateStatus(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.BankTransactionStatus, matchedDueID *uuid.UUID, matchedBy *uuid.UUID, matchedAt *time.Time, journalEntryID *uuid.UUID) error
+	Reclassify(ctx context.Context, tx pgx.Tx, id uuid.UUID, classification string, journalEntryID *uuid.UUID) error
 }
 

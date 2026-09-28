@@ -396,4 +396,32 @@ func (s *Service) MirrorBankDepositRefund(ctx context.Context, propertyID, bankT
 	return err
 }
 
+// MirrorUnappliedReclassification posts reclassification of non-rent bank deposits:
+// Dr unapplied_receipts (amountPaise)
+// Cr interest_income / owner_capital / non_pg_other_income / operating_expense
+func (s *Service) MirrorUnappliedReclassification(ctx context.Context, propertyID, bankTxnID uuid.UUID, targetAccount string, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	if targetAccount == "" {
+		targetAccount = domain.AcctNonPGOtherIncome
+	}
+	lines, err := MakeLines(propertyID, bankTxnID, "unapplied_reclassification", at, []LineSpec{
+		{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "unapplied_receipt_reclass_dr"},
+		{Account: targetAccount, Credit: amountPaise, LineKind: "reclass_target_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+
 

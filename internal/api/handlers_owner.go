@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -630,14 +631,22 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		return
 	}
 	limited := io.LimitReader(file, maxCSVBytes+1)
-	rows, err := csv.Parse(limited)
+	parseRes, err := csv.ParseWithMeta(limited)
 	if err != nil {
 		if errors.Is(err, csv.ErrUnknownSchema) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown CSV schema — required columns: date, note, and amount (or deposit/withdrawal)"})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "csv parse error: unsupported format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "csv parse error: " + err.Error()})
 		return
+	}
+	rows := parseRes.Rows
+
+	var bankAccountID *uuid.UUID
+	if acctStr := strings.TrimSpace(c.Request.FormValue("bank_account_id")); acctStr != "" {
+		if parsedID, err := uuid.Parse(acctStr); err == nil {
+			bankAccountID = &parsedID
+		}
 	}
 
 	var (
@@ -651,8 +660,13 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 	for _, row := range rows {
 		// 1. Debits: Outflows stored for statement reconciliation tie-out, but never matched to dues or credited to ledger
 		if row.Type == csv.RowTypeDebit {
+			classification := "unclassified"
+			if row.IsInternalTransfer {
+				classification = "internal_transfer"
+			}
 			debitHash := domain.ComputeBankTxnDedupHash(
 				pid,
+				bankAccountID,
 				row.Date,
 				int64(row.AmountPaise),
 				"debit",
@@ -663,6 +677,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			debitTxn := &domain.BankTransaction{
 				ID:                  uuid.NewSHA1(uuid.NameSpaceOID, []byte(debitHash)),
 				PropertyID:          pid,
+				BankAccountID:       bankAccountID,
 				TxnID:               row.TxnID,
 				AmountPaise:         int64(row.AmountPaise),
 				RowType:             "debit",
@@ -672,6 +687,10 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				OccurrenceIndex:     row.Occurrence,
 				DedupHash:           debitHash,
 				Status:              domain.BankTxnIgnoredDebit,
+				Classification:      classification,
+				IsInternalTransfer:  row.IsInternalTransfer,
+				PayerPhone:          row.PayerPhone,
+				PayerVPA:            row.PayerVPA,
 			}
 			if h.BankTxnRepo != nil {
 				inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, debitTxn)
@@ -690,8 +709,16 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		}
 
 		// 2. Credits: Inflow handling with idempotent deduplication and double-entry quarantine
+		classification := "unclassified"
+		if row.IsReversal {
+			classification = "reversal"
+		} else if row.IsInternalTransfer {
+			classification = "internal_transfer"
+		}
+
 		dedupHash := domain.ComputeBankTxnDedupHash(
 			pid,
+			bankAccountID,
 			row.Date,
 			int64(row.AmountPaise),
 			"credit",
@@ -704,6 +731,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		creditTxn := &domain.BankTransaction{
 			ID:                  sourceID,
 			PropertyID:          pid,
+			BankAccountID:       bankAccountID,
 			TxnID:               row.TxnID,
 			AmountPaise:         int64(row.AmountPaise),
 			RowType:             "credit",
@@ -713,6 +741,11 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			OccurrenceIndex:     row.Occurrence,
 			DedupHash:           dedupHash,
 			Status:              domain.BankTxnUnmatched,
+			Classification:      classification,
+			IsReversal:          row.IsReversal,
+			IsInternalTransfer:  row.IsInternalTransfer,
+			PayerPhone:          row.PayerPhone,
+			PayerVPA:            row.PayerVPA,
 		}
 
 		// Fail-fast double-entry quarantine posted FIRST: Dr bank / Cr unapplied_receipts.
@@ -739,6 +772,12 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				duplicates++
 				continue
 			}
+		}
+
+		// Reversals and internal transfers are strictly excluded from dues matching
+		if row.IsReversal || row.IsInternalTransfer {
+			unmatched++
+			continue
 		}
 
 		// Evaluate match candidates without auto-settling (Tier 1 auto-posting is held OFF until verified against live statement)
@@ -779,7 +818,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"row_count":  len(rows),
 		"matched":    matched,   // 0 while Tier 1 auto-posting is held off for verification
 		"suggested":  suggested, // candidate matches staged for owner confirmation
@@ -787,7 +826,82 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		"duplicates": duplicates,
 		"debits":     debits,    // tagged outflows stored for statement reconciliation tie-out
 		"failed":     unmatched, // backward-compatibility alias
-	})
+	}
+	if parseRes.OpeningBalancePaise != nil {
+		resp["opening_balance_paise"] = *parseRes.OpeningBalancePaise
+	}
+	if len(parseRes.Warnings) > 0 {
+		resp["warnings"] = parseRes.Warnings
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+type ClassifyBankTransactionReq struct {
+	Classification string `json:"classification" binding:"required"`
+}
+
+// ClassifyBankTransaction handles POST /owner/statements/transactions/:id/classify.
+func (h *Handlers) ClassifyBankTransaction(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	txnID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req ClassifyBankTransactionReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: classification is required"})
+		return
+	}
+
+	validClassifications := map[string]string{
+		"interest_income":   domain.AcctInterestIncome,
+		"owner_equity":      domain.AcctOwnerCapital,
+		"non_pg_income":     domain.AcctNonPGOtherIncome,
+		"reversal":          domain.AcctOperatingExpense,
+		"internal_transfer": domain.AcctBank,
+	}
+	targetAcct, valid := validClassifications[req.Classification]
+	if !valid {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid classification; must be interest_income, owner_equity, non_pg_income, reversal, or internal_transfer"})
+		return
+	}
+
+	if h.BankTxnRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bank transaction store not configured"})
+		return
+	}
+
+	txn, err := h.BankTxnRepo.GetByPropertyAndID(c.Request.Context(), pid, txnID)
+	if err != nil {
+		if errors.Is(err, postgres.ErrBankTransactionNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "bank transaction not found"})
+			return
+		}
+		log.Printf("ERROR: ClassifyBankTransaction retrieving txn failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve transaction"})
+		return
+	}
+
+	var entryID *uuid.UUID
+	if h.Finance != nil && h.FinanceEnabled && txn.RowType == "credit" {
+		if err := h.Finance.MirrorUnappliedReclassification(c.Request.Context(), pid, txn.ID, targetAcct, txn.AmountPaise, txn.TxnDate); err != nil {
+			log.Printf("ERROR: ClassifyBankTransaction ledger mirror reclassification failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial reclassification"})
+			return
+		}
+	}
+
+	if err := h.BankTxnRepo.Reclassify(c.Request.Context(), nil, txn.ID, req.Classification, entryID); err != nil {
+		log.Printf("ERROR: ClassifyBankTransaction reclassify failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update classification"})
+		return
+	}
+
+	txn.Classification = req.Classification
+	c.JSON(http.StatusOK, txn)
 }
 
 // ListPayments handles GET /owner/payments.

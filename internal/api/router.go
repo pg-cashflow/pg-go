@@ -195,6 +195,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payment-reports/:id/reject", h.RejectPaymentReport)
 
 			owner.POST("/statements/import", h.ImportStatements)
+			owner.POST("/statements/transactions/:id/classify", h.ClassifyBankTransaction)
 			owner.GET("/payments", h.ListPayments)
 			owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
 			owner.GET("/events", h.ListEvents)

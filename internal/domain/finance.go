@@ -33,6 +33,8 @@ const (
 	AcctDamagesIncome            = "damages_income"
 	AcctRefundPayable            = "refund_payable"
 	AcctGatewayAdjustment        = "gateway_adjustment"
+	AcctInterestIncome           = "interest_income"
+	AcctNonPGOtherIncome         = "non_pg_other_income"
 )
 
 type CapitalKind string

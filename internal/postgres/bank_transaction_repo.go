@@ -39,9 +39,13 @@ func (r *BankTransactionRepo) InsertTransaction(ctx context.Context, tx pgx.Tx, 
 	if txn.OccurrenceIndex <= 0 {
 		txn.OccurrenceIndex = 1
 	}
+	if txn.Classification == "" {
+		txn.Classification = "unclassified"
+	}
 	if txn.DedupHash == "" {
 		txn.DedupHash = domain.ComputeBankTxnDedupHash(
 			txn.PropertyID,
+			txn.BankAccountID,
 			txn.TxnDate,
 			txn.AmountPaise,
 			txn.RowType,
@@ -53,15 +57,17 @@ func (r *BankTransactionRepo) InsertTransaction(ctx context.Context, tx pgx.Tx, 
 
 	query := `
 		INSERT INTO bank_transactions (
-			id, property_id, txn_id, amount_paise, row_type, txn_date,
+			id, property_id, bank_account_id, txn_id, amount_paise, row_type, txn_date,
 			narration, closing_balance_paise, occurrence_index, dedup_hash,
-			status, matched_due_id, suggested_due_id, confidence_score,
+			status, classification, is_reversal, is_internal_transfer, payer_phone, payer_vpa,
+			matched_due_id, suggested_due_id, confidence_score,
 			matched_at, matched_by, journal_entry_id, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6,
-			$7, $8, $9, $10,
-			$11, $12, $13, $14,
-			$15, $16, $17, NOW(), NOW()
+			$1, $2, $3, $4, $5, $6, $7,
+			$8, $9, $10, $11,
+			$12, $13, $14, $15, $16, $17,
+			$18, $19, $20,
+			$21, $22, $23, NOW(), NOW()
 		)
 		ON CONFLICT (property_id, dedup_hash) DO NOTHING
 		RETURNING id, created_at, updated_at;
@@ -70,16 +76,18 @@ func (r *BankTransactionRepo) InsertTransaction(ctx context.Context, tx pgx.Tx, 
 	var row pgx.Row
 	if tx != nil {
 		row = tx.QueryRow(ctx, query,
-			txn.ID, txn.PropertyID, txn.TxnID, txn.AmountPaise, txn.RowType, txn.TxnDate,
+			txn.ID, txn.PropertyID, txn.BankAccountID, txn.TxnID, txn.AmountPaise, txn.RowType, txn.TxnDate,
 			txn.Narration, txn.ClosingBalancePaise, txn.OccurrenceIndex, txn.DedupHash,
-			string(txn.Status), txn.MatchedDueID, txn.SuggestedDueID, txn.ConfidenceScore,
+			string(txn.Status), txn.Classification, txn.IsReversal, txn.IsInternalTransfer, txn.PayerPhone, txn.PayerVPA,
+			txn.MatchedDueID, txn.SuggestedDueID, txn.ConfidenceScore,
 			txn.MatchedAt, txn.MatchedBy, txn.JournalEntryID,
 		)
 	} else {
 		row = r.pool.QueryRow(ctx, query,
-			txn.ID, txn.PropertyID, txn.TxnID, txn.AmountPaise, txn.RowType, txn.TxnDate,
+			txn.ID, txn.PropertyID, txn.BankAccountID, txn.TxnID, txn.AmountPaise, txn.RowType, txn.TxnDate,
 			txn.Narration, txn.ClosingBalancePaise, txn.OccurrenceIndex, txn.DedupHash,
-			string(txn.Status), txn.MatchedDueID, txn.SuggestedDueID, txn.ConfidenceScore,
+			string(txn.Status), txn.Classification, txn.IsReversal, txn.IsInternalTransfer, txn.PayerPhone, txn.PayerVPA,
+			txn.MatchedDueID, txn.SuggestedDueID, txn.ConfidenceScore,
 			txn.MatchedAt, txn.MatchedBy, txn.JournalEntryID,
 		)
 	}
@@ -99,9 +107,10 @@ func (r *BankTransactionRepo) InsertTransaction(ctx context.Context, tx pgx.Tx, 
 func (r *BankTransactionRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.BankTransaction, error) {
 	query := `
 		SELECT
-			id, property_id, txn_id, amount_paise, row_type, txn_date,
+			id, property_id, bank_account_id, txn_id, amount_paise, row_type, txn_date,
 			narration, closing_balance_paise, occurrence_index, dedup_hash,
-			status, matched_due_id, suggested_due_id, confidence_score,
+			status, classification, is_reversal, is_internal_transfer, payer_phone, payer_vpa,
+			matched_due_id, suggested_due_id, confidence_score,
 			matched_at, matched_by, journal_entry_id, created_at, updated_at
 		FROM bank_transactions
 		WHERE id = $1
@@ -114,9 +123,10 @@ func (r *BankTransactionRepo) GetByID(ctx context.Context, id uuid.UUID) (*domai
 func (r *BankTransactionRepo) GetByPropertyAndID(ctx context.Context, propertyID, id uuid.UUID) (*domain.BankTransaction, error) {
 	query := `
 		SELECT
-			id, property_id, txn_id, amount_paise, row_type, txn_date,
+			id, property_id, bank_account_id, txn_id, amount_paise, row_type, txn_date,
 			narration, closing_balance_paise, occurrence_index, dedup_hash,
-			status, matched_due_id, suggested_due_id, confidence_score,
+			status, classification, is_reversal, is_internal_transfer, payer_phone, payer_vpa,
+			matched_due_id, suggested_due_id, confidence_score,
 			matched_at, matched_by, journal_entry_id, created_at, updated_at
 		FROM bank_transactions
 		WHERE property_id = $1 AND id = $2
@@ -169,9 +179,10 @@ func (r *BankTransactionRepo) ListByProperty(ctx context.Context, propertyID uui
 
 	query := fmt.Sprintf(`
 		SELECT
-			id, property_id, txn_id, amount_paise, row_type, txn_date,
+			id, property_id, bank_account_id, txn_id, amount_paise, row_type, txn_date,
 			narration, closing_balance_paise, occurrence_index, dedup_hash,
-			status, matched_due_id, suggested_due_id, confidence_score,
+			status, classification, is_reversal, is_internal_transfer, payer_phone, payer_vpa,
+			matched_due_id, suggested_due_id, confidence_score,
 			matched_at, matched_by, journal_entry_id, created_at, updated_at
 		FROM bank_transactions
 		%s
@@ -225,13 +236,35 @@ func (r *BankTransactionRepo) UpdateStatus(ctx context.Context, tx pgx.Tx, id uu
 	return nil
 }
 
+// Reclassify updates the classification and journal entry of a quarantined bank transaction.
+func (r *BankTransactionRepo) Reclassify(ctx context.Context, tx pgx.Tx, id uuid.UUID, classification string, journalEntryID *uuid.UUID) error {
+	query := `
+		UPDATE bank_transactions
+		SET classification = $2,
+		    journal_entry_id = COALESCE($3, journal_entry_id),
+		    updated_at = NOW()
+		WHERE id = $1
+	`
+	var err error
+	if tx != nil {
+		_, err = tx.Exec(ctx, query, id, classification, journalEntryID)
+	} else {
+		_, err = r.pool.Exec(ctx, query, id, classification, journalEntryID)
+	}
+	if err != nil {
+		return fmt.Errorf("postgres: reclassify bank_transaction: %w", err)
+	}
+	return nil
+}
+
 func scanBankTransaction(row pgx.Row) (*domain.BankTransaction, error) {
 	var txn domain.BankTransaction
 	var statusStr string
 	err := row.Scan(
-		&txn.ID, &txn.PropertyID, &txn.TxnID, &txn.AmountPaise, &txn.RowType, &txn.TxnDate,
+		&txn.ID, &txn.PropertyID, &txn.BankAccountID, &txn.TxnID, &txn.AmountPaise, &txn.RowType, &txn.TxnDate,
 		&txn.Narration, &txn.ClosingBalancePaise, &txn.OccurrenceIndex, &txn.DedupHash,
-		&statusStr, &txn.MatchedDueID, &txn.SuggestedDueID, &txn.ConfidenceScore,
+		&statusStr, &txn.Classification, &txn.IsReversal, &txn.IsInternalTransfer, &txn.PayerPhone, &txn.PayerVPA,
+		&txn.MatchedDueID, &txn.SuggestedDueID, &txn.ConfidenceScore,
 		&txn.MatchedAt, &txn.MatchedBy, &txn.JournalEntryID, &txn.CreatedAt, &txn.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

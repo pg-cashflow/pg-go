@@ -1,6 +1,7 @@
 package csv
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -381,6 +382,136 @@ func TestParse_PreDataRowWithAmount_FailsClosed(t *testing.T) {
 	_, err := Parse(strings.NewReader(in))
 	if err == nil {
 		t.Fatalf("expected fail-closed error when pre-data row has populated amount cells, got nil")
+	}
+}
+
+func TestParse_SBI_UPINarrationExtraction(t *testing.T) {
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"01-08-26,UPI/CR/424512345678/RAMESH K/SBIN/9876543210/Payme,-,15000.00,,15000.81\n"
+
+	res, err := ParseWithMeta(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(res.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(res.Rows))
+	}
+	r := res.Rows[0]
+	if r.TxnID != "424512345678" {
+		t.Errorf("expected TxnID extracted from narration '424512345678', got %q", r.TxnID)
+	}
+	if r.PayerPhone != "9876543210" {
+		t.Errorf("expected PayerPhone '9876543210', got %q", r.PayerPhone)
+	}
+	if r.PayerName != "RAMESH K" {
+		t.Errorf("expected PayerName 'RAMESH K', got %q", r.PayerName)
+	}
+	if r.IsReversal {
+		t.Errorf("expected IsReversal to be false for UPI/CR")
+	}
+}
+
+func TestParse_SBI_ReversalAndSweepDetection(t *testing.T) {
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"13-08-26,UPI/REV/424512345678/RAMESH K/SBIN/9876543210/REV,-,2000.00,,5000.00\n" +
+		"14-08-26,AUTO SWEEP TO MOD AC,-,,10000.00,40000.00\n"
+
+	res, err := ParseWithMeta(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(res.Rows))
+	}
+	if !res.Rows[0].IsReversal {
+		t.Errorf("expected row 0 to be marked as reversal")
+	}
+	if res.Rows[0].TxnID != "424512345678" {
+		t.Errorf("expected row 0 TxnID '424512345678', got %q", res.Rows[0].TxnID)
+	}
+	if !res.Rows[1].IsInternalTransfer {
+		t.Errorf("expected row 1 to be marked as internal transfer (sweep)")
+	}
+}
+
+func TestParse_OpeningBalance_AdjacentCells_And_Warnings(t *testing.T) {
+	// Label in cell 0, amount in cell 1
+	inWithAnchor := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"Your Opening Balance on 01-08-26:,₹0.81,,,,\n" +
+		"01-08-26,RENT,REF1,15000.00,,15000.81\n"
+
+	resWith, err := ParseWithMeta(strings.NewReader(inWithAnchor))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if resWith.OpeningBalancePaise == nil || *resWith.OpeningBalancePaise != 81 {
+		t.Errorf("expected opening balance 81 paise, got %v", resWith.OpeningBalancePaise)
+	}
+	if len(resWith.Warnings) != 0 {
+		t.Errorf("expected no warnings, got %v", resWith.Warnings)
+	}
+
+	// Without anchor
+	inNoAnchor := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"01-08-26,RENT,REF1,15000.00,,15000.81\n"
+
+	resNo, err := ParseWithMeta(strings.NewReader(inNoAnchor))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if resNo.OpeningBalancePaise != nil {
+		t.Errorf("expected nil opening balance, got %v", resNo.OpeningBalancePaise)
+	}
+	if len(resNo.Warnings) == 0 || !strings.Contains(resNo.Warnings[0], "missing opening balance anchor") {
+		t.Errorf("expected missing anchor warning, got %v", resNo.Warnings)
+	}
+}
+
+func TestParse_ParenthesisedAmountsAndOverdraft(t *testing.T) {
+	in := "Date,Transaction Reference,Ref.No./Chq.No.,Credit,Debit,Balance\n" +
+		"01-08-26,TEST CR SUFFIX,REF1,18500.00 (Cr),,18500.00 (Cr)\n" +
+		"02-08-26,TEST DR OVERDRAFT,REF2,,5000.00,(5000.00)\n"
+
+	res, err := ParseWithMeta(strings.NewReader(in))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(res.Rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(res.Rows))
+	}
+	if res.Rows[0].AmountPaise != 1850000 {
+		t.Errorf("row 0 expected 1850000 paise, got %d", res.Rows[0].AmountPaise)
+	}
+	if res.Rows[0].BalancePaise == nil || *res.Rows[0].BalancePaise != 1850000 {
+		t.Errorf("row 0 balance expected 1850000, got %v", res.Rows[0].BalancePaise)
+	}
+
+	if res.Rows[1].AmountPaise != 500000 {
+		t.Errorf("row 1 expected 500000 paise, got %d", res.Rows[1].AmountPaise)
+	}
+	// (5000.00) in accounting balance represents negative overdraft: -500000 paise
+	if res.Rows[1].BalancePaise == nil || *res.Rows[1].BalancePaise != -500000 {
+		t.Errorf("row 1 balance expected -500000 (overdraft), got %v", res.Rows[1].BalancePaise)
+	}
+}
+
+func TestParse_SniffContentType_Rejections(t *testing.T) {
+	htmlContent := "<html><body><table><tr><td>Date</td></tr></table></body></html>"
+	_, errHTML := ParseWithMeta(strings.NewReader(htmlContent))
+	if errHTML == nil || !strings.Contains(errHTML.Error(), "html file detected") {
+		t.Errorf("expected HTML rejection error, got %v", errHTML)
+	}
+
+	excelMagic := []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00}
+	_, errXLS := ParseWithMeta(bytes.NewReader(excelMagic))
+	if errXLS == nil || !strings.Contains(errXLS.Error(), "binary Excel (.xls) file detected") {
+		t.Errorf("expected binary Excel rejection error, got %v", errXLS)
+	}
+
+	xlsxMagic := []byte{0x50, 0x4B, 0x03, 0x04, 0x00, 0x00}
+	_, errXLSX := ParseWithMeta(bytes.NewReader(xlsxMagic))
+	if errXLSX == nil || !strings.Contains(errXLSX.Error(), "Excel (.xlsx) file detected") {
+		t.Errorf("expected XLSX rejection error, got %v", errXLSX)
 	}
 }
 

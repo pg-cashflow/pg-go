@@ -1,6 +1,8 @@
 package csv
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -24,19 +26,25 @@ const (
 
 // Row is one sanitized bank-statement transaction.
 type Row struct {
-	TxnID        string
-	AmountPaise  int
-	Type         RowType
-	Date         time.Time
-	Note         string
-	BalancePaise *int64
-	Occurrence   int // 1-based index for identical same-day transactions within the file
+	TxnID              string
+	AmountPaise        int
+	Type               RowType
+	Date               time.Time
+	Note               string
+	BalancePaise       *int64
+	Occurrence         int // 1-based index for identical same-day transactions within the file
+	PayerPhone         string
+	PayerVPA           string
+	PayerName          string
+	IsReversal         bool
+	IsInternalTransfer bool
 }
 
-// ParseResult holds parsed statement rows and opening balance anchor if available.
+// ParseResult holds parsed statement rows, opening balance anchor, and warnings.
 type ParseResult struct {
 	Rows                []Row
 	OpeningBalancePaise *int64
+	Warnings            []string
 }
 
 var (
@@ -62,10 +70,27 @@ func Parse(r io.Reader) ([]Row, error) {
 
 // ParseWithMeta reads a bank statement CSV. It scans initial rows to locate the header row,
 // safely skipping account preamble/metadata lines common in bank exports (e.g. SBI).
+// Sniffs content-type to reject HTML and binary Excel exports fail-closed.
 // All required columns must be present in the detected header or ErrUnknownSchema is returned.
 // Footer, summary, and opening-balance pre-data rows without populated money cells are tolerated.
 func ParseWithMeta(r io.Reader) (ParseResult, error) {
-	cr := csv.NewReader(r)
+	br := bufio.NewReader(r)
+	peekBytes, _ := br.Peek(512)
+	if len(peekBytes) > 0 {
+		trimmed := strings.TrimSpace(string(peekBytes))
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "<!DOCTYPE") || strings.HasPrefix(upper, "<HTML") || strings.HasPrefix(upper, "<TABLE") || strings.HasPrefix(upper, "<?XML") {
+			return ParseResult{}, errors.New("html file detected — please export as CSV")
+		}
+		if len(peekBytes) >= 8 && bytes.Equal(peekBytes[:8], []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}) {
+			return ParseResult{}, errors.New("binary Excel (.xls) file detected — please export as CSV")
+		}
+		if len(peekBytes) >= 4 && bytes.Equal(peekBytes[:4], []byte{0x50, 0x4B, 0x03, 0x04}) {
+			return ParseResult{}, errors.New("Excel (.xlsx) file detected — please export as CSV")
+		}
+	}
+
+	cr := csv.NewReader(br)
 	cr.TrimLeadingSpace = true
 	cr.ReuseRecord = true
 	cr.LazyQuotes = true
@@ -187,9 +212,15 @@ func ParseWithMeta(r io.Reader) (ParseResult, error) {
 		out = append(out, row)
 	}
 
+	var warnings []string
+	if openingBalance == nil {
+		warnings = append(warnings, "missing opening balance anchor")
+	}
+
 	return ParseResult{
 		Rows:                out,
 		OpeningBalancePaise: openingBalance,
+		Warnings:            warnings,
 	}, nil
 }
 
@@ -387,13 +418,61 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 		}
 	}
 
+	var payerPhone, payerVPA, payerName string
+	var isReversal, isInternalTransfer bool
+
+	upperNote := strings.ToUpper(note)
+	if strings.Contains(upperNote, "REVERSAL") || strings.Contains(upperNote, "REV-UPI") || strings.Contains(upperNote, "UPI/REV/") {
+		isReversal = true
+	}
+	if strings.Contains(upperNote, "SWEEP") || strings.Contains(upperNote, "MOD TO") || strings.Contains(upperNote, "TO MOD") || strings.Contains(upperNote, "MOD BAL") || strings.Contains(upperNote, "AUTO SWEEP") {
+		isInternalTransfer = true
+	}
+
+	// SBI UPI pattern: UPI/(CR|REV|DR)/<12-digit ref>/<payer name>/<bank>/<payer phone or VPA>/<remark>
+	if strings.HasPrefix(upperNote, "UPI/") {
+		parts := strings.Split(note, "/")
+		if len(parts) >= 6 {
+			dir := strings.ToUpper(parts[1])
+			if dir == "REV" {
+				isReversal = true
+			}
+			ref := strings.TrimSpace(parts[2])
+			if (txnID == "" || txnID == "-" || strings.Trim(txnID, "0") == "") && ref != "" {
+				txnID = ref
+			}
+			payerName = strings.TrimSpace(parts[3])
+			phoneOrVPA := strings.TrimSpace(parts[5])
+			if strings.Contains(phoneOrVPA, "@") {
+				payerVPA = phoneOrVPA
+			} else {
+				digits := strings.Map(func(r rune) rune {
+					if r >= '0' && r <= '9' {
+						return r
+					}
+					return -1
+				}, phoneOrVPA)
+				if len(digits) == 10 {
+					payerPhone = digits
+				} else if len(digits) == 12 && strings.HasPrefix(digits, "91") {
+					payerPhone = digits[2:]
+				}
+			}
+		}
+	}
+
 	return Row{
-		TxnID:        txnID,
-		AmountPaise:  amountPaise,
-		Type:         rowType,
-		Date:         dt,
-		Note:         note,
-		BalancePaise: balancePaise,
+		TxnID:              txnID,
+		AmountPaise:        amountPaise,
+		Type:               rowType,
+		Date:               dt,
+		Note:               note,
+		BalancePaise:       balancePaise,
+		PayerPhone:         payerPhone,
+		PayerVPA:           payerVPA,
+		PayerName:          payerName,
+		IsReversal:         isReversal,
+		IsInternalTransfer: isInternalTransfer,
 	}, nil
 }
 
@@ -407,23 +486,35 @@ func tryExtractOpeningBalance(rec []string, idx colIndex) *int64 {
 			}
 		}
 	}
-	// 2. Otherwise scan across all cells for currency amount
-	for _, cell := range rec {
+	// 2. Scan across all cells for opening balance label and candidate amount
+	for i, cell := range rec {
 		s := strings.TrimSpace(cell)
 		upper := strings.ToUpper(s)
 		if strings.Contains(upper, "OPENING BALANCE") || strings.Contains(upper, "BALANCE AS ON") {
+			// A. If amount is in same cell after colon
 			idxColon := strings.LastIndex(s, ":")
-			candidate := s
 			if idxColon >= 0 && idxColon < len(s)-1 {
-				candidate = strings.TrimSpace(s[idxColon+1:])
-			} else {
-				words := strings.Fields(s)
-				if len(words) > 0 {
-					candidate = words[len(words)-1]
+				candidate := strings.TrimSpace(s[idxColon+1:])
+				if bal, err := parseSignedAmountPaise(candidate); err == nil {
+					return &bal
 				}
 			}
-			if bal, err := parseSignedAmountPaise(candidate); err == nil {
-				return &bal
+			// B. If amount is the last word in same cell
+			words := strings.Fields(s)
+			if len(words) > 1 {
+				candidate := words[len(words)-1]
+				if bal, err := parseSignedAmountPaise(candidate); err == nil {
+					return &bal
+				}
+			}
+			// C. Check subsequent adjacent cells on this row (e.g. table conversion splits label and amount)
+			for j := i + 1; j < len(rec); j++ {
+				adj := strings.TrimSpace(StripFormulaChars(rec[j]))
+				if adj != "" {
+					if bal, err := parseSignedAmountPaise(adj); err == nil {
+						return &bal
+					}
+				}
 			}
 		}
 	}
@@ -432,7 +523,8 @@ func tryExtractOpeningBalance(rec []string, idx colIndex) *int64 {
 
 // parseSignedAmountPaise parses decimal amounts into integer paise without floating point drift.
 // Rejects amounts with more than 2 decimal places (fail-closed for money).
-// Tolerates Indian comma formatting (e.g. 1,26,948.00) and trailing/leading Cr/Dr indicators.
+// Tolerates Indian comma formatting (e.g. 1,26,948.00), parenthesised accounting (18,500.00),
+// and trailing/leading Cr/Dr indicators, including parenthesised (Cr)/(Dr).
 func parseSignedAmountPaise(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -440,11 +532,34 @@ func parseSignedAmountPaise(s string) (int64, error) {
 	}
 
 	upper := strings.ToUpper(s)
-	isCreditSuffix := strings.HasSuffix(upper, "CR")
-	isDebitSuffix := strings.HasSuffix(upper, "DR")
+	isCreditSuffix := false
+	isDebitSuffix := false
 
-	s = strings.TrimSuffix(upper, "CR")
-	s = strings.TrimSuffix(s, "DR")
+	if strings.HasSuffix(upper, "(CR)") {
+		isCreditSuffix = true
+		upper = strings.TrimSuffix(upper, "(CR)")
+	} else if strings.HasSuffix(upper, "(DR)") {
+		isDebitSuffix = true
+		upper = strings.TrimSuffix(upper, "(DR)")
+	} else if strings.HasSuffix(upper, "CR") {
+		isCreditSuffix = true
+		upper = strings.TrimSuffix(upper, "CR")
+	} else if strings.HasSuffix(upper, "DR") {
+		isDebitSuffix = true
+		upper = strings.TrimSuffix(upper, "DR")
+	}
+
+	upper = strings.TrimSpace(upper)
+
+	isParenthesesNegative := false
+	if strings.HasPrefix(upper, "(") && strings.HasSuffix(upper, ")") {
+		isParenthesesNegative = true
+		upper = strings.TrimPrefix(upper, "(")
+		upper = strings.TrimSuffix(upper, ")")
+		upper = strings.TrimSpace(upper)
+	}
+
+	s = upper
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.TrimPrefix(s, "₹")
 	s = strings.TrimPrefix(s, "RS.")
@@ -460,7 +575,7 @@ func parseSignedAmountPaise(s string) (int64, error) {
 		s = strings.TrimPrefix(s, "-")
 	} else if strings.HasPrefix(s, "+") {
 		s = strings.TrimPrefix(s, "+")
-	} else if isDebitSuffix {
+	} else if isParenthesesNegative || isDebitSuffix {
 		negative = true
 	} else if isCreditSuffix {
 		negative = false
