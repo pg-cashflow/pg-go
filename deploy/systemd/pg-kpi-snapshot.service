@@ -1,0 +1,19 @@
+[Unit]
+Description=pg-app KPI snapshot job (daily occupancy, revenue, collections snapshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pgapp
+Group=pgapp
+WorkingDirectory=/opt/pg-app
+EnvironmentFile=/opt/pg-app/.env
+ExecStart=/opt/pg-app/kpi-snapshot
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pg-app
+PrivateTmp=true

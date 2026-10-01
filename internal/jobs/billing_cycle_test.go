@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -135,3 +136,43 @@ func TestJoinURL(t *testing.T) {
 		}
 	}
 }
+
+type stubRecurringExpenses struct {
+	called bool
+	asOf   time.Time
+}
+
+func (s *stubRecurringExpenses) ProcessRecurringExpenses(_ context.Context, asOf time.Time) error {
+	s.called = true
+	s.asOf = asOf
+	return nil
+}
+
+type stubTenantLister struct {
+	tenants []domain.Tenant
+}
+
+func (s stubTenantLister) ListActiveByDueDay(_ context.Context, _ int, _ *uuid.UUID) ([]domain.Tenant, error) {
+	return s.tenants, nil
+}
+
+func TestBillingCycle_RecurringExpensesHook(t *testing.T) {
+	rec := &stubRecurringExpenses{}
+	job := &BillingCycle{
+		Tenants:           stubTenantLister{},
+		Billing:           &stubBilling{},
+		RecurringExpenses: rec,
+	}
+
+	err := job.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if !rec.called {
+		t.Errorf("expected RecurringExpenses hook to be called during Run, but it was not")
+	}
+	if rec.asOf.IsZero() {
+		t.Errorf("expected asOf time to be populated, got zero time")
+	}
+}
+

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pg-app rent reminder daily at 09:00 IST
+
+[Timer]
+# 09:00 IST = 03:30 UTC
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pg-app search reindex weekly on Sundays at 04:00 IST
+
+[Timer]
+# 04:00 IST Sunday = 22:30 UTC Saturday
+OnCalendar=Sat *-*-* 22:30:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

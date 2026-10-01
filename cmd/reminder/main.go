@@ -85,9 +85,10 @@ func main() {
 		SMS:        gateway,
 		Push:       pushSvc,
 		Mailer:     mail,
-		Events:     pub,
-		BaseURL:    cfg.MagicLinkBaseURL,
-		Log:        slog.Default(),
+		Events:      pub,
+		BaseURL:     cfg.MagicLinkBaseURL,
+		Log:         slog.Default(),
+		CatchUpDays: 2,
 	}
 	if err := job.Run(ctx); err != nil {
 		log.Fatal(err)

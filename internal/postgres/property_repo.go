@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
 	"math/big"
 	"strings"
 	"time"
@@ -86,6 +88,59 @@ func (r *PropertyRepo) List(ctx context.Context) ([]domain.Property, error) {
 		out = append(out, *p)
 	}
 	return out, rows.Err()
+}
+
+func (r *PropertyRepo) GetSettings(ctx context.Context, propertyID uuid.UUID) (*domain.PropertySettings, error) {
+	var s domain.PropertySettings
+	var rawModules []byte
+	var offsets []int32
+	err := r.db.QueryRow(ctx, `
+		SELECT property_id, payout_auto_dispatch, reminder_offsets, reminder_catch_up_days,
+		       active_modules, auto_apply_credit, created_at, updated_at
+		FROM property_settings WHERE property_id=$1`, propertyID).Scan(
+		&s.PropertyID, &s.PayoutAutoDispatch, &offsets, &s.ReminderCatchUpDays,
+		&rawModules, &s.AutoApplyCredit, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			defaults := domain.DefaultPropertySettings(propertyID)
+			return &defaults, nil
+		}
+		return nil, err
+	}
+	s.ReminderOffsets = make([]int, len(offsets))
+	for i, o := range offsets {
+		s.ReminderOffsets[i] = int(o)
+	}
+	if len(rawModules) > 0 {
+		_ = json.Unmarshal(rawModules, &s.ActiveModules)
+	}
+	return &s, nil
+}
+
+func (r *PropertyRepo) UpsertSettings(ctx context.Context, s *domain.PropertySettings) error {
+	rawModules, err := json.Marshal(s.ActiveModules)
+	if err != nil {
+		return err
+	}
+	offsets := make([]int32, len(s.ReminderOffsets))
+	for i, o := range s.ReminderOffsets {
+		offsets[i] = int32(o)
+	}
+	s.UpdatedAt = time.Now().UTC()
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO property_settings (property_id, payout_auto_dispatch, reminder_offsets,
+		                               reminder_catch_up_days, active_modules, auto_apply_credit, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (property_id) DO UPDATE SET
+			payout_auto_dispatch=EXCLUDED.payout_auto_dispatch,
+			reminder_offsets=EXCLUDED.reminder_offsets,
+			reminder_catch_up_days=EXCLUDED.reminder_catch_up_days,
+			active_modules=EXCLUDED.active_modules,
+			auto_apply_credit=EXCLUDED.auto_apply_credit,
+			updated_at=EXCLUDED.updated_at`,
+		s.PropertyID, s.PayoutAutoDispatch, offsets, s.ReminderCatchUpDays,
+		rawModules, s.AutoApplyCredit, s.UpdatedAt)
+	return err
 }
 
 func scanProperty(row pgx.Row) (*domain.Property, error) {

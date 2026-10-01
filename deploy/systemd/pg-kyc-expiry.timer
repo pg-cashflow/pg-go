@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pg-app KYC expiry daily at 03:00 IST
+
+[Timer]
+# 03:00 IST = 21:30 UTC previous day
+OnCalendar=*-*-* 21:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

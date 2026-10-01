@@ -582,23 +582,29 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		"approval_mode", approvalMode,
 	)
 
-	// Automated Payout Dispatch: if automated payout dispatcher is active (CF_PAYOUT_AUTO_DISPATCH_ENABLED),
-	// automatically initiate batch transfer and dispatch inline with background outbox fallback.
+	// Automated Payout Dispatch: if automated payout dispatcher is active AND payout_auto_dispatch
+	// is enabled in the property's operational settings, automatically initiate batch transfer and dispatch inline with background outbox fallback.
 	if h.PayoutDispatcher != nil {
-		if updatedBatch, _, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID); err == nil {
-			approvedBatch = updatedBatch
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer cancel()
-				if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
-					slog.Warn("auto-dispatch payout batch transfer failed inline, relying on ledger outbox worker",
-						"batch_id", batchID,
-						"err", dErr,
-					)
-				}
-			}()
-		} else {
-			slog.Error("failed to initiate auto-dispatch transfer for approved batch", "batch_id", batchID, "err", err)
+		autoDispatch := false
+		if st, err := h.getPropertySettings(c.Request.Context(), pid); err == nil && st != nil {
+			autoDispatch = st.PayoutAutoDispatch
+		}
+		if autoDispatch {
+			if updatedBatch, _, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID); err == nil {
+				approvedBatch = updatedBatch
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer cancel()
+					if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
+						slog.Warn("auto-dispatch payout batch transfer failed inline, relying on ledger outbox worker",
+							"batch_id", batchID,
+							"err", dErr,
+						)
+					}
+				}()
+			} else {
+				slog.Error("failed to initiate auto-dispatch transfer for approved batch", "batch_id", batchID, "err", err)
+			}
 		}
 	}
 
@@ -744,6 +750,20 @@ func (h *Handlers) getChecksumSecret() string {
 		return h.JWTSecret
 	}
 	return "payout_checksum_secret"
+}
+
+func (h *Handlers) getPropertySettings(ctx context.Context, pid uuid.UUID) (*domain.PropertySettings, error) {
+	if pss, ok := h.PropertyStore.(interface {
+		GetSettings(context.Context, uuid.UUID) (*domain.PropertySettings, error)
+	}); ok {
+		return pss.GetSettings(ctx, pid)
+	}
+	if h.Pool != nil {
+		repo := postgres.NewPropertyRepo(h.Pool)
+		return repo.GetSettings(ctx, pid)
+	}
+	defaults := domain.DefaultPropertySettings(pid)
+	return &defaults, nil
 }
 
 // OwnerDispatchPayoutBatch handles POST /owner/payouts/batches/:id/dispatch.

@@ -151,6 +151,7 @@ func NewRouter(d Deps) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
 		})
 		api.GET("/join/invite/:code", h.LookupInvite)
+		api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
 
 		// Per-IP rate limits (ADR-2, M2): 3/min OTP, 10/min Firebase (burst headroom for login retries)
 		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
@@ -187,9 +188,15 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/dues/:id/waive", h.WaiveDue)
 			owner.POST("/dues/:id/match", h.ManualMatch)
 			owner.POST("/dues/:id/mark-cash-paid", h.MarkCashPaid)
+			owner.POST("/dues/bulk-mark-paid/preview", h.BulkMarkCashPaidPreview)
+			owner.POST("/dues/bulk-mark-paid/confirm", h.BulkMarkCashPaidConfirm)
 			owner.GET("/dues/:id/qr", h.DueQR)
 			owner.GET("/dues/:id/pay", h.OwnerDuePay)
 			owner.POST("/dues/:id/token", h.DueToken)
+			owner.GET("/occupancy", h.OwnerOccupancy)
+			owner.GET("/calendar/token", h.OwnerGetCalendarToken)
+			owner.GET("/settings", h.OwnerGetPropertySettings)
+			owner.PATCH("/settings", h.OwnerUpdatePropertySettings)
 
 			owner.GET("/payment-reports", h.ListPaymentReports)
 			owner.POST("/payment-reports/:id/confirm", h.ConfirmPaymentReport)

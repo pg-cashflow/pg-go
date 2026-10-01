@@ -1,0 +1,10 @@
+[Unit]
+Description=Run pg-app cashfree poll every 15 minutes
+
+[Timer]
+OnCalendar=*:00,15,30,45
+Persistent=true
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

@@ -858,9 +858,17 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	})
 	ownerGroup.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
 	ownerGroup.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
+	ownerGroup.POST("/payouts/batches/:id/dispatch", h.OwnerDispatchPayoutBatch)
+
+	// Subtest 1: With PayoutAutoDispatch DISABLED (default in PropertySettings),
+	// approval MUST keep the batch in 'approved' status (dual control halt, requiring manual dispatch).
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO property_settings (property_id, payout_auto_dispatch)
+		VALUES ($1, false)
+		ON CONFLICT (property_id) DO UPDATE SET payout_auto_dispatch = false`, propID)
 
 	w := httptest.NewRecorder()
-	createReq, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Auto test"}`))
+	createReq, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Auto test 1"}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, createReq)
 	if w.Code != http.StatusCreated {
@@ -885,7 +893,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	router.ServeHTTP(w, approveReq)
 
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK approving batch with auto-dispatch, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 200 OK approving batch with auto-dispatch disabled, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var resp struct {
@@ -896,18 +904,86 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		t.Fatalf("unmarshal approve response: %v", err)
 	}
 
+	// Batch MUST halt at 'approved' because payout_auto_dispatch is false
+	if resp.Batch.Status != domain.BatchApproved {
+		t.Errorf("expected batch status 'approved' when auto-dispatch disabled, got '%s'", resp.Batch.Status)
+	}
+
+	// Manual dispatch then succeeds
+	w = httptest.NewRecorder()
+	dispReq, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/dispatch", batchID), nil)
+	router.ServeHTTP(w, dispReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK manual dispatching batch, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Subtest 2: With PayoutAutoDispatch ENABLED in property_settings,
+	// approval MUST auto-initiate batch transfer to 'processing'.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO property_settings (property_id, payout_auto_dispatch)
+		VALUES ($1, true)
+		ON CONFLICT (property_id) DO UPDATE SET payout_auto_dispatch = true`, propID)
+	if err != nil {
+		t.Fatalf("update property_settings: %v", err)
+	}
+
+	// Create a second payout item & batch
+	piID2 := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
+		VALUES ($1, $2, 'REF-AUTODISP-02', 300000, 'Vendor Supply 2', '2026-09', 'pending')`, piID2, payeeID)
+	if err != nil {
+		t.Fatalf("insert payout item 2: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID2) }()
+
+	w = httptest.NewRecorder()
+	createReq2, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Auto test 2"}`))
+	createReq2.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, createReq2)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created creating batch 2, got %d: %s", w.Code, w.Body.String())
+	}
+	var createResp2 struct {
+		Batch domain.PayoutBatch `json:"batch"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &createResp2)
+	batchID2 := createResp2.Batch.ID
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, batchID2) }()
+
+	approveBody2 := map[string]interface{}{
+		"expected_item_count":  1,
+		"expected_total_paise": 300000,
+	}
+	bodyJSON2, _ := json.Marshal(approveBody2)
+	w = httptest.NewRecorder()
+	approveReq2, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve", batchID2), bytes.NewReader(bodyJSON2))
+	approveReq2.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, approveReq2)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK approving batch 2 with auto-dispatch enabled, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp2 struct {
+		Batch domain.PayoutBatch `json:"batch"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("unmarshal approve response 2: %v", err)
+	}
+
 	// Batch in response MUST be in 'processing' status because dispatcher auto-initiated transfer!
-	if resp.Batch.Status != domain.BatchProcessing {
-		t.Errorf("expected batch status 'processing' on auto-dispatch, got '%s'", resp.Batch.Status)
+	if resp2.Batch.Status != domain.BatchProcessing {
+		t.Errorf("expected batch status 'processing' on auto-dispatch, got '%s'", resp2.Batch.Status)
 	}
 
 	// Verify DB state
-	dbBatch, err := payoutRepo.GetBatchByID(ctx, batchID)
+	dbBatch2, err := payoutRepo.GetBatchByID(ctx, batchID2)
 	if err != nil {
 		t.Fatalf("get batch from db: %v", err)
 	}
-	if dbBatch.Status != domain.BatchProcessing {
-		t.Errorf("expected DB batch status 'processing', got '%s'", dbBatch.Status)
+	if dbBatch2.Status != domain.BatchProcessing {
+		t.Errorf("expected DB batch status 'processing', got '%s'", dbBatch2.Status)
 	}
 }
 

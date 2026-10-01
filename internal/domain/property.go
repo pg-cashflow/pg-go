@@ -29,3 +29,31 @@ const (
 	CollectionModeManualProof = "manual_proof"
 	CollectionModeGateway     = "gateway"
 )
+
+type PropertySettings struct {
+	PropertyID          uuid.UUID       `json:"property_id"`
+	PayoutAutoDispatch  bool            `json:"payout_auto_dispatch"`
+	ReminderOffsets     []int           `json:"reminder_offsets"`
+	ReminderCatchUpDays int             `json:"reminder_catch_up_days"`
+	ActiveModules       map[string]bool `json:"active_modules"`
+	AutoApplyCredit     bool            `json:"auto_apply_credit"`
+	CreatedAt           time.Time       `json:"created_at"`
+	UpdatedAt           time.Time       `json:"updated_at"`
+}
+
+func DefaultPropertySettings(propertyID uuid.UUID) PropertySettings {
+	return PropertySettings{
+		PropertyID:          propertyID,
+		PayoutAutoDispatch:  false,
+		ReminderOffsets:     []int{-3, 0, 1, 7},
+		ReminderCatchUpDays: 2,
+		ActiveModules: map[string]bool{
+			"gamification": true,
+			"kyc":          true,
+			"payouts":      true,
+			"accounting":   true,
+			"calendar":     true,
+		},
+		AutoApplyCredit: true,
+	}
+}

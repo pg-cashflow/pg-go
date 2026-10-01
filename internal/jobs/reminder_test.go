@@ -349,3 +349,167 @@ func TestReminder_AtomicDedupSkipsSecondAttempt(t *testing.T) {
 		t.Fatalf("expected 0 sends when TryLog returns inserted=false, got %d", sms.n)
 	}
 }
+
+type mapReminderLogger struct {
+	logs map[string]bool
+}
+
+func newMapReminderLogger() *mapReminderLogger {
+	return &mapReminderLogger{logs: make(map[string]bool)}
+}
+
+func (m *mapReminderLogger) key(dueID uuid.UUID, remType, channel string) string {
+	return dueID.String() + ":" + remType + ":" + channel
+}
+
+func (m *mapReminderLogger) Exists(_ context.Context, dueID uuid.UUID, remType, channel string) (bool, error) {
+	return m.logs[m.key(dueID, remType, channel)], nil
+}
+
+func (m *mapReminderLogger) TryLog(_ context.Context, dueID uuid.UUID, remType, channel string) (bool, error) {
+	k := m.key(dueID, remType, channel)
+	if m.logs[k] {
+		return false, nil
+	}
+	m.logs[k] = true
+	return true, nil
+}
+
+func (m *mapReminderLogger) DeleteLog(_ context.Context, dueID uuid.UUID, remType, channel string) error {
+	delete(m.logs, m.key(dueID, remType, channel))
+	return nil
+}
+
+func TestReminder_CatchUp_DMinus2MissedDMinus3(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	logs := newMapReminderLogger()
+	sms := &countingSMS{}
+
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive, Name: "T",
+		}},
+		Properties:  stubPropertyGetter{p: &domain.Property{ID: propID, OwnerEmail: "o@example.com"}},
+		Reminders:   logs,
+		SMS:         sms,
+		CatchUpDays: 2,
+		BaseURL:     "https://pay.example.com",
+	}
+
+	due := domain.Due{
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		PropertyID: propID,
+		DueDate:    today.AddDate(0, 0, 2), // Delta is -2 (missed D-3 yesterday)
+		Amount:     10000,
+		DueCode:    "CATCH01",
+	}
+
+	// First run: Should catch up and send D-3 reminder
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 1 {
+		t.Fatalf("expected 1 send on catch-up for missed D-3, got %d", sms.n)
+	}
+
+	// Second run: Already logged, should NOT re-send
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue 2nd: %v", err)
+	}
+	if sms.n != 1 {
+		t.Fatalf("expected duplicate run to not re-send, got %d", sms.n)
+	}
+}
+
+func TestReminder_CatchUp_DPlus2MissedDPlus1(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	logs := newMapReminderLogger()
+	sms := &countingSMS{}
+	fresh := time.Now().Add(-1 * time.Hour)
+
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive, Name: "T",
+		}},
+		Properties:  stubPropertyGetter{p: &domain.Property{ID: propID, OwnerEmail: "o@example.com", PaymentMode: domain.PaymentModeCashfree}},
+		Reminders:   logs,
+		SMS:         sms,
+		CatchUpDays: 2,
+		Intents:     stubIntentRecency{n: 1, at: &fresh},
+		BaseURL:     "https://pay.example.com",
+	}
+
+	due := domain.Due{
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		PropertyID: propID,
+		DueDate:    today.AddDate(0, 0, -2), // Delta is 2 (missed D+1 yesterday)
+		Amount:     10000,
+		DueCode:    "CATCH02",
+	}
+
+	// First run: Should catch up and send D+1 reminder
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 1 {
+		t.Fatalf("expected 1 send on catch-up for missed D+1, got %d", sms.n)
+	}
+
+	// Second run: Already logged, should NOT re-send
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue 2nd: %v", err)
+	}
+	if sms.n != 1 {
+		t.Fatalf("expected duplicate run to not re-send, got %d", sms.n)
+	}
+}
+
+func TestReminder_CatchUp_BeyondWindowDropped(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := dateOnly(time.Now().In(loc))
+	phone := "9876543210"
+	tenantID := uuid.New()
+	propID := uuid.New()
+	logs := newMapReminderLogger()
+	sms := &countingSMS{}
+	fresh := time.Now().Add(-1 * time.Hour)
+
+	job := &ReminderJob{
+		Tenants: stubTenantGetter{t: &domain.Tenant{
+			ID: tenantID, Phone: &phone, Status: domain.TenantStatusActive, Name: "T",
+		}},
+		Properties:  stubPropertyGetter{p: &domain.Property{ID: propID, OwnerEmail: "o@example.com", PaymentMode: domain.PaymentModeCashfree}},
+		Reminders:   logs,
+		SMS:         sms,
+		CatchUpDays: 2, // window is delta 1..3
+		Intents:     stubIntentRecency{n: 1, at: &fresh},
+		BaseURL:     "https://pay.example.com",
+	}
+
+	due := domain.Due{
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		PropertyID: propID,
+		DueDate:    today.AddDate(0, 0, -5), // Delta is 5 (beyond 1+2=3, before 7)
+		Amount:     10000,
+		DueCode:    "CATCH03",
+	}
+
+	if err := job.processDue(context.Background(), due, today, loc); err != nil {
+		t.Fatalf("processDue: %v", err)
+	}
+	if sms.n != 0 {
+		t.Fatalf("expected 0 sends when beyond catch-up window, got %d", sms.n)
+	}
+}
+

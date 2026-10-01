@@ -73,8 +73,83 @@ type ReminderJob struct {
 	Push       PushSender
 	Mailer     mailer.Mailer
 	Events     events.Publisher
-	BaseURL    string
-	Log        *slog.Logger
+	BaseURL     string
+	Log         *slog.Logger
+	CatchUpDays int // Days after nominal trigger day to catch up on missed reminders (default: 2)
+}
+
+func (j *ReminderJob) wasReminderSent(ctx context.Context, dueID uuid.UUID, remType string) bool {
+	if j.Reminders == nil {
+		return false
+	}
+	smsSent, err := j.Reminders.Exists(ctx, dueID, remType, "sms")
+	if err == nil && smsSent {
+		return true
+	}
+	pushSent, err := j.Reminders.Exists(ctx, dueID, remType, "push")
+	if err == nil && pushSent {
+		return true
+	}
+	return false
+}
+
+func (j *ReminderJob) resolveReminderType(ctx context.Context, dueID uuid.UUID, delta int) string {
+	if j.Reminders == nil {
+		switch delta {
+		case -3:
+			return ReminderDMinus3
+		case 0:
+			return ReminderD0
+		case 1:
+			return ReminderDPlus1
+		case 7:
+			return ReminderDPlus7
+		default:
+			return ""
+		}
+	}
+
+	catchUp := j.CatchUpDays
+	if catchUp <= 0 {
+		catchUp = 2
+	}
+
+	// 1. D-3 stage: nominal delta == -3. Catch-up window [-3, min(-3 + catchUp, -1)]
+	if delta == -3 {
+		return ReminderDMinus3
+	}
+	if delta > -3 && delta < 0 && delta <= -3+catchUp {
+		if !j.wasReminderSent(ctx, dueID, ReminderDMinus3) {
+			return ReminderDMinus3
+		}
+	}
+
+	// 2. D-0 stage: nominal delta == 0.
+	if delta == 0 {
+		return ReminderD0
+	}
+
+	// 3. D+1 stage: nominal delta == 1. Catch-up window [1, min(1 + catchUp, 6)]
+	if delta == 1 {
+		return ReminderDPlus1
+	}
+	if delta > 1 && delta < 7 && delta <= 1+catchUp {
+		if !j.wasReminderSent(ctx, dueID, ReminderDPlus1) {
+			return ReminderDPlus1
+		}
+	}
+
+	// 4. D+7 stage: nominal delta == 7. Catch-up window [7, 7 + catchUp]
+	if delta == 7 {
+		return ReminderDPlus7
+	}
+	if delta > 7 && delta <= 7+catchUp {
+		if !j.wasReminderSent(ctx, dueID, ReminderDPlus7) {
+			return ReminderDPlus7
+		}
+	}
+
+	return ""
 }
 
 // Run evaluates all active pending rent dues and sends due reminders.
@@ -127,17 +202,8 @@ func (j *ReminderJob) processDue(ctx context.Context, due domain.Due, today time
 	dueDate := dateOnly(due.DueDate.In(loc))
 	delta := int(today.Sub(dueDate).Hours() / 24)
 
-	var remType string
-	switch delta {
-	case -3:
-		remType = ReminderDMinus3
-	case 0:
-		remType = ReminderD0
-	case 1:
-		remType = ReminderDPlus1
-	case 7:
-		remType = ReminderDPlus7
-	default:
+	remType := j.resolveReminderType(ctx, due.ID, delta)
+	if remType == "" {
 		return nil
 	}
 

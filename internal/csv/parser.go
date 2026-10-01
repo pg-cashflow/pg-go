@@ -422,7 +422,7 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 	var isReversal, isInternalTransfer bool
 
 	upperNote := strings.ToUpper(note)
-	if strings.Contains(upperNote, "REVERSAL") || strings.Contains(upperNote, "REV-UPI") || strings.Contains(upperNote, "UPI/REV/") {
+	if strings.Contains(upperNote, "REVERSAL") || strings.Contains(upperNote, "REV-UPI") || strings.Contains(upperNote, "UPI/REV/") || strings.Contains(upperNote, "UPI-REV") {
 		isReversal = true
 	}
 	if strings.Contains(upperNote, "SWEEP") || strings.Contains(upperNote, "MOD TO") || strings.Contains(upperNote, "TO MOD") || strings.Contains(upperNote, "MOD BAL") || strings.Contains(upperNote, "AUTO SWEEP") {
@@ -457,6 +457,37 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 				} else if len(digits) == 12 && strings.HasPrefix(digits, "91") {
 					payerPhone = digits[2:]
 				}
+			}
+		}
+	} else if strings.HasPrefix(upperNote, "UPI-") {
+		// HDFC / ICICI UPI pattern: UPI-(REV-)?<ref/name/bank/phone/rem>
+		parts := strings.Split(note, "-")
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if strings.EqualFold(trimmed, "REV") {
+				isReversal = true
+				continue
+			}
+			if strings.Contains(trimmed, "@") && payerVPA == "" {
+				payerVPA = trimmed
+				continue
+			}
+			digits := strings.Map(func(r rune) rune {
+				if r >= '0' && r <= '9' {
+					return r
+				}
+				return -1
+			}, trimmed)
+			if len(digits) == 12 && (txnID == "" || txnID == "-" || strings.Trim(txnID, "0") == "") {
+				txnID = digits
+			} else if (len(digits) == 10 || (len(digits) == 12 && strings.HasPrefix(digits, "91"))) && payerPhone == "" {
+				if len(digits) == 10 {
+					payerPhone = digits
+				} else {
+					payerPhone = digits[2:]
+				}
+			} else if payerName == "" && len(trimmed) > 2 && !strings.EqualFold(trimmed, "UPI") && digits == "" {
+				payerName = trimmed
 			}
 		}
 	}

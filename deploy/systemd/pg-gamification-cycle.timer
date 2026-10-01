@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pg-app gamification cycle monthly on 1st at 01:00 IST
+
+[Timer]
+# 01:00 IST on 1st = 19:30 UTC on last day of previous month
+OnCalendar=*-*-01 19:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

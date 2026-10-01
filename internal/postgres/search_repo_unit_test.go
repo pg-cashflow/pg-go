@@ -135,4 +135,58 @@ func TestSearchRepo_QueryScopingUnit(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("Tenant_StrictScoping_SearchVector", func(t *testing.T) {
+		mock := &mockCapturingDB{}
+		repo := NewSearchRepo(mock)
+
+		p := search.Params{
+			PropertyID: propID,
+			Role:       string(domain.RoleTenant),
+			TenantID:   &tenantID,
+		}
+		_, _ = repo.SearchVector(context.Background(), p, 10, make([]float32, 384))
+
+		if !strings.Contains(mock.lastQuery, "entity_type = ANY($4)") {
+			t.Errorf("vector query missing entity_type = ANY($4): %s", mock.lastQuery)
+		}
+		if !strings.Contains(mock.lastQuery, "AND tenant_id = $5") {
+			t.Errorf("vector query missing strict AND tenant_id = $5: %s", mock.lastQuery)
+		}
+		if strings.Contains(mock.lastQuery, "tenant_id IS NULL") {
+			t.Errorf("vector query must NEVER contain 'tenant_id IS NULL': %s", mock.lastQuery)
+		}
+		expectedTypes := []string{"hazard", "violation"}
+		if !reflect.DeepEqual(mock.lastArgs[3], expectedTypes) {
+			t.Errorf("expected allowed types %v, got %v", expectedTypes, mock.lastArgs[3])
+		}
+		if mock.lastArgs[4] != tenantID {
+			t.Errorf("expected tenantID %v, got %v", tenantID, mock.lastArgs[4])
+		}
+	})
+
+	t.Run("Manager_NoPaymentNotes_SearchVector", func(t *testing.T) {
+		mock := &mockCapturingDB{}
+		repo := NewSearchRepo(mock)
+
+		p := search.Params{
+			PropertyID: propID,
+			Role:       string(domain.RoleManager),
+			TenantID:   nil,
+		}
+		_, _ = repo.SearchVector(context.Background(), p, 10, make([]float32, 384))
+
+		if !strings.Contains(mock.lastQuery, "entity_type = ANY($4)") {
+			t.Errorf("vector query missing entity_type = ANY($4): %s", mock.lastQuery)
+		}
+		expectedTypes := []string{"inspection", "hazard", "violation"}
+		if !reflect.DeepEqual(mock.lastArgs[3], expectedTypes) {
+			t.Errorf("expected manager allowed types %v, got %v", expectedTypes, mock.lastArgs[3])
+		}
+		for _, arg := range mock.lastArgs[3].([]string) {
+			if arg == "payment_note" {
+				t.Errorf("manager vector query MUST NOT contain payment_note in entity_type filter")
+			}
+		}
+	})
 }

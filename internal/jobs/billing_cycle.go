@@ -37,15 +37,21 @@ type PushSender interface {
 	Send(ctx context.Context, tenantID uuid.UUID, payload []byte) error
 }
 
+// RecurringExpenseScheduler processes recurring expenses during the billing cycle.
+type RecurringExpenseScheduler interface {
+	ProcessRecurringExpenses(ctx context.Context, asOf time.Time) error
+}
+
 // BillingCycle runs anniversary rent-due creation.
 type BillingCycle struct {
-	Billing    BillingService
-	Tenants    TenantLister
-	Properties PropertyGetter
-	MagicLink  MagicLinkCreator
-	SMS        SMSSender
-	Push       PushSender
-	Mailer     interface {
+	Billing           BillingService
+	Tenants           TenantLister
+	Properties        PropertyGetter
+	MagicLink         MagicLinkCreator
+	SMS               SMSSender
+	Push              PushSender
+	RecurringExpenses RecurringExpenseScheduler
+	Mailer            interface {
 		Send(ctx context.Context, to, subject, htmlBody string) error
 	}
 	Events  events.Publisher
@@ -98,6 +104,16 @@ func (j *BillingCycle) Run(ctx context.Context) error {
 			}
 		}
 	}
+
+	if j.RecurringExpenses != nil {
+		if err := j.RecurringExpenses.ProcessRecurringExpenses(ctx, now); err != nil {
+			log.Error("billing-cycle: recurring expenses hook failed", "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
 	return firstErr
 }
 
