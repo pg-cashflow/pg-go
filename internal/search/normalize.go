@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 var exactTokenRe = regexp.MustCompile(`^[A-Za-z0-9-]{6,}$`)
@@ -35,12 +36,13 @@ const (
 	MaxQueryLength = 100
 )
 
-// ValidQueryLength returns true when q meets length bounds.
+// ValidQueryLength returns true when q meets length bounds (counted in Unicode runes).
 func ValidQueryLength(q string) bool {
-	if len(q) < MinQueryLength && !exactTokenRe.MatchString(q) {
+	count := utf8.RuneCountInString(q)
+	if count < MinQueryLength {
 		return false
 	}
-	if len(q) > MaxQueryLength {
+	if count > MaxQueryLength {
 		return false
 	}
 	return true

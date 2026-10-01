@@ -124,7 +124,10 @@ func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType 
 		  AND entity_type = ANY($4)`
 	args := []any{p.PropertyID, perType, vec, allowedDocTypes}
 	n := 5
-	if p.TenantID != nil {
+	if domain.Role(p.Role) == domain.RoleTenant {
+		if p.TenantID == nil {
+			return nil, nil // fail-closed: tenant role without tenant ID has zero document visibility
+		}
 		q += ` AND tenant_id = $` + itoa(n)
 		args = append(args, *p.TenantID)
 		n++
@@ -576,7 +579,10 @@ func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params
 		  AND entity_type = ANY($4)`
 	args := []any{p.PropertyID, like, limit, allowedDocTypes}
 	n := 5
-	if p.TenantID != nil {
+	if domain.Role(p.Role) == domain.RoleTenant {
+		if p.TenantID == nil {
+			return nil, nil // fail-closed: tenant role without tenant ID has zero document visibility
+		}
 		q += fmt.Sprintf(` AND tenant_id = $%d`, n)
 		args = append(args, *p.TenantID)
 		n++

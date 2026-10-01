@@ -220,4 +220,25 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 			}
 		}
 	}
+
+	// Case 7: Fail-closed verification: RoleTenant with nil TenantID must return 0 results
+	pTenantNil := search.Params{
+		Query:      "secret",
+		Limit:      10,
+		Mode:       search.ModeLexical,
+		PropertyID: propID,
+		TenantID:   nil,
+		Role:       string(domain.RoleTenant),
+	}
+	resTenantNil, err := repo.SearchLexical(ctx, pTenantNil, []search.EntityType{search.TypeDocument}, 10)
+	if err != nil {
+		t.Fatalf("tenant nil search failed: %v", err)
+	}
+	if len(resTenantNil) != 0 {
+		t.Errorf("SECURITY LEAK [Case 7]: RoleTenant with nil TenantID returned documents: %+v", resTenantNil)
+	}
+	vecResTenantNil, err := repo.SearchVector(ctx, pTenantNil, 10, make([]float32, 384))
+	if err == nil && len(vecResTenantNil) != 0 {
+		t.Errorf("SECURITY LEAK [Case 7 Vector]: RoleTenant with nil TenantID returned vector documents: %+v", vecResTenantNil)
+	}
 }

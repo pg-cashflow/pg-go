@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -22,7 +23,7 @@ func (s *Service) Search(ctx context.Context, role domain.Role, propertyID uuid.
 		return q, ModeLexical, nil, fmt.Errorf("query required")
 	}
 	if !ValidQueryLength(q) {
-		if len(q) > MaxQueryLength {
+		if utf8.RuneCountInString(q) > MaxQueryLength {
 			return q, ModeLexical, nil, fmt.Errorf("query too long")
 		}
 		return q, ModeLexical, nil, fmt.Errorf("query too short")

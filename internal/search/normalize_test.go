@@ -25,6 +25,16 @@ func TestValidQueryLength(t *testing.T) {
 	if !ValidQueryLength(maxValid) {
 		t.Errorf("string of 100 characters should be valid")
 	}
+
+	// 40 runes of Devanagari (3 bytes each = 120 bytes)
+	devanagari40 := strings.Repeat("र", 40)
+	if !ValidQueryLength(devanagari40) {
+		t.Errorf("40-rune Devanagari string (%d bytes) should be valid", len(devanagari40))
+	}
+	devanagari101 := strings.Repeat("र", 101)
+	if ValidQueryLength(devanagari101) {
+		t.Errorf("101-rune Devanagari string should be invalid")
+	}
 }
 
 func TestExtractPhoneDigits(t *testing.T) {
