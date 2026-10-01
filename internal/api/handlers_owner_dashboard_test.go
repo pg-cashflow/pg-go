@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -126,6 +127,20 @@ func (s *dashboardPropStore) UpsertSettings(_ context.Context, st *domain.Proper
 	return nil
 }
 
+type dashboardGamificationStore struct {
+	gamification.Store
+	floors []domain.Floor
+	rooms  []domain.Room
+}
+
+func (s *dashboardGamificationStore) ListFloors(_ context.Context, _ uuid.UUID) ([]domain.Floor, error) {
+	return s.floors, nil
+}
+
+func (s *dashboardGamificationStore) ListRooms(_ context.Context, _ uuid.UUID) ([]domain.Room, error) {
+	return s.rooms, nil
+}
+
 func TestOwnerOccupancy_ComputesCorrectMetrics(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	jwtSecret := "test_secret_for_occupancy"
@@ -179,6 +194,174 @@ func TestOwnerOccupancy_ComputesCorrectMetrics(t *testing.T) {
 
 	if res.OccupiedBeds != 2 {
 		t.Errorf("expected 2 active occupied beds, got %d", res.OccupiedBeds)
+	}
+}
+
+func TestOwnerOccupancy_FloorWiseAndVacantRoomsTieOut(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test_secret_for_floor_occupancy"
+	propID := uuid.New()
+	userID := uuid.New()
+
+	ownerUser := &domain.User{
+		ID:         userID,
+		PropertyID: &propID,
+		Role:       domain.RoleOwner,
+	}
+	token, err := auth.IssueToken(jwtSecret, ownerUser)
+	if err != nil {
+		t.Fatalf("IssueToken failed: %v", err)
+	}
+
+	floor1ID := uuid.New()
+	floor2ID := uuid.New()
+
+	floors := []domain.Floor{
+		{ID: floor1ID, PropertyID: propID, FloorNumber: 1, Name: "Ground Floor"},
+		{ID: floor2ID, PropertyID: propID, FloorNumber: 2, Name: "First Floor"},
+	}
+
+	r101ID := uuid.New()
+	r102ID := uuid.New()
+	r103ID := uuid.New()
+	r201ID := uuid.New()
+	r202ID := uuid.New()
+
+	rooms := []domain.Room{
+		{ID: r101ID, PropertyID: propID, FloorId: floor1ID, RoomNumber: "101", Capacity: 2},
+		{ID: r102ID, PropertyID: propID, FloorId: floor1ID, RoomNumber: "102", Capacity: 2},
+		{ID: r103ID, PropertyID: propID, FloorId: floor1ID, RoomNumber: "103", Capacity: 1}, // Vacant
+		{ID: r201ID, PropertyID: propID, FloorId: floor2ID, RoomNumber: "201", Capacity: 3},
+		{ID: r202ID, PropertyID: propID, FloorId: floor2ID, RoomNumber: "202", Capacity: 2}, // Vacant
+	}
+
+	r101Num := "101"
+	r102Num := "102"
+	r201Num := "201"
+
+	tenants := map[uuid.UUID]*domain.Tenant{
+		uuid.New(): {ID: uuid.New(), PropertyID: propID, Name: "Alice", RoomID: &r101ID, RoomNumber: &r101Num, Status: domain.TenantStatusActive},
+		uuid.New(): {ID: uuid.New(), PropertyID: propID, Name: "Bob", RoomID: &r101ID, RoomNumber: &r101Num, Status: domain.TenantStatusActive},
+		uuid.New(): {ID: uuid.New(), PropertyID: propID, Name: "Charlie", RoomID: &r102ID, RoomNumber: &r102Num, Status: domain.TenantStatusActive},
+		uuid.New(): {ID: uuid.New(), PropertyID: propID, Name: "David", RoomID: &r201ID, RoomNumber: &r201Num, Status: domain.TenantStatusActive},
+		uuid.New(): {ID: uuid.New(), PropertyID: propID, Name: "Eva", RoomID: &r201ID, RoomNumber: &r201Num, Status: domain.TenantStatusActive},
+	}
+
+	h := &Handlers{
+		Deps: Deps{
+			JWTSecret:         jwtSecret,
+			TenantStore:       &dashboardTenantStore{tenants: tenants},
+			GamificationStore: &dashboardGamificationStore{floors: floors, rooms: rooms},
+		},
+	}
+
+	r := gin.New()
+	ownerGroup := r.Group("/owner", auth.RequireOwner(jwtSecret, nil))
+	ownerGroup.GET("/occupancy", h.OwnerOccupancy)
+
+	req := httptest.NewRequest(http.MethodGet, "/owner/occupancy", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		PropertyID       uuid.UUID        `json:"property_id"`
+		TotalRooms       int              `json:"total_rooms"`
+		OccupiedRooms    int              `json:"occupied_rooms"`
+		VacantRooms      int              `json:"vacant_rooms"`
+		CapacityBeds     int              `json:"capacity_beds"`
+		OccupiedBeds     int              `json:"occupied_beds"`
+		VacantBeds       int              `json:"vacant_beds"`
+		OccupancyRatePct float64          `json:"occupancy_rate_pct"`
+		Floors           []FloorOccupancy `json:"floors"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// 1. Property-wide tie-out checks
+	if res.TotalRooms != 5 {
+		t.Errorf("expected 5 total rooms, got %d", res.TotalRooms)
+	}
+	if res.OccupiedRooms != 3 {
+		t.Errorf("expected 3 occupied rooms (101, 102, 201), got %d", res.OccupiedRooms)
+	}
+	if res.VacantRooms != 2 {
+		t.Errorf("expected exactly 2 vacant rooms (103, 202), got %d", res.VacantRooms)
+	}
+	if res.TotalRooms != res.OccupiedRooms+res.VacantRooms {
+		t.Errorf("rooms tie-out failed: total(%d) != occupied(%d) + vacant(%d)", res.TotalRooms, res.OccupiedRooms, res.VacantRooms)
+	}
+	if res.CapacityBeds != 10 {
+		t.Errorf("expected 10 total capacity beds, got %d", res.CapacityBeds)
+	}
+	if res.OccupiedBeds != 5 {
+		t.Errorf("expected 5 occupied beds, got %d", res.OccupiedBeds)
+	}
+	if res.VacantBeds != 5 {
+		t.Errorf("expected 5 vacant beds, got %d", res.VacantBeds)
+	}
+	if res.OccupancyRatePct != 50.0 {
+		t.Errorf("expected 50%% occupancy, got %.2f%%", res.OccupancyRatePct)
+	}
+
+	// 2. Floor-wise checks
+	if len(res.Floors) != 2 {
+		t.Fatalf("expected 2 floors, got %d", len(res.Floors))
+	}
+
+	// Floor 1 (Ground Floor)
+	f1 := res.Floors[0]
+	if f1.FloorNumber != 1 || f1.FloorName != "Ground Floor" {
+		t.Errorf("unexpected floor 1: %+v", f1)
+	}
+	if f1.TotalRooms != 3 || f1.OccupiedRooms != 2 || f1.VacantRooms != 1 {
+		t.Errorf("floor 1 room counts mismatch: total=%d, occ=%d, vac=%d (expected 3, 2, 1)", f1.TotalRooms, f1.OccupiedRooms, f1.VacantRooms)
+	}
+	if f1.CapacityBeds != 5 || f1.OccupiedBeds != 3 || f1.VacantBeds != 2 {
+		t.Errorf("floor 1 bed counts mismatch: cap=%d, occ=%d, vac=%d (expected 5, 3, 2)", f1.CapacityBeds, f1.OccupiedBeds, f1.VacantBeds)
+	}
+	if f1.OccupancyRatePct != 60.0 {
+		t.Errorf("floor 1 expected 60%% occupancy, got %.2f%%", f1.OccupancyRatePct)
+	}
+	// Verify room 103 is vacant
+	var found103Vacant bool
+	for _, rm := range f1.Rooms {
+		if rm.RoomNumber == "103" && rm.IsVacant && rm.VacantBeds == 1 {
+			found103Vacant = true
+		}
+	}
+	if !found103Vacant {
+		t.Errorf("expected room 103 on floor 1 to be vacant with 1 vacant bed")
+	}
+
+	// Floor 2 (First Floor)
+	f2 := res.Floors[1]
+	if f2.FloorNumber != 2 || f2.FloorName != "First Floor" {
+		t.Errorf("unexpected floor 2: %+v", f2)
+	}
+	if f2.TotalRooms != 2 || f2.OccupiedRooms != 1 || f2.VacantRooms != 1 {
+		t.Errorf("floor 2 room counts mismatch: total=%d, occ=%d, vac=%d (expected 2, 1, 1)", f2.TotalRooms, f2.OccupiedRooms, f2.VacantRooms)
+	}
+	if f2.CapacityBeds != 5 || f2.OccupiedBeds != 2 || f2.VacantBeds != 3 {
+		t.Errorf("floor 2 bed counts mismatch: cap=%d, occ=%d, vac=%d (expected 5, 2, 3)", f2.CapacityBeds, f2.OccupiedBeds, f2.VacantBeds)
+	}
+	if f2.OccupancyRatePct != 40.0 {
+		t.Errorf("floor 2 expected 40%% occupancy, got %.2f%%", f2.OccupancyRatePct)
+	}
+	// Verify room 202 is vacant
+	var found202Vacant bool
+	for _, rm := range f2.Rooms {
+		if rm.RoomNumber == "202" && rm.IsVacant && rm.VacantBeds == 2 {
+			found202Vacant = true
+		}
+	}
+	if !found202Vacant {
+		t.Errorf("expected room 202 on floor 2 to be vacant with 2 vacant beds")
 	}
 }
 

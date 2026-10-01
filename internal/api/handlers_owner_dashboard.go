@@ -14,36 +14,285 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
+// RoomOccupancy represents the occupancy status of an individual room.
+type RoomOccupancy struct {
+	ID           uuid.UUID `json:"id"`
+	RoomNumber   string    `json:"room_number"`
+	Capacity     int       `json:"capacity"`
+	OccupiedBeds int       `json:"occupied_beds"`
+	VacantBeds   int       `json:"vacant_beds"`
+	IsVacant     bool      `json:"is_vacant"`
+	TenantNames  []string  `json:"tenant_names,omitempty"`
+}
+
+// FloorOccupancy represents aggregated occupancy and room vacancies for a floor.
+type FloorOccupancy struct {
+	FloorID          uuid.UUID       `json:"floor_id"`
+	FloorNumber      int             `json:"floor_number"`
+	FloorName        string          `json:"floor_name"`
+	TotalRooms       int             `json:"total_rooms"`
+	OccupiedRooms    int             `json:"occupied_rooms"`
+	VacantRooms      int             `json:"vacant_rooms"`
+	CapacityBeds     int             `json:"capacity_beds"`
+	OccupiedBeds     int             `json:"occupied_beds"`
+	VacantBeds       int             `json:"vacant_beds"`
+	OccupancyRatePct float64         `json:"occupancy_rate_pct"`
+	Rooms            []RoomOccupancy `json:"rooms"`
+}
+
 // OwnerOccupancy handles GET /owner/occupancy.
-// Returns aggregated bed capacity, occupancy counts, vacant beds, and basis points.
+// Returns aggregated bed capacity, occupancy counts, vacant beds, basis points,
+// and complete floor-by-floor room vacancy breakdown.
 func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
 
-	occ := h.occupancy(c, pid)
-	vacant := occ.CapacityBeds - occ.OccupiedBeds
-	if vacant < 0 {
-		vacant = 0
+	ctx := c.Request.Context()
+
+	var floors []domain.Floor
+	var rooms []domain.Room
+	if h.GamificationStore != nil {
+		floors, _ = h.GamificationStore.ListFloors(ctx, pid)
+		rooms, _ = h.GamificationStore.ListRooms(ctx, pid)
 	}
-	bps := finance.OccupancyBPS(occ)
-	pct := float64(bps) / 100.0
+
+	var tenants []domain.Tenant
+	if h.TenantStore != nil {
+		tenants, _ = h.TenantStore.ListByProperty(ctx, pid)
+	}
+
+	// Filter active tenants and track notice/risk
+	var activeTenants []domain.Tenant
+	bedsAtRisk := 0
+	for _, t := range tenants {
+		if t.Status == domain.TenantStatusActive {
+			activeTenants = append(activeTenants, t)
+			if t.NoticeGivenAt != nil {
+				bedsAtRisk++
+			}
+		}
+	}
+
+	// Index active tenants by room_id and room_number
+	tenantsByRoomID := make(map[uuid.UUID][]domain.Tenant)
+	tenantsByRoomNum := make(map[string][]domain.Tenant)
+	assignedTenantIDs := make(map[uuid.UUID]bool)
+
+	for _, t := range activeTenants {
+		if t.RoomID != nil && *t.RoomID != uuid.Nil {
+			tenantsByRoomID[*t.RoomID] = append(tenantsByRoomID[*t.RoomID], t)
+			assignedTenantIDs[t.ID] = true
+		}
+		if t.RoomNumber != nil && strings.TrimSpace(*t.RoomNumber) != "" {
+			k := strings.ToUpper(strings.TrimSpace(*t.RoomNumber))
+			tenantsByRoomNum[k] = append(tenantsByRoomNum[k], t)
+		}
+	}
+
+	// If no rooms are configured in GamificationStore, synthesize rooms from tenants' room numbers
+	if len(rooms) == 0 {
+		seenRoomNums := make(map[string]bool)
+		for _, t := range activeTenants {
+			if t.RoomNumber != nil && strings.TrimSpace(*t.RoomNumber) != "" {
+				rn := strings.TrimSpace(*t.RoomNumber)
+				upper := strings.ToUpper(rn)
+				if !seenRoomNums[upper] {
+					seenRoomNums[upper] = true
+					roomCap := int16(len(tenantsByRoomNum[upper]))
+					if roomCap < 1 {
+						roomCap = 1
+					}
+					syntheticID := uuid.NewMD5(pid, []byte(upper))
+					rooms = append(rooms, domain.Room{
+						ID:         syntheticID,
+						PropertyID: pid,
+						RoomNumber: rn,
+						Capacity:   roomCap,
+					})
+				}
+			}
+		}
+	}
+
+	// Build map of floorID -> *FloorOccupancy
+	floorMap := make(map[uuid.UUID]*FloorOccupancy)
+	for _, fl := range floors {
+		flCopy := fl
+		name := flCopy.Name
+		if name == "" {
+			name = fmt.Sprintf("Floor %d", flCopy.FloorNumber)
+		}
+		floorMap[fl.ID] = &FloorOccupancy{
+			FloorID:     fl.ID,
+			FloorNumber: fl.FloorNumber,
+			FloorName:   name,
+			Rooms:       []RoomOccupancy{},
+		}
+	}
+
+	// Prepare an unassigned / general floor for rooms without valid floor_id
+	var unassignedFloor *FloorOccupancy
+	getUnassignedFloor := func() *FloorOccupancy {
+		if unassignedFloor == nil {
+			unassignedFloor = &FloorOccupancy{
+				FloorID:     uuid.Nil,
+				FloorNumber: 999,
+				FloorName:   "Ground / General",
+				Rooms:       []RoomOccupancy{},
+			}
+		}
+		return unassignedFloor
+	}
+
+	// Process each room
+	for _, rm := range rooms {
+		matched := tenantsByRoomID[rm.ID]
+		rnKey := strings.ToUpper(strings.TrimSpace(rm.RoomNumber))
+		if candidateTenants, ok := tenantsByRoomNum[rnKey]; ok {
+			for _, ct := range candidateTenants {
+				if !assignedTenantIDs[ct.ID] {
+					matched = append(matched, ct)
+					assignedTenantIDs[ct.ID] = true
+				}
+			}
+		}
+
+		capVal := int(rm.Capacity)
+		if capVal <= 0 {
+			capVal = len(matched)
+			if capVal <= 0 {
+				capVal = 1
+			}
+		}
+		occBeds := len(matched)
+		vacBeds := capVal - occBeds
+		if vacBeds < 0 {
+			vacBeds = 0
+		}
+
+		var tNames []string
+		for _, mt := range matched {
+			if mt.Name != "" {
+				tNames = append(tNames, mt.Name)
+			}
+		}
+
+		roomOcc := RoomOccupancy{
+			ID:           rm.ID,
+			RoomNumber:   rm.RoomNumber,
+			Capacity:     capVal,
+			OccupiedBeds: occBeds,
+			VacantBeds:   vacBeds,
+			IsVacant:     occBeds == 0,
+			TenantNames:  tNames,
+		}
+
+		targetFloor := floorMap[rm.FloorId]
+		if targetFloor == nil {
+			targetFloor = getUnassignedFloor()
+		}
+		targetFloor.Rooms = append(targetFloor.Rooms, roomOcc)
+	}
+
+	// Aggregate per-floor stats
+	var resultFloors []FloorOccupancy
+	for _, fl := range floorMap {
+		aggregateFloor(fl)
+		resultFloors = append(resultFloors, *fl)
+	}
+	if unassignedFloor != nil {
+		aggregateFloor(unassignedFloor)
+		resultFloors = append(resultFloors, *unassignedFloor)
+	}
+
+	// Sort floors by FloorNumber ascending
+	sort.Slice(resultFloors, func(i, j int) bool {
+		return resultFloors[i].FloorNumber < resultFloors[j].FloorNumber
+	})
+
+	// Property-wide aggregation
+	totalRooms := 0
+	occupiedRooms := 0
+	vacantRooms := 0
+	capacityBeds := 0
+	occupiedBeds := 0
+
+	for _, fl := range resultFloors {
+		totalRooms += fl.TotalRooms
+		occupiedRooms += fl.OccupiedRooms
+		vacantRooms += fl.VacantRooms
+		capacityBeds += fl.CapacityBeds
+		occupiedBeds += fl.OccupiedBeds
+	}
+
+	// Fallback to h.occupancy if no room-level capacity was found
+	if capacityBeds == 0 && len(activeTenants) > 0 {
+		occ := h.occupancy(c, pid)
+		capacityBeds = occ.CapacityBeds
+		occupiedBeds = occ.OccupiedBeds
+		bedsAtRisk = occ.BedsAtRisk
+	}
+
+	vacantBeds := capacityBeds - occupiedBeds
+	if vacantBeds < 0 {
+		vacantBeds = 0
+	}
+
+	occRatePct := 0.0
+	occRateBps := 0
+	if capacityBeds > 0 {
+		occRatePct = float64(occupiedBeds) / float64(capacityBeds) * 100.0
+		occRateBps = int(occRatePct * 100.0)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"property_id":        pid,
-		"capacity_beds":      occ.CapacityBeds,
-		"occupied_beds":      occ.OccupiedBeds,
-		"vacant_beds":        vacant,
-		"beds_at_risk":       occ.BedsAtRisk,
-		"occupancy_rate_bps": bps,
-		"occupancy_rate_pct": pct,
+		"capacity_beds":      capacityBeds,
+		"occupied_beds":      occupiedBeds,
+		"vacant_beds":        vacantBeds,
+		"beds_at_risk":       bedsAtRisk,
+		"total_rooms":        totalRooms,
+		"occupied_rooms":     occupiedRooms,
+		"vacant_rooms":       vacantRooms,
+		"occupancy_rate_bps": occRateBps,
+		"occupancy_rate_pct": occRatePct,
+		"floors":             resultFloors,
 		"as_of":              time.Now().UTC(),
 	})
+}
+
+func aggregateFloor(fl *FloorOccupancy) {
+	fl.TotalRooms = len(fl.Rooms)
+	fl.OccupiedRooms = 0
+	fl.VacantRooms = 0
+	fl.CapacityBeds = 0
+	fl.OccupiedBeds = 0
+	fl.VacantBeds = 0
+
+	// Sort rooms within floor by RoomNumber
+	sort.Slice(fl.Rooms, func(i, j int) bool {
+		return fl.Rooms[i].RoomNumber < fl.Rooms[j].RoomNumber
+	})
+
+	for _, rm := range fl.Rooms {
+		if rm.IsVacant {
+			fl.VacantRooms++
+		} else {
+			fl.OccupiedRooms++
+		}
+		fl.CapacityBeds += rm.Capacity
+		fl.OccupiedBeds += rm.OccupiedBeds
+		fl.VacantBeds += rm.VacantBeds
+	}
+
+	if fl.CapacityBeds > 0 {
+		fl.OccupancyRatePct = float64(fl.OccupiedBeds) / float64(fl.CapacityBeds) * 100.0
+	}
 }
 
 type BulkMarkPaidPreviewRequest struct {

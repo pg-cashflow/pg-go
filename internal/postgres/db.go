@@ -30,8 +30,25 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if minConns < 2 {
 		minConns = 2
 	}
+	if s := os.Getenv("DATABASE_MIN_CONNS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			minConns = n
+		}
+	}
 	cfg.MinConns = int32(minConns)
 	cfg.MaxConnLifetime = time.Hour
+	if s := os.Getenv("DATABASE_MAX_CONN_LIFETIME"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			cfg.MaxConnLifetime = d
+		}
+	}
+	cfg.MaxConnIdleTime = 15 * time.Minute
+	if s := os.Getenv("DATABASE_MAX_CONN_IDLE_TIME"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			cfg.MaxConnIdleTime = d
+		}
+	}
+	cfg.HealthCheckPeriod = 1 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)

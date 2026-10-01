@@ -58,6 +58,69 @@ function esc(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
+async function enableWebPush(btn, statusEl) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    statusEl.innerHTML = `<p class="err">Push notifications not supported on this browser. On iOS Safari, please install via "Add to Home Screen" first.</p>`;
+    return;
+  }
+  try {
+    btn.disabled = true;
+    btn.textContent = "Requesting permission...";
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      statusEl.innerHTML = `<p class="err">Permission ${esc(perm)}. Notifications require browser permission.</p>`;
+      btn.disabled = false;
+      btn.textContent = "Enable Notifications";
+      return;
+    }
+    btn.textContent = "Subscribing...";
+    const reg = await navigator.serviceWorker.ready;
+    const vapidRes = await api("/push/vapid-public-key");
+    if (!vapidRes || !vapidRes.public_key) {
+      statusEl.innerHTML = `<p class="err">Push notifications not configured on server.</p>`;
+      btn.disabled = false;
+      btn.textContent = "Enable Notifications";
+      return;
+    }
+    const appServerKey = urlBase64ToUint8Array(vapidRes.public_key);
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: appServerKey,
+      });
+    }
+    const rawKey = sub.getKey("p256dh");
+    const rawAuth = sub.getKey("auth");
+    const p256dh = rawKey ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawKey))) : "";
+    const auth = rawAuth ? btoa(String.fromCharCode.apply(null, new Uint8Array(rawAuth))) : "";
+    await api("/tenant/push/subscribe", {
+      method: "POST",
+      body: JSON.stringify({
+        endpoint: sub.endpoint,
+        keys: { p256dh, auth },
+      }),
+    });
+    statusEl.innerHTML = `<p class="ok">Notifications active! You will receive rent & meal alerts.</p>`;
+    btn.textContent = "Notifications Active ✓";
+  } catch (e) {
+    statusEl.innerHTML = `<p class="err">${esc(e.message || String(e))}</p>`;
+    btn.disabled = false;
+    btn.textContent = "Enable Notifications";
+  }
+}
+
 function logout() {
   S.token = "";
   S.user = null;
@@ -299,24 +362,27 @@ async function showWaiting(err) {
 }
 
 async function showOwner(err) {
-  const tab = S.tab || "joins";
-  let joins = { join_requests: [] }, reports = { payment_reports: [] }, invite = {}, dues = { dues: [] };
+  const tab = S.tab || "occupancy";
+  let joins = { join_requests: [] }, reports = { payment_reports: [] }, invite = {}, dues = { dues: [] }, occ = {};
   try {
     joins = await api("/owner/join-requests?status=pending");
     reports = await api("/owner/payment-reports?status=pending_review");
     invite = await api("/owner/invite");
     dues = await api("/owner/dues");
+    try { occ = await api("/owner/occupancy"); } catch (_) {}
   } catch (e) { err = e; }
   const n = el(`<main>
     <h1>Owner</h1>
     ${banner(err)}
     <nav class="tabs">
+      <button data-tab="occupancy" class="${tab === "occupancy" ? "on" : ""}">Occupancy</button>
       <button data-tab="joins" class="${tab === "joins" ? "on" : ""}">Join requests</button>
       <button data-tab="reports" class="${tab === "reports" ? "on" : ""}">UTR reports</button>
       <button data-tab="dues" class="${tab === "dues" ? "on" : ""}">Dues</button>
       <button data-tab="gamification" class="${tab === "gamification" ? "on" : ""}">Gamification</button>
       <button data-tab="more" class="${tab === "more" ? "on" : ""}">More</button>
     </nav>
+    <section id="occupancy" class="${tab === "occupancy" ? "" : "hidden"}"></section>
     <section id="joins" class="${tab === "joins" ? "" : "hidden"}"></section>
     <section id="reports" class="${tab === "reports" ? "" : "hidden"}"></section>
     <section id="dues" class="${tab === "dues" ? "" : "hidden"}"></section>
@@ -328,6 +394,117 @@ async function showOwner(err) {
     b.onclick = () => { S.tab = b.dataset.tab; showOwner(); };
   });
   n.querySelector("#out").onclick = logout;
+
+  // Render Occupancy Summary Chart & Floor breakdown
+  const obox = n.querySelector("#occupancy");
+  if (obox) {
+    const totalRooms = occ.total_rooms || 0;
+    const vacantRooms = occ.vacant_rooms || 0;
+    const occupiedRooms = occ.occupied_rooms || 0;
+    const capBeds = occ.capacity_beds || 0;
+    const occBeds = occ.occupied_beds || 0;
+    const vacBeds = occ.vacant_beds || 0;
+    const occRate = Math.round(occ.occupancy_rate_pct || 0);
+
+    let html = `
+      <div class="kpi-grid">
+        <div class="kpi-card accent-green">
+          <div class="kpi-label">Vacant Rooms</div>
+          <div class="kpi-num">${vacantRooms}</div>
+          <div class="kpi-sub">${totalRooms ? `${vacantRooms} of ${totalRooms} rooms vacant` : "No rooms registered"}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Occupancy Rate</div>
+          <div class="kpi-num">${occRate}%</div>
+          <div class="kpi-sub">${occupiedRooms} rooms occupied</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Bed Status</div>
+          <div class="kpi-num">${vacBeds} Free</div>
+          <div class="kpi-sub">${occBeds} / ${capBeds} beds occupied</div>
+        </div>
+      </div>
+
+      <div class="card occupancy-summary-card">
+        <div class="occ-header-row">
+          <div>
+            <h2>Floor Occupancy Overview</h2>
+            <p class="muted" style="margin:0.2rem 0 0.5rem;">Visual room vacancies and bed capacity across all floors.</p>
+          </div>
+          <div class="filter-controls">
+            <button class="btn-xs ${S.vacantOnly ? "on" : "secondary"}" id="toggle-vacant-view">
+              ${S.vacantOnly ? "Showing Vacant Only" : "Show Vacant Only"}
+            </button>
+          </div>
+        </div>`;
+
+    if (!(occ.floors || []).length) {
+      html += `<p class="muted" style="padding: 1rem 0;">No floors configured yet. Add floors and rooms in the <strong>Gamification</strong> tab to track real-time visual occupancy.</p>`;
+    } else {
+      occ.floors.forEach((f) => {
+        const fOccRate = Math.round(f.occupancy_rate_pct || 0);
+        const fVacRooms = f.vacant_rooms || 0;
+        const fTotRooms = f.total_rooms || 0;
+        const fVacBeds = f.vacant_beds || 0;
+        const fCapBeds = f.capacity_beds || 0;
+        const fOccBeds = f.occupied_beds || 0;
+
+        html += `
+          <div class="floor-block">
+            <div class="floor-title-row">
+              <span class="floor-name"><strong>${esc(f.floor_name || "Floor " + f.floor_number)}</strong></span>
+              <span class="badge ${fVacRooms > 0 ? "ok" : "warn"}">
+                ${fVacRooms} vacant room${fVacRooms === 1 ? "" : "s"}
+              </span>
+            </div>
+            
+            <!-- Horizontal visual bar chart for this floor -->
+            <div class="bar-chart-track">
+              <div class="bar-chart-fill" style="width: ${Math.min(100, fOccRate)}%;"></div>
+            </div>
+            <div class="bar-chart-labels">
+              <span>${f.occupied_rooms} of ${fTotRooms} rooms occupied (${fOccRate}%)</span>
+              <span>${fVacBeds} bed${fVacBeds === 1 ? "" : "s"} vacant (${fOccBeds}/${fCapBeds} occupied)</span>
+            </div>
+
+            <!-- Room Pills Grid -->
+            <div class="room-grid">`;
+
+        (f.rooms || []).forEach((r) => {
+          const isVac = r.is_vacant;
+          const isPart = !isVac && r.vacant_beds > 0;
+          const statusClass = isVac ? "vacant" : (isPart ? "partial" : "full");
+          
+          if (S.vacantOnly && !isVac && !isPart) {
+            return; // Skip full rooms when filtering for vacant only
+          }
+
+          let statusBadgeText = isVac ? `${r.vacant_beds} beds free` : (isPart ? `${r.vacant_beds} free` : "Full");
+          let dotColor = isVac ? "#16a34a" : (isPart ? "#eab308" : "#94a3b8");
+
+          html += `
+            <div class="room-pill ${statusClass}" title="${isVac ? "Completely Vacant" : `${r.occupied_beds}/${r.capacity} beds occupied`}">
+              <span class="dot" style="background:${dotColor};"></span>
+              <span class="room-num">${esc(r.room_number)}</span>
+              <span class="room-beds-tag">${statusBadgeText}</span>
+            </div>`;
+        });
+
+        html += `</div></div>`;
+      });
+    }
+
+    html += `</div>`;
+    obox.innerHTML = html;
+
+    const toggleBtn = obox.querySelector("#toggle-vacant-view");
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        S.vacantOnly = !S.vacantOnly;
+        showOwner();
+      };
+    }
+  }
 
   const jbox = n.querySelector("#joins");
   if (!(joins.join_requests || []).length) jbox.innerHTML = "<p>No pending join requests.</p>";
@@ -584,6 +761,16 @@ async function showTenant(err) {
       <div id="hz_status"></div>
     </details>
 
+    <!-- Notifications (Rent & Meal Alerts) -->
+    <details class="card">
+      <summary>Notifications & Device Alerts</summary>
+      <p class="muted">Get alerts for rent dues, meal RSVP reminders, and warden notices directly on your phone.</p>
+      <div class="row">
+        <button id="enable_push">Enable Notifications</button>
+      </div>
+      <div id="push_status"></div>
+    </details>
+
     <details class="card">
       <summary>Aadhaar (optional)</summary>
       <label>Secure QR payload</label><textarea id="qr" rows="2"></textarea>
@@ -596,6 +783,11 @@ async function showTenant(err) {
   </main>`);
 
   n.querySelector("#out").onclick = logout;
+
+  const pushBtn = n.querySelector("#enable_push");
+  if (pushBtn) {
+    pushBtn.onclick = () => enableWebPush(pushBtn, n.querySelector("#push_status"));
+  }
 
   // Meal RSVP handlers
   n.querySelector("#save_rsvp").onclick = async () => {
