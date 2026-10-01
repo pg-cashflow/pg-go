@@ -16,13 +16,16 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// ErrEmbeddingsNotConfigured is returned by NoopEmbedder; callers treat it as "text-only".
+var ErrEmbeddingsNotConfigured = errors.New("embeddings not configured")
+
 // NoopEmbedder disables vector search.
 type NoopEmbedder struct{}
 
 func (NoopEmbedder) Dimensions() int { return EmbeddingDims }
 
 func (NoopEmbedder) Embed(context.Context, string) ([]float32, error) {
-	return nil, errors.New("embeddings not configured")
+	return nil, ErrEmbeddingsNotConfigured
 }
 
 // HashEmbedder is a deterministic local embedder for dev/tests (not true semantics).

@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
 
@@ -24,7 +26,7 @@ func (r *SearchRepo) SearchLexical(ctx context.Context, p search.Params, types [
 			if p.TenantID != nil {
 				continue
 			}
-			rs, err := r.searchTenants(ctx, p.PropertyID, like, upper, perType)
+			rs, err := r.searchTenants(ctx, p.PropertyID, p.Query, like, upper, perType)
 			if err != nil {
 				return nil, err
 			}
@@ -97,7 +99,7 @@ func (r *SearchRepo) SearchLexical(ctx context.Context, p search.Params, types [
 			out = append(out, rs...)
 		case search.TypeDocument:
 			// Vector index only; lexical document search uses title/body ILIKE fallback.
-			rs, err := r.searchDocumentsLexical(ctx, p.PropertyID, p.TenantID, like, perType)
+			rs, err := r.searchDocumentsLexical(ctx, p, like, perType)
 			if err != nil {
 				return nil, err
 			}
@@ -108,16 +110,22 @@ func (r *SearchRepo) SearchLexical(ctx context.Context, p search.Params, types [
 }
 
 func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType int, embedding []float32) ([]search.Result, error) {
+	allowedDocTypes := search.AllowedDocumentEntityTypes(domain.Role(p.Role))
+	if len(allowedDocTypes) == 0 {
+		return nil, nil
+	}
+
 	vec := pgVectorLiteral(embedding)
 	q := `
 		SELECT entity_type, entity_id::text, title, body,
 		       1 - (embedding <=> $3::vector) AS score
 		FROM search_documents
-		WHERE property_id = $1`
-	args := []any{p.PropertyID, perType, vec}
-	n := 4
+		WHERE property_id = $1
+		  AND entity_type = ANY($4)`
+	args := []any{p.PropertyID, perType, vec, allowedDocTypes}
+	n := 5
 	if p.TenantID != nil {
-		q += ` AND (tenant_id IS NULL OR tenant_id = $` + itoa(n) + `)`
+		q += ` AND tenant_id = $` + itoa(n)
 		args = append(args, *p.TenantID)
 		n++
 	}
@@ -149,6 +157,19 @@ func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType 
 }
 
 func (r *SearchRepo) UpsertDocument(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, entityType string, entityID uuid.UUID, title, body string, embedding []float32) error {
+	if len(embedding) == 0 {
+		// Text-only: works with or without the optional pgvector column.
+		_, err := r.db.Exec(ctx, `
+			INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,NOW())
+			ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
+				tenant_id = EXCLUDED.tenant_id,
+				title = EXCLUDED.title,
+				body = EXCLUDED.body,
+				updated_at = NOW()`,
+			propertyID, tenantID, entityType, entityID, title, body)
+		return err
+	}
 	vec := pgVectorLiteral(embedding)
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, embedding, updated_at)
@@ -232,8 +253,9 @@ func scanSources(rows interface{ Next() bool; Scan(...any) error; Close() }) []s
 	return out
 }
 
-func (r *SearchRepo) searchTenants(ctx context.Context, propertyID uuid.UUID, like, upper string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
+func (r *SearchRepo) searchTenants(ctx context.Context, propertyID uuid.UUID, q, like, upper string, limit int) ([]search.Result, error) {
+	phoneDigits := search.ExtractPhoneDigits(q)
+	qSQL := `
 		SELECT id::text, name, COALESCE(room_number,''), status
 		FROM tenants
 		WHERE property_id = $1
@@ -241,10 +263,17 @@ func (r *SearchRepo) searchTenants(ctx context.Context, propertyID uuid.UUID, li
 		    name ILIKE $2 ESCAPE '\'
 		    OR COALESCE(room_number,'') ILIKE $2 ESCAPE '\'
 		    OR COALESCE(phone,'') ILIKE $2 ESCAPE '\'
-		    OR UPPER(COALESCE(phone,'')) = $3
+		    OR UPPER(COALESCE(phone,'')) = $3`
+	args := []any{propertyID, like, upper, limit}
+	if len(phoneDigits) >= 10 {
+		args = append(args, "%"+phoneDigits+"%")
+		qSQL += fmt.Sprintf(` OR COALESCE(phone,'') ILIKE $%d`, len(args))
+	}
+	qSQL += `
 		  )
 		ORDER BY name
-		LIMIT $4`, propertyID, like, upper, limit)
+		LIMIT $4`
+	rows, err := r.db.Query(ctx, qSQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +526,7 @@ func (r *SearchRepo) searchHazards(ctx context.Context, propertyID uuid.UUID, li
 			ID:       id,
 			Title:    "Hazard " + cat,
 			Subtitle: truncate(desc, 60),
-			Path:     "/manager/hazards?q=" + cat,
+			Path:     "/manager/hazards?q=" + url.QueryEscape(cat),
 		})
 	}
 	return out, nil
@@ -527,22 +556,30 @@ func (r *SearchRepo) searchViolations(ctx context.Context, propertyID uuid.UUID,
 			ID:       id,
 			Title:    "Violation " + code,
 			Subtitle: truncate(tenantName+" · "+desc, 60),
-			Path:     "/manager/violations?q=" + code,
+			Path:     "/manager/violations?q=" + url.QueryEscape(code),
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, like string, limit int) ([]search.Result, error) {
+func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params, like string, limit int) ([]search.Result, error) {
+	allowedDocTypes := search.AllowedDocumentEntityTypes(domain.Role(p.Role))
+	if len(allowedDocTypes) == 0 {
+		return nil, nil
+	}
+
 	q := `
 		SELECT entity_type, entity_id::text, title, body
 		FROM search_documents
 		WHERE property_id = $1
-		  AND (title ILIKE $2 ESCAPE '\' OR body ILIKE $2 ESCAPE '\')`
-	args := []any{propertyID, like, limit}
-	if tenantID != nil {
-		q += ` AND (tenant_id IS NULL OR tenant_id = $4)`
-		args = append(args, *tenantID)
+		  AND (title ILIKE $2 ESCAPE '\' OR body ILIKE $2 ESCAPE '\')
+		  AND entity_type = ANY($4)`
+	args := []any{p.PropertyID, like, limit, allowedDocTypes}
+	n := 5
+	if p.TenantID != nil {
+		q += fmt.Sprintf(` AND tenant_id = $%d`, n)
+		args = append(args, *p.TenantID)
+		n++
 	}
 	q += ` ORDER BY updated_at DESC LIMIT $3`
 	rows, err := r.db.Query(ctx, q, args...)
@@ -588,7 +625,7 @@ func scanTenantResults(rows interface {
 			ID:       id,
 			Title:    name,
 			Subtitle: sub,
-			Path:     pathPrefix + name,
+			Path:     pathPrefix + url.QueryEscape(name),
 		})
 	}
 	return out, nil
@@ -597,7 +634,7 @@ func scanTenantResults(rows interface {
 func documentPath(entityType, id string) string {
 	switch entityType {
 	case "inspection":
-		return "/manager/inspections/" + id
+		return "/manager/inspections/" + url.PathEscape(id)
 	case "hazard":
 		return "/manager/hazards"
 	case "violation":

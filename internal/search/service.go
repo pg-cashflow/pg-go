@@ -22,6 +22,9 @@ func (s *Service) Search(ctx context.Context, role domain.Role, propertyID uuid.
 		return q, ModeLexical, nil, fmt.Errorf("query required")
 	}
 	if !ValidQueryLength(q) {
+		if len(q) > MaxQueryLength {
+			return q, ModeLexical, nil, fmt.Errorf("query too long")
+		}
 		return q, ModeLexical, nil, fmt.Errorf("query too short")
 	}
 	if limit <= 0 {

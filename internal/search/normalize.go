@@ -30,12 +30,36 @@ func NormalizeQuery(q string) string {
 	return b.String()
 }
 
-// ValidQueryLength returns true when q meets minimum length rules.
+const (
+	MinQueryLength = 2
+	MaxQueryLength = 100
+)
+
+// ValidQueryLength returns true when q meets length bounds.
 func ValidQueryLength(q string) bool {
-	if len(q) < 2 && !exactTokenRe.MatchString(q) {
+	if len(q) < MinQueryLength && !exactTokenRe.MatchString(q) {
+		return false
+	}
+	if len(q) > MaxQueryLength {
 		return false
 	}
 	return true
+}
+
+// ExtractPhoneDigits extracts only the digit characters from a string.
+// If the string contains at least 10 digits, returns the last 10 digits.
+func ExtractPhoneDigits(s string) string {
+	var digits strings.Builder
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	if len(d) >= 10 {
+		return d[len(d)-10:]
+	}
+	return d
 }
 
 // LikePattern escapes ILIKE wildcards for a contains match.

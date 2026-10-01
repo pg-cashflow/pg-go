@@ -136,7 +136,7 @@ func TestCreateRefund(t *testing.T) {
 	if err := json.Unmarshal(gotBody, &reqBody); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
 	}
-	if reqBody.RefundAmount != 5500.00 || reqBody.RefundID != "rf_test_123" || reqBody.RefundNote != "Tenant moved out" {
+	if reqBody.RefundAmount.String() != "5500.00" || reqBody.RefundID != "rf_test_123" || reqBody.RefundNote != "Tenant moved out" {
 		t.Fatalf("unexpected request body: %+v", reqBody)
 	}
 	if ref.CFRefundID != "999888" || ref.AmountPaise != 550000 || ref.RefundStatus != "SUCCESS" {

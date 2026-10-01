@@ -17,7 +17,22 @@ func AllowedTypes(role domain.Role) []EntityType {
 		return []EntityType{TypeDue, TypePayment, TypeDocument}
 	default:
 		return nil
+	}
 }
+
+// AllowedDocumentEntityTypes returns document entity types visible for a role.
+// Strictly scopes search_documents queries to prevent privilege escalation.
+func AllowedDocumentEntityTypes(role domain.Role) []string {
+	switch role {
+	case domain.RoleOwner:
+		return []string{"inspection", "hazard", "violation", "payment_note"}
+	case domain.RoleManager:
+		return []string{"inspection", "hazard", "violation"}
+	case domain.RoleTenant:
+		return []string{"hazard", "violation"}
+	default:
+		return nil
+	}
 }
 
 func filterTypes(allowed []EntityType, requested []EntityType) []EntityType {

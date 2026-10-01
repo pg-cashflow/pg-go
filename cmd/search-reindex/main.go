@@ -10,8 +10,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
 
-// Rebuilds search_documents embeddings for all properties.
-// Usage: SEARCH_EMBEDDING=hash go run ./cmd/search-reindex/
+// Rebuilds search_documents for all properties (text-only unless SEARCH_EMBEDDING=hash).
+// Usage: go run ./cmd/search-reindex/
 func main() {
 	_ = godotenv.Load()
 	dbURL := os.Getenv("DATABASE_URL")
@@ -25,9 +25,10 @@ func main() {
 	}
 	defer pool.Close()
 
-	var embedder search.Embedder = search.HashEmbedder{}
-	if os.Getenv("SEARCH_EMBEDDING") == "none" {
-		embedder = search.NoopEmbedder{}
+	// Text-only by default; SEARCH_EMBEDDING=hash adds dev-only vectors (needs pgvector).
+	var embedder search.Embedder = search.NoopEmbedder{}
+	if os.Getenv("SEARCH_EMBEDDING") == "hash" {
+		embedder = search.HashEmbedder{}
 	}
 
 	repo := postgres.NewSearchRepo(pool)

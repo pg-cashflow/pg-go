@@ -117,7 +117,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	}
 
 	dueID := uuid.New()
-	dCode := fmt.Sprintf("H%05d", time.Now().UnixNano()%100000)
+	dCode := uuid.New().String()[:8]
 	pStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	pEnd := time.Date(2026, 9, 30, 23, 59, 59, 0, time.UTC)
 	dueDate := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
