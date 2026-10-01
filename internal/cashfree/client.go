@@ -53,7 +53,7 @@ func NewClient(cfg Config) *Client {
 
 type createOrderBody struct {
 	OrderID       string         `json:"order_id"`
-	OrderAmount   float64        `json:"order_amount"`
+	OrderAmount   json.Number    `json:"order_amount"`
 	OrderCurrency string         `json:"order_currency"`
 	Customer      map[string]any `json:"customer_details"`
 	OrderMeta     map[string]any `json:"order_meta"`
@@ -79,7 +79,7 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 
 	body := createOrderBody{
 		OrderID:       orderID,
-		OrderAmount:   float64(amountPaise) / 100.0,
+		OrderAmount:   json.Number(FormatPaiseToRupees(int64(amountPaise))),
 		OrderCurrency: "INR",
 		Customer:      map[string]any{"customer_id": orderID, "customer_phone": customerPhone},
 		OrderMeta: map[string]any{
@@ -220,7 +220,7 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 }
 
 type CreateRefundRequest struct {
-	RefundAmount float64 `json:"refund_amount"`
+	RefundAmount json.Number `json:"refund_amount"`
 	RefundID     string  `json:"refund_id"`
 	RefundNote   string  `json:"refund_note,omitempty"`
 	RefundSpeed  string  `json:"refund_speed,omitempty"`
@@ -231,7 +231,7 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
 	body := CreateRefundRequest{
-		RefundAmount: float64(amountPaise) / 100.0,
+		RefundAmount: json.Number(FormatPaiseToRupees(amountPaise)),
 		RefundID:     refundID,
 		RefundNote:   reason,
 		RefundSpeed:  "STANDARD",

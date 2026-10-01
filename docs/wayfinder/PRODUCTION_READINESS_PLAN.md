@@ -3,7 +3,7 @@
 > **Status**: Verified Production-Ready for Phase 1 Deployment  
 > **Target Scale**: 1–10 Properties · 50–500 Tenants · 5–20 Staff  
 > **Repository**: `github.com/pg-cashflow/pg-go`  
-> **Active Branches**: `origin/div_dev` & `origin/develop`
+> **Active Branches**: `origin/div_dev` (active integration & hardening; `develop` staging baseline to be cut from `div_dev`)
 
 ---
 
