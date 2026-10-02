@@ -3,16 +3,22 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -385,4 +391,160 @@ func TestOwnerEODSettlementBalance_Endpoints(t *testing.T) {
 		}
 	})
 }
+
+type mockSettlementReconcilerService struct {
+	fail   bool
+	called bool
+}
+
+func (m *mockSettlementReconcilerService) ReconcileWebhookSettlement(_ context.Context, _ *cashfree.SettlementWebhookRecord) (*domain.GatewaySettlement, error) {
+	m.called = true
+	if m.fail {
+		return nil, errors.New("reconciler db error")
+	}
+	return &domain.GatewaySettlement{}, nil
+}
+
+func signWebhook(secret, ts, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(ts + body))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func TestCashfreeSettlementWebhook_FailClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	const validSecret = "test_cashfree_secret_key"
+	validPayload := `{"data":{"settlement":{"settlement_id":"CF_STLM_123","status":"SUCCESS","payment_amount":1000.0,"amount_settled":980.0,"service_charge":16.95,"service_tax":3.05,"adjustment":0.0,"utr":"UTR12345"}},"type":"SETTLEMENT_SUCCESS","event_time":"2026-10-02T10:00:00Z"}`
+
+	t.Run("Fails closed with 503 when CashfreeSecret is unconfigured", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret: "",
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 Service Unavailable, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("Fails with 401 when signature is invalid", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret: validSecret,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		req.Header.Set("x-webhook-timestamp", ts)
+		req.Header.Set("x-webhook-signature", "invalid_tampered_sig")
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("Fails with 401 when timestamp tolerance is exceeded (> 300s old)", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret:      validSecret,
+				WebhookToleranceSec: 300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		oldTS := strconv.FormatInt(time.Now().Add(-600*time.Second).UnixMilli(), 10)
+		sig := signWebhook(validSecret, oldTS, validPayload)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		req.Header.Set("x-webhook-timestamp", oldTS)
+		req.Header.Set("x-webhook-signature", sig)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized for expired timestamp, got %d", w.Code)
+		}
+	})
+
+	t.Run("Fails closed with 500 when Reconciler fails, prompting gateway retry", func(t *testing.T) {
+		mockRecon := &mockSettlementReconcilerService{fail: true}
+		gwRepo := &stubGatewayRepo{}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret:       validSecret,
+				SettlementReconciler: mockRecon,
+				GatewayPaymentRepo:   gwRepo,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		sig := signWebhook(validSecret, ts, validPayload)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		req.Header.Set("x-webhook-timestamp", ts)
+		req.Header.Set("x-webhook-signature", sig)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 on reconciler error to ensure gateway retries, got %d", w.Code)
+		}
+		if !mockRecon.called {
+			t.Error("expected reconciler to be called")
+		}
+		if len(gwRepo.webhookEvents) != 1 {
+			t.Errorf("expected 1 audit webhook event logged, got %d", len(gwRepo.webhookEvents))
+		}
+	})
+
+	t.Run("Succeeds with 200 and records audit row when valid", func(t *testing.T) {
+		mockRecon := &mockSettlementReconcilerService{fail: false}
+		gwRepo := &stubGatewayRepo{}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret:       validSecret,
+				SettlementReconciler: mockRecon,
+				GatewayPaymentRepo:   gwRepo,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		sig := signWebhook(validSecret, ts, validPayload)
+
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		req.Header.Set("x-webhook-timestamp", ts)
+		req.Header.Set("x-webhook-signature", sig)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if !mockRecon.called {
+			t.Error("expected reconciler to be called")
+		}
+		if len(gwRepo.webhookEvents) != 1 {
+			t.Errorf("expected 1 audit event logged, got %d", len(gwRepo.webhookEvents))
+		}
+	})
+}
+
 

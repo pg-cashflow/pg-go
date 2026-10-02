@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -138,7 +139,8 @@ func (h *Handlers) OwnerResolveSettlementDiscrepancy(c *gin.Context) {
 }
 
 // CashfreeSettlementWebhook handles POST /webhooks/cashfree/settlements.
-// Verifies HMAC signature, audits raw payload, and feeds SettlementReconciler.
+// Enforces fail-closed HMAC signature check, timestamp tolerance, audit logging in webhook_events,
+// and ensures reconciler errors propagate to trigger gateway retry.
 func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 	raw, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -146,24 +148,56 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 		return
 	}
 
-	signature := c.GetHeader("x-webhook-signature")
-	timestamp := c.GetHeader("x-webhook-timestamp")
-
-	if h.CashfreeSecret != "" {
-		if !cashfree.VerifyWebhookHMAC(h.CashfreeSecret, timestamp, string(raw), signature) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid webhook signature"})
-			return
-		}
-	}
-
-	parsed, err := cashfree.ParseSettlementWebhook(raw)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("parse settlement payload: %v", err)})
+	// 1. Fail closed if CashfreeSecret is unconfigured
+	if h.CashfreeSecret == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payment gateway not configured"})
 		return
 	}
 
+	signature := c.GetHeader("x-webhook-signature")
+	timestamp := c.GetHeader("x-webhook-timestamp")
+
+	// 2. Cryptographic HMAC verification
+	if !cashfree.VerifyWebhookHMAC(h.CashfreeSecret, timestamp, string(raw), signature) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid webhook signature"})
+		return
+	}
+
+	// 3. Timestamp drift / replay check
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(timestamp, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
+	}
+
+	// 4. Audit raw payload into webhook_events
+	if h.GatewayPaymentRepo != nil {
+		_ = h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
+			Provider:         "cashfree",
+			Signature:        &signature,
+			TimestampHeader:  &timestamp,
+			RawPayload:       raw,
+			ProcessingStatus: "received",
+		})
+	}
+
+	// 5. Parse payload with sanitized error
+	parsed, err := cashfree.ParseSettlementWebhook(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settlement payload"})
+		return
+	}
+
+	// 6. Feed SettlementReconciler with fail-closed retry propagation
 	if h.SettlementReconciler != nil {
-		_, _ = h.SettlementReconciler.ReconcileWebhookSettlement(c.Request.Context(), parsed)
+		if _, err := h.SettlementReconciler.ReconcileWebhookSettlement(c.Request.Context(), parsed); err != nil {
+			slog.Error("failed to reconcile settlement webhook", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement reconciliation failure"})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "received"})

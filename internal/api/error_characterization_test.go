@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -251,6 +252,10 @@ func (s *stubAuthService) RotateRefreshToken(ctx context.Context, plaintextToken
 }
 
 func (s *stubAuthService) RevokeSession(ctx context.Context, plaintextToken string) error {
+	return nil
+}
+
+func (s *stubAuthService) RevokeUserSessions(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 

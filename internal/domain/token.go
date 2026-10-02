@@ -31,8 +31,9 @@ type RefreshToken struct {
 	FamilyID  uuid.UUID `json:"family_id"`
 	TokenHash string    `json:"-"`
 	ExpiresAt time.Time `json:"expires_at"`
-	Revoked   bool      `json:"revoked"`
-	CreatedAt time.Time `json:"created_at"`
+	Revoked   bool       `json:"revoked"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
 }
 
 // GenerateToken returns a raw token (hex) for the URL; never store raw.

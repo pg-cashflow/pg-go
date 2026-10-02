@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -111,7 +112,11 @@ func (s *Service) RecordMeterReading(ctx context.Context, in MeterReadingInput) 
 			includedUnits = rm.IncludedUnits
 			if delta > float64(includedUnits) {
 				excessUnits = delta - float64(includedUnits)
-				billablePaise = int(excessUnits * float64(settings.ElectricityTariffPaise))
+				// Pure integer arithmetic via milli-units (1 kWh = 1000 milli-units) to eliminate float precision loss and truncation artifacts
+				excessMilliUnits := int64(math.Round(excessUnits * 1000.0))
+				tariffPaise := int64(settings.ElectricityTariffPaise)
+				// Half-up integer rounding: (milliUnits * tariff + 500) / 1000
+				billablePaise = int((excessMilliUnits*tariffPaise + 500) / 1000)
 			}
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -23,6 +24,8 @@ type RefreshTokenRepository interface {
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
 	RevokeFamily(ctx context.Context, familyID uuid.UUID) error
 	RevokeUserTokens(ctx context.Context, userID uuid.UUID) error
+	RotateTokenTx(ctx context.Context, oldHash string, newRT *domain.RefreshToken) (*domain.RefreshToken, error)
+	PurgeExpiredTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
 // GenerateRefreshToken creates a high-entropy 256-bit cryptographically secure token

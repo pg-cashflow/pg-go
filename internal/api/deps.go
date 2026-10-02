@@ -47,6 +47,7 @@ type AuthService interface {
 	IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error)
 	RotateRefreshToken(ctx context.Context, plaintextToken string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error)
 	RevokeSession(ctx context.Context, plaintextToken string) error
+	RevokeUserSessions(ctx context.Context, userID uuid.UUID) error
 }
 
 // MagicLinkService resolves and creates payment tokens.
@@ -237,4 +238,9 @@ type SettlementBalancerStore interface {
 	ListDailyBalances(ctx context.Context, propertyID uuid.UUID, limit, offset int) ([]*domain.DailySettlementBalance, error)
 	ComputeDayAggregates(ctx context.Context, propertyID uuid.UUID, reconDate time.Time) (*domain.DailySettlementBalance, error)
 }
+
+type SettlementReconcilerService interface {
+	ReconcileWebhookSettlement(ctx context.Context, rec *cashfree.SettlementWebhookRecord) (*domain.GatewaySettlement, error)
+}
+
 

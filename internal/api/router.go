@@ -91,7 +91,7 @@ type Deps struct {
 	AttendanceSvc  *attendance.Service
 
 	SettlementRepo       *postgres.SettlementRepo
-	SettlementReconciler *finance.SettlementReconciler
+	SettlementReconciler SettlementReconcilerService
 
 	SettlementBalancerRepo SettlementBalancerStore
 	SettlementBalancer     *finance.SettlementBalancer

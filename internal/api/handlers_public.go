@@ -319,6 +319,9 @@ func (h *Handlers) RevokeSessions(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	if h.Auth != nil {
+		_ = h.Auth.RevokeUserSessions(c.Request.Context(), uid)
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
