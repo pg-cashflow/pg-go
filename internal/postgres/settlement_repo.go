@@ -91,20 +91,30 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			adjustment_paise = EXCLUDED.adjustment_paise,
 			net_amount_paise = EXCLUDED.net_amount_paise,
 			settlement_status = CASE
-				WHEN gateway_settlements.settlement_status = 'SETTLED' AND EXCLUDED.settlement_status != 'SETTLED' THEN gateway_settlements.settlement_status
+				-- Terminal reversal cannot be overwritten by any state
+				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.settlement_status
+				-- Legitimate reversal wins over everything else (e.g. chargeback after SUCCESS)
+				WHEN EXCLUDED.settlement_status = 'REVERSED' THEN 'REVERSED'
+				-- Terminal SUCCESS cannot regress to PENDING or FAILED
+				WHEN gateway_settlements.settlement_status = 'SUCCESS' AND EXCLUDED.settlement_status IN ('PENDING', 'FAILED') THEN gateway_settlements.settlement_status
+				-- Terminal FAILED cannot regress to PENDING
+				WHEN gateway_settlements.settlement_status = 'FAILED' AND EXCLUDED.settlement_status = 'PENDING' THEN gateway_settlements.settlement_status
 				ELSE EXCLUDED.settlement_status
 			END,
 			settled_on = COALESCE(EXCLUDED.settled_on, gateway_settlements.settled_on),
 			settlement_initiated_on = COALESCE(EXCLUDED.settlement_initiated_on, gateway_settlements.settlement_initiated_on),
 			transfer_time = COALESCE(EXCLUDED.transfer_time, gateway_settlements.transfer_time),
 			reconciliation_status = CASE
-				WHEN gateway_settlements.reconciliation_status = 'RESOLVED' THEN gateway_settlements.reconciliation_status
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.reconciliation_status
 				ELSE EXCLUDED.reconciliation_status
 			END,
 			discrepancy_reason = CASE
-				WHEN gateway_settlements.reconciliation_status = 'RESOLVED' THEN gateway_settlements.discrepancy_reason
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.discrepancy_reason
 				ELSE EXCLUDED.discrepancy_reason
 			END,
+			resolution_notes = COALESCE(EXCLUDED.resolution_notes, gateway_settlements.resolution_notes),
+			resolved_by = COALESCE(EXCLUDED.resolved_by, gateway_settlements.resolved_by),
+			resolved_at = COALESCE(EXCLUDED.resolved_at, gateway_settlements.resolved_at),
 			journal_entry_id = COALESCE(EXCLUDED.journal_entry_id, gateway_settlements.journal_entry_id),
 			raw_payload = EXCLUDED.raw_payload,
 			updated_at = NOW()
