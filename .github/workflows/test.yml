@@ -20,6 +20,8 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    env:
+      HAS_PAT: ${{ secrets.GH_PAT != '' }}
     steps:
       - name: Checkout pg-go
         uses: actions/checkout@v4
@@ -27,7 +29,7 @@ jobs:
           path: pg-go
 
       - name: Checkout pg-react
-        if: ${{ secrets.GH_PAT != '' }}
+        if: env.HAS_PAT == 'true'
         uses: actions/checkout@v4
         with:
           repository: pg-cashflow/pg-react
@@ -40,14 +42,14 @@ jobs:
           go-version-file: pg-go/go.mod
 
       - uses: actions/setup-node@v4
-        if: ${{ secrets.GH_PAT != '' }}
+        if: env.HAS_PAT == 'true'
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: pg-react/package-lock.json
 
       - name: Test and build pg-react
-        if: ${{ secrets.GH_PAT != '' }}
+        if: env.HAS_PAT == 'true'
         working-directory: pg-react
         env:
           VITE_API_BASE_URL: /api

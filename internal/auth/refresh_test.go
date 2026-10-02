@@ -93,15 +93,27 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 	}
 
 	if oldRT.Revoked {
-		// Check grace window
-		if oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 30*time.Second {
-			for _, rt := range m.tokens {
-				if rt.FamilyID == oldRT.FamilyID && !rt.Revoked && time.Now().Before(rt.ExpiresAt) {
-					return rt, nil
-				}
+		var activeCount int
+		for _, rt := range m.tokens {
+			if rt.FamilyID == oldRT.FamilyID && !rt.Revoked && time.Now().Before(rt.ExpiresAt) {
+				activeCount++
 			}
 		}
-		// Grace window exceeded or replacement invalid -> revoke family
+
+		// Grace window check (15 seconds, only if family is not already nuked)
+		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 15*time.Second {
+			// Issue fresh child token in the same family
+			newRT.ID = uuid.New()
+			newRT.UserID = oldRT.UserID
+			newRT.FamilyID = oldRT.FamilyID
+			newRT.CreatedAt = time.Now()
+			newRT.Revoked = false
+
+			m.tokens[newRT.TokenHash] = newRT
+			m.byID[newRT.ID] = newRT
+			return newRT, nil
+		}
+		// Grace window exceeded or family already nuked -> revoke family
 		now := time.Now()
 		for _, rt := range m.tokens {
 			if rt.FamilyID == oldRT.FamilyID {
@@ -319,13 +331,25 @@ func TestRefreshTokenGraceWindowRetry(t *testing.T) {
 		t.Fatalf("expected non-empty refToken2")
 	}
 
-	// Step 3: Network retransmit of refToken1 within 30s grace window
+	// Step 3: Network retransmit of refToken1 within 15s grace window
 	accTokenRetry, refTokenRetry, _, err := svc.RotateRefreshToken(ctx, refToken1)
 	if err != nil {
 		t.Fatalf("expected grace window to tolerate retransmit, got error: %v", err)
 	}
 	if accTokenRetry == "" || refTokenRetry == "" {
 		t.Fatalf("expected non-empty tokens on grace window retry")
+	}
+	if refTokenRetry == refToken1 {
+		t.Fatalf("expected fresh unrevoked child token, got old revoked token")
+	}
+
+	// Step 4: Verify the fresh child token can itself be rotated cleanly
+	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refTokenRetry)
+	if err != nil {
+		t.Fatalf("expected fresh child token from retry to rotate successfully, got: %v", err)
+	}
+	if accTokenNext == "" || refTokenNext == "" {
+		t.Fatalf("expected valid tokens after rotating retry child token")
 	}
 }
 

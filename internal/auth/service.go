@@ -537,13 +537,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 		return "", "", nil, fmt.Errorf("issue new access token: %w", err)
 	}
 
-	finalPlaintext := newPlaintext
-	if rotatedRT.TokenHash != newHash {
-		// Active token returned via grace window
-		finalPlaintext = trimmed
-	}
-
-	return newAccessToken, finalPlaintext, user, nil
+	return newAccessToken, newPlaintext, user, nil
 }
 
 // RevokeUserSessions revokes all stored refresh tokens for a user.

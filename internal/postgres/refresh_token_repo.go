@@ -129,29 +129,37 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 
 	// 1. Replay attack check
 	if current.Revoked {
-		// Grace window check: if token was revoked within the last 30 seconds (lost response ACK or concurrent retry)
-		if current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 30*time.Second {
-			var activeToken domain.RefreshToken
-			activeQuery := `
-				SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at
-				FROM refresh_tokens
-				WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()
-				ORDER BY created_at DESC
-				LIMIT 1
-			`
-			if aerr := tx.QueryRow(ctx, activeQuery, current.FamilyID).Scan(
-				&activeToken.ID, &activeToken.UserID, &activeToken.FamilyID,
-				&activeToken.TokenHash, &activeToken.ExpiresAt, &activeToken.Revoked,
-				&activeToken.RevokedAt, &activeToken.CreatedAt,
-			); aerr == nil {
-				if r.pool != nil {
-					_ = tx.Commit(ctx)
-				}
-				return &activeToken, nil
+		// Check if the family has any active (unrevoked) tokens left
+		var activeCount int
+		_ = tx.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()`, current.FamilyID).Scan(&activeCount)
+
+		// Grace window check: only applies if the family has not been nuked (active tokens exist)
+		// and this token was revoked within the last 15 seconds.
+		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 15*time.Second {
+			// Issue a fresh child token in the same family so client gets a working unrevoked token
+			now := time.Now().UTC()
+			if newRT.ID == uuid.Nil {
+				newRT.ID = uuid.New()
 			}
+			newRT.FamilyID = current.FamilyID
+			newRT.UserID = current.UserID
+			newRT.CreatedAt = now
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+				newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.CreatedAt,
+			); err != nil {
+				return nil, fmt.Errorf("insert grace-window child token: %w", err)
+			}
+			if r.pool != nil {
+				if err := tx.Commit(ctx); err != nil {
+					return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
+				}
+			}
+			return newRT, nil
 		}
 
-		// Replay attack confirmed: nuke entire family!
+		// Replay attack confirmed or family already nuked: ensure entire family is revoked!
 		_, _ = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = NOW() WHERE family_id = $1`, current.FamilyID)
 		if r.pool != nil {
 			_ = tx.Commit(ctx)

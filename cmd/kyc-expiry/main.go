@@ -58,5 +58,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	refreshRepo := postgres.NewRefreshTokenRepo(pool)
+	if n, err := refreshRepo.PurgeExpiredTokens(ctx, 24*time.Hour); err != nil {
+		slog.Error("kyc-expiry: refresh token purge failed", "err", err)
+	} else if n > 0 {
+		slog.Info("kyc-expiry: purged expired refresh tokens", "deleted", n)
+	}
+
 	slog.Info("kyc-expiry job finished successfully")
 }

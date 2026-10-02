@@ -545,6 +545,46 @@ func TestCashfreeSettlementWebhook_FailClosed(t *testing.T) {
 			t.Errorf("expected 1 audit event logged, got %d", len(gwRepo.webhookEvents))
 		}
 	})
+
+	t.Run("Duplicate delivery retry succeeds idempotently with 200", func(t *testing.T) {
+		mockRecon := &mockSettlementReconcilerService{fail: false}
+		gwRepo := &stubGatewayRepo{}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreeSecret:       validSecret,
+				SettlementReconciler: mockRecon,
+				GatewayPaymentRepo:   gwRepo,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+
+		ts := strconv.FormatInt(time.Now().UnixMilli(), 10)
+		sig := signWebhook(validSecret, ts, validPayload)
+
+		// First delivery
+		w1 := httptest.NewRecorder()
+		req1, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		req1.Header.Set("x-webhook-timestamp", ts)
+		req1.Header.Set("x-webhook-signature", sig)
+		r.ServeHTTP(w1, req1)
+		if w1.Code != http.StatusOK {
+			t.Fatalf("first delivery expected 200 OK, got %d", w1.Code)
+		}
+
+		// Duplicate delivery retry from gateway
+		w2 := httptest.NewRecorder()
+		req2, _ := http.NewRequest(http.MethodPost, "/webhooks/cashfree/settlements", bytes.NewBufferString(validPayload))
+		req2.Header.Set("x-webhook-timestamp", ts)
+		req2.Header.Set("x-webhook-signature", sig)
+		r.ServeHTTP(w2, req2)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("duplicate retry expected 200 OK, got %d: %s", w2.Code, w2.Body.String())
+		}
+		if len(gwRepo.webhookEvents) != 2 {
+			t.Errorf("expected 2 audit events logged across duplicate deliveries, got %d", len(gwRepo.webhookEvents))
+		}
+	})
 }
 
 

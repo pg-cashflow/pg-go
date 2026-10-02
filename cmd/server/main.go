@@ -370,6 +370,11 @@ func main() {
 				} else {
 					logger.Info("outbox cleanup complete", "deleted", n)
 				}
+				if pn, err := refreshRepo.PurgeExpiredTokens(dispatchCtx, 24*time.Hour); err != nil {
+					logger.Error("refresh token purge failed", "err", err)
+				} else if pn > 0 {
+					logger.Info("refresh token purge complete", "deleted", pn)
+				}
 			}
 		}
 	}()

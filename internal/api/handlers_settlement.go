@@ -142,7 +142,8 @@ func (h *Handlers) OwnerResolveSettlementDiscrepancy(c *gin.Context) {
 // Enforces fail-closed HMAC signature check, timestamp tolerance, audit logging in webhook_events,
 // and ensures reconciler errors propagate to trigger gateway retry.
 func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
-	raw, err := io.ReadAll(c.Request.Body)
+	// Cap settlement webhook payload read to 256 KB
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, 256*1024))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read body"})
 		return
@@ -175,13 +176,15 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 
 	// 4. Audit raw payload into webhook_events
 	if h.GatewayPaymentRepo != nil {
-		_ = h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
+		if aerr := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
 			Provider:         "cashfree",
 			Signature:        &signature,
 			TimestampHeader:  &timestamp,
 			RawPayload:       raw,
 			ProcessingStatus: "received",
-		})
+		}); aerr != nil {
+			slog.Warn("failed to persist settlement webhook audit event", "error", aerr)
+		}
 	}
 
 	// 5. Parse payload with sanitized error
