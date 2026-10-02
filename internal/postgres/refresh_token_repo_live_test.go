@@ -248,12 +248,58 @@ func TestLivePostgresConcurrentRotation(t *testing.T) {
 		t.Fatalf("expected at least 1 successful rotation among concurrent workers, got 0")
 	}
 
-	// Verify that the original root token is definitely marked revoked in DB
+	// 1. Verify that the original root token is definitely marked revoked in DB
 	storedRoot, err := repo.GetRefreshTokenByHash(ctx, rootHash)
 	if err != nil {
 		t.Fatalf("fetch stored root: %v", err)
 	}
 	if !storedRoot.Revoked {
 		t.Fatalf("expected root token to be revoked after concurrent rotation")
+	}
+
+	// 2. Verify that the number of active (unrevoked) tokens in DB equals the number of successes
+	var activeTokensInDB int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE`, familyID).Scan(&activeTokensInDB); err != nil {
+		t.Fatalf("count active tokens in db: %v", err)
+	}
+	if activeTokensInDB != successCount {
+		t.Fatalf("expected active tokens in DB (%d) to equal successCount (%d)", activeTokensInDB, successCount)
+	}
+
+	// 3. Verify that all tokens in the family (root and children) strictly share the root's family_started_at
+	expectedStartedAt := rootRT.FamilyStartedAt.Truncate(time.Microsecond)
+	rows, err := pool.Query(ctx, `SELECT id, revoked, family_started_at FROM refresh_tokens WHERE family_id = $1`, familyID)
+	if err != nil {
+		t.Fatalf("query family tokens: %v", err)
+	}
+	defer rows.Close()
+
+	totalRows := 0
+	for rows.Next() {
+		var tID uuid.UUID
+		var isRevoked bool
+		var famStarted time.Time
+		if err := rows.Scan(&tID, &isRevoked, &famStarted); err != nil {
+			t.Fatalf("scan family token: %v", err)
+		}
+		totalRows++
+		if !famStarted.Truncate(time.Microsecond).Equal(expectedStartedAt) {
+			t.Fatalf("token %v in DB has family_started_at %v, expected %v", tID, famStarted, expectedStartedAt)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+	if totalRows != 1+successCount {
+		t.Fatalf("expected total tokens in family to be %d (1 root + %d successes), got %d", 1+successCount, successCount, totalRows)
+	}
+
+	// 4. Verify all worker-returned tokens have the identical family_started_at
+	for i := 0; i < concurrency; i++ {
+		if results[i] == nil {
+			if !tokens[i].FamilyStartedAt.Truncate(time.Microsecond).Equal(expectedStartedAt) {
+				t.Errorf("worker %d returned token with family_started_at %v, expected %v", i, tokens[i].FamilyStartedAt, expectedStartedAt)
+			}
+		}
 	}
 }

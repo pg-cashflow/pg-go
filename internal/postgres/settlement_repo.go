@@ -83,13 +83,31 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			property_id = COALESCE(EXCLUDED.property_id, gateway_settlements.property_id),
 			payment_intent_id = COALESCE(EXCLUDED.payment_intent_id, gateway_settlements.payment_intent_id),
 			payment_id = COALESCE(EXCLUDED.payment_id, gateway_settlements.payment_id),
-			ingestion_source = EXCLUDED.ingestion_source,
+			ingestion_source = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.ingestion_source
+				ELSE EXCLUDED.ingestion_source
+			END,
 			utr = CASE WHEN EXCLUDED.utr != '' THEN EXCLUDED.utr ELSE gateway_settlements.utr END,
-			gross_amount_paise = EXCLUDED.gross_amount_paise,
-			service_charge_paise = EXCLUDED.service_charge_paise,
-			service_tax_paise = EXCLUDED.service_tax_paise,
-			adjustment_paise = EXCLUDED.adjustment_paise,
-			net_amount_paise = EXCLUDED.net_amount_paise,
+			gross_amount_paise = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.gross_amount_paise
+				ELSE EXCLUDED.gross_amount_paise
+			END,
+			service_charge_paise = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.service_charge_paise
+				ELSE EXCLUDED.service_charge_paise
+			END,
+			service_tax_paise = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.service_tax_paise
+				ELSE EXCLUDED.service_tax_paise
+			END,
+			adjustment_paise = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.adjustment_paise
+				ELSE EXCLUDED.adjustment_paise
+			END,
+			net_amount_paise = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.net_amount_paise
+				ELSE EXCLUDED.net_amount_paise
+			END,
 			settlement_status = CASE
 				-- Terminal reversal cannot be overwritten by any state
 				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.settlement_status
@@ -116,7 +134,10 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			resolved_by = COALESCE(EXCLUDED.resolved_by, gateway_settlements.resolved_by),
 			resolved_at = COALESCE(EXCLUDED.resolved_at, gateway_settlements.resolved_at),
 			journal_entry_id = COALESCE(EXCLUDED.journal_entry_id, gateway_settlements.journal_entry_id),
-			raw_payload = EXCLUDED.raw_payload,
+			raw_payload = CASE
+				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.raw_payload
+				ELSE EXCLUDED.raw_payload
+			END,
 			updated_at = NOW()
 		RETURNING id, created_at, updated_at;
 	`

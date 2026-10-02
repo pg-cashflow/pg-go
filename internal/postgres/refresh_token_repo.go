@@ -175,7 +175,9 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 			return nil, fmt.Errorf("revoke compromised token family: %w", err)
 		}
 		if r.pool != nil {
-			_ = tx.Commit(ctx)
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("commit revoke family tx: %w", err)
+			}
 		}
 		return nil, ErrReplayDetected
 	}
