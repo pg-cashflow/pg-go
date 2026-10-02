@@ -20,9 +20,11 @@ func (s *Service) LogViolation(ctx context.Context, tenantID uuid.UUID, ruleCode
 		return nil, err
 	}
 
-	step := int16(recentCount + 1)
-	if step > 3 {
+	step := int16(1)
+	if recentCount >= 2 {
 		step = 3 // capped at step 3 formal warning ladder
+	} else if recentCount == 1 {
+		step = 2
 	}
 
 	v := &domain.Violation{

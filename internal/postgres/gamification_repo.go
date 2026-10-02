@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -592,13 +593,13 @@ func (r *GamificationRepo) ListInspections(ctx context.Context, propertyID uuid.
 	args := []any{propertyID}
 	if roomID != nil {
 		args = append(args, *roomID)
-		q += ` AND room_id=$` + string(rune('0'+len(args)))
+		q += ` AND room_id=$` + strconv.Itoa(len(args))
 	}
 	if floorID != nil {
 		args = append(args, *floorID)
-		q += ` AND floor_id=$` + string(rune('0'+len(args)))
+		q += ` AND floor_id=$` + strconv.Itoa(len(args))
 	}
-	q += ` ORDER BY inspected_at DESC LIMIT $` + string(rune('0'+len(args)+1))
+	q += ` ORDER BY inspected_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
 	rows, err := r.pool.Query(ctx, q, args...)
@@ -860,11 +861,11 @@ func (r *GamificationRepo) GetLatestMeterReading(ctx context.Context, propertyID
 	args := []any{propertyID, kind}
 	if roomID != nil {
 		args = append(args, *roomID)
-		q += ` AND room_id=$` + string(rune('0'+len(args)))
+		q += ` AND room_id=$` + strconv.Itoa(len(args))
 	}
 	if floorID != nil {
 		args = append(args, *floorID)
-		q += ` AND floor_id=$` + string(rune('0'+len(args)))
+		q += ` AND floor_id=$` + strconv.Itoa(len(args))
 	}
 	q += ` ORDER BY reading_at DESC LIMIT 1`
 
@@ -910,13 +911,13 @@ func (r *GamificationRepo) ListMeterReadings(ctx context.Context, propertyID uui
 	args := []any{propertyID}
 	if roomID != nil {
 		args = append(args, *roomID)
-		q += ` AND room_id=$` + string(rune('0'+len(args)))
+		q += ` AND room_id=$` + strconv.Itoa(len(args))
 	}
 	if floorID != nil {
 		args = append(args, *floorID)
-		q += ` AND floor_id=$` + string(rune('0'+len(args)))
+		q += ` AND floor_id=$` + strconv.Itoa(len(args))
 	}
-	q += ` ORDER BY reading_at DESC LIMIT $` + string(rune('0'+len(args)+1))
+	q += ` ORDER BY reading_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
 
 	rows, err := r.pool.Query(ctx, q, args...)

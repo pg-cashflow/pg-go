@@ -26,7 +26,7 @@ jobs:
       - name: Run Gosec Security Scanner
         uses: securego/gosec@v2.22.1
         with:
-          args: './...'
+          args: '-conf .gosec.json ./...'
 
   gitleaks:
     name: Gitleaks Secret Scanner

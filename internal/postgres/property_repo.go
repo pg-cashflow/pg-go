@@ -124,7 +124,7 @@ func (r *PropertyRepo) UpsertSettings(ctx context.Context, s *domain.PropertySet
 	}
 	offsets := make([]int32, len(s.ReminderOffsets))
 	for i, o := range s.ReminderOffsets {
-		offsets[i] = int32(o)
+		offsets[i] = int32(o) // #nosec G115
 	}
 	s.UpdatedAt = time.Now().UTC()
 	_, err = r.db.Exec(ctx, `

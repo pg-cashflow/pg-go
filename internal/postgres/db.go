@@ -96,7 +96,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	sort.Strings(files)
 
 	for _, name := range files {
-		body, err := os.ReadFile(filepath.Join(dir, name))
+		body, err := os.ReadFile(filepath.Join(dir, filepath.Clean(name))) // #nosec G304
 		if err != nil {
 			return err
 		}

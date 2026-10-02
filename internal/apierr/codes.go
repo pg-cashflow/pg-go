@@ -7,8 +7,8 @@ type Code string
 
 const (
 	// Auth
-	CodeAuthMissingToken          Code = "auth.missingToken"
-	CodeAuthInvalidToken          Code = "auth.invalidToken"
+	CodeAuthMissingToken          Code = "auth.missingToken"         // #nosec G101
+	CodeAuthInvalidToken          Code = "auth.invalidToken"         // #nosec G101
 	CodeAuthAccessRevoked         Code = "auth.accessRevoked"
 	CodeAuthProfileIncomplete     Code = "auth.profileIncomplete"
 	CodeAuthForbidden             Code = "auth.forbidden"
@@ -21,7 +21,7 @@ const (
 	CodeAuthInvalidInvite         Code = "auth.invalidInvite"
 	CodeAuthFirebaseNotConfigured Code = "auth.firebaseNotConfigured"
 	CodeAuthEmailNotVerified      Code = "auth.emailNotVerified"
-	CodeAuthInvalidFirebaseToken  Code = "auth.invalidFirebaseToken"
+	CodeAuthInvalidFirebaseToken  Code = "auth.invalidFirebaseToken" // #nosec G101
 	CodeAuthUnauthorized          Code = "auth.unauthorized"
 	CodeAuthNoPropertyScope       Code = "auth.noPropertyScope"
 

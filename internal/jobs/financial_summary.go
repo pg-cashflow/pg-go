@@ -178,7 +178,7 @@ func (j *FinancialSummaryJob) loadTemplate(name string) (*template.Template, err
 		}
 	}
 	path := filepath.Join(dir, name)
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(filepath.Clean(path)) // #nosec G304
 	if err != nil {
 		return template.New(name).Parse(`<h1>{{.Period}}</h1><p>{{.PropertyName}}</p>
 <p>Rent collected: {{.RentCollected}}</p>

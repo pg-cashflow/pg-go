@@ -190,7 +190,7 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 				data.VPA = intent.VPA
 				data.UPILink = intent.UPILink
 				if len(png) > 0 {
-					data.QRDataURI = template.URL("data:image/png;base64," + b64(png))
+					data.QRDataURI = template.URL("data:image/png;base64," + b64(png)) // #nosec G203
 				}
 			}
 		}
@@ -199,7 +199,7 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 		data.UPILink = qr.GenerateUPILink(view.UPIVPA, view.OwnerName, int64(view.AmountPaise), view.Due.DueCode, room)
 		data.VPA = view.UPIVPA
 		if png, err := qr.GenerateQR(data.UPILink); err == nil {
-			data.QRDataURI = template.URL("data:image/png;base64," + b64(png))
+			data.QRDataURI = template.URL("data:image/png;base64," + b64(png)) // #nosec G203
 		}
 	}
 

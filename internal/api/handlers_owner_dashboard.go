@@ -102,11 +102,13 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 				rn := strings.TrimSpace(*t.RoomNumber)
 				upper := strings.ToUpper(rn)
 				if !seenRoomNums[upper] {
-					seenRoomNums[upper] = true
-					roomCap := int16(len(tenantsByRoomNum[upper]))
-					if roomCap < 1 {
-						roomCap = 1
+					cnt := len(tenantsByRoomNum[upper])
+					if cnt < 1 {
+						cnt = 1
+					} else if cnt > 32767 {
+						cnt = 32767
 					}
+					roomCap := int16(cnt) // #nosec G115
 					syntheticID := uuid.NewMD5(pid, []byte(upper))
 					rooms = append(rooms, domain.Room{
 						ID:         syntheticID,
