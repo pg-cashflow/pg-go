@@ -84,27 +84,35 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			payment_intent_id = COALESCE(EXCLUDED.payment_intent_id, gateway_settlements.payment_intent_id),
 			payment_id = COALESCE(EXCLUDED.payment_id, gateway_settlements.payment_id),
 			ingestion_source = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.ingestion_source
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.ingestion_source
 				ELSE EXCLUDED.ingestion_source
 			END,
+			-- Banking metadata (utr, settled_on, transfer_time) is intentionally updated on replay
+			-- even for manually reconciled rows, ensuring bank reference tie-outs receive official gateway metadata.
 			utr = CASE WHEN EXCLUDED.utr != '' THEN EXCLUDED.utr ELSE gateway_settlements.utr END,
 			gross_amount_paise = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.gross_amount_paise
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.gross_amount_paise
 				ELSE EXCLUDED.gross_amount_paise
 			END,
 			service_charge_paise = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.service_charge_paise
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.service_charge_paise
 				ELSE EXCLUDED.service_charge_paise
 			END,
 			service_tax_paise = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.service_tax_paise
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.service_tax_paise
 				ELSE EXCLUDED.service_tax_paise
 			END,
 			adjustment_paise = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.adjustment_paise
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.adjustment_paise
 				ELSE EXCLUDED.adjustment_paise
 			END,
 			net_amount_paise = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.net_amount_paise
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.net_amount_paise
 				ELSE EXCLUDED.net_amount_paise
 			END,
@@ -123,18 +131,33 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			settlement_initiated_on = COALESCE(EXCLUDED.settlement_initiated_on, gateway_settlements.settlement_initiated_on),
 			transfer_time = COALESCE(EXCLUDED.transfer_time, gateway_settlements.transfer_time),
 			reconciliation_status = CASE
+				-- Post-reconciliation reversal re-opens discrepancy queue so operators can post reversing journal entry
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN 'discrepancy'
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.reconciliation_status
 				ELSE EXCLUDED.reconciliation_status
 			END,
 			discrepancy_reason = CASE
+				-- Post-reconciliation reversal sets explicit reason for the operator queue
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN 'post_reconciliation_reversal'
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.discrepancy_reason
 				ELSE EXCLUDED.discrepancy_reason
 			END,
-			resolution_notes = COALESCE(EXCLUDED.resolution_notes, gateway_settlements.resolution_notes),
-			resolved_by = COALESCE(EXCLUDED.resolved_by, gateway_settlements.resolved_by),
-			resolved_at = COALESCE(EXCLUDED.resolved_at, gateway_settlements.resolved_at),
+			resolution_notes = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' AND gateway_settlements.reconciliation_status = 'manually_reconciled' THEN
+					COALESCE(gateway_settlements.resolution_notes || ' | [SYSTEM ALERT: Reversal received post-reconciliation]', 'SYSTEM ALERT: Reversal received post-reconciliation')
+				ELSE COALESCE(EXCLUDED.resolution_notes, gateway_settlements.resolution_notes)
+			END,
+			resolved_by = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN NULL
+				ELSE COALESCE(EXCLUDED.resolved_by, gateway_settlements.resolved_by)
+			END,
+			resolved_at = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN NULL
+				ELSE COALESCE(EXCLUDED.resolved_at, gateway_settlements.resolved_at)
+			END,
 			journal_entry_id = COALESCE(EXCLUDED.journal_entry_id, gateway_settlements.journal_entry_id),
 			raw_payload = CASE
+				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.raw_payload
 				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.raw_payload
 				ELSE EXCLUDED.raw_payload
 			END,

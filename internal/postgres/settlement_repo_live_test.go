@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +137,53 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 		}
 		if fetched.NetAmountPaise != correctedNet {
 			t.Errorf("expected net_amount_paise to remain operator-corrected %d, got %d", correctedNet, fetched.NetAmountPaise)
+		}
+
+		// Subsequent legitimate REVERSED webhook arrives for this manually reconciled settlement:
+		// Must re-open discrepancy, set reason 'post_reconciliation_reversal', and record reversal figures.
+		revGross := int64(495000)
+		revNet := int64(0)
+		revAdjustment := int64(-495000)
+		revStlm := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     revGross,
+			ServiceChargePaise:   1000,
+			ServiceTaxPaise:      180,
+			AdjustmentPaise:      revAdjustment,
+			NetAmountPaise:       revNet,
+			SettlementStatus:     "REVERSED",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{"chargeback": true}`),
+		}
+		if err := repo.UpsertSettlement(ctx, revStlm); err != nil {
+			t.Fatalf("upsert post-reconciliation reversal failed: %v", err)
+		}
+
+		revFetched, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch post-reconciliation reversal failed: %v", err)
+		}
+		if revFetched.SettlementStatus != "REVERSED" {
+			t.Errorf("expected settlement_status REVERSED, got %q", revFetched.SettlementStatus)
+		}
+		if revFetched.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Errorf("expected reconciliation_status 'discrepancy' on post-recon reversal, got %q", revFetched.ReconciliationStatus)
+		}
+		if revFetched.DiscrepancyReason == nil || *revFetched.DiscrepancyReason != "post_reconciliation_reversal" {
+			t.Errorf("expected discrepancy_reason 'post_reconciliation_reversal', got %v", revFetched.DiscrepancyReason)
+		}
+		if revFetched.AdjustmentPaise != revAdjustment {
+			t.Errorf("expected adjustment_paise %d, got %d", revAdjustment, revFetched.AdjustmentPaise)
+		}
+		if revFetched.NetAmountPaise != revNet {
+			t.Errorf("expected net_amount_paise %d, got %d", revNet, revFetched.NetAmountPaise)
+		}
+		if revFetched.ResolutionNotes == nil || !strings.Contains(*revFetched.ResolutionNotes, "Reversal received post-reconciliation") {
+			t.Errorf("expected alert in resolution_notes, got %v", revFetched.ResolutionNotes)
 		}
 	})
 

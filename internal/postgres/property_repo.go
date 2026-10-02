@@ -71,10 +71,38 @@ func (r *PropertyRepo) SetInviteCode(ctx context.Context, id uuid.UUID, code str
 	return err
 }
 
+// ErrPropertyNotFound is returned when archiving or unarchiving a property that does not exist.
+var ErrPropertyNotFound = errors.New("property not found")
+
+// Archive retires a property without deleting it. Archived properties are hidden from List and keep
+// all financial history (hard deletes are blocked once audit rows exist). Archiving is idempotent.
+func (r *PropertyRepo) Archive(ctx context.Context, id uuid.UUID) error {
+	cmd, err := r.db.Exec(ctx, `UPDATE properties SET archived_at = COALESCE(archived_at, NOW()) WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrPropertyNotFound
+	}
+	return nil
+}
+
+// Unarchive restores an archived property.
+func (r *PropertyRepo) Unarchive(ctx context.Context, id uuid.UUID) error {
+	cmd, err := r.db.Exec(ctx, `UPDATE properties SET archived_at = NULL WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrPropertyNotFound
+	}
+	return nil
+}
+
 func (r *PropertyRepo) List(ctx context.Context) ([]domain.Property, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
-		FROM properties ORDER BY created_at`)
+		FROM properties WHERE archived_at IS NULL ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}

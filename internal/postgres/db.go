@@ -2,6 +2,9 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -82,6 +86,11 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	if err != nil {
 		return err
 	}
+	// checksum records the SHA-256 of each migration file as it was applied, so an edit to an
+	// already-applied migration is detected instead of being silently ignored.
+	if _, err := conn.Exec(ctx, `ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
+		return fmt.Errorf("add schema_migrations.checksum: %w", err)
+	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -113,22 +122,44 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 			return fmt.Errorf("acquire migration tx advisory lock for %s: %w", name, err)
 		}
 
+		sum := sha256.Sum256(body)
+		checksum := hex.EncodeToString(sum[:])
+
 		// Check existence inside the locked transaction to prevent TOCTOU races between concurrent runners
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=$1)`, name).Scan(&exists); err != nil {
-			_ = tx.Rollback(ctx)
-			return err
-		}
-		if exists {
+		var appliedChecksum *string
+		err = tx.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE version=$1`, name).Scan(&appliedChecksum)
+		switch {
+		case err == nil:
+			// Already applied. Verify the file has not been edited since.
+			if appliedChecksum == nil {
+				// Applied before checksums existed: record the current content (trust on first use).
+				if _, err := tx.Exec(ctx, `UPDATE schema_migrations SET checksum=$2 WHERE version=$1 AND checksum IS NULL`, name, checksum); err != nil {
+					_ = tx.Rollback(ctx)
+					return fmt.Errorf("record checksum for %s: %w", name, err)
+				}
+				if err := tx.Commit(ctx); err != nil {
+					return err
+				}
+				continue
+			}
+			if *appliedChecksum != checksum {
+				_ = tx.Rollback(ctx)
+				return fmt.Errorf("migration %s was modified after it was applied (applied checksum %s, file checksum %s): never edit an applied migration, add a new one", name, *appliedChecksum, checksum)
+			}
 			_ = tx.Rollback(ctx)
 			continue
+		case errors.Is(err, pgx.ErrNoRows):
+			// Not applied yet: fall through and apply it.
+		default:
+			_ = tx.Rollback(ctx)
+			return err
 		}
 
 		if _, err := tx.Exec(ctx, string(body)); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES($1)`, name); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations(version, checksum) VALUES($1, $2)`, name, checksum); err != nil {
 			_ = tx.Rollback(ctx)
 			return err
 		}
