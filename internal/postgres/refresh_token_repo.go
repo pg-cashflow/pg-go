@@ -42,10 +42,13 @@ func (r *RefreshTokenRepo) StoreRefreshToken(ctx context.Context, rt *domain.Ref
 	if rt.CreatedAt.IsZero() {
 		rt.CreatedAt = time.Now().UTC()
 	}
+	if rt.FamilyStartedAt.IsZero() {
+		rt.FamilyStartedAt = rt.CreatedAt
+	}
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		rt.ID, rt.UserID, rt.FamilyID, rt.TokenHash, rt.ExpiresAt, rt.Revoked, rt.RevokedAt, rt.CreatedAt,
+		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		rt.ID, rt.UserID, rt.FamilyID, rt.TokenHash, rt.ExpiresAt, rt.Revoked, rt.RevokedAt, rt.FamilyStartedAt, rt.CreatedAt,
 	)
 	return err
 }
@@ -53,10 +56,10 @@ func (r *RefreshTokenRepo) StoreRefreshToken(ctx context.Context, rt *domain.Ref
 func (r *RefreshTokenRepo) GetRefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
 	var rt domain.RefreshToken
 	err := r.db.QueryRow(ctx, `
-		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at
+		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
 		FROM refresh_tokens
 		WHERE token_hash = $1`, hash,
-	).Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &rt.TokenHash, &rt.ExpiresAt, &rt.Revoked, &rt.RevokedAt, &rt.CreatedAt)
+	).Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &rt.TokenHash, &rt.ExpiresAt, &rt.Revoked, &rt.RevokedAt, &rt.FamilyStartedAt, &rt.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +113,7 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 
 	var current domain.RefreshToken
 	query := `
-		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at
+		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
 		FROM refresh_tokens
 		WHERE token_hash = $1
 		FOR UPDATE
@@ -118,13 +121,18 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	err = tx.QueryRow(ctx, query, oldHash).Scan(
 		&current.ID, &current.UserID, &current.FamilyID,
 		&current.TokenHash, &current.ExpiresAt, &current.Revoked,
-		&current.RevokedAt, &current.CreatedAt,
+		&current.RevokedAt, &current.FamilyStartedAt, &current.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrRefreshTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("select token for update: %w", err)
+	}
+
+	familyStarted := current.FamilyStartedAt
+	if familyStarted.IsZero() {
+		familyStarted = current.CreatedAt
 	}
 
 	// 1. Replay attack check
@@ -145,11 +153,12 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 			}
 			newRT.FamilyID = current.FamilyID
 			newRT.UserID = current.UserID
+			newRT.FamilyStartedAt = familyStarted
 			newRT.CreatedAt = now
 			if _, err := tx.Exec(ctx, `
-				INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.CreatedAt,
+				INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+				newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.CreatedAt,
 			); err != nil {
 				return nil, fmt.Errorf("insert grace-window child token: %w", err)
 			}
@@ -172,16 +181,14 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	}
 
 	// 2. Absolute Maximum Session Lifetime check (90 days)
+	// Uses immutable family_started_at so purging older revoked tokens never resets the ceiling
 	const maxSessionFamilyLifetime = 90 * 24 * time.Hour
-	var rootCreatedAt time.Time
-	if err := tx.QueryRow(ctx, `SELECT MIN(created_at) FROM refresh_tokens WHERE family_id = $1`, current.FamilyID).Scan(&rootCreatedAt); err == nil && !rootCreatedAt.IsZero() {
-		if time.Since(rootCreatedAt) > maxSessionFamilyLifetime {
-			return nil, ErrRefreshTokenExpired
-		}
-		maxExpiry := rootCreatedAt.Add(maxSessionFamilyLifetime)
-		if newRT.ExpiresAt.After(maxExpiry) {
-			newRT.ExpiresAt = maxExpiry
-		}
+	if time.Since(familyStarted) > maxSessionFamilyLifetime {
+		return nil, ErrRefreshTokenExpired
+	}
+	maxExpiry := familyStarted.Add(maxSessionFamilyLifetime)
+	if newRT.ExpiresAt.After(maxExpiry) {
+		newRT.ExpiresAt = maxExpiry
 	}
 
 	// 3. Expiry check
@@ -195,17 +202,18 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		return nil, fmt.Errorf("revoke current token: %w", err)
 	}
 
-	// 4. Insert new rotated token
+	// 4. Insert new rotated token with inherited immutable family_started_at
 	if newRT.ID == uuid.Nil {
 		newRT.ID = uuid.New()
 	}
 	newRT.FamilyID = current.FamilyID
 	newRT.UserID = current.UserID
+	newRT.FamilyStartedAt = familyStarted
 	newRT.CreatedAt = now
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.CreatedAt,
+		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("insert rotated token: %w", err)
 	}

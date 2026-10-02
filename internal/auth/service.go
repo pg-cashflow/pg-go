@@ -33,6 +33,7 @@ var (
 	ErrFirebaseNotConfigured = errors.New("firebase auth not configured")
 	ErrEmailNotVerified      = errors.New("firebase email not verified")
 	ErrStaleAuthToken        = errors.New("auth token is stale: fresh re-authentication required")
+	ErrRefreshTokenExpired   = errors.New("refresh token expired")
 )
 
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
@@ -468,14 +469,16 @@ func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessTo
 		return "", "", fmt.Errorf("generate refresh token: %w", err)
 	}
 
+	now := time.Now().UTC()
 	rt := &domain.RefreshToken{
-		ID:        uuid.New(),
-		UserID:    user.ID,
-		FamilyID:  uuid.New(),
-		TokenHash: hash,
-		ExpiresAt: time.Now().UTC().Add(RefreshTokenTTL),
-		Revoked:   false,
-		CreatedAt: time.Now().UTC(),
+		ID:              uuid.New(),
+		UserID:          user.ID,
+		FamilyID:        uuid.New(),
+		TokenHash:       hash,
+		ExpiresAt:       now.Add(RefreshTokenTTL),
+		Revoked:         false,
+		FamilyStartedAt: now,
+		CreatedAt:       now,
 	}
 	if err := s.refreshRepo.StoreRefreshToken(ctx, rt); err != nil {
 		return "", "", fmt.Errorf("store refresh token: %w", err)
@@ -514,7 +517,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 			return "", "", nil, ErrReplayDetected
 		}
 		if errors.Is(err, postgres.ErrRefreshTokenExpired) {
-			return "", "", nil, ErrOTPExpired
+			return "", "", nil, ErrRefreshTokenExpired
 		}
 		return "", "", nil, fmt.Errorf("rotate refresh token: %w", err)
 	}

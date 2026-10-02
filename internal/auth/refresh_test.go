@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -92,6 +93,11 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 		return nil, postgres.ErrRefreshTokenNotFound
 	}
 
+	familyStarted := oldRT.FamilyStartedAt
+	if familyStarted.IsZero() {
+		familyStarted = oldRT.CreatedAt
+	}
+
 	if oldRT.Revoked {
 		var activeCount int
 		for _, rt := range m.tokens {
@@ -106,6 +112,7 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 			newRT.ID = uuid.New()
 			newRT.UserID = oldRT.UserID
 			newRT.FamilyID = oldRT.FamilyID
+			newRT.FamilyStartedAt = familyStarted
 			newRT.CreatedAt = time.Now()
 			newRT.Revoked = false
 
@@ -126,6 +133,11 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 		return nil, postgres.ErrReplayDetected
 	}
 
+	// 90-day ceiling check
+	if time.Since(familyStarted) > 90*24*time.Hour {
+		return nil, postgres.ErrRefreshTokenExpired
+	}
+
 	if time.Now().After(oldRT.ExpiresAt) {
 		return nil, postgres.ErrRefreshTokenExpired
 	}
@@ -133,6 +145,7 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 	newRT.ID = uuid.New()
 	newRT.UserID = oldRT.UserID
 	newRT.FamilyID = oldRT.FamilyID
+	newRT.FamilyStartedAt = familyStarted
 	newRT.CreatedAt = time.Now()
 	newRT.Revoked = false
 
@@ -401,3 +414,62 @@ func TestRefreshTokenReplayAttackDetection(t *testing.T) {
 		t.Fatalf("expected ErrReplayDetected when using refToken2 from revoked family, got %v", err)
 	}
 }
+
+func TestRefreshTokenSessionCeilingWithPurge(t *testing.T) {
+	ctx := context.Background()
+	userRepo := &memoryUserRepo{users: make(map[uuid.UUID]*domain.User)}
+	refreshRepo := newMemoryRefreshTokenRepo()
+
+	user := &domain.User{
+		ID:           uuid.New(),
+		Phone:        "9876543210",
+		Role:         domain.RoleTenant,
+		TokenVersion: 1,
+		CreatedAt:    time.Now(),
+	}
+	_ = userRepo.Create(ctx, user)
+
+	svc := NewService(nil, userRepo, nil, nil, nil, "otp-secret", "jwt-secret-very-secure-1234567890")
+	svc.SetRefreshTokenRepo(refreshRepo)
+
+	// Step 1: Issue Session
+	_, refToken1, err := svc.IssueSession(ctx, user)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+
+	// Step 2: Rotate token to refToken2
+	_, refToken2, _, err := svc.RotateRefreshToken(ctx, refToken1)
+	if err != nil {
+		t.Fatalf("first rotation: %v", err)
+	}
+
+	// Step 3: Simulate purge of refToken1 (as done by PurgeExpiredTokens after 24h)
+	h1 := HashRefreshToken(refToken1)
+	delete(refreshRepo.tokens, h1)
+
+	// Step 4: refToken2 still retains FamilyStartedAt from refToken1
+	h2 := HashRefreshToken(refToken2)
+	rt2 := refreshRepo.tokens[h2]
+	if rt2.FamilyStartedAt.IsZero() {
+		t.Fatalf("expected rt2 to have non-zero FamilyStartedAt")
+	}
+
+	// Rotate refToken2 to refToken3 succeeds within 90 days
+	_, refToken3, _, err := svc.RotateRefreshToken(ctx, refToken2)
+	if err != nil {
+		t.Fatalf("rotation after root purge should succeed: %v", err)
+	}
+
+	// Step 5: Fast forward FamilyStartedAt past 90 days to simulate 90-day ceiling
+	h3 := HashRefreshToken(refToken3)
+	rt3 := refreshRepo.tokens[h3]
+	rt3.FamilyStartedAt = time.Now().Add(-91 * 24 * time.Hour)
+
+	// Rotation of refToken3 MUST fail because family_started_at exceeds 90-day ceiling
+	_, _, _, err = svc.RotateRefreshToken(ctx, refToken3)
+	if !errors.Is(err, ErrRefreshTokenExpired) {
+		t.Fatalf("expected ErrRefreshTokenExpired when exceeding 90-day ceiling, got %v", err)
+	}
+}
+
