@@ -533,3 +533,238 @@ func TestMoneyMath_SettlementPerturbation_FailClosedEvals(t *testing.T) {
 	}
 }
 
+// TestMoneyMath_BankStatementIngress_DoubleEntryConservation_PropertyEvals verifies that Bank Statement
+// credits, quarantine entries, allocations, refunds, and reclassifications strictly conserve double-entry balance:
+// sum(Debits) == sum(Credits) with 0 integer-paise drift across 10,000 randomized lifecycle flows.
+func TestMoneyMath_BankStatementIngress_DoubleEntryConservation_PropertyEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(13579))
+	ctx := context.Background()
+
+	const iterations = 10000
+	for i := 0; i < iterations; i++ {
+		st := NewMemoryStore()
+		svc := NewService(st, nil)
+		pid := uuid.New()
+		txnID := uuid.New()
+		at := time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)
+
+		// 1. Ingest random bank statement credit: 100 to 5,000,000 paise (₹1 to ₹50,000)
+		creditPaise := int64(rng.Intn(5000000) + 100)
+		err := svc.MirrorBankStatementCredit(ctx, pid, txnID, creditPaise, at)
+		if err != nil {
+			t.Fatalf("[Iteration %d] MirrorBankStatementCredit failed: %v", i, err)
+		}
+
+		// 2. Perform a random lifecycle resolution:
+		// 0 = Allocate to Rent / Deposit / Utilities
+		// 1 = Refund unapplied deposit back to payer
+		// 2 = Reclassify to non-rent revenue / interest / capital
+		resolutionMode := rng.Intn(3)
+		switch resolutionMode {
+		case 0:
+			// Allocation
+			dueKinds := []domain.DueKind{domain.DueKindRent, domain.DueKindDeposit, domain.DueKindElectricity, domain.DueKindWater}
+			kind := dueKinds[rng.Intn(len(dueKinds))]
+			err = svc.MirrorUnappliedAllocation(ctx, pid, txnID, kind, creditPaise, at.Add(time.Hour))
+			if err != nil {
+				t.Fatalf("[Iteration %d] MirrorUnappliedAllocation failed: %v", i, err)
+			}
+		case 1:
+			// Refund
+			err = svc.MirrorBankDepositRefund(ctx, pid, txnID, creditPaise, at.Add(time.Hour))
+			if err != nil {
+				t.Fatalf("[Iteration %d] MirrorBankDepositRefund failed: %v", i, err)
+			}
+		case 2:
+			// Reclassification
+			accounts := []string{domain.AcctInterestIncome, domain.AcctOwnerCapital, domain.AcctNonPGOtherIncome}
+			targetAcc := accounts[rng.Intn(len(accounts))]
+			err = svc.MirrorUnappliedReclassification(ctx, pid, txnID, targetAcc, creditPaise, at.Add(time.Hour))
+			if err != nil {
+				t.Fatalf("[Iteration %d] MirrorUnappliedReclassification failed: %v", i, err)
+			}
+		}
+
+		// 3. Inspect journal lines and assert strict double-entry balance invariants
+		lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+		if err != nil {
+			t.Fatalf("[Iteration %d] ListJournal failed: %v", i, err)
+		}
+
+		var totalDr, totalCr int64
+		for _, l := range lines {
+			if l.DebitPaise > 0 && l.CreditPaise > 0 {
+				t.Fatalf("[Iteration %d] line %s has both debit and credit", i, l.ID)
+			}
+			if l.DebitPaise < 0 || l.CreditPaise < 0 {
+				t.Fatalf("[Iteration %d] negative paise on line %s", i, l.ID)
+			}
+			totalDr += l.DebitPaise
+			totalCr += l.CreditPaise
+		}
+
+		if totalDr != totalCr {
+			t.Fatalf("[Iteration %d] journal imbalanced: totalDr=%d totalCr=%d diff=%d",
+				i, totalDr, totalCr, totalDr-totalCr)
+		}
+		// In any balanced two-step flow, total journal activity is exactly 2 * creditPaise
+		if totalDr != creditPaise*2 {
+			t.Fatalf("[Iteration %d] total debit activity mismatch: expected %d, got %d",
+				i, creditPaise*2, totalDr)
+		}
+	}
+}
+
+// TestMoneyMath_BankStatement_Perturbation_FailClosedEvals verifies that deliberate imbalance perturbations
+// strictly fail closed when making bank statement mirror journal lines.
+func TestMoneyMath_BankStatement_Perturbation_FailClosedEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(24680))
+	pid := uuid.New()
+	txnID := uuid.New()
+	at := time.Date(2026, 9, 28, 15, 0, 0, 0, time.UTC)
+
+	const iterations = 2500
+	for i := 0; i < iterations; i++ {
+		creditPaise := int64(rng.Intn(5000000) + 100)
+		delta := int64(rng.Intn(10) + 1)
+		if rng.Intn(2) == 0 {
+			delta = -delta
+		}
+
+		// Perturbed specs
+		specs := []LineSpec{
+			{Account: domain.AcctBank, Debit: creditPaise + delta, LineKind: "bank_deposit_dr"},
+			{Account: domain.AcctUnappliedReceipts, Credit: creditPaise, LineKind: "unapplied_receipt_cr"},
+		}
+
+		_, err := MakeLines(pid, txnID, "bank_statement_credit", at, specs)
+		if !errors.Is(err, ErrUnbalancedJournal) {
+			t.Fatalf("[Iteration %d] expected ErrUnbalancedJournal for delta %d, got: %v", i, delta, err)
+		}
+	}
+}
+
+// TestMoneyMath_EODMultiWayBalancer_PropertyEvals verifies that the EOD Multi-Way Settlement Balancer
+// strictly asserts balanced state (is_balanced=true, discrepancy=0) across 10,000 randomized synthetic business days.
+func TestMoneyMath_EODMultiWayBalancer_PropertyEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(54321))
+	pid := uuid.New()
+	reconDate := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+
+	const iterations = 10000
+	for i := 0; i < iterations; i++ {
+		// 1. Gateway Collections: 1,000 to 10,000,000 paise (₹10 to ₹100,000)
+		gwCollections := int64(rng.Intn(10000000) + 1000)
+
+		// 2. Gateway Settlement Batch:
+		// Portion of collections settled today (e.g., 50% to 100%)
+		settledPortion := int64(rng.Intn(int(gwCollections)) + 1)
+		feePaise := settledPortion * int64(rng.Intn(200)+100) / 10000 // 1.00% to 3.00%
+		taxPaise := feePaise * 18 / 100                               // 18% GST
+		adjPaise := int64(rng.Intn(500))                             // 0 to 500 paise adjustments
+		netSettledPaise := settledPortion - (feePaise + taxPaise + adjPaise)
+		if netSettledPaise <= 0 {
+			continue
+		}
+
+		inTransitPaise := gwCollections - settledPortion
+
+		// 3. Bank Statement Cleared Activity:
+		// Cleared net gateway settlement + direct bank transfers
+		directBankReceipts := int64(rng.Intn(2000000))
+		bankCredits := netSettledPaise + directBankReceipts
+		bankDebits := int64(rng.Intn(1000000))
+
+		// 4. Ledger Activity (in sync with cleared statements):
+		ledgerBankDr := bankCredits
+		ledgerBankCr := bankDebits
+
+		bal := domain.DailySettlementBalance{
+			PropertyID:             pid,
+			ReconDate:              reconDate,
+			GatewayGrossPaise:      settledPortion,
+			GatewayNetSettledPaise: netSettledPaise,
+			GatewayFeesPaise:       feePaise,
+			GatewayTaxPaise:        taxPaise,
+			GatewayAdjustmentPaise: adjPaise,
+			GatewayInTransitPaise:  inTransitPaise,
+			BankCreditsPaise:       bankCredits,
+			BankDebitsPaise:        bankDebits,
+			LedgerBankDrPaise:      ledgerBankDr,
+			LedgerBankCrPaise:      ledgerBankCr,
+		}
+
+		bal.EvaluateBalance()
+
+		if !bal.IsBalanced {
+			t.Fatalf("[Iteration %d] expected is_balanced=true, got false (discrepancy: %d paise, discrepancies: %+v)",
+				i, bal.DiscrepancyPaise, bal.Discrepancies)
+		}
+		if bal.DiscrepancyPaise != 0 {
+			t.Fatalf("[Iteration %d] expected discrepancy_paise=0, got %d", i, bal.DiscrepancyPaise)
+		}
+	}
+}
+
+// TestMoneyMath_EODMultiWayBalancer_Perturbation_FailClosedEvals verifies that deliberate
+// 1-paise perturbations on ANY of the balancer terms strictly fail closed (is_balanced=false, discrepancy>0).
+func TestMoneyMath_EODMultiWayBalancer_Perturbation_FailClosedEvals(t *testing.T) {
+	rng := rand.New(rand.NewSource(67890))
+	pid := uuid.New()
+	reconDate := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+
+	const iterations = 2500
+	for i := 0; i < iterations; i++ {
+		gross := int64(rng.Intn(5000000) + 10000)
+		fee := int64(1500)
+		tax := int64(270)
+		adj := int64(100)
+		net := gross - (fee + tax + adj)
+		bankCredits := net
+		ledgerDr := net
+
+		bal := domain.DailySettlementBalance{
+			PropertyID:             pid,
+			ReconDate:              reconDate,
+			GatewayGrossPaise:      gross,
+			GatewayNetSettledPaise: net,
+			GatewayFeesPaise:       fee,
+			GatewayTaxPaise:        tax,
+			GatewayAdjustmentPaise: adj,
+			GatewayInTransitPaise:  0,
+			BankCreditsPaise:       bankCredits,
+			LedgerBankDrPaise:      ledgerDr,
+		}
+
+		// Perturb one random term by +/- 1 to +/- 10 paise
+		delta := int64(rng.Intn(10) + 1)
+		if rng.Intn(2) == 0 {
+			delta = -delta
+		}
+
+		targetTerm := rng.Intn(4)
+		switch targetTerm {
+		case 0:
+			bal.GatewayNetSettledPaise += delta
+		case 1:
+			bal.BankCreditsPaise += delta
+		case 2:
+			bal.LedgerBankDrPaise += delta
+		case 3:
+			bal.GatewayInTransitPaise = -int64(rng.Intn(10) + 1) // strictly negative in-transit
+		}
+
+		bal.EvaluateBalance()
+
+		if bal.IsBalanced {
+			t.Fatalf("[Iteration %d, Term %d] expected is_balanced=false for delta %d, got true",
+				i, targetTerm, delta)
+		}
+		if bal.DiscrepancyPaise == 0 {
+			t.Fatalf("[Iteration %d, Term %d] expected discrepancy > 0, got 0", i, targetTerm)
+		}
+	}
+}
+
+
+

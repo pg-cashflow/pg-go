@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -42,14 +43,15 @@ type FirebaseTokenVerifier interface {
 // Service handles OTP request/verify and JWT issuance.
 // Rate limits live here (not in HTTP middleware).
 type Service struct {
-	otp        OTPRepository
-	users      UserRepository
-	tenants    TenantRepository
-	properties PropertyRepository
-	gateway    sms.SMSGateway
-	firebase   FirebaseTokenVerifier
-	otpSecret  string
-	jwtSecret  string
+	otp         OTPRepository
+	users       UserRepository
+	tenants     TenantRepository
+	properties  PropertyRepository
+	gateway     sms.SMSGateway
+	firebase    FirebaseTokenVerifier
+	refreshRepo RefreshTokenRepository
+	otpSecret   string
+	jwtSecret   string
 }
 
 func NewService(
@@ -69,6 +71,11 @@ func NewService(
 		otpSecret:  otpSecret,
 		jwtSecret:  jwtSecret,
 	}
+}
+
+// SetRefreshTokenRepo enables refresh token family rotation and persistence.
+func (s *Service) SetRefreshTokenRepo(r RefreshTokenRepository) {
+	s.refreshRepo = r
 }
 
 // SetFirebaseVerifier enables POST /auth/firebase token exchange.
@@ -444,4 +451,124 @@ func setFirebaseUID(u *domain.User, firebaseUID string) {
 		return
 	}
 	u.FirebaseUID = &firebaseUID
+}
+
+// IssueSession creates an access token (15m) and a newly seeded refresh token family (30d).
+func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error) {
+	accessToken, err = IssueAccessToken(s.jwtSecret, user)
+	if err != nil {
+		return "", "", fmt.Errorf("issue access token: %w", err)
+	}
+	if s.refreshRepo == nil {
+		return accessToken, "", nil
+	}
+
+	plaintext, hash, err := GenerateRefreshToken()
+	if err != nil {
+		return "", "", fmt.Errorf("generate refresh token: %w", err)
+	}
+
+	rt := &domain.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		FamilyID:  uuid.New(),
+		TokenHash: hash,
+		ExpiresAt: time.Now().UTC().Add(RefreshTokenTTL),
+		Revoked:   false,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.refreshRepo.StoreRefreshToken(ctx, rt); err != nil {
+		return "", "", fmt.Errorf("store refresh token: %w", err)
+	}
+	return accessToken, plaintext, nil
+}
+
+// RotateRefreshToken verifies a refresh token, executes replay detection, rotates the token within the family, and returns a new access token and new refresh token.
+func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error) {
+	if s.refreshRepo == nil {
+		return "", "", nil, errors.New("auth: refresh repository not configured")
+	}
+	trimmed := strings.TrimSpace(plaintextToken)
+	if trimmed == "" {
+		return "", "", nil, ErrInvalidToken
+	}
+
+	hash := HashRefreshToken(trimmed)
+	rt, err := s.refreshRepo.GetRefreshTokenByHash(ctx, hash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil, ErrInvalidToken
+		}
+		return "", "", nil, fmt.Errorf("load refresh token: %w", err)
+	}
+
+	// Replay attack detection: if token is already revoked, an attacker or compromised client is reusing it
+	if rt.Revoked {
+		_ = s.refreshRepo.RevokeFamily(ctx, rt.FamilyID)
+		return "", "", nil, ErrReplayDetected
+	}
+
+	if time.Now().UTC().After(rt.ExpiresAt) {
+		return "", "", nil, ErrOTPExpired
+	}
+
+	// Revoke current token upon rotation
+	if err := s.refreshRepo.RevokeRefreshToken(ctx, rt.ID); err != nil {
+		return "", "", nil, fmt.Errorf("revoke current refresh token: %w", err)
+	}
+
+	user, err = s.users.GetByID(ctx, rt.UserID)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("load user: %w", err)
+	}
+
+	// Verify tenant status if tenant
+	if user.TenantID != nil && s.tenants != nil {
+		t, err := s.tenants.GetByID(ctx, *user.TenantID)
+		if err == nil && t != nil && t.Status == domain.TenantStatusVacated {
+			return "", "", nil, ErrTenantVacated
+		}
+	}
+
+	newPlaintext, newHash, err := GenerateRefreshToken()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("generate new refresh token: %w", err)
+	}
+
+	newRT := &domain.RefreshToken{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		FamilyID:  rt.FamilyID, // Retain family ID across rotation
+		TokenHash: newHash,
+		ExpiresAt: time.Now().UTC().Add(RefreshTokenTTL),
+		Revoked:   false,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.refreshRepo.StoreRefreshToken(ctx, newRT); err != nil {
+		return "", "", nil, fmt.Errorf("store rotated refresh token: %w", err)
+	}
+
+	newAccessToken, err = IssueAccessToken(s.jwtSecret, user)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("issue new access token: %w", err)
+	}
+
+	return newAccessToken, newPlaintext, user, nil
+}
+
+// RevokeSession revokes the presented refresh token and its family.
+func (s *Service) RevokeSession(ctx context.Context, plaintextToken string) error {
+	if s.refreshRepo == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(plaintextToken)
+	if trimmed == "" {
+		return nil
+	}
+	hash := HashRefreshToken(trimmed)
+	rt, err := s.refreshRepo.GetRefreshTokenByHash(ctx, hash)
+	if err != nil {
+		return nil
+	}
+	return s.refreshRepo.RevokeFamily(ctx, rt.FamilyID)
 }

@@ -131,8 +131,11 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	// Idempotency key handling
-	idempotencyKey := strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
+	// Idempotency key handling: standard Idempotency-Key with X-Idempotency-Key fallback
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if idempotencyKey == "" {
+		idempotencyKey = strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
+	}
 	if idempotencyKey == "" {
 		idempotencyKey = uuid.New().String()
 	}

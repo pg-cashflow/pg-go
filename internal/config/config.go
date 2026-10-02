@@ -58,6 +58,7 @@ type Config struct {
 	IntelligenceEnabled          bool
 	AdminEmail                   string
 	AdminPhone                   string
+	TrustedProxies               []string
 }
 
 func Load() (*Config, error) {
@@ -84,6 +85,7 @@ func Load() (*Config, error) {
 		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),
 		AppEnv:                envOr("APP_ENV", "development"),
 		CORSAllowedOrigins:    splitOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		TrustedProxies:         splitOrigins(os.Getenv("TRUSTED_PROXIES")),
 		FrontendURL:           os.Getenv("FRONTEND_URL"),
 		FirebaseProjectID:     os.Getenv("FIREBASE_PROJECT_ID"),
 		FirebaseCredentials:   os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),

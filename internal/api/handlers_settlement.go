@@ -1,13 +1,17 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -174,3 +178,128 @@ func (h *Handlers) getSettlementRepo() *postgres.SettlementRepo {
 	}
 	return nil
 }
+
+type runEODBalanceBody struct {
+	Date string `json:"date"`
+}
+
+func (h *Handlers) getSettlementBalancer() *finance.SettlementBalancer {
+	if h.SettlementBalancer != nil {
+		return h.SettlementBalancer
+	}
+	if h.SettlementBalancerRepo != nil {
+		return finance.NewSettlementBalancer(h.SettlementBalancerRepo)
+	}
+	if h.Pool != nil {
+		return finance.NewSettlementBalancer(postgres.NewSettlementBalancerRepo(h.Pool))
+	}
+	return nil
+}
+
+// OwnerGetEODBalance handles GET /owner/settlements/eod-balance?date=YYYY-MM-DD
+func (h *Handlers) OwnerGetEODBalance(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	balancer := h.getSettlementBalancer()
+	if balancer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement balancer not configured"})
+		return
+	}
+
+	dateStr := c.Query("date")
+	reconDate := time.Now().UTC()
+	if dateStr != "" {
+		parsed, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date format, expected YYYY-MM-DD"})
+			return
+		}
+		reconDate = parsed
+	}
+
+	bal, err := balancer.GetDailyBalance(c.Request.Context(), pid, reconDate)
+	if err != nil {
+		if errors.Is(err, postgres.ErrDailyBalanceNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "eod balance not found for specified date"})
+			return
+		}
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, bal)
+}
+
+// OwnerRunEODBalance handles POST /owner/settlements/eod-balance/run
+func (h *Handlers) OwnerRunEODBalance(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	balancer := h.getSettlementBalancer()
+	if balancer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement balancer not configured"})
+		return
+	}
+
+	var body runEODBalanceBody
+	_ = c.ShouldBindJSON(&body)
+
+	reconDate := time.Now().UTC()
+	if body.Date != "" {
+		parsed, err := time.Parse("2006-01-02", body.Date)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date format, expected YYYY-MM-DD"})
+			return
+		}
+		reconDate = parsed
+	}
+
+	bal, err := balancer.RunDailyBalance(c.Request.Context(), pid, reconDate)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, bal)
+}
+
+// OwnerListEODBalances handles GET /owner/settlements/eod-balance/history
+func (h *Handlers) OwnerListEODBalances(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	balancer := h.getSettlementBalancer()
+	if balancer == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement balancer not configured"})
+		return
+	}
+
+	limit := 30
+	offset := 0
+	if l := c.Query("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 {
+			limit = val
+		}
+	}
+	if o := c.Query("offset"); o != "" {
+		if val, err := strconv.Atoi(o); err == nil && val >= 0 {
+			offset = val
+		}
+	}
+
+	list, err := balancer.ListDailyBalances(c.Request.Context(), pid, limit, offset)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"balances": list,
+		"total":    len(list),
+	})
+}
+

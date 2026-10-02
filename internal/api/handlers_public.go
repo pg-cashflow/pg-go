@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,6 +17,37 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 )
+
+const (
+	RefreshCookieName = "pg_refresh_token"
+	RefreshCookiePath = "/api/auth"
+)
+
+func (h *Handlers) isProduction() bool {
+	return strings.EqualFold(h.AppEnv, "production")
+}
+
+func (h *Handlers) setRefreshCookie(c *gin.Context, token string, expiresAt time.Time) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = -1
+	}
+	c.SetCookie(
+		RefreshCookieName,
+		token,
+		maxAge,
+		RefreshCookiePath,
+		"", // host-only
+		h.isProduction(),
+		true, // HttpOnly
+	)
+}
+
+func (h *Handlers) clearRefreshCookie(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(RefreshCookieName, "", -1, RefreshCookiePath, "", h.isProduction(), true)
+}
 
 var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
 <html lang="en">
@@ -109,6 +141,10 @@ type paymentPageData struct {
 
 // PaymentPage serves GET /p/:token HTML.
 func (h *Handlers) PaymentPage(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Referrer-Policy", "no-referrer")
+
 	view, err := h.MagicLink.ResolveToken(c.Request.Context(), c.Param("token"))
 	if err != nil {
 		status := http.StatusNotFound
@@ -261,6 +297,10 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 		return
 	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
+	if accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user); err == nil && refToken != "" {
+		token = accToken
+		h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	}
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
 }
 
@@ -331,7 +371,59 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		}
 	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
+	if accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user); err == nil && refToken != "" {
+		token = accToken
+		h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	}
 	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+}
+
+// AuthRefresh handles POST /auth/refresh.
+// Reads the HttpOnly refresh token cookie, rotates the token in its family, and issues a fresh 15-minute access token.
+func (h *Handlers) AuthRefresh(c *gin.Context) {
+	cookie, err := c.Cookie(RefreshCookieName)
+	if err != nil || strings.TrimSpace(cookie) == "" {
+		c.JSON(http.StatusUnauthorized, apierr.ErrorEnvelope{
+			Error: "missing refresh token",
+			Code:  apierr.CodeAuthUnauthorized,
+		})
+		return
+	}
+
+	newAccessToken, newRefreshToken, user, err := h.Auth.RotateRefreshToken(c.Request.Context(), cookie)
+	if err != nil {
+		h.clearRefreshCookie(c)
+		code := apierr.CodeAuthUnauthorized
+		msg := "invalid or expired refresh token"
+		status := http.StatusUnauthorized
+		if errors.Is(err, auth.ErrReplayDetected) {
+			code = apierr.CodeAuthAccessRevoked
+			msg = "refresh token replay detected: session family revoked"
+		} else if errors.Is(err, auth.ErrTenantVacated) {
+			code = apierr.CodeAuthAccessRevoked
+			msg = "tenant vacated"
+			status = http.StatusForbidden
+		}
+		c.JSON(status, apierr.ErrorEnvelope{
+			Error: msg,
+			Code:  code,
+		})
+		return
+	}
+
+	h.setRefreshCookie(c, newRefreshToken, time.Now().Add(auth.RefreshTokenTTL))
+	h.attachUserLocale(c.Request.Context(), c.Request, user)
+	c.JSON(http.StatusOK, gin.H{"token": newAccessToken, "user": user})
+}
+
+// AuthLogout handles POST /auth/logout.
+// Revokes the presented refresh token family and clears the cookie.
+func (h *Handlers) AuthLogout(c *gin.Context) {
+	if cookie, err := c.Cookie(RefreshCookieName); err == nil && strings.TrimSpace(cookie) != "" {
+		_ = h.Auth.RevokeSession(c.Request.Context(), cookie)
+	}
+	h.clearRefreshCookie(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (h *Handlers) attachUserLocale(ctx context.Context, r *http.Request, user *domain.User) {

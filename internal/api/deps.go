@@ -44,6 +44,9 @@ type AuthService interface {
 	VerifyStepUpOTP(ctx context.Context, phone, otp string) error
 	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)
 	VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (auth.FirebaseIdentity, error)
+	IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error)
+	RotateRefreshToken(ctx context.Context, plaintextToken string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error)
+	RevokeSession(ctx context.Context, plaintextToken string) error
 }
 
 // MagicLinkService resolves and creates payment tokens.
@@ -226,5 +229,12 @@ type BankAccountStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.BankAccount, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]*domain.BankAccount, error)
 	Deactivate(ctx context.Context, id uuid.UUID) error
+}
+
+type SettlementBalancerStore interface {
+	UpsertDailyBalance(ctx context.Context, bal *domain.DailySettlementBalance) error
+	GetDailyBalance(ctx context.Context, propertyID uuid.UUID, reconDate time.Time) (*domain.DailySettlementBalance, error)
+	ListDailyBalances(ctx context.Context, propertyID uuid.UUID, limit, offset int) ([]*domain.DailySettlementBalance, error)
+	ComputeDayAggregates(ctx context.Context, propertyID uuid.UUID, reconDate time.Time) (*domain.DailySettlementBalance, error)
 }
 

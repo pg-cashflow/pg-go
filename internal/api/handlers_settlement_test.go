@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -240,3 +241,148 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 		}
 	})
 }
+
+type mockAPIBalancerStore struct {
+	items map[string]*domain.DailySettlementBalance
+}
+
+func newMockAPIBalancerStore() *mockAPIBalancerStore {
+	return &mockAPIBalancerStore{items: make(map[string]*domain.DailySettlementBalance)}
+}
+
+func (m *mockAPIBalancerStore) UpsertDailyBalance(_ context.Context, bal *domain.DailySettlementBalance) error {
+	key := bal.PropertyID.String() + "|" + bal.ReconDate.Format("2006-01-02")
+	m.items[key] = bal
+	return nil
+}
+
+func (m *mockAPIBalancerStore) GetDailyBalance(_ context.Context, propertyID uuid.UUID, reconDate time.Time) (*domain.DailySettlementBalance, error) {
+	key := propertyID.String() + "|" + reconDate.Format("2006-01-02")
+	if v, ok := m.items[key]; ok {
+		return v, nil
+	}
+	return nil, postgres.ErrDailyBalanceNotFound
+}
+
+func (m *mockAPIBalancerStore) ListDailyBalances(_ context.Context, propertyID uuid.UUID, limit, offset int) ([]*domain.DailySettlementBalance, error) {
+	var list []*domain.DailySettlementBalance
+	for _, v := range m.items {
+		if v.PropertyID == propertyID {
+			list = append(list, v)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockAPIBalancerStore) ComputeDayAggregates(_ context.Context, propertyID uuid.UUID, reconDate time.Time) (*domain.DailySettlementBalance, error) {
+	bal := &domain.DailySettlementBalance{
+		ID:                     uuid.New(),
+		PropertyID:             propertyID,
+		ReconDate:              reconDate,
+		GatewayGrossPaise:      100000,
+		GatewayNetSettledPaise: 97820,
+		GatewayFeesPaise:       1850,
+		GatewayTaxPaise:        330,
+		BankCreditsPaise:       97820,
+		LedgerBankDrPaise:      97820,
+	}
+	bal.EvaluateBalance()
+	return bal, nil
+}
+
+func TestOwnerEODSettlementBalance_Endpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMockAPIBalancerStore()
+	h := &Handlers{
+		Deps: Deps{
+			SettlementBalancerRepo: store,
+			SettlementBalancer:     finance.NewSettlementBalancer(store),
+		},
+	}
+
+	propID := uuid.New()
+	userID := uuid.New()
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+		c.Next()
+	})
+
+	r.GET("/owner/settlements/eod-balance", h.OwnerGetEODBalance)
+	r.POST("/owner/settlements/eod-balance/run", h.OwnerRunEODBalance)
+	r.GET("/owner/settlements/eod-balance/history", h.OwnerListEODBalances)
+
+	dateStr := "2026-09-28"
+
+	t.Run("GET eod-balance before run returns 404", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/owner/settlements/eod-balance?date="+dateStr, nil)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("POST eod-balance/run computes and persists snapshot", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		body := `{"date":"` + dateStr + `"}`
+		req, _ := http.NewRequest(http.MethodPost, "/owner/settlements/eod-balance/run", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp domain.DailySettlementBalance
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if !resp.IsBalanced {
+			t.Errorf("expected is_balanced=true, got false")
+		}
+		if resp.GatewayGrossPaise != 100000 {
+			t.Errorf("expected gross=100000, got %d", resp.GatewayGrossPaise)
+		}
+	})
+
+	t.Run("GET eod-balance returns saved snapshot", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/owner/settlements/eod-balance?date="+dateStr, nil)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", w.Code)
+		}
+		var resp domain.DailySettlementBalance
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.PropertyID != propID {
+			t.Errorf("expected property %s, got %s", propID, resp.PropertyID)
+		}
+	})
+
+	t.Run("GET eod-balance/history returns historical snapshots", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, "/owner/settlements/eod-balance/history?limit=10", nil)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d", w.Code)
+		}
+		var resp struct {
+			Balances []*domain.DailySettlementBalance `json:"balances"`
+			Total    int                              `json:"total"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Total != 1 {
+			t.Errorf("expected total=1, got %d", resp.Total)
+		}
+	})
+}
+

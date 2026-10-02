@@ -9,8 +9,6 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
-const TokenTTL = 30 * 24 * time.Hour
-
 // DefaultTokenVersion matches users.token_version DEFAULT 1.
 const DefaultTokenVersion = 1
 
@@ -31,8 +29,13 @@ func tokenVersionOf(user *domain.User) int {
 	return user.TokenVersion
 }
 
-// IssueToken creates a signed JWT with a 30-day TTL.
-func IssueToken(secret string, user *domain.User) (string, error) {
+const (
+	TokenTTL        = 30 * 24 * time.Hour
+	AccessTokenTTL  = 15 * time.Minute
+	RefreshTokenTTL = 30 * 24 * time.Hour
+)
+
+func issueTokenWithTTL(secret string, user *domain.User, ttl time.Duration) (string, error) {
 	now := time.Now().UTC()
 	claims := Claims{
 		UserID:       user.ID,
@@ -41,9 +44,10 @@ func IssueToken(secret string, user *domain.User) (string, error) {
 		PropertyID:   user.PropertyID,
 		TokenVersion: tokenVersionOf(user),
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.New().String(),
 			Subject:   user.ID.String(),
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(TokenTTL)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -52,6 +56,16 @@ func IssueToken(secret string, user *domain.User) (string, error) {
 		return "", fmt.Errorf("sign token: %w", err)
 	}
 	return signed, nil
+}
+
+// IssueAccessToken creates a signed JWT with a 15-minute TTL.
+func IssueAccessToken(secret string, user *domain.User) (string, error) {
+	return issueTokenWithTTL(secret, user, AccessTokenTTL)
+}
+
+// IssueToken creates a signed JWT with a 30-day TTL.
+func IssueToken(secret string, user *domain.User) (string, error) {
+	return issueTokenWithTTL(secret, user, TokenTTL)
 }
 
 // VerifyToken parses and validates a JWT, returning its claims.

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -69,6 +70,7 @@ type Deps struct {
 	MagicLinkBaseURL   string
 	VAPIDPublicKey     string
 	CORSAllowedOrigins []string
+	TrustedProxies      []string
 	FrontendURL        string
 	AppEnv             string
 
@@ -90,6 +92,9 @@ type Deps struct {
 
 	SettlementRepo       *postgres.SettlementRepo
 	SettlementReconciler *finance.SettlementReconciler
+
+	SettlementBalancerRepo SettlementBalancerStore
+	SettlementBalancer     *finance.SettlementBalancer
 
 	BankTxnRepo     BankTransactionStore
 	BankAccountRepo BankAccountStore
@@ -116,15 +121,28 @@ var redactingLogFormatter = func(p gin.LogFormatterParams) string {
 // NewRouter wires all Rev 6 routes.
 func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Recovery(), gin.LoggerWithConfig(gin.LoggerConfig{
-		Formatter: redactingLogFormatter,
-	}), localization.Middleware())
+	if len(d.TrustedProxies) > 0 {
+		_ = r.SetTrustedProxies(d.TrustedProxies)
+	} else {
+		// By default, trust no upstream proxies unless explicitly configured via TRUSTED_PROXIES
+		_ = r.SetTrustedProxies(nil)
+	}
+
+	r.Use(
+		gin.Recovery(),
+		gin.LoggerWithConfig(gin.LoggerConfig{
+			Formatter: redactingLogFormatter,
+		}),
+		SecurityHeaders(d.AppEnv),
+		MaxBodyBytes(10<<20), // 10MB global body limit (protects against DoS / memory exhaustion)
+		localization.Middleware(),
+	)
 	if len(d.CORSAllowedOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "Accept-Language"},
-			AllowCredentials: false,
+			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language"},
+			AllowCredentials: true,
 			MaxAge:           12 * time.Hour,
 		}))
 	}
@@ -157,6 +175,8 @@ func NewRouter(d Deps) *gin.Engine {
 		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
 		api.POST("/auth/otp/verify", h.OTPVerify)
 		api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
+		api.POST("/auth/refresh", h.AuthRefresh)
+		api.POST("/auth/logout", h.AuthLogout)
 		api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
 
 		pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret, d.AuthUserRepo))
@@ -287,6 +307,11 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/settlements/:id", h.OwnerGetSettlement)
 			owner.POST("/settlements/:id/resolve", h.OwnerResolveSettlementDiscrepancy)
 
+			// Multi-Way EOD Settlement Balancer (Track P / Ticket 15)
+			owner.GET("/settlements/eod-balance", h.OwnerGetEODBalance)
+			owner.POST("/settlements/eod-balance/run", h.OwnerRunEODBalance)
+			owner.GET("/settlements/eod-balance/history", h.OwnerListEODBalances)
+
 			// Staff Attendance & Wage-Calculation Engine (Track M)
 			owner.POST("/staff", h.OwnerCreateStaffProfile)
 			owner.GET("/staff", h.OwnerListStaffProfiles)
@@ -399,3 +424,30 @@ func NewRouter(d Deps) *gin.Engine {
 type Handlers struct {
 	Deps
 }
+
+// SecurityHeaders adds baseline HTTP security headers (nosniff, frame denial, referrer policy, CSP Report-Only, HSTS).
+func SecurityHeaders(appEnv string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Content-Security-Policy-Report-Only", "default-src 'self'; script-src 'self' 'unsafe-inline' https://sdk.cashfree.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://sandbox.cashfree.com https://api.cashfree.com; frame-src 'self' https://sdk.cashfree.com https://api.cashfree.com;")
+
+		if strings.EqualFold(appEnv, "production") {
+			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		c.Next()
+	}
+}
+
+// MaxBodyBytes limits the incoming request body size to prevent memory exhaustion / DoS attacks.
+func MaxBodyBytes(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Body != nil {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+

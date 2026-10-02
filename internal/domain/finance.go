@@ -363,3 +363,123 @@ type SettlementFilter struct {
 	Offset    int
 }
 
+type DiscrepancyItem struct {
+	Category    string `json:"category"` // gateway_in_transit, bank_unmatched, unbalanced_ledger, missing_settlement_deposit
+	AmountPaise int64  `json:"amount_paise"`
+	Note        string `json:"note"`
+	Severity    string `json:"severity"` // info, warning, critical
+}
+
+type DailySettlementBalance struct {
+	ID                     uuid.UUID         `json:"id"`
+	PropertyID             uuid.UUID         `json:"property_id"`
+	ReconDate              time.Time         `json:"recon_date"`
+	GatewayGrossPaise      int64             `json:"gateway_gross_paise"`
+	GatewayNetSettledPaise int64             `json:"gateway_net_settled_paise"`
+	GatewayFeesPaise       int64             `json:"gateway_fees_paise"`
+	GatewayTaxPaise        int64             `json:"gateway_tax_paise"`
+	GatewayAdjustmentPaise int64             `json:"gateway_adjustment_paise"`
+	GatewayInTransitPaise  int64             `json:"gateway_in_transit_paise"`
+	BankCreditsPaise       int64             `json:"bank_credits_paise"`
+	BankDebitsPaise        int64             `json:"bank_debits_paise"`
+	UnappliedQuarantinePaise int64           `json:"unapplied_quarantine_paise"`
+	LedgerBankDrPaise      int64             `json:"ledger_bank_dr_paise"`
+	LedgerBankCrPaise      int64             `json:"ledger_bank_cr_paise"`
+	IsBalanced             bool              `json:"is_balanced"`
+	DiscrepancyPaise       int64             `json:"discrepancy_paise"`
+	Discrepancies          []DiscrepancyItem `json:"discrepancies"`
+	Metadata               map[string]any    `json:"metadata"`
+	CreatedAt              time.Time         `json:"created_at"`
+	UpdatedAt              time.Time         `json:"updated_at"`
+}
+
+// EvaluateBalance performs deterministic multi-way mathematical checks across gateway, bank, and ledger legs.
+func (b *DailySettlementBalance) EvaluateBalance() {
+	var items []DiscrepancyItem
+	var totalDiscrepancy int64
+
+	// 1. Gateway settlement decomposition check
+	gwExpectedGross := b.GatewayNetSettledPaise + b.GatewayFeesPaise + b.GatewayTaxPaise + b.GatewayAdjustmentPaise
+	if b.GatewayGrossPaise != gwExpectedGross {
+		diff := b.GatewayGrossPaise - gwExpectedGross
+		absDiff := diff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		items = append(items, DiscrepancyItem{
+			Category:    "gateway_settlement_imbalance",
+			AmountPaise: absDiff,
+			Note:        "Gateway gross does not equal net settled + fees + tax + adjustment",
+			Severity:    "critical",
+		})
+		totalDiscrepancy += absDiff
+	}
+
+	// 2. Bank Cleared Receipts vs Ledger Bank Debits drift
+	bankCreditDiff := b.BankCreditsPaise - b.LedgerBankDrPaise
+	if bankCreditDiff != 0 {
+		absDiff := bankCreditDiff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		items = append(items, DiscrepancyItem{
+			Category:    "bank_receipt_vs_ledger_drift",
+			AmountPaise: absDiff,
+			Note:        "Cleared bank statement credits differ from general ledger bank debits",
+			Severity:    "warning",
+		})
+		totalDiscrepancy += absDiff
+	}
+
+	// 3. Bank Cleared Disbursements vs Ledger Bank Credits drift
+	bankDebitDiff := b.BankDebitsPaise - b.LedgerBankCrPaise
+	if bankDebitDiff != 0 {
+		absDiff := bankDebitDiff
+		if absDiff < 0 {
+			absDiff = -absDiff
+		}
+		items = append(items, DiscrepancyItem{
+			Category:    "bank_disbursement_vs_ledger_drift",
+			AmountPaise: absDiff,
+			Note:        "Cleared bank statement debits differ from general ledger bank credits",
+			Severity:    "warning",
+		})
+		totalDiscrepancy += absDiff
+	}
+
+	// 4. Gateway In-Transit status
+	if b.GatewayInTransitPaise < 0 {
+		absDiff := -b.GatewayInTransitPaise
+		items = append(items, DiscrepancyItem{
+			Category:    "negative_gateway_in_transit",
+			AmountPaise: absDiff,
+			Note:        "Cumulative settlements exceed cumulative gateway collections",
+			Severity:    "critical",
+		})
+		totalDiscrepancy += absDiff
+	} else if b.GatewayInTransitPaise > 0 {
+		items = append(items, DiscrepancyItem{
+			Category:    "gateway_in_transit",
+			AmountPaise: b.GatewayInTransitPaise,
+			Note:        "Collections in gateway clearing awaiting standard settlement",
+			Severity:    "info",
+		})
+	}
+
+	// 5. Unapplied Quarantine status
+	if b.UnappliedQuarantinePaise > 0 {
+		items = append(items, DiscrepancyItem{
+			Category:    "unapplied_receipts_quarantine",
+			AmountPaise: b.UnappliedQuarantinePaise,
+			Note:        "Bank deposits quarantined pending owner confirmation",
+			Severity:    "info",
+		})
+	}
+
+	b.Discrepancies = items
+	b.DiscrepancyPaise = totalDiscrepancy
+	b.IsBalanced = (totalDiscrepancy == 0)
+}
+
+
+

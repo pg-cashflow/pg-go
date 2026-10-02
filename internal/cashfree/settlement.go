@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,17 +38,17 @@ type OrderSettlementRecord struct {
 type SettlementWebhookPayload struct {
 	Data struct {
 		Settlement struct {
-			SettlementID          any     `json:"settlement_id"` // string or int64
-			Status                string  `json:"status"`
-			AmountSettled         float64 `json:"amount_settled"`
-			UTR                   any     `json:"utr"` // string or int64
-			SettledOn             string  `json:"settled_on"`
-			SettlementType        string  `json:"settlement_type"`
-			PaymentAmount         float64 `json:"payment_amount"`
-			ServiceCharge         float64 `json:"service_charge"`
-			ServiceTax            float64 `json:"service_tax"`
-			Adjustment            float64 `json:"adjustment"`
-			SettlementInitiatedOn string  `json:"settlement_initiated_on"`
+			SettlementID          any    `json:"settlement_id"` // string or int64
+			Status                string `json:"status"`
+			AmountSettled         any    `json:"amount_settled"`
+			UTR                   any    `json:"utr"` // string or int64
+			SettledOn             string `json:"settled_on"`
+			SettlementType        string `json:"settlement_type"`
+			PaymentAmount         any    `json:"payment_amount"`
+			ServiceCharge         any    `json:"service_charge"`
+			ServiceTax            any    `json:"service_tax"`
+			Adjustment            any    `json:"adjustment"`
+			SettlementInitiatedOn string `json:"settlement_initiated_on"`
 		} `json:"settlement"`
 	} `json:"data"`
 	EventTime string `json:"event_time"`
@@ -248,11 +247,11 @@ func ParseSettlementWebhook(raw []byte) (*SettlementWebhookRecord, error) {
 	rec := &SettlementWebhookRecord{
 		CFSettlementID:     stlmID,
 		Status:             strings.ToUpper(strings.TrimSpace(s.Status)),
-		GrossAmountPaise:   floatToPaise(s.PaymentAmount),
-		NetAmountPaise:     floatToPaise(s.AmountSettled),
-		ServiceChargePaise: floatToPaise(s.ServiceCharge),
-		ServiceTaxPaise:    floatToPaise(s.ServiceTax),
-		AdjustmentPaise:    floatToPaise(s.Adjustment),
+		GrossAmountPaise:   coercePaise(s.PaymentAmount),
+		NetAmountPaise:     coercePaise(s.AmountSettled),
+		ServiceChargePaise: coercePaise(s.ServiceCharge),
+		ServiceTaxPaise:    coercePaise(s.ServiceTax),
+		AdjustmentPaise:    coercePaise(s.Adjustment),
 		UTR:                coerceString(s.UTR),
 		EventType:          strings.TrimSpace(payload.Type),
 		RawPayload:         raw,
@@ -304,16 +303,42 @@ func getAmountPaise(m map[string]any, k string) int64 {
 	if !ok || val == nil {
 		return 0
 	}
+	return coercePaise(val)
+}
+
+func coercePaise(val any) int64 {
+	if val == nil {
+		return 0
+	}
 	switch v := val.(type) {
 	case string:
 		p, err := ParseRupeesToPaise(v)
 		if err == nil {
 			return p
 		}
-		f, _ := strconv.ParseFloat(v, 64)
-		return floatToPaise(f)
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			p, _ := ParseRupeesToPaise(strconv.FormatFloat(f, 'f', 2, 64))
+			return p
+		}
+		return 0
+	case json.Number:
+		p, err := ParseRupeesToPaise(v.String())
+		if err == nil {
+			return p
+		}
+		return 0
 	case float64:
-		return floatToPaise(v)
+		p, err := ParseRupeesToPaise(strconv.FormatFloat(v, 'f', 2, 64))
+		if err == nil {
+			return p
+		}
+		return 0
+	case float32:
+		p, err := ParseRupeesToPaise(strconv.FormatFloat(float64(v), 'f', 2, 64))
+		if err == nil {
+			return p
+		}
+		return 0
 	case int64:
 		return v * 100
 	case int:
@@ -321,17 +346,6 @@ func getAmountPaise(m map[string]any, k string) int64 {
 	default:
 		return 0
 	}
-}
-
-func floatToPaise(val float64) int64 {
-	if val == 0 {
-		return 0
-	}
-	// Use math.Round to avoid precision drift on float arithmetic
-	if val < 0 {
-		return -int64(math.Round(-val * 100))
-	}
-	return int64(math.Round(val * 100))
 }
 
 func parseTime(raw string) time.Time {

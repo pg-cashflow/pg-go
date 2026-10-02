@@ -242,6 +242,18 @@ func (s *stubAuthService) VerifyFirebaseStepUp(ctx context.Context, idToken stri
 	return auth.FirebaseIdentity{UID: "stub-firebase-uid", AuthTime: time.Now().UTC()}, nil
 }
 
+func (s *stubAuthService) IssueSession(ctx context.Context, user *domain.User) (string, string, error) {
+	return "stub-access-token", "stub-refresh-token", nil
+}
+
+func (s *stubAuthService) RotateRefreshToken(ctx context.Context, plaintextToken string) (string, string, *domain.User, error) {
+	return "stub-new-access-token", "stub-new-refresh-token", &domain.User{Role: domain.RoleOwner}, nil
+}
+
+func (s *stubAuthService) RevokeSession(ctx context.Context, plaintextToken string) error {
+	return nil
+}
+
 func TestOTPVerifyCharacterization(t *testing.T) {
 	cases := []struct {
 		name       string

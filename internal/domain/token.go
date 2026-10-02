@@ -24,6 +24,17 @@ type PaymentToken struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// RefreshToken represents a persisted refresh token with family tracking.
+type RefreshToken struct {
+	ID        uuid.UUID `json:"id"`
+	UserID    uuid.UUID `json:"user_id"`
+	FamilyID  uuid.UUID `json:"family_id"`
+	TokenHash string    `json:"-"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Revoked   bool      `json:"revoked"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // GenerateToken returns a raw token (hex) for the URL; never store raw.
 func GenerateToken() (raw string, err error) {
 	b := make([]byte, TokenByteLen)

@@ -131,7 +131,9 @@ func main() {
 		}
 	}
 
+	refreshRepo := postgres.NewRefreshTokenRepo(pool)
 	authSvc := auth.NewService(otpRepo, userRepo, tenantRepo, propertyRepo, gateway, cfg.OTPHMACSecret, cfg.JWTSecret)
+	authSvc.SetRefreshTokenRepo(refreshRepo)
 	if cfg.FirebaseProjectID != "" {
 		if cfg.FirebaseCredentials != "" {
 			if _, err := os.Stat(cfg.FirebaseCredentials); err != nil {
@@ -313,6 +315,7 @@ func main() {
 		MagicLinkBaseURL:   cfg.MagicLinkBaseURL,
 		VAPIDPublicKey:     cfg.VAPIDPublicKey,
 		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		TrustedProxies:      cfg.TrustedProxies,
 		FrontendURL:         cfg.FrontendURL,
 		AppEnv:              cfg.AppEnv,
 		SearchSvc:           searchSvc,
@@ -324,10 +327,12 @@ func main() {
 		PayoutRepo:          payoutRepo,
 		PayoutDispatcher:    payoutDispatcher,
 		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
-		AttendanceRepo:      attendanceRepo,
-		AttendanceSvc:       attendanceSvc,
-		BankTxnRepo:         bankTxnRepo,
-		BankAccountRepo:     bankAccountRepo,
+		AttendanceRepo:         attendanceRepo,
+		AttendanceSvc:          attendanceSvc,
+		BankTxnRepo:            bankTxnRepo,
+		BankAccountRepo:        bankAccountRepo,
+		SettlementBalancerRepo: postgres.NewSettlementBalancerRepo(pool),
+		SettlementBalancer:     finance.NewSettlementBalancer(postgres.NewSettlementBalancerRepo(pool)),
 	})
 
 	srv := &http.Server{

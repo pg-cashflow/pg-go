@@ -35,14 +35,13 @@
 - [Track L (Ticket 11): Payout Phase 2 — Cashfree Transfers V2 Integration](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_l_payout_phase_2_cashfree_transfers_v2.md): Resolved. Automated Cashfree Transfers V2 integration (Batch Transfer V2, Beneficiary V2 with account-hash derivation, fundsource_id wiring, dispatch_unknown ambiguous timeout handling, Cashfree approval pending bucket, and ledger mirror reversal). Verified via live database tests and 100% green test suite across all 30 internal packages.
 - [Track M (Ticket 12): Staff Attendance & Wage-Calculation Engine](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_m_attendance_and_wage_calc.md): Resolved. Isolated upstream domain for per-property leave policies, daily attendance tracking, mid-cycle proration, and integer-paise wage calculation, feeding into `payout_items` (`PayeeTypeStaff`) without altering the audited payout pipeline. Verified via unit, live postgres, and HTTP integration tests across all 31 internal packages.
 - [Track N (Ticket 13): Stream 3 Layer 1 — Cashfree Settlement Ingress & Order-to-Intent Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_n_settlement_reconciliation_layer1.md): Resolved. Ingress for Cashfree settlement webhooks and order-level API polling (2025-01-01 / 2026-01-01 polymorphic parser), order-to-intent matching, integer paise MDR/GST allocation, balanced double-entry journals, human-gated discrepancy review with maker-checker step-up, cross-property IDOR standardization (404), and continuous property-based money-math invariant evals.
-
+- [Track P (Ticket 15): Stream 3 Layer 3 — End-of-Day Multi-Way Settlement Balancer & Audit Trail](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_p_multi_way_settlement_balancer.md): Resolved. Reconciles Cashfree gateway clearing decomposition (Gross = Net + Fees + Tax + Adj), gateway in-transit balance, cleared bank statement inflows/outflows against general ledger journal lines, and Tier 2 unapplied receipt quarantine. Implemented durable daily snapshot store (`daily_settlement_balances`, migration 031), REST endpoints (`/owner/settlements/eod-balance`, `/run`, `/history`), UI integration in `pg-react` with dual tabs and variance breakdown, and 10,000-iteration randomized property invariant evaluations.
+ 
 ## Frontier (Open Tickets)
 
-- [Track O (Ticket 14): Stream 3 Layer 2 — Bank Statement Ingress & Unidentified Deposit Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_o_bank_statement_ingress_layer2.md): Fix silent rent cross-attribution by demoting AmountDateWindowMatcher to Tier 2 heuristic staging; ingest bank statements via canonical CSV parser; enforce double-entry Dr bank / Cr unapplied_receipts quarantine; replace ExpenseImportSuggestion with durable bank_transactions table.
+- **Track Q (Ticket 16): Final Staging Cutover & End-to-End Deployment Verification**:
+  Cut staging branch `develop` from `div_dev`, verify static binary build (`cmd/server`), validate GitHub Actions CI parity, and ensure zero schema drift across all 31 Postgres migrations.
 
-## Not yet specified
-
-- Stream 3 Layer 3: End-of-Day Multi-Way Settlement Balancer & Audit Trail.
 
 ## Out of scope
 
