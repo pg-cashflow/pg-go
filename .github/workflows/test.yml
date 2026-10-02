@@ -81,7 +81,7 @@ jobs:
           OTP_HMAC_SECRET: ci_test_otp_hmac_secret_32_chars_long!!
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
           KYC_IDENTITY_SECRET: ci_test_kyc_identity_secret_32_chars!
-        run: go test -v ./... -timeout 5m
+        run: go test -race -v ./... -timeout 5m
 
       - name: Vet pg-go
         working-directory: pg-go
