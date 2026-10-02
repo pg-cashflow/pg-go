@@ -36,6 +36,28 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 		s.RawPayload = json.RawMessage("{}")
 	}
 
+	if s.PropertyID == nil {
+		if s.OrderID != nil && *s.OrderID != "" {
+			var pid uuid.UUID
+			if err := r.pool.QueryRow(ctx, `SELECT property_id FROM payments WHERE order_id = $1 LIMIT 1`, *s.OrderID).Scan(&pid); err == nil {
+				s.PropertyID = &pid
+			}
+		}
+		if s.PropertyID == nil && s.CFSettlementID != "" {
+			var pid uuid.UUID
+			if err := r.pool.QueryRow(ctx, `SELECT property_id FROM gateway_settlements WHERE cf_settlement_id = $1 AND property_id IS NOT NULL LIMIT 1`, s.CFSettlementID).Scan(&pid); err == nil {
+				s.PropertyID = &pid
+			}
+		}
+		if s.PropertyID == nil {
+			var pid uuid.UUID
+			var totalProps int
+			if err := r.pool.QueryRow(ctx, `SELECT id, (SELECT COUNT(*) FROM properties) FROM properties ORDER BY created_at ASC LIMIT 1`).Scan(&pid, &totalProps); err == nil && totalProps == 1 {
+				s.PropertyID = &pid
+			}
+		}
+	}
+
 	query := `
 		INSERT INTO gateway_settlements (
 			id, property_id, cf_settlement_id, order_id, cf_payment_id,
@@ -68,12 +90,21 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			service_tax_paise = EXCLUDED.service_tax_paise,
 			adjustment_paise = EXCLUDED.adjustment_paise,
 			net_amount_paise = EXCLUDED.net_amount_paise,
-			settlement_status = EXCLUDED.settlement_status,
+			settlement_status = CASE
+				WHEN gateway_settlements.settlement_status = 'SETTLED' AND EXCLUDED.settlement_status != 'SETTLED' THEN gateway_settlements.settlement_status
+				ELSE EXCLUDED.settlement_status
+			END,
 			settled_on = COALESCE(EXCLUDED.settled_on, gateway_settlements.settled_on),
 			settlement_initiated_on = COALESCE(EXCLUDED.settlement_initiated_on, gateway_settlements.settlement_initiated_on),
 			transfer_time = COALESCE(EXCLUDED.transfer_time, gateway_settlements.transfer_time),
-			reconciliation_status = EXCLUDED.reconciliation_status,
-			discrepancy_reason = EXCLUDED.discrepancy_reason,
+			reconciliation_status = CASE
+				WHEN gateway_settlements.reconciliation_status = 'RESOLVED' THEN gateway_settlements.reconciliation_status
+				ELSE EXCLUDED.reconciliation_status
+			END,
+			discrepancy_reason = CASE
+				WHEN gateway_settlements.reconciliation_status = 'RESOLVED' THEN gateway_settlements.discrepancy_reason
+				ELSE EXCLUDED.discrepancy_reason
+			END,
 			journal_entry_id = COALESCE(EXCLUDED.journal_entry_id, gateway_settlements.journal_entry_id),
 			raw_payload = EXCLUDED.raw_payload,
 			updated_at = NOW()

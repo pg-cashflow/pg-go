@@ -227,7 +227,9 @@ func (r *SettlementReconciler) ReconcileWebhookSettlement(
 			rec.GrossAmountPaise, rec.NetAmountPaise, rec.ServiceChargePaise, rec.ServiceTaxPaise, rec.AdjustmentPaise)
 		stlm.ReconciliationStatus = domain.ReconDiscrepancy
 		stlm.DiscrepancyReason = &reason
-		_ = r.Store.UpsertSettlement(ctx, stlm)
+		if err := r.Store.UpsertSettlement(ctx, stlm); err != nil {
+			return nil, fmt.Errorf("upsert discrepancy settlement: %w", err)
+		}
 		return stlm, nil
 	}
 

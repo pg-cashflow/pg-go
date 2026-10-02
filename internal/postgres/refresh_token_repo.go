@@ -131,7 +131,9 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	if current.Revoked {
 		// Check if the family has any active (unrevoked) tokens left
 		var activeCount int
-		_ = tx.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()`, current.FamilyID).Scan(&activeCount)
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()`, current.FamilyID).Scan(&activeCount); err != nil {
+			return nil, fmt.Errorf("check active family tokens: %w", err)
+		}
 
 		// Grace window check: only applies if the family has not been nuked (active tokens exist)
 		// and this token was revoked within the last 15 seconds.
@@ -160,14 +162,29 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		}
 
 		// Replay attack confirmed or family already nuked: ensure entire family is revoked!
-		_, _ = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = NOW() WHERE family_id = $1`, current.FamilyID)
+		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = NOW() WHERE family_id = $1`, current.FamilyID); err != nil {
+			return nil, fmt.Errorf("revoke compromised token family: %w", err)
+		}
 		if r.pool != nil {
 			_ = tx.Commit(ctx)
 		}
 		return nil, ErrReplayDetected
 	}
 
-	// 2. Expiry check
+	// 2. Absolute Maximum Session Lifetime check (90 days)
+	const maxSessionFamilyLifetime = 90 * 24 * time.Hour
+	var rootCreatedAt time.Time
+	if err := tx.QueryRow(ctx, `SELECT MIN(created_at) FROM refresh_tokens WHERE family_id = $1`, current.FamilyID).Scan(&rootCreatedAt); err == nil && !rootCreatedAt.IsZero() {
+		if time.Since(rootCreatedAt) > maxSessionFamilyLifetime {
+			return nil, ErrRefreshTokenExpired
+		}
+		maxExpiry := rootCreatedAt.Add(maxSessionFamilyLifetime)
+		if newRT.ExpiresAt.After(maxExpiry) {
+			newRT.ExpiresAt = maxExpiry
+		}
+	}
+
+	// 3. Expiry check
 	if time.Now().UTC().After(current.ExpiresAt) {
 		return nil, ErrRefreshTokenExpired
 	}

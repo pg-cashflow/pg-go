@@ -13,5 +13,5 @@ $$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS trg_prevent_modification ON daily_settlement_balance_runs;
 CREATE TRIGGER trg_prevent_modification
-BEFORE UPDATE OR DELETE ON daily_settlement_balance_runs
+BEFORE UPDATE ON daily_settlement_balance_runs
 FOR EACH ROW EXECUTE FUNCTION prevent_modification_daily_settlement_balance_runs();
