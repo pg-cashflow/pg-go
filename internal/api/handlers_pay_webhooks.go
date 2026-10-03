@@ -373,7 +373,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent) {
 	ctx := c.Request.Context()
 	if h.Pool != nil && h.GatewayPaymentRepo != nil {
-		_ = postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+		if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_FAILED_WEBHOOK", fail.CFPaymentID, "")
 			if err != nil || !firstSeen {
@@ -383,7 +383,16 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 				return err
 			}
 			return nil
-		})
+		}); txErr != nil {
+			// Transaction failure on payment-failed webhook — the intent status update or dedup insert failed.
+			// Log at ERROR for operator visibility; still return 200 OK to prevent gateway retry storms on
+			// a non-money-moving event. The webhook_events audit record is the authoritative receipt.
+			slog.Default().Error("PAYMENT_FAILED_WEBHOOK: transaction error updating payment_intents",
+				"order_id", fail.OrderID,
+				"cf_payment_id", fail.CFPaymentID,
+				"err", txErr,
+			)
+		}
 	}
 	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
 		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
@@ -440,13 +449,19 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			}
 
 			// Locks: tenants -> dues -> payments -> gateway_refunds
+			// Errors on FOR UPDATE lock rows must propagate — if the row is missing or
+			// the query fails, proceeding without the lock breaks the lock hierarchy.
 			var dummy uuid.UUID
-			_ = tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy)
+			if lockErr := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); lockErr != nil {
+				return fmt.Errorf("lock tenant for refund webhook: %w", lockErr)
+			}
 			d, err := txDueRepo.GetByIDForUpdate(ctx, p.DueID)
 			if err != nil {
 				return err
 			}
-			_ = tx.QueryRow(ctx, `SELECT id FROM payments WHERE id=$1 FOR UPDATE`, p.ID).Scan(&dummy)
+			if lockErr := tx.QueryRow(ctx, `SELECT id FROM payments WHERE id=$1 FOR UPDATE`, p.ID).Scan(&dummy); lockErr != nil {
+				return fmt.Errorf("lock payment for refund webhook: %w", lockErr)
+			}
 
 			// Forward-only state transition check
 			if existingRef != nil && isTerminalRefund(existingRef.Status) && !isTerminalRefund(ref.RefundStatus) {
