@@ -36,11 +36,11 @@
 - [Track M (Ticket 12): Staff Attendance & Wage-Calculation Engine](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_m_attendance_and_wage_calc.md): Resolved. Isolated upstream domain for per-property leave policies, daily attendance tracking, mid-cycle proration, and integer-paise wage calculation, feeding into `payout_items` (`PayeeTypeStaff`) without altering the audited payout pipeline. Verified via unit, live postgres, and HTTP integration tests across all 31 internal packages.
 - [Track N (Ticket 13): Stream 3 Layer 1 — Cashfree Settlement Ingress & Order-to-Intent Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_n_settlement_reconciliation_layer1.md): Resolved. Ingress for Cashfree settlement webhooks and order-level API polling (2025-01-01 / 2026-01-01 polymorphic parser), order-to-intent matching, integer paise MDR/GST allocation, balanced double-entry journals, human-gated discrepancy review with maker-checker step-up, cross-property IDOR standardization (404), and continuous property-based money-math invariant evals.
 - [Track P (Ticket 15): Stream 3 Layer 3 — End-of-Day Multi-Way Settlement Balancer & Audit Trail](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_p_multi_way_settlement_balancer.md): Resolved. Reconciles Cashfree gateway clearing decomposition (Gross = Net + Fees + Tax + Adj), gateway in-transit balance, cleared bank statement inflows/outflows against general ledger journal lines, and Tier 2 unapplied receipt quarantine. Implemented durable daily snapshot store (`daily_settlement_balances`, migration 031), REST endpoints (`/owner/settlements/eod-balance`, `/run`, `/history`), UI integration in `pg-react` with dual tabs and variance breakdown, and 10,000-iteration randomized property invariant evaluations.
- 
+- [Track Q (Ticket 16): Final Staging Cutover & End-to-End Deployment Verification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_q_staging_cutover_verification.md): Resolved. Verified static binary build across all 12 `cmd/...` executables with 0 errors, resolved schema checksum drift, successfully applied and verified all 43 migrations (001–043) with zero drift, verified 100% test suite passing across all packages and invariant property evaluations with zero integer-paise drift.
+
 ## Frontier (Open Tickets)
 
-- **Track Q (Ticket 16): Final Staging Cutover & End-to-End Deployment Verification**:
-  Cut staging branch `develop` from `div_dev`, verify static binary build (`cmd/server`), validate GitHub Actions CI parity, and ensure zero schema drift across all 31 Postgres migrations.
+*(All 16 Wayfinder tracks resolved and verified)*
 
 
 ## Out of scope

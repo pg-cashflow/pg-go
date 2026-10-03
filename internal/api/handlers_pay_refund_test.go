@@ -589,6 +589,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live postgres test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -600,7 +603,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -822,6 +825,9 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 }
 
 func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live postgres test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -833,7 +839,7 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)

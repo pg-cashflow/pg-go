@@ -226,7 +226,9 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if lockedIntent.Status == "superseded" {
 					failureReason = "session_superseded"
 				}
-				_ = txPayRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, &intent.ID, int64(succ.AmountPaise), failureReason, evtRecord.RawPayload)
+				if err := txPayRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, &intent.ID, int64(succ.AmountPaise), failureReason, evtRecord.RawPayload); err != nil {
+					return err
+				}
 
 				note := "unapplied duplicate: dues already closed, pending owner refund or manual allocation"
 				p := &domain.Payment{
@@ -244,9 +246,22 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					return err
 				}
 				if h.Finance != nil {
-					_ = h.Finance.MirrorUnappliedPayment(ctx, due0.PropertyID, p.ID, int64(succ.AmountPaise), at)
+					if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, due0.PropertyID, p.ID, int64(succ.AmountPaise), at); mirrorErr != nil {
+						// Ledger-gap: payment row is committed but the journal entry failed.
+						// The C-2 deferred trigger will reject a future unbalanced commit for this
+						// source_id. Log at ERROR for operator alerting; do NOT roll back the
+						// payment to avoid re-crediting the customer.
+						slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",
+							"payment_id", p.ID,
+							"property_id", due0.PropertyID,
+							"amount_paise", succ.AmountPaise,
+							"err", mirrorErr,
+						)
+					}
 				}
-				_ = txIntentRepo.MarkPaid(ctx, intent.ID, cfID)
+				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
+					return err
+				}
 				return nil
 			}
 
@@ -286,15 +301,30 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					return err
 				}
 				if credit > 0 {
-					_, _ = tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, credit)
+					if _, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, credit); err != nil {
+						return err
+					}
 				}
 				remainingPaise -= allocPaise
 			}
 
 			if h.Finance != nil {
-				_ = h.Finance.MirrorPayment(ctx, p, due0)
+				if mirrorErr := h.Finance.MirrorPayment(ctx, p, due0); mirrorErr != nil {
+					// Ledger-gap: payment row is committed but the journal entry failed.
+					// The C-2 deferred trigger will reject a future unbalanced commit for this
+					// source_id. Log at ERROR for operator alerting; do NOT roll back the
+					// payment to avoid re-crediting the customer.
+					slog.Default().Error("LEDGER GAP: MirrorPayment failed after payment committed",
+						"payment_id", p.ID,
+						"due_id", due0.ID,
+						"property_id", due0.PropertyID,
+						"err", mirrorErr,
+					)
+				}
 			}
-			_ = txIntentRepo.MarkPaid(ctx, intent.ID, cfID)
+			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
+				return err
+			}
 			return nil
 		})
 		if err != nil {
@@ -349,7 +379,9 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 			if err != nil || !firstSeen {
 				return err
 			}
-			_, _ = tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1`, fail.OrderID)
+			if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1`, fail.OrderID); err != nil {
+				return err
+			}
 			return nil
 		})
 	}
@@ -444,17 +476,39 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				now := time.Now().UTC()
 				if p.IsUnapplied {
 					if h.Finance != nil {
-						_ = h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, true, d.Kind, now)
+						if mirrorErr := h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, true, d.Kind, now); mirrorErr != nil {
+							// Ledger-gap: refund row is committed but the reversal journal failed.
+							// Log at ERROR for operator alerting; do NOT roll back the refund record.
+							slog.Default().Error("LEDGER GAP: MirrorRefund (unapplied) failed after refund committed",
+								"refund_id", rfRow.ID,
+								"property_id", d.PropertyID,
+								"amount_paise", ref.RefundAmount,
+								"err", mirrorErr,
+							)
+						}
 					}
 				} else {
-					_ = txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+					if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
 						RefundID:    rfRow.ID,
 						DueID:       &d.ID,
 						AmountPaise: ref.RefundAmount,
-					})
-					_ = recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d)
+					}); err != nil {
+						return err
+					}
+					if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+						return err
+					}
 					if h.Finance != nil {
-						_ = h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, false, d.Kind, now)
+						if mirrorErr := h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, false, d.Kind, now); mirrorErr != nil {
+							// Ledger-gap: refund row is committed but the reversal journal failed.
+							// Log at ERROR for operator alerting; do NOT roll back the refund record.
+							slog.Default().Error("LEDGER GAP: MirrorRefund (applied) failed after refund committed",
+								"refund_id", rfRow.ID,
+								"property_id", d.PropertyID,
+								"amount_paise", ref.RefundAmount,
+								"err", mirrorErr,
+							)
+						}
 					}
 				}
 			}

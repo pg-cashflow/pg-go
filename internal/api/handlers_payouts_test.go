@@ -54,6 +54,9 @@ func (m *mockSMSForPayouts) Send(_ context.Context, phone, message string) error
 }
 
 func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live postgres test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -740,6 +743,9 @@ func TestCSVExportSanitizationAndFormatting(t *testing.T) {
 }
 
 func TestPayoutAutoDispatchOnApproval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live postgres test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

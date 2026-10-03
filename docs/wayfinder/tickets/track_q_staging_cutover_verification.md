@@ -1,7 +1,7 @@
 # Ticket 16: Track Q — Final Staging Cutover & End-to-End Deployment Verification
 
 - **Type**: `wayfinder:task`
-- **Status**: In Progress
+- **Status**: Resolved
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
 - **Prerequisite**: Track P (End-of-Day Multi-Way Settlement Balancer) resolved.
 
@@ -13,10 +13,10 @@ Complete final pre-deployment audit, binary compilation verification, database m
 
 ## 2. Key Verifications
 
-1. **Database Migrations Integrity (001–031)**:
-   - All 31 SQL migrations in `migrations/` verified idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
-   - Clean linear dependency chain from `001_initial.sql` up to `031_daily_settlement_balances.sql`.
-   - `cmd/migrate` builds and executes cleanly with PgBouncer-compatible advisory locking.
+1. **Database Migrations Integrity (001–043)**:
+   - All 43 SQL migrations in `migrations/` verified idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+   - Clean linear dependency chain from `001_initial.sql` up to `043_ledger_integrity_controls.sql`.
+   - `cmd/migrate` builds and executes cleanly with PgBouncer-compatible advisory locking (verified via `go run cmd/migrate/main.go`).
 
 2. **Binary Buildability**:
    - All 12 executable binaries in `cmd/...` compile with 0 errors:

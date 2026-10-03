@@ -428,11 +428,15 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				for _, item := range allocationsToCreate {
 					d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
 					if err == nil && d != nil {
-						_ = recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d)
+						if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+							return err
+						}
 					}
 				}
 			} else if rfRow.Status == "failed" || rfRow.Status == "cancelled" {
-				_, _ = tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID)
+				if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -447,10 +451,28 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	if rfRow.Status == "succeeded" && h.Finance != nil {
 		finTime := time.Now().UTC()
 		if p.IsUnapplied {
-			_ = h.Finance.MirrorRefund(ctx, pid, rfRow.ID, req.AmountPaise, true, domain.DueKindRent, finTime)
+			if mirrorErr := h.Finance.MirrorRefund(ctx, pid, rfRow.ID, req.AmountPaise, true, domain.DueKindRent, finTime); mirrorErr != nil {
+				// Ledger-gap: refund row is committed but the reversal journal failed.
+				// Log at ERROR for operator alerting; the refund record is authoritative.
+				slog.Error("LEDGER GAP: MirrorRefund (unapplied) failed after manual refund committed",
+					"refund_id", rfRow.ID,
+					"property_id", pid,
+					"amount_paise", req.AmountPaise,
+					"err", mirrorErr,
+				)
+			}
 		} else {
 			for _, item := range allocationsToCreate {
-				_ = h.Finance.MirrorRefund(ctx, pid, rfRow.ID, item.amountPaise, false, item.dueKind, finTime)
+				if mirrorErr := h.Finance.MirrorRefund(ctx, pid, rfRow.ID, item.amountPaise, false, item.dueKind, finTime); mirrorErr != nil {
+					// Ledger-gap: refund row is committed but the reversal journal failed.
+					// Log at ERROR for operator alerting; the refund record is authoritative.
+					slog.Error("LEDGER GAP: MirrorRefund (applied) failed after manual refund committed",
+						"refund_id", rfRow.ID,
+						"property_id", pid,
+						"amount_paise", item.amountPaise,
+						"err", mirrorErr,
+					)
+				}
 			}
 		}
 	}

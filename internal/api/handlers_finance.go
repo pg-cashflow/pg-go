@@ -338,6 +338,8 @@ func (h *Handlers) GetFinanceSettings(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// EnsureDefaults is idempotent seed-on-first-access; a failure here is non-fatal
+	// because GetSettings below will still return a usable zero-value row.
 	_ = h.Finance.Store.EnsureDefaults(c.Request.Context(), pid)
 	st, err := h.Finance.Store.GetSettings(c.Request.Context(), pid)
 	if err != nil {
@@ -720,6 +722,8 @@ func (h *Handlers) OwnerForecast(c *gin.Context) {
 	}
 	series := intelligence.ForecastOCF(sum.OCFPaise, 200, 12)
 	payload, _ := json.Marshal(series)
+	// InsertForecast is a best-effort cache write; a failure here must not block
+	// the forecast response already computed in memory.
 	_ = h.Finance.Store.InsertForecast(c.Request.Context(), &domain.ForecastSnapshot{
 		PropertyID: pid, HorizonDays: 365, AsOf: time.Now().UTC(), Payload: payload,
 	})

@@ -32,6 +32,9 @@ func signPayoutWebhook(secret, timestamp string, body []byte) string {
 }
 
 func TestLivePayoutWebhookFlows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live postgres test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
