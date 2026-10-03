@@ -57,6 +57,14 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	if m039SQL, err := os.ReadFile(m039Path); err == nil {
 		_, _ = pool.Exec(ctx, string(m039SQL))
 	}
+	m040Path := filepath.Join(migrationsDir, "040_search_property_scoped_trgm.sql")
+	if m040SQL, err := os.ReadFile(m040Path); err == nil {
+		_, _ = pool.Exec(ctx, string(m040SQL))
+	}
+	m041Path := filepath.Join(migrationsDir, "041_search_prefix_pattern_ops.sql")
+	if m041SQL, err := os.ReadFile(m041Path); err == nil {
+		_, _ = pool.Exec(ctx, string(m041SQL))
+	}
 
 	repo := NewSearchRepo(pool)
 	searchSvc := &search.Service{Repo: repo}
@@ -160,7 +168,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	for i := 1; i <= 12; i++ {
 		extraTenantID := uuid.New()
 		extraDueID := uuid.New()
-		extraPhone := fmt.Sprintf("+916%09d", (nano+int64(i))%1000000000)
+		extraPhone := fmt.Sprintf("+916888888%03d", 500+i)
 		_, err = pool.Exec(ctx, `
 			INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
 			VALUES ($1, $2, $3, $4, $5, 'active', 500000, 5)`,
@@ -450,6 +458,23 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		}
 		if results[0].Type != search.TypeBankTransaction || results[0].ID != bankTxnID.String() {
 			t.Errorf("expected bank transaction match, got %+v", results[0])
+		}
+	})
+
+	t.Run("Owner: unmatched bank credit lookup via token found only in narration", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Unmatched Bank Deposit", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected bank transaction hit for narration 'Unmatched Bank Deposit', err=%v, count=%d", err, len(results))
+		}
+		found := false
+		for _, r := range results {
+			if r.Type == search.TypeBankTransaction && r.ID == bankTxnID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected bank transaction %s in results for narration search, got %+v", bankTxnID, results)
 		}
 	})
 

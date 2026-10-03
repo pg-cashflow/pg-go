@@ -324,6 +324,7 @@ func (r *SearchRepo) buildTenantsQuery(p search.Params, tokens []search.Token, l
 		ORDER BY
 		  CASE
 		    WHEN UPPER(name) = UPPER($%d) THEN 1000
+		    WHEN room_number = $%d THEN 950
 		    WHEN name ILIKE ($%d || '%%') THEN 800
 		    WHEN (name ILIKE ($%d || '%%') OR name ILIKE ('%% ' || $%d || '%%')) THEN 600
 		    WHEN name ILIKE ('%%' || $%d || '%%') THEN 400
@@ -332,7 +333,7 @@ func (r *SearchRepo) buildTenantsQuery(p search.Params, tokens []search.Token, l
 		  created_at DESC
 		LIMIT $%d`,
 		strings.Join(tokenClauses, " AND "),
-		qIdx, qIdx, qIdx, qIdx, qIdx, qIdx, limitIdx,
+		qIdx, qIdx, qIdx, qIdx, qIdx, qIdx, qIdx, limitIdx,
 	)
 
 	return entityQuery{
@@ -446,6 +447,25 @@ func (r *SearchRepo) buildDuesQuery(p search.Params, tokens []search.Token, limi
 	}
 }
 
+// prefixRange computes the lower and upper bounds for a prefix match against
+// a text_pattern_ops B-Tree index using PostgreSQL's ~>=~ and ~<~ operators.
+// Returns ok=false if s is too short (<3 runes) or ends at MaxRune.
+func prefixRange(s string) (string, string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	runes := []rune(s)
+	if len(runes) < 3 {
+		return "", "", false
+	}
+	last := runes[len(runes)-1]
+	if last == utf8.MaxRune {
+		return "", "", false
+	}
+	upperRunes := make([]rune, len(runes))
+	copy(upperRunes, runes)
+	upperRunes[len(upperRunes)-1] = last + 1
+	return string(runes), string(upperRunes), true
+}
+
 func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, limit int) entityQuery {
 	args := []any{p.PropertyID}
 	tenantFilter := ""
@@ -454,54 +474,93 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 		tenantFilter = fmt.Sprintf(" AND p.tenant_id = $%d", len(args))
 	}
 
-	var payClauses []string
-	var nameClauses []string
+	var isCodeSearch bool
+	var fastClauses []string
+	var fallbackClauses []string
+
 	for _, t := range tokens {
+		pLower, pUpper, ok := prefixRange(t.Raw)
+		if ok && t.Kind == search.TokenCode {
+			isCodeSearch = true
+			args = append(args, pLower, pUpper)
+			fastClauses = append(fastClauses, fmt.Sprintf("(p.upi_txn_id IS NOT NULL AND lower(p.upi_txn_id) ~>=~ $%d AND lower(p.upi_txn_id) ~<~ $%d)", len(args)-1, len(args)))
+		} else {
+			likeVal := search.LikePattern(t.Raw)
+			args = append(args, likeVal)
+			fastClauses = append(fastClauses, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", len(args)))
+		}
+
 		likeVal := search.LikePattern(t.Raw)
 		args = append(args, likeVal)
-		likeIdx := len(args)
-
-		payClauses = append(payClauses, fmt.Sprintf("((p.upi_txn_id IS NOT NULL AND p.upi_txn_id ILIKE $%d ESCAPE '\\') OR (p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\'))", likeIdx, likeIdx))
-		nameClauses = append(nameClauses, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", likeIdx))
+		fallbackClauses = append(fallbackClauses, fmt.Sprintf("(p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\')", len(args)))
 	}
 
-	args = append(args, p.Query, limit)
-	qIdx := len(args) - 1
+	args = append(args, limit)
 	limitIdx := len(args)
+	args = append(args, p.Query)
+	qIdx := len(args)
 
-	// Defect 6: Clean INNER JOIN on tenants with indexed UNION branches
+	var fastScore, fallbackScore string
+	if isCodeSearch {
+		fastScore = fmt.Sprintf(`
+			  CASE
+			    WHEN UPPER(p.upi_txn_id) = UPPER($%d) THEN 1000
+			    WHEN p.upi_txn_id ILIKE ($%d || '%%%%') THEN 800
+			    ELSE 600
+			  END`, qIdx, qIdx)
+		fallbackScore = "400"
+	} else {
+		fastScore = fmt.Sprintf(`
+			  CASE
+			    WHEN UPPER(t.name) = UPPER($%d) THEN 1000
+			    WHEN t.name ILIKE ($%d || '%%%%') THEN 800
+			    WHEN (t.name ILIKE ($%d || '%%%%') OR t.name ILIKE ('%%%% ' || $%d || '%%%%')) THEN 600
+			    ELSE 400
+			  END`, qIdx, qIdx, qIdx, qIdx)
+		fallbackScore = "200"
+	}
+
+	// Two-stage lookup matching ADR-012 latency targets:
+	// Stage 1 (fast): Prefix range scan on upi_txn_id (via idx_payments_upi_prefix) or name scan on tenants (via idx_tenants_name_trgm)
+	// Stage 2 (fallback): raw_note trigram scan (via idx_payments_raw_note_trgm), gated by (SELECT count(*) FROM fast) < limit
 	sql := fmt.Sprintf(`
+		WITH fast AS MATERIALIZED (
+			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment') AS upi_txn_id, COALESCE(t.name, '') AS tenant_name, p.amount, p.created_at,
+			  %s AS rank_score
+			FROM payments p
+			INNER JOIN tenants t ON t.id = p.tenant_id
+			WHERE t.property_id = $1%s
+			  AND %s
+			LIMIT $%d
+		),
+		fallback AS (
+			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment') AS upi_txn_id, COALESCE(t.name, '') AS tenant_name, p.amount, p.created_at,
+			  %s AS rank_score
+			FROM payments p
+			INNER JOIN tenants t ON t.id = p.tenant_id
+			WHERE t.property_id = $1%s
+			  AND (SELECT count(*) FROM fast) < $%d
+			  AND %s
+			LIMIT $%d
+		)
 		SELECT id, upi_txn_id, tenant_name, amount
 		FROM (
-			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment') AS upi_txn_id, COALESCE(t.name, '') AS tenant_name, p.amount, p.created_at
-			FROM payments p
-			INNER JOIN tenants t ON t.id = p.tenant_id
-			WHERE t.property_id = $1%s
-			  AND %s
-			UNION
-			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment') AS upi_txn_id, COALESCE(t.name, '') AS tenant_name, p.amount, p.created_at
-			FROM payments p
-			INNER JOIN tenants t ON t.id = p.tenant_id
-			WHERE t.property_id = $1%s
-			  AND %s
+			SELECT * FROM fast
+			UNION ALL
+			SELECT * FROM fallback WHERE id NOT IN (SELECT id FROM fast)
 		) u
-		ORDER BY
-		  CASE
-		    WHEN UPPER(upi_txn_id) = UPPER($%d) THEN 1000
-		    WHEN upi_txn_id ILIKE ($%d || '%%') THEN 800
-		    WHEN UPPER(tenant_name) = UPPER($%d) THEN 700
-		    WHEN tenant_name ILIKE ($%d || '%%') THEN 500
-		    WHEN (tenant_name ILIKE ($%d || '%%') OR tenant_name ILIKE ('%% ' || $%d || '%%')) THEN 400
-		    WHEN tenant_name ILIKE ('%%' || $%d || '%%') THEN 300
-		    ELSE 100
-		  END DESC,
-		  created_at DESC
+		ORDER BY rank_score DESC, created_at DESC
 		LIMIT $%d`,
+		fastScore,
 		tenantFilter,
-		strings.Join(payClauses, " AND "),
+		strings.Join(fastClauses, " AND "),
+		limitIdx,
+		fallbackScore,
 		tenantFilter,
-		strings.Join(nameClauses, " AND "),
-		qIdx, qIdx, qIdx, qIdx, qIdx, qIdx, qIdx, limitIdx,
+		limitIdx,
+		strings.Join(fallbackClauses, " AND "),
+		limitIdx,
+		limitIdx,
 	)
 
 	return entityQuery{
@@ -829,38 +888,77 @@ func (r *SearchRepo) buildViolationsQuery(p search.Params, tokens []search.Token
 }
 
 // buildBankTransactionsQuery covers unmatched bank statement credits and debits (Ticket 14 / Migration 027).
+// Uses a two-stage lookup:
+// - Stage 1 (fast): Exact/prefix index scan on txn_id via idx_bank_txn_prop_prefix
+// - Stage 2 (fallback): Trigram search on narration via idx_bank_transactions_prop_narration_trgm,
+//   gated on (SELECT count(*) FROM fast) < limit so Postgres skips narration scan with a one-time filter.
 func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search.Token, limit int) entityQuery {
 	args := []any{p.PropertyID}
-	var tokenClauses []string
+	var fastClauses []string
+	var fallbackClauses []string
+
 	for _, t := range tokens {
-		var sub []string
+		pLower, pUpper, ok := prefixRange(t.Raw)
+		if ok {
+			args = append(args, pLower, pUpper)
+			fastClauses = append(fastClauses, fmt.Sprintf("(lower(txn_id) ~>=~ $%d AND lower(txn_id) ~<~ $%d)", len(args)-1, len(args)))
+		} else {
+			likeVal := search.LikePattern(t.Raw)
+			args = append(args, likeVal)
+			fastClauses = append(fastClauses, fmt.Sprintf("txn_id ILIKE $%d ESCAPE '\\'", len(args)))
+		}
+
 		likeVal := search.LikePattern(t.Raw)
 		args = append(args, likeVal)
-		sub = append(sub, fmt.Sprintf("txn_id ILIKE $%d ESCAPE '\\'", len(args)))
-		sub = append(sub, fmt.Sprintf("narration ILIKE $%d ESCAPE '\\'", len(args)))
-		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+		fallbackClauses = append(fallbackClauses, fmt.Sprintf("narration ILIKE $%d ESCAPE '\\'", len(args)))
 	}
 
-	args = append(args, p.Query, limit)
-	qIdx := len(args) - 1
+	args = append(args, limit)
 	limitIdx := len(args)
+	args = append(args, p.Query)
+	qIdx := len(args)
 
 	sql := fmt.Sprintf(`
-		SELECT id::text, txn_id, COALESCE(narration, ''), amount_paise, status
-		FROM bank_transactions
-		WHERE property_id = $1
-		  AND %s
-		ORDER BY
-		  CASE
-		    WHEN UPPER(txn_id) = UPPER($%d) THEN 1000
-		    WHEN txn_id ILIKE ($%d || '%%') THEN 800
-		    WHEN narration ILIKE ('%%' || $%d || '%%') THEN 400
-		    ELSE 100
-		  END DESC,
-		  txn_date DESC
+		WITH fast AS MATERIALIZED (
+			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
+			  CASE
+			    WHEN UPPER(txn_id) = UPPER($%d) THEN 1000
+			    WHEN txn_id ILIKE ($%d || '%%') THEN 800
+			    ELSE 600
+			  END AS rank_score
+			FROM bank_transactions
+			WHERE property_id = $1
+			  AND %s
+			LIMIT $%d
+		),
+		fallback AS (
+			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
+			  CASE
+			    WHEN narration ILIKE ('%%' || $%d || '%%') THEN 400
+			    ELSE 100
+			  END AS rank_score
+			FROM bank_transactions
+			WHERE property_id = $1
+			  AND (SELECT count(*) FROM fast) < $%d
+			  AND %s
+			LIMIT $%d
+		)
+		SELECT id, txn_id, narration, amount_paise, status
+		FROM (
+			SELECT * FROM fast
+			UNION ALL
+			SELECT * FROM fallback WHERE id NOT IN (SELECT id FROM fast)
+		) combined
+		ORDER BY rank_score DESC, txn_date DESC
 		LIMIT $%d`,
-		strings.Join(tokenClauses, " AND "),
-		qIdx, qIdx, qIdx, limitIdx,
+		qIdx, qIdx,
+		strings.Join(fastClauses, " AND "),
+		limitIdx,
+		qIdx,
+		limitIdx,
+		strings.Join(fallbackClauses, " AND "),
+		limitIdx,
+		limitIdx,
 	)
 
 	return entityQuery{
