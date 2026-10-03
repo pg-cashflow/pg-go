@@ -31,6 +31,8 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		t.Skip("skipping search v2 live test: DATABASE_URL not set")
 	}
 
+	requireDisposableDB(t, cfg.DatabaseURL)
+
 	ctx := context.Background()
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -39,9 +41,11 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	defer pool.Close()
 
 	// Ensure extensions
-	_, _ = pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pg_trgm;`)
+	if _, err := pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pg_trgm;`); err != nil {
+		t.Fatalf("create extensions failed: %v", err)
+	}
 
-	// Apply migration 038 and 039
+	// Apply migrations 038 through 042 strictly (fail fast on any error)
 	migrationsDir := "../../migrations"
 	if _, err := os.Stat(migrationsDir); err != nil {
 		migrationsDir = "migrations"
@@ -49,25 +53,21 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 			migrationsDir = "../migrations"
 		}
 	}
-	m038Path := filepath.Join(migrationsDir, "038_search_v2_indexes.sql")
-	if m038SQL, err := os.ReadFile(m038Path); err == nil {
-		_, _ = pool.Exec(ctx, string(m038SQL))
-	}
-	m039Path := filepath.Join(migrationsDir, "039_search_v2_tuning.sql")
-	if m039SQL, err := os.ReadFile(m039Path); err == nil {
-		_, _ = pool.Exec(ctx, string(m039SQL))
-	}
-	m040Path := filepath.Join(migrationsDir, "040_search_property_scoped_trgm.sql")
-	if m040SQL, err := os.ReadFile(m040Path); err == nil {
-		_, _ = pool.Exec(ctx, string(m040SQL))
-	}
-	m041Path := filepath.Join(migrationsDir, "041_search_prefix_pattern_ops.sql")
-	if m041SQL, err := os.ReadFile(m041Path); err == nil {
-		_, _ = pool.Exec(ctx, string(m041SQL))
-	}
-	m042Path := filepath.Join(migrationsDir, "042_search_drop_redundant_global_trgm.sql")
-	if m042SQL, err := os.ReadFile(m042Path); err == nil {
-		_, _ = pool.Exec(ctx, string(m042SQL))
+	for _, m := range []string{
+		"038_search_v2_indexes.sql",
+		"039_search_v2_tuning.sql",
+		"040_search_property_scoped_trgm.sql",
+		"041_search_prefix_pattern_ops.sql",
+		"042_search_drop_redundant_global_trgm.sql",
+	} {
+		mPath := filepath.Join(migrationsDir, m)
+		mSQL, err := os.ReadFile(mPath)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", m, err)
+		}
+		if _, err := pool.Exec(ctx, string(mSQL)); err != nil {
+			t.Fatalf("apply migration %s: %v", m, err)
+		}
 	}
 
 	repo := NewSearchRepo(pool)

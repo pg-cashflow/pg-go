@@ -30,6 +30,9 @@ const (
 	searchFanout       = 4                      // max concurrent queries per request
 )
 
+// searchEntityObserver allows tests to measure per-entity-type durations.
+var searchEntityObserver func(entityType string, d time.Duration)
+
 type queryOutcome struct {
 	res []search.Result
 	err error
@@ -79,6 +82,9 @@ func (r *SearchRepo) runConcurrent(ctx context.Context, queries []entityQuery) (
 			failed++
 			slog.Warn("search query failed", "type", queries[i].entityType, "ms", o.dur.Milliseconds(), "err", o.err)
 			continue
+		}
+		if searchEntityObserver != nil {
+			searchEntityObserver(string(queries[i].entityType), o.dur)
 		}
 		if o.dur > 100*time.Millisecond {
 			slog.Warn("search query slow", "type", queries[i].entityType, "ms", o.dur.Milliseconds())
@@ -485,6 +491,15 @@ func identifierLike(t search.Token) bool {
 	return true
 }
 
+func hasDigit(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, limit int) entityQuery {
 	args := []any{p.PropertyID}
 	tenantFilter := ""
@@ -499,20 +514,26 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 
 	for _, t := range tokens {
 		pLower, pUpper, ok := prefixRange(t.Raw)
-		if ok && identifierLike(t) {
+		isTxnBank := strings.HasPrefix(strings.ToLower(t.Raw), "txn-")
+		if ok && identifierLike(t) && !isTxnBank {
 			isCodeSearch = true
 			args = append(args, pLower, pUpper)
 			fastClauses = append(fastClauses, fmt.Sprintf("(p.upi_txn_id IS NOT NULL AND lower(p.upi_txn_id) ~>=~ $%d AND lower(p.upi_txn_id) ~<~ $%d)", len(args)-1, len(args)))
 		} else {
 			likeVal := search.LikePattern(t.Raw)
 			args = append(args, likeVal)
-			fastClauses = append(fastClauses, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", len(args)))
+			fastClauses = append(fastClauses, fmt.Sprintf("((t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\') OR (t.room_number IS NOT NULL AND t.room_number ILIKE $%d ESCAPE '\\'))", len(args), len(args)))
 		}
 
 		likeVal := search.LikePattern(t.Raw)
 		args = append(args, likeVal)
-		fallbackClauses = append(fallbackClauses,
-			fmt.Sprintf("((p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\') OR (p.upi_txn_id IS NOT NULL AND p.upi_txn_id ILIKE $%d ESCAPE '\\'))", len(args), len(args)))
+		if !isTxnBank && (isCodeSearch || (len(t.Raw) >= 5 && (t.Kind == search.TokenCode || hasDigit(t.Raw)))) {
+			fallbackClauses = append(fallbackClauses,
+				fmt.Sprintf("((p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\') OR (p.upi_txn_id IS NOT NULL AND p.upi_txn_id ILIKE $%d ESCAPE '\\'))", len(args), len(args)))
+		} else {
+			fallbackClauses = append(fallbackClauses,
+				fmt.Sprintf("(p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\')", len(args)))
+		}
 	}
 
 	fastOrder := ""
@@ -564,7 +585,7 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 			FROM payments p
 			INNER JOIN tenants t ON t.id = p.tenant_id
 			WHERE t.property_id = $1%s
-			  AND (SELECT count(*) FROM fast) < $%d
+			  AND (SELECT count(*) FROM fast) = 0
 			  AND %s
 			LIMIT $%d
 		)
@@ -583,7 +604,6 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 		limitIdx,
 		fallbackScore,
 		tenantFilter,
-		limitIdx,
 		strings.Join(fallbackClauses, " AND "),
 		limitIdx,
 		limitIdx,
@@ -950,7 +970,7 @@ func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search
 			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
 			  CASE
 			    WHEN UPPER(txn_id) = UPPER($%d) THEN 1000
-			    WHEN txn_id ILIKE ($%d || '%%%%') THEN 800
+			    WHEN txn_id ILIKE ($%d || '%%') THEN 800
 			    ELSE 600
 			  END AS rank_score
 			FROM bank_transactions
@@ -962,7 +982,7 @@ func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search
 		fallback AS (
 			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
 			  CASE
-			    WHEN narration ILIKE ('%%%%' || $%d || '%%%%') OR txn_id ILIKE ('%%%%' || $%d || '%%%%') THEN 400
+			    WHEN narration ILIKE ('%%' || $%d || '%%') OR txn_id ILIKE ('%%' || $%d || '%%') THEN 400
 			    ELSE 100
 			  END AS rank_score
 			FROM bank_transactions
