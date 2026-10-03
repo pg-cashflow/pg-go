@@ -1,47 +1,15 @@
 package main
 
-import (
-	"context"
-	"log"
-	"os"
+// search-reindex is deprecated.
+//
+// ADR-012: search_documents (vector/hybrid search) has been permanently disabled.
+// Search V2 queries live tables directly using trigram indexes (pg_trgm).
+// No reindexing is required or supported.
+//
+// Usage: this binary now exits immediately with a deprecation message.
+import "log"
 
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/postgres"
-	"github.com/pg-cashflow/pg-go/internal/search"
-)
-
-// Rebuilds search_documents for all properties (text-only unless SEARCH_EMBEDDING=hash).
-// Usage: go run ./cmd/search-reindex/
 func main() {
-	_ = godotenv.Load()
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Fatal("DATABASE_URL required")
-	}
-	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, dbURL)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer pool.Close()
-
-	// Text-only by default; SEARCH_EMBEDDING=hash adds dev-only vectors (needs pgvector).
-	var embedder search.Embedder = search.NoopEmbedder{}
-	if os.Getenv("SEARCH_EMBEDDING") == "hash" {
-		embedder = search.HashEmbedder{}
-	}
-
-	repo := postgres.NewSearchRepo(pool)
-	propRepo := postgres.NewPropertyRepo(pool)
-	props, err := propRepo.List(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	idx := search.Indexer{Repo: repo, Embedder: embedder}
-	for _, p := range props {
-		if err := idx.RebuildProperty(ctx, p.ID); err != nil {
-			log.Fatal("property ", p.ID, ": ", err)
-		}
-		log.Println("reindexed", p.Name)
-	}
+	log.Println("[DEPRECATED] search-reindex: ADR-012 decommissioned vector search. No action taken.")
+	log.Println("Search V2 operates directly on live tables (tenants, dues, payments, ...) via pg_trgm indexes.")
 }

@@ -8,6 +8,7 @@ func AllowedTypes(role domain.Role) []EntityType {
 	case domain.RoleOwner:
 		return []EntityType{
 			TypeTenant, TypeDue, TypePayment, TypePaymentReport, TypeJoinRequest, TypeEvent, TypeInspection, TypeHazard, TypeViolation,
+			TypeBankTransaction, TypeSettlement, TypePayout, TypeRefund,
 		}
 	case domain.RoleManager:
 		return []EntityType{

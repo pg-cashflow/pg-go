@@ -75,13 +75,11 @@ type idORRepo struct {
 	otherTenantID uuid.UUID
 }
 
-func (r *idORRepo) SearchLexical(_ context.Context, p search.Params, types []search.EntityType, _ int) ([]search.Result, error) {
+func (r *idORRepo) SearchLexical(_ context.Context, p search.Params, types []search.EntityType, _ int) ([]search.Result, bool, error) {
 	if p.TenantID != nil && *p.TenantID == r.otherTenantID {
-		return []search.Result{{Type: search.TypeDue, ID: "leak", Title: "secret"}}, nil
+		return []search.Result{{Type: search.TypeDue, ID: "leak", Title: "secret"}}, false, nil
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
-func (r *idORRepo) SearchVector(context.Context, search.Params, int, []float32) ([]search.Result, error) {
-	return nil, nil
-}
+

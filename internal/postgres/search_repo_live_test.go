@@ -19,6 +19,10 @@ import (
 // 2. Managers cannot view payment notes.
 // 3. Tenants cannot view another tenant's payment notes.
 // 4. Managers cannot search for UTR or payment notes in search_documents.
+//
+// NOTE: search_documents is legacy infrastructure (ADR-012). This test is retained
+// to ensure RBAC scoping cannot regress if the table is ever queried in future.
+// The production search path (SearchLexical) does NOT use search_documents.
 func TestSearchDocuments_RBACIsolation(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
@@ -79,17 +83,29 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		t.Fatalf("insert tenants: %v", err)
 	}
 
-	// Seed search_documents:
+	// Seed search_documents directly with raw SQL (UpsertDocument removed per ADR-012):
 	// 1. Inspection note (tenant_id = NULL)
 	inspID := uuid.New()
-	err = repo.UpsertDocument(ctx, propID, nil, "inspection", inspID, "Inspection Move-in #999", "Internal owner inspection notes secret 123", nil)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, updated_at)
+		VALUES ($1, NULL, 'inspection', $2, 'Inspection Move-in #999', 'Internal owner inspection notes secret 123', NOW())
+		ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
+			title = EXCLUDED.title, body = EXCLUDED.body, updated_at = NOW()`,
+		propID, inspID,
+	)
 	if err != nil {
 		t.Fatalf("upsert inspection doc: %v", err)
 	}
 
 	// 2. Payment note for Tenant A (tenant_id = tenantA)
 	payID := uuid.New()
-	err = repo.UpsertDocument(ctx, propID, &tenantA, "payment_note", payID, "Payment UTR987654321", "Rent paid via UPI UTR987654321 private payment note", nil)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, updated_at)
+		VALUES ($1, $2, 'payment_note', $3, 'Payment UTR987654321', 'Rent paid via UPI UTR987654321 private payment note', NOW())
+		ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
+			title = EXCLUDED.title, body = EXCLUDED.body, updated_at = NOW()`,
+		propID, tenantA, payID,
+	)
 	if err != nil {
 		t.Fatalf("upsert payment note doc: %v", err)
 	}
@@ -104,7 +120,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   &tenantA,
 		Role:       string(domain.RoleTenant),
 	}
-	resTenantA, err := repo.SearchLexical(ctx, pTenantA, []search.EntityType{search.TypeDocument}, 10)
+	resTenantA, _, err := repo.SearchLexical(ctx, pTenantA, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("tenant search failed: %v", err)
 	}
@@ -124,7 +140,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   nil,
 		Role:       string(domain.RoleManager),
 	}
-	resManager, err := repo.SearchLexical(ctx, pManager, []search.EntityType{search.TypeDocument}, 10)
+	resManager, _, err := repo.SearchLexical(ctx, pManager, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("manager search failed: %v", err)
 	}
@@ -144,7 +160,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   &tenantB,
 		Role:       string(domain.RoleTenant),
 	}
-	resTenantB, err := repo.SearchLexical(ctx, pTenantB, []search.EntityType{search.TypeDocument}, 10)
+	resTenantB, _, err := repo.SearchLexical(ctx, pTenantB, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("tenant B search failed: %v", err)
 	}
@@ -163,7 +179,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   nil,
 		Role:       string(domain.RoleManager),
 	}
-	resManagerDue, err := repo.SearchLexical(ctx, pManagerDue, []search.EntityType{search.TypeDocument}, 10)
+	resManagerDue, _, err := repo.SearchLexical(ctx, pManagerDue, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("manager due search failed: %v", err)
 	}
@@ -182,7 +198,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   nil,
 		Role:       string(domain.RoleOwner),
 	}
-	resOwner, err := repo.SearchLexical(ctx, pOwner, []search.EntityType{search.TypeDocument}, 10)
+	resOwner, _, err := repo.SearchLexical(ctx, pOwner, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("owner search failed: %v", err)
 	}
@@ -196,32 +212,7 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		t.Errorf("Owner expected to see payment note but did not find it")
 	}
 
-	// Case 6: Vector path RBAC checks
-	// Manager vector search must not leak payment notes
-	vecResManager, err := repo.SearchVector(ctx, pManager, 10, make([]float32, 384))
-	if err != nil {
-		t.Logf("SearchVector skipped or unsupported on this DB: %v", err)
-	} else {
-		for _, r := range vecResManager {
-			if r.ID == payID.String() {
-				t.Errorf("SECURITY LEAK [Case 6 Vector]: Manager saw payment note in SearchVector: %+v", r)
-			}
-		}
-	}
-
-	// Tenant vector search must not leak inspection notes
-	vecResTenant, err := repo.SearchVector(ctx, pTenantA, 10, make([]float32, 384))
-	if err != nil {
-		t.Logf("SearchVector skipped or unsupported on this DB: %v", err)
-	} else {
-		for _, r := range vecResTenant {
-			if r.ID == inspID.String() {
-				t.Errorf("SECURITY LEAK [Case 6 Vector]: Tenant saw inspection note in SearchVector: %+v", r)
-			}
-		}
-	}
-
-	// Case 7: Fail-closed verification: RoleTenant with nil TenantID must return 0 results
+	// Case 6: Fail-closed verification: RoleTenant with nil TenantID must return 0 results
 	pTenantNil := search.Params{
 		Query:      "secret",
 		Limit:      10,
@@ -230,15 +221,11 @@ func TestSearchDocuments_RBACIsolation(t *testing.T) {
 		TenantID:   nil,
 		Role:       string(domain.RoleTenant),
 	}
-	resTenantNil, err := repo.SearchLexical(ctx, pTenantNil, []search.EntityType{search.TypeDocument}, 10)
+	resTenantNil, _, err := repo.SearchLexical(ctx, pTenantNil, []search.EntityType{search.TypeDocument}, 10)
 	if err != nil {
 		t.Fatalf("tenant nil search failed: %v", err)
 	}
 	if len(resTenantNil) != 0 {
-		t.Errorf("SECURITY LEAK [Case 7]: RoleTenant with nil TenantID returned documents: %+v", resTenantNil)
-	}
-	vecResTenantNil, err := repo.SearchVector(ctx, pTenantNil, 10, make([]float32, 384))
-	if err == nil && len(vecResTenantNil) != 0 {
-		t.Errorf("SECURITY LEAK [Case 7 Vector]: RoleTenant with nil TenantID returned vector documents: %+v", vecResTenantNil)
+		t.Errorf("SECURITY LEAK [Case 6]: RoleTenant with nil TenantID returned documents: %+v", resTenantNil)
 	}
 }

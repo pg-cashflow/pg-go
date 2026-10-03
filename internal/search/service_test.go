@@ -10,15 +10,10 @@ import (
 
 type stubRepo struct {
 	lexical []Result
-	vector  []Result
 }
 
-func (s *stubRepo) SearchLexical(_ context.Context, _ Params, _ []EntityType, _ int) ([]Result, error) {
-	return s.lexical, nil
-}
-
-func (s *stubRepo) SearchVector(_ context.Context, _ Params, _ int, _ []float32) ([]Result, error) {
-	return s.vector, nil
+func (s *stubRepo) SearchLexical(_ context.Context, _ Params, _ []EntityType, _ int) ([]Result, bool, error) {
+	return s.lexical, false, nil
 }
 
 func TestServiceSearch_ownerGetsLexical(t *testing.T) {
@@ -26,9 +21,9 @@ func TestServiceSearch_ownerGetsLexical(t *testing.T) {
 	svc := &Service{
 		Repo: &stubRepo{lexical: []Result{{Type: TypeTenant, ID: "t1", Title: "Ravi"}}},
 	}
-	_, mode, rs, err := svc.Search(context.Background(), domain.RoleOwner, pid, nil, "ravi", 10, ModeLexical, nil)
-	if err != nil || mode != ModeLexical || len(rs) != 1 {
-		t.Fatalf("err=%v mode=%s len=%d", err, mode, len(rs))
+	_, mode, rs, partial, err := svc.Search(context.Background(), domain.RoleOwner, pid, nil, "ravi", 10, ModeLexical, nil)
+	if err != nil || mode != ModeLexical || len(rs) != 1 || partial {
+		t.Fatalf("err=%v mode=%s len=%d partial=%v", err, mode, len(rs), partial)
 	}
 }
 
@@ -39,7 +34,7 @@ func TestServiceSearch_tenantScopePassed(t *testing.T) {
 	svc := &Service{
 		Repo: &captureRepo{tenantID: &captured},
 	}
-	_, _, _, err := svc.Search(context.Background(), domain.RoleTenant, pid, &tid, "ab", 10, ModeLexical, nil)
+	_, _, _, _, err := svc.Search(context.Background(), domain.RoleTenant, pid, &tid, "ab", 10, ModeLexical, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +47,7 @@ type captureRepo struct {
 	tenantID **uuid.UUID
 }
 
-func (c *captureRepo) SearchLexical(_ context.Context, p Params, _ []EntityType, _ int) ([]Result, error) {
+func (c *captureRepo) SearchLexical(_ context.Context, p Params, _ []EntityType, _ int) ([]Result, bool, error) {
 	*c.tenantID = p.TenantID
-	return nil, nil
-}
-
-func (c *captureRepo) SearchVector(context.Context, Params, int, []float32) ([]Result, error) {
-	return nil, nil
+	return nil, false, nil
 }

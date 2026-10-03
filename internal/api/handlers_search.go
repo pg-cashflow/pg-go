@@ -56,7 +56,7 @@ func (h *Handlers) Search(c *gin.Context) {
 		return
 	}
 
-	nq, usedMode, results, err := h.SearchSvc.Search(
+	nq, usedMode, results, partial, err := h.SearchSvc.Search(
 		c.Request.Context(),
 		claims.Role,
 		*claims.PropertyID,
@@ -89,9 +89,13 @@ func (h *Handlers) Search(c *gin.Context) {
 			"subtitle": r.Subtitle,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	resp := gin.H{
 		"q":       nq,
 		"mode":    usedMode,
 		"results": out,
-	})
+	}
+	if partial {
+		resp["partial"] = true
+	}
+	c.JSON(http.StatusOK, resp)
 }

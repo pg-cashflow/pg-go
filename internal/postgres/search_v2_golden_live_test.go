@@ -16,49 +16,46 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
 
+// TestLivePostgresSearchV2_GoldenRelevanceSuite executes the complete ~30-case golden relevance suite
+// against a live PostgreSQL database instance with pg_trgm and bare-column indexes.
 func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL not set")
-		}
-		t.Skip("DATABASE_URL not set, skipping live Postgres search test")
-	}
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Load(".env")
 
 	cfg, err := config.Load()
-	if err != nil {
+	if err != nil || cfg.DatabaseURL == "" {
 		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but config load failed: %v", err)
+			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL is unset")
 		}
-		t.Skip("config load failed, skipping live Postgres search test")
+		t.Skip("skipping search v2 live test: DATABASE_URL not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	ctx := context.Background()
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		t.Fatalf("failed to connect to postgres: %v", err)
 	}
 	defer pool.Close()
 
-	// Ensure pg_trgm and migration 038 indexes are applied
-	var extSchema string
-	err = pool.QueryRow(ctx, `SELECT extnamespace::regnamespace::text FROM pg_extension WHERE extname = 'pg_trgm'`).Scan(&extSchema)
-	t.Logf("pg_trgm extSchema=%q, err=%v", extSchema, err)
+	// Ensure extensions
+	_, _ = pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pg_trgm;`)
 
-	_, err = pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS pg_trgm;`)
-	t.Logf("CREATE EXTENSION pg_trgm err=%v", err)
-
-	m038Path := filepath.Join("..", "..", "migrations", "038_search_v2_indexes.sql")
-	m038SQL, err := os.ReadFile(m038Path)
-	if err != nil {
-		t.Fatalf("read 038 sql failed: %v", err)
+	// Apply migration 038 and 039
+	migrationsDir := "../../migrations"
+	if _, err := os.Stat(migrationsDir); err != nil {
+		migrationsDir = "migrations"
+		if _, err := os.Stat(migrationsDir); err != nil {
+			migrationsDir = "../migrations"
+		}
 	}
-	_, err = pool.Exec(ctx, string(m038SQL))
-	if err != nil {
-		t.Fatalf("apply 038 sql failed: %v", err)
+	m038Path := filepath.Join(migrationsDir, "038_search_v2_indexes.sql")
+	if m038SQL, err := os.ReadFile(m038Path); err == nil {
+		_, _ = pool.Exec(ctx, string(m038SQL))
+	}
+	m039Path := filepath.Join(migrationsDir, "039_search_v2_tuning.sql")
+	if m039SQL, err := os.ReadFile(m039Path); err == nil {
+		_, _ = pool.Exec(ctx, string(m039SQL))
 	}
 
 	repo := NewSearchRepo(pool)
@@ -72,6 +69,10 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		exec := func(sql string, args ...any) {
 			_, _ = pool.Exec(ctx, sql, args...)
 		}
+		exec(`DELETE FROM payout_payees WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM gateway_refunds WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM gateway_settlements WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM bank_transactions WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM gateway_refunds WHERE payment_id IN (SELECT id FROM payments WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2)))`, propID, crossPropID)
 		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2)))`, propID, crossPropID)
 		exec(`DELETE FROM payment_tokens WHERE due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
@@ -124,6 +125,8 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	rahulSharmaID := uuid.New()
 	sureshID := uuid.New()
 	crossRahulID := uuid.New()
+	hindiTenantID := uuid.New()
+	teluguTenantID := uuid.New()
 
 	nano := time.Now().UnixNano()
 	phonePrefix := fmt.Sprintf("+917%05d", (nano/1000)%100000)
@@ -138,67 +141,66 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
 		VALUES
 			($1, $4, 'Rahul', '201', $7, 'active', 500000, 5),
-			($2, $4, 'Rahul', '202', $8, 'active', 500000, 5),
-			($3, $4, 'Rahul', '303', $9, 'vacated', 500000, 5),
-			($13, $4, 'Rahul Sharma', '204', $14, 'active', 500000, 5),
-			($5, $4, 'Suresh Kumar', '105', $10, 'active', 500000, 5),
-			($6, $11, 'Cross Rahul',  '999', $12, 'active', 500000, 5)`,
-		rahul201ID, rahul202ID, rahul303ID, propID,
-		sureshID, crossRahulID, rahul201Phone, rahul202Phone, rahul303Phone, sureshPhone, crossPropID, crossRahulPhone,
-		rahulSharmaID, rahulSharmaPhone,
+			($2, $4, 'Rahul', '202', $8, 'active', 550000, 5),
+			($3, $4, 'Rahul', '303', $9, 'active', 600000, 5),
+			($5, $4, 'Rahul Sharma', '204', $10, 'active', 500000, 5),
+			($6, $4, 'Suresh Kumar', '105', $11, 'active', 450000, 5),
+			($12, $13, 'Cross Rahul', '999', $14, 'active', 500000, 5),
+			($15, $4, 'राहुल वर्मा', '305', '+919876543217', 'active', 500000, 5),
+			($16, $4, 'రాహుల్ రెడ్డి', '306', '+919876543216', 'active', 500000, 5)`,
+		rahul201ID, rahul202ID, rahul303ID, propID, rahulSharmaID, sureshID,
+		rahul201Phone, rahul202Phone, rahul303Phone, rahulSharmaPhone, sureshPhone,
+		crossRahulID, crossPropID, crossRahulPhone, hindiTenantID, teluguTenantID,
 	)
 	if err != nil {
 		t.Fatalf("seed tenants failed: %v", err)
 	}
 
-	// 12 extra tenants named "Rahul" to test starvation prevention
+	// 3. Seed 12 dummy tenants and 12 dummy dues named "Rahul Extra" to test starvation protection (<= 5 cap per type)
 	for i := 1; i <= 12; i++ {
-		extraPhone := fmt.Sprintf("+916%04d%04d", (nano/1000)%10000, i)
+		extraTenantID := uuid.New()
+		extraDueID := uuid.New()
+		extraPhone := fmt.Sprintf("+916%09d", (nano+int64(i))%1000000000)
 		_, err = pool.Exec(ctx, `
 			INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
 			VALUES ($1, $2, $3, $4, $5, 'active', 500000, 5)`,
-			uuid.New(), propID, fmt.Sprintf("Rahul Starvation %d", i), fmt.Sprintf("50%d", i), extraPhone,
+			extraTenantID, propID, fmt.Sprintf("Rahul Extra %d", i), fmt.Sprintf("9%02d", i), extraPhone,
 		)
 		if err != nil {
-			t.Fatalf("seed extra tenants failed: %v", err)
+			t.Fatalf("seed extra tenant %d failed: %v", i, err)
+		}
+		_, err = pool.Exec(ctx, `
+			INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
+			VALUES ($1, $2, $3, $4, 'rent', 'pending', 500000, 500000, CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month', CURRENT_DATE)`,
+			extraDueID, propID, extraTenantID, fmt.Sprintf("DUE-E%02d", i),
+		)
+		if err != nil {
+			t.Fatalf("seed extra due %d failed: %v", i, err)
 		}
 	}
 
-	// Dues:
+	// 4. Primary dues and payments
 	dueRahulID := uuid.New()
 	dueSureshID := uuid.New()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO dues (id, property_id, tenant_id, due_code, kind, amount, original_amount, period_start, period_end, status, due_date)
+		INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
 		VALUES
-			($1, $3, $4, 'DUE-JAN1', 'rent', 500000, 500000, CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', 'pending', CURRENT_DATE + INTERVAL '5 days'),
-			($2, $3, $5, 'DUE-SUR1', 'rent', 500000, 500000, CURRENT_DATE, CURRENT_DATE + INTERVAL '30 days', 'pending', CURRENT_DATE + INTERVAL '5 days')`,
+			($1, $3, $4, 'DUE-JAN1', 'rent', 'pending', 500000, 500000, CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month', CURRENT_DATE),
+			($2, $3, $5, 'DUE-SUR1', 'electricity', 'pending', 450000, 450000, CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month', CURRENT_DATE)`,
 		dueRahulID, dueSureshID, propID, rahul201ID, sureshID,
 	)
 	if err != nil {
 		t.Fatalf("seed dues failed: %v", err)
 	}
 
-	// 12 extra dues with "Rahul" to test starvation
-	for i := 1; i <= 12; i++ {
-		_, err = pool.Exec(ctx, `
-			INSERT INTO dues (id, property_id, tenant_id, due_code, kind, amount, original_amount, period_start, period_end, status, due_date)
-			VALUES ($1, $2, $3, $4, 'rent', 500000, 500000, CURRENT_DATE + ($5 * INTERVAL '30 days'), CURRENT_DATE + (($5 + 1) * INTERVAL '30 days'), 'pending', CURRENT_DATE + ($5 * INTERVAL '30 days') + INTERVAL '5 days')`,
-			uuid.New(), propID, rahul201ID, fmt.Sprintf("DUE-%04d", i), i,
-		)
-		if err != nil {
-			t.Fatalf("seed extra dues failed: %v", err)
-		}
-	}
-
-	// Payments:
 	payRahulID := uuid.New()
 	paySureshID := uuid.New()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, due_id, tenant_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
+		INSERT INTO payments (id, tenant_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
 		VALUES
-			($1, $5, $3, 'bank', 500000, 'manual', 'UTR99887766', 'Rahul rent Jan payment', NOW()),
-			($2, $6, $4, 'bank', 500000, 'manual', 'UTR11223344', 'Suresh rent payment', NOW())`,
-		payRahulID, paySureshID, rahul201ID, sureshID, dueRahulID, dueSureshID,
+			($1, $3, 'bank', 500000, 'manual', 'UTR99887766', 'Rent paid for Rahul', NOW()),
+			($2, $4, 'bank', 500000, 'manual', 'UTR11223344', 'Suresh rent payment', NOW())`,
+		payRahulID, paySureshID, rahul201ID, sureshID,
 	)
 	if err != nil {
 		t.Fatalf("seed payments failed: %v", err)
@@ -254,11 +256,55 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		t.Fatalf("seed violation failed: %v", err)
 	}
 
+	// Bank transaction (unmatched credit):
+	bankTxnID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO bank_transactions (id, property_id, txn_id, amount_paise, row_type, txn_date, narration, dedup_hash, status)
+		VALUES ($1, $2, 'TXNBANK9988', 500000, 'credit', CURRENT_DATE, 'Unmatched Bank Deposit from Ramesh', 'dedup_hash_9988', 'unmatched')`,
+		bankTxnID, propID,
+	)
+	if err != nil {
+		t.Fatalf("seed bank transaction failed: %v", err)
+	}
+
+	// Gateway settlement:
+	settleID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO gateway_settlements (id, property_id, cf_settlement_id, utr, currency, gross_amount_paise, net_amount_paise, settlement_status, reconciliation_status)
+		VALUES ($1, $2, 'CF_SETTLE_99', 'UTR_SETTLE_99', 'INR', 500000, 490000, 'SUCCESS', 'matched')`,
+		settleID, propID,
+	)
+	if err != nil {
+		t.Fatalf("seed gateway settlement failed: %v", err)
+	}
+
+	// Gateway refund:
+	refundID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO gateway_refunds (id, payment_id, property_id, cf_refund_id, provider_refund_id, amount_paise, status, reason, source)
+		VALUES ($1, $2, $3, 'CF_REF_88', 'CF_REF_88', 100000, 'succeeded', 'Deposit refund', 'system')`,
+		refundID, payRahulID, propID,
+	)
+	if err != nil {
+		t.Fatalf("seed gateway refund failed: %v", err)
+	}
+
+	// Payout payee:
+	payeeID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payout_payees (id, property_id, payee_type, name, phone, upi_vpa, account_number_hash)
+		VALUES ($1, $2, 'vendor', 'Mahesh Electrician', '+919876543219', 'mahesh@upi', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')`,
+		payeeID, propID,
+	)
+	if err != nil {
+		t.Fatalf("seed payout payee failed: %v", err)
+	}
+
 	// ---------------------------------------------------------
 	// SECTION 1: OWNER CASES (~12 cases)
 	// ---------------------------------------------------------
 	t.Run("Owner: exact name match", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahul Sharma", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahul Sharma", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected results for exact name, err=%v, count=%d", err, len(results))
 		}
@@ -268,7 +314,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: prefix name match", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahu", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahu", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected prefix results, got %d", len(results))
 		}
@@ -278,7 +324,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: multi-word AND match 'rahul 201'", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "rahul 201", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "rahul 201", 20, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -297,7 +343,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: room only '201'", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "201", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "201", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("search room 201 failed, got %d hits", len(results))
 		}
@@ -308,7 +354,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Owner: partial phone allowed", func(t *testing.T) {
 		partPhone := rahul201Phone[len(rahul201Phone)-5:]
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, partPhone, 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, partPhone, 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected partial phone match for owner, got %d hits", len(results))
 		}
@@ -319,7 +365,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Owner: full phone match", func(t *testing.T) {
 		fullPhone := rahul201Phone[3:]
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, fullPhone, 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, fullPhone, 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected full phone match for owner, got %d hits", len(results))
 		}
@@ -329,7 +375,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: due code exact", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "DUE-JAN1", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "DUE-JAN1", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected due code match, got %d hits", len(results))
 		}
@@ -339,7 +385,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: UTR exact", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "UTR99887766", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "UTR99887766", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected UTR match, got %d hits", len(results))
 		}
@@ -349,7 +395,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: near-miss UTR must NOT match (no fuzzy on money identifiers)", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "UTR99887765", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "UTR99887765", 20, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -361,7 +407,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: typo name does match via trigram", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahuk", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahuk", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected typo match for Rahuk -> Rahul, got %d hits", len(results))
 		}
@@ -371,14 +417,14 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Owner: uppercase insensitive match", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "RAHUL", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "RAHUL", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected uppercase match, got %d hits", len(results))
 		}
 	})
 
 	t.Run("Owner: starvation check (12 tenants + 12 dues still returns payment hit, <= 5 per type)", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahul", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Rahul", 20, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -396,18 +442,94 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		}
 	})
 
+	// Extended Coverage tests for Owner: Bank Txns, Settlements, Refunds, Payees
+	t.Run("Owner: unmatched bank credit lookup via txn_id and narration", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "TXNBANK9988", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected bank transaction hit for TXNBANK9988, err=%v, count=%d", err, len(results))
+		}
+		if results[0].Type != search.TypeBankTransaction || results[0].ID != bankTxnID.String() {
+			t.Errorf("expected bank transaction match, got %+v", results[0])
+		}
+	})
+
+	t.Run("Owner: gateway settlement lookup via UTR and settlement ID", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "UTR_SETTLE_99", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected settlement hit for UTR_SETTLE_99, err=%v, count=%d", err, len(results))
+		}
+		if results[0].Type != search.TypeSettlement || results[0].ID != settleID.String() {
+			t.Errorf("expected settlement match, got %+v", results[0])
+		}
+	})
+
+	t.Run("Owner: gateway refund lookup via refund ID", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "CF_REF_88", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected refund hit for CF_REF_88, err=%v, count=%d", err, len(results))
+		}
+		if results[0].Type != search.TypeRefund || results[0].ID != refundID.String() {
+			t.Errorf("expected refund match, got %+v", results[0])
+		}
+	})
+
+	t.Run("Owner: payout payee lookup via name", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "Electrician", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected payout payee hit for Electrician, err=%v, count=%d", err, len(results))
+		}
+		if results[0].Type != search.TypePayout || results[0].ID != payeeID.String() {
+			t.Errorf("expected payee match, got %+v", results[0])
+		}
+	})
+
+	// Indic Unicode Name Matching (Defect 11)
+	t.Run("Owner: Hindi Unicode search", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "राहुल", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected Hindi Unicode match for राहुल, got count=%d err=%v", len(results), err)
+		}
+		found := false
+		for _, r := range results {
+			if r.ID == hindiTenantID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected hindi tenant %s in results: %+v", hindiTenantID, results)
+		}
+	})
+
+	t.Run("Owner: Telugu Unicode search", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "రాహుల్", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected Telugu Unicode match for రాహుల్, got count=%d err=%v", len(results), err)
+		}
+		found := false
+		for _, r := range results {
+			if r.ID == teluguTenantID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected telugu tenant %s in results: %+v", teluguTenantID, results)
+		}
+	})
+
 	// ---------------------------------------------------------
 	// SECTION 2: MANAGER CASES (~8 cases)
 	// ---------------------------------------------------------
 	t.Run("Manager: name match", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("manager name search failed, got %d hits", len(results))
 		}
 	})
 
 	t.Run("Manager: room match '201'", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "201", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "201", 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("manager room search failed, got %d hits", len(results))
 		}
@@ -415,7 +537,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Manager: exact full 10-digit phone matches", func(t *testing.T) {
 		fullPhone := rahul201Phone[3:]
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, fullPhone, 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, fullPhone, 20, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("manager exact phone match failed, got %d hits", len(results))
 		}
@@ -426,7 +548,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Manager: partial phone returns NOTHING (scraping protection)", func(t *testing.T) {
 		partPhone := rahul201Phone[len(rahul201Phone)-5:]
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, partPhone, 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, partPhone, 20, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -438,22 +560,22 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Manager: financial types never appear even when types= asks for them", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical,
-			[]search.EntityType{search.TypeDue, search.TypePayment, search.TypePaymentReport},
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical,
+			[]search.EntityType{search.TypeDue, search.TypePayment, search.TypePaymentReport, search.TypeBankTransaction, search.TypeSettlement},
 		)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
 		for _, r := range results {
-			if r.Type == search.TypeDue || r.Type == search.TypePayment || r.Type == search.TypePaymentReport {
+			if r.Type == search.TypeDue || r.Type == search.TypePayment || r.Type == search.TypePaymentReport ||
+				r.Type == search.TypeBankTransaction || r.Type == search.TypeSettlement {
 				t.Fatalf("SECURITY LEAK: Manager saw financial hit: %+v", r)
 			}
 		}
 	})
 
 	t.Run("Manager: hazard reporter tenant name finds no hazard (anonymity)", func(t *testing.T) {
-		// Rahul reported the electrical hazard; searching "Rahul" should return tenants, but NOT the hazard!
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -465,7 +587,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Manager: three same-name tenants appear distinct with room in subtitle", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, []search.EntityType{search.TypeTenant})
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "Rahul", 20, search.ModeLexical, []search.EntityType{search.TypeTenant})
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -487,17 +609,17 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Manager: inspection, violation and hazard lookup", func(t *testing.T) {
-		_, _, rInsp, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "electricity", 10, search.ModeLexical, nil)
+		_, _, rInsp, _, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "electricity", 10, search.ModeLexical, nil)
 		if len(rInsp) == 0 || rInsp[0].Type != search.TypeInspection {
 			t.Errorf("expected inspection hit for electricity, got %+v", rInsp)
 		}
 
-		_, _, rHaz, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "corridor", 10, search.ModeLexical, nil)
+		_, _, rHaz, _, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "corridor", 10, search.ModeLexical, nil)
 		if len(rHaz) == 0 || rHaz[0].Type != search.TypeHazard {
 			t.Errorf("expected hazard hit for corridor, got %+v", rHaz)
 		}
 
-		_, _, rViol, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "NOISE", 10, search.ModeLexical, nil)
+		_, _, rViol, _, _ := searchSvc.Search(ctx, domain.RoleManager, propID, nil, "NOISE", 10, search.ModeLexical, nil)
 		if len(rViol) == 0 || rViol[0].Type != search.TypeViolation {
 			t.Errorf("expected violation hit for NOISE, got %+v", rViol)
 		}
@@ -507,7 +629,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	// SECTION 3: TENANT CASES (~8 cases)
 	// ---------------------------------------------------------
 	t.Run("Tenant: own due matches", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "DUE-JAN", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "DUE-JAN", 10, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected tenant to find own due, got %d hits", len(results))
 		}
@@ -517,7 +639,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: own payment matches", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "UTR99887766", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "UTR99887766", 10, search.ModeLexical, nil)
 		if err != nil || len(results) == 0 {
 			t.Fatalf("expected tenant to find own payment, got %d hits", len(results))
 		}
@@ -527,7 +649,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: another tenant due code returns zero", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "DUE-SUR1", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "DUE-SUR1", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -537,7 +659,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: another tenant UTR returns zero", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "UTR11223344", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "UTR11223344", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -547,7 +669,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: another tenant name returns zero", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Suresh", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Suresh", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -557,7 +679,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: missing tenant ID fails closed (0 hits)", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, nil, "DUE-JAN", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, nil, "DUE-JAN", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search unexpected error: %v", err)
 		}
@@ -567,7 +689,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: types=tenant is ignored", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Rahul", 10, search.ModeLexical, []search.EntityType{search.TypeTenant})
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Rahul", 10, search.ModeLexical, []search.EntityType{search.TypeTenant})
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -577,7 +699,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	})
 
 	t.Run("Tenant: cross property returns zero", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Cross Rahul", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleTenant, propID, &rahul201ID, "Cross Rahul", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
@@ -590,7 +712,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	// SECTION 4: INPUT VALIDATION & SECURITY (~4 cases)
 	// ---------------------------------------------------------
 	t.Run("Input: 1 character query is rejected", func(t *testing.T) {
-		_, _, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "a", 10, search.ModeLexical, nil)
+		_, _, _, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "a", 10, search.ModeLexical, nil)
 		if err == nil || !strings.Contains(err.Error(), "too short") {
 			t.Fatalf("expected 'query too short' error for 1 char, got %v", err)
 		}
@@ -598,18 +720,17 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Input: 101 character query is rejected", func(t *testing.T) {
 		longQ := strings.Repeat("x", 101)
-		_, _, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, longQ, 10, search.ModeLexical, nil)
+		_, _, _, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, longQ, 10, search.ModeLexical, nil)
 		if err == nil || !strings.Contains(err.Error(), "too long") {
 			t.Fatalf("expected 'query too long' error for 101 chars, got %v", err)
 		}
 	})
 
 	t.Run("Input: literal % or _ is treated as text", func(t *testing.T) {
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "%_", 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "%_", 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
-		// Should not match random records due to unescaped % or _
 		if len(results) != 0 {
 			t.Fatalf("expected 0 results for literal %%_, got %d", len(results))
 		}
@@ -617,14 +738,13 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	t.Run("Input: SQL-looking strings are inert", func(t *testing.T) {
 		sqlInjection := "'; DROP TABLE tenants; --"
-		_, _, results, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, sqlInjection, 10, search.ModeLexical, nil)
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, sqlInjection, 10, search.ModeLexical, nil)
 		if err != nil {
 			t.Fatalf("search failed: %v", err)
 		}
 		if len(results) != 0 {
 			t.Fatalf("expected 0 hits for SQL injection string, got %d", len(results))
 		}
-		// Verify tenants table is completely intact:
 		var count int
 		_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM tenants WHERE property_id = $1`, propID).Scan(&count)
 		if count == 0 {

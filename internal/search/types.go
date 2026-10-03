@@ -16,25 +16,26 @@ var (
 type EntityType string
 
 const (
-	TypeTenant        EntityType = "tenant"
-	TypeDue           EntityType = "due"
-	TypePayment       EntityType = "payment"
-	TypePaymentReport EntityType = "payment_report"
-	TypeJoinRequest   EntityType = "join_request"
-	TypeEvent         EntityType = "event"
-	TypeInspection    EntityType = "inspection"
-	TypeHazard        EntityType = "hazard"
-	TypeViolation     EntityType = "violation"
-	TypeDocument      EntityType = "document"
+	TypeTenant          EntityType = "tenant"
+	TypeDue             EntityType = "due"
+	TypePayment         EntityType = "payment"
+	TypePaymentReport   EntityType = "payment_report"
+	TypeJoinRequest     EntityType = "join_request"
+	TypeEvent           EntityType = "event"
+	TypeInspection      EntityType = "inspection"
+	TypeHazard          EntityType = "hazard"
+	TypeViolation       EntityType = "violation"
+	TypeDocument        EntityType = "document"
+	TypeBankTransaction EntityType = "bank_transaction"
+	TypeSettlement      EntityType = "settlement"
+	TypePayout          EntityType = "payout"
+	TypeRefund          EntityType = "refund"
 )
 
-// Mode selects lexical-only or hybrid (lexical + vector RRF).
+// Mode selects the search strategy. ADR-012: only ModeLexical is active; ModeHybrid is removed.
 type Mode string
 
-const (
-	ModeLexical Mode = "lexical"
-	ModeHybrid  Mode = "hybrid"
-)
+const ModeLexical Mode = "lexical"
 
 // Result is one federated search hit returned to the client.
 type Result struct {

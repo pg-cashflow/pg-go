@@ -241,27 +241,8 @@ func main() {
 		defer searchPool.Close()
 	}
 	searchRepo := postgres.NewSearchRepo(searchPool)
-	var embedder search.Embedder = search.NoopEmbedder{}
-	switch os.Getenv("SEARCH_EMBEDDING") {
-	case "hash":
-		embedder = search.HashEmbedder{}
-	}
-	searchSvc := &search.Service{Repo: searchRepo, Embedder: embedder}
-	if os.Getenv("SEARCH_REINDEX_ON_START") == "1" {
-		go func() {
-			props, err := propertyRepo.List(ctx)
-			if err != nil {
-				logger.Error("search reindex list properties", "err", err)
-				return
-			}
-			idx := search.Indexer{Repo: searchRepo, Embedder: embedder}
-			for _, p := range props {
-				if err := idx.RebuildProperty(ctx, p.ID); err != nil {
-					logger.Error("search reindex property", "property_id", p.ID, "err", err)
-				}
-			}
-		}()
-	}
+	// ADR-012: vector/hybrid search permanently disabled. NoopEmbedder retained for interface compat only.
+	searchSvc := &search.Service{Repo: searchRepo, Embedder: search.NoopEmbedder{}}
 
 	payoutRepo := postgres.NewPayoutRepo(pool, financeSvc)
 	attendanceRepo := postgres.NewAttendanceRepo(pool)
