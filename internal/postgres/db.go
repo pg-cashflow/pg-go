@@ -64,6 +64,43 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// NewSearchPool creates a dedicated small connection pool (3-5 connections) specifically
+// for Search V2 queries, isolating search traffic from money paths (webhooks, ledger, payouts).
+func NewSearchPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url for search pool: %w", err)
+	}
+
+	maxConns := 5
+	if s := os.Getenv("SEARCH_DATABASE_MAX_CONNS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+	cfg.MaxConns = int32(maxConns)
+	minConns := 2
+	if s := os.Getenv("SEARCH_DATABASE_MIN_CONNS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			minConns = n
+		}
+	}
+	cfg.MinConns = int32(minConns)
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 1 * time.Minute
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect search pool: %w", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("ping search pool: %w", err)
+	}
+	return pool, nil
+}
+
 // Migrate applies pending *.sql files from dir in lexical order.
 // Serializes concurrent migrations across processes or concurrent test packages
 // using transaction-scoped advisory locks (0x50474D4947524154 / 'PGMIGRAT'),

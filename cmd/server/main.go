@@ -233,7 +233,14 @@ func main() {
 		logger,
 	)
 
-	searchRepo := postgres.NewSearchRepo(pool)
+	searchPool, err := postgres.NewSearchPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Warn("failed to initialize dedicated search pool, falling back to main pool", "err", err)
+		searchPool = pool
+	} else {
+		defer searchPool.Close()
+	}
+	searchRepo := postgres.NewSearchRepo(searchPool)
 	var embedder search.Embedder = search.NoopEmbedder{}
 	switch os.Getenv("SEARCH_EMBEDDING") {
 	case "hash":

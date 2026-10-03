@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"golang.org/x/time/rate"
 )
 
@@ -73,6 +75,70 @@ func ipRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duratio
 				lastSeen: now,
 			}
 			limiters[ip] = e
+		} else {
+			e.lastSeen = now
+		}
+		allowed := e.limiter.Allow()
+		mu.Unlock()
+
+		if !allowed {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// userOrIPRateLimit returns a token-bucket rate limiter that keys on the authenticated
+// user ID (claims.UserID) to prevent mobile carrier NAT IP sharing collisions.
+// If unauthenticated, it safely falls back to ClientIP.
+func userOrIPRateLimit(rps float64, burst int) gin.HandlerFunc {
+	return userOrIPRateLimitBounded(rps, burst, defaultMaxIPEntries, defaultEntryTTL)
+}
+
+func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration) gin.HandlerFunc {
+	var mu sync.Mutex
+	limiters := make(map[string]*ipLimiterEntry)
+
+	sweep := func(now time.Time) {
+		for k, e := range limiters {
+			if now.Sub(e.lastSeen) > ttl {
+				delete(limiters, k)
+			}
+		}
+	}
+
+	return func(c *gin.Context) {
+		key := c.ClientIP()
+		if claims, ok := auth.ClaimsFromContext(c); ok && claims.UserID != uuid.Nil {
+			key = "usr:" + claims.UserID.String()
+		}
+		now := time.Now()
+
+		mu.Lock()
+		e, ok := limiters[key]
+		if !ok {
+			if len(limiters) >= maxEntries {
+				sweep(now)
+			}
+			if len(limiters) >= maxEntries {
+				var oldestKey string
+				var oldestTime time.Time
+				for k, v := range limiters {
+					if oldestKey == "" || v.lastSeen.Before(oldestTime) {
+						oldestKey = k
+						oldestTime = v.lastSeen
+					}
+				}
+				if oldestKey != "" {
+					delete(limiters, oldestKey)
+				}
+			}
+			e = &ipLimiterEntry{
+				limiter:  rate.NewLimiter(rate.Limit(rps), burst),
+				lastSeen: now,
+			}
+			limiters[key] = e
 		} else {
 			e.lastSeen = now
 		}
