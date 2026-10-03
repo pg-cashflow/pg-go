@@ -389,4 +389,218 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 			t.Fatalf("expected settlement_status to transition from FAILED to SUCCESS, got %q", fetchedRecovered.SettlementStatus)
 		}
 	})
+
+	t.Run("duplicate REVERSED replay preserves discrepancy and does not overwrite status or amounts", func(t *testing.T) {
+		cfSettlementID := "CF_DUP_REV_" + uuid.New().String()[:8]
+		orderID := "order_dr_" + uuid.New().String()[:8]
+		cfPaymentID := "pay_dr_" + uuid.New().String()[:8]
+
+		// 1. Initial settled state
+		initialStlm := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     200000,
+			NetAmountPaise:       200000,
+			SettlementStatus:     "SUCCESS",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{}`),
+		}
+		if err := repo.UpsertSettlement(ctx, initialStlm); err != nil {
+			t.Fatalf("upsert initial settled state failed: %v", err)
+		}
+
+		// 2. First REVERSED delivery arrives
+		rev1 := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     200000,
+			NetAmountPaise:       0,
+			AdjustmentPaise:      -200000,
+			SettlementStatus:     "REVERSED",
+			ReconciliationStatus: domain.ReconMatched, // incoming payload might default to matched
+			RawPayload:           json.RawMessage(`{"reversal": 1}`),
+		}
+		if err := repo.UpsertSettlement(ctx, rev1); err != nil {
+			t.Fatalf("first REVERSED delivery failed: %v", err)
+		}
+
+		fetched1, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after first REVERSED failed: %v", err)
+		}
+		if fetched1.SettlementStatus != "REVERSED" {
+			t.Fatalf("expected settlement_status REVERSED, got %q", fetched1.SettlementStatus)
+		}
+		if fetched1.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected reconciliation_status 'discrepancy', got %q", fetched1.ReconciliationStatus)
+		}
+		if fetched1.DiscrepancyReason == nil || *fetched1.DiscrepancyReason != "post_reconciliation_reversal" {
+			t.Fatalf("expected discrepancy_reason 'post_reconciliation_reversal', got %v", fetched1.DiscrepancyReason)
+		}
+
+		// 3. Second IDENTICAL REVERSED delivery arrives (duplicate webhook / retry)
+		rev2 := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     200000,
+			NetAmountPaise:       0,
+			AdjustmentPaise:      -200000,
+			SettlementStatus:     "REVERSED",
+			ReconciliationStatus: domain.ReconMatched, // replayed payload still computes matched
+			RawPayload:           json.RawMessage(`{"reversal": 1}`),
+		}
+		if err := repo.UpsertSettlement(ctx, rev2); err != nil {
+			t.Fatalf("second identical REVERSED delivery failed: %v", err)
+		}
+
+		fetched2, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after second REVERSED failed: %v", err)
+		}
+		// Crucial verification: duplicate delivery MUST NOT overwrite 'discrepancy' or discrepancy_reason
+		if fetched2.SettlementStatus != "REVERSED" {
+			t.Fatalf("expected settlement_status to remain REVERSED, got %q", fetched2.SettlementStatus)
+		}
+		if fetched2.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected duplicate REVERSED to preserve 'discrepancy', got %q", fetched2.ReconciliationStatus)
+		}
+		if fetched2.DiscrepancyReason == nil || *fetched2.DiscrepancyReason != "post_reconciliation_reversal" {
+			t.Fatalf("expected duplicate REVERSED to preserve 'post_reconciliation_reversal', got %v", fetched2.DiscrepancyReason)
+		}
+		if fetched2.GrossAmountPaise != 200000 || fetched2.NetAmountPaise != 0 || fetched2.AdjustmentPaise != -200000 {
+			t.Fatalf("expected amounts preserved on identical replay, got gross=%d, net=%d, adj=%d",
+				fetched2.GrossAmountPaise, fetched2.NetAmountPaise, fetched2.AdjustmentPaise)
+		}
+	})
+
+	t.Run("differing amount replay on reconciled row flips to discrepancy and preserves amounts", func(t *testing.T) {
+		cfSettlementID := "CF_DIFF_RECON_" + uuid.New().String()[:8]
+		orderID := "order_df_" + uuid.New().String()[:8]
+		cfPaymentID := "pay_df_" + uuid.New().String()[:8]
+
+		// 1. Initial matched row
+		stlm := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     300000,
+			NetAmountPaise:       300000,
+			ServiceChargePaise:   1000,
+			ServiceTaxPaise:      180,
+			SettlementStatus:     "SUCCESS",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{}`),
+		}
+		if err := repo.UpsertSettlement(ctx, stlm); err != nil {
+			t.Fatalf("upsert initial matched row failed: %v", err)
+		}
+
+		// 2. Conflicting replay arrives claiming different gross/net amounts
+		conflictingReplay := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     350000, // differing gross amount!
+			NetAmountPaise:       350000, // differing net amount!
+			ServiceChargePaise:   1000,
+			ServiceTaxPaise:      180,
+			SettlementStatus:     "SUCCESS",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{"tampered": true}`),
+		}
+		if err := repo.UpsertSettlement(ctx, conflictingReplay); err != nil {
+			t.Fatalf("upsert conflicting replay failed: %v", err)
+		}
+
+		fetched, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after conflicting replay failed: %v", err)
+		}
+		// Must flip to discrepancy with amount_changed_after_reconciliation
+		if fetched.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected reconciliation_status 'discrepancy', got %q", fetched.ReconciliationStatus)
+		}
+		if fetched.DiscrepancyReason == nil || *fetched.DiscrepancyReason != "amount_changed_after_reconciliation" {
+			t.Fatalf("expected discrepancy_reason 'amount_changed_after_reconciliation', got %v", fetched.DiscrepancyReason)
+		}
+		// Existing amounts must NOT be silently changed
+		if fetched.GrossAmountPaise != 300000 {
+			t.Fatalf("expected gross_amount_paise preserved at 300000, got %d", fetched.GrossAmountPaise)
+		}
+		if fetched.NetAmountPaise != 300000 {
+			t.Fatalf("expected net_amount_paise preserved at 300000, got %d", fetched.NetAmountPaise)
+		}
+		if fetched.ResolutionNotes == nil || !strings.Contains(*fetched.ResolutionNotes, "Conflicting amounts received post-reconciliation") {
+			t.Fatalf("expected resolution notes alert, got %v", fetched.ResolutionNotes)
+		}
+	})
+
+	t.Run("differing amount replay on REVERSED row flips reason to amount_changed_after_reconciliation and preserves amounts", func(t *testing.T) {
+		cfSettlementID := "CF_DIFF_REV_" + uuid.New().String()[:8]
+		orderID := "order_dfr_" + uuid.New().String()[:8]
+		cfPaymentID := "pay_dfr_" + uuid.New().String()[:8]
+
+		// 1. Initial reversed row
+		revInitial := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     150000,
+			NetAmountPaise:       0,
+			AdjustmentPaise:      -150000,
+			SettlementStatus:     "REVERSED",
+			ReconciliationStatus: domain.ReconDiscrepancy,
+			RawPayload:           json.RawMessage(`{}`),
+		}
+		if err := repo.UpsertSettlement(ctx, revInitial); err != nil {
+			t.Fatalf("upsert initial REVERSED row failed: %v", err)
+		}
+
+		// 2. Differing replay arrives with different adjustment figure
+		revDiffering := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     150000,
+			NetAmountPaise:       0,
+			AdjustmentPaise:      -100000, // different adjustment!
+			SettlementStatus:     "REVERSED",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{}`),
+		}
+		if err := repo.UpsertSettlement(ctx, revDiffering); err != nil {
+			t.Fatalf("upsert differing REVERSED replay failed: %v", err)
+		}
+
+		fetched, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after differing REVERSED replay failed: %v", err)
+		}
+		if fetched.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected reconciliation_status 'discrepancy', got %q", fetched.ReconciliationStatus)
+		}
+		if fetched.DiscrepancyReason == nil || *fetched.DiscrepancyReason != "amount_changed_after_reconciliation" {
+			t.Fatalf("expected discrepancy_reason 'amount_changed_after_reconciliation', got %v", fetched.DiscrepancyReason)
+		}
+		if fetched.AdjustmentPaise != -150000 {
+			t.Fatalf("expected adjustment_paise preserved at -150000, got %d", fetched.AdjustmentPaise)
+		}
+	})
 }
