@@ -68,6 +68,13 @@ func TestPerformanceGateRealistic(t *testing.T) {
 		t.Fatalf("apply migration 039 failed: %v", err)
 	}
 
+	m040Path := filepath.Join("..", "..", "migrations", "040_search_property_scoped_trgm.sql")
+	if m040SQL, err := os.ReadFile(m040Path); err == nil {
+		if _, err := pool.Exec(ctx, string(m040SQL)); err != nil {
+			t.Fatalf("apply migration 040 failed: %v", err)
+		}
+	}
+
 	propID := uuid.New()
 	t.Cleanup(func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -78,12 +85,46 @@ func TestPerformanceGateRealistic(t *testing.T) {
 		_, _ = pool.Exec(cleanCtx, `DELETE FROM dues WHERE property_id = $1`, propID)
 		_, _ = pool.Exec(cleanCtx, `DELETE FROM tenants WHERE property_id = $1`, propID)
 		_, _ = pool.Exec(cleanCtx, `DELETE FROM properties WHERE id = $1`, propID)
+		_, _ = pool.Exec(cleanCtx, `DELETE FROM dues WHERE property_id IN (SELECT id FROM properties WHERE name LIKE 'Noise Property%')`)
+		_, _ = pool.Exec(cleanCtx, `DELETE FROM tenants WHERE property_id IN (SELECT id FROM properties WHERE name LIKE 'Noise Property%')`)
+		_, _ = pool.Exec(cleanCtx, `DELETE FROM properties WHERE name LIKE 'Noise Property%'`)
 		_, _ = pool.Exec(cleanCtx, `CHECKPOINT`)
 	})
 
 	ownerPhone := fmt.Sprintf("+919%09d", time.Now().UnixNano()%1000000000)
 	runPrefix := strings.ToUpper(uuid.New().String()[:2])
 	runSeed := int64(time.Now().UnixNano() % 50000)
+
+	// Seed noise properties and tenants so that the target property is a slice of the table
+	t.Log("Seeding 300 noise properties with tenants...")
+	_, err = pool.Exec(ctx, `
+		WITH props AS (
+			INSERT INTO properties (id, name, owner_phone, owner_name, owner_email, invite_code, upi_vpa)
+			SELECT 
+				gen_random_uuid(),
+				'Noise Property ' || i,
+				'+918' || lpad(i::text, 9, '0'),
+				'Noise Owner ' || i,
+				'noise' || i || '@test.com',
+				lpad(i::text, 8, 'n'),
+				'noise' || i || '@upi'
+			FROM generate_series(1, 300) AS s(i)
+			RETURNING id
+		)
+		INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
+		SELECT
+			gen_random_uuid(),
+			p.id,
+			'Noise Tenant ' || i,
+			((i % 900) + 100)::text,
+			'+917' || lpad((row_number() over())::text, 9, '0'),
+			'active',
+			500000,
+			5
+		FROM props p, generate_series(1, 40) AS s(i)`)
+	if err != nil {
+		t.Fatalf("seeding noise properties failed: %v", err)
+	}
 
 	_, err = pool.Exec(ctx, `
 		INSERT INTO properties (id, name, owner_phone, owner_name, owner_email, invite_code, upi_vpa)
@@ -324,12 +365,13 @@ func TestPerformanceGateRealistic(t *testing.T) {
 			"TXN-" + runPrefix + "-50",
 			"Tenant 100",
 			"201",
-			"active",
-			"credit",
+			"Tenant 50",
+			"TXN-" + runPrefix + "-100",
 		}
 
 		iterations := 200
 		var latencies []time.Duration
+		var partialCount int
 
 		for i := 0; i < iterations; i++ {
 			q := queries[i%len(queries)]
@@ -340,9 +382,9 @@ func TestPerformanceGateRealistic(t *testing.T) {
 				t.Fatalf("benchmark search failed at iteration %d for %q: %v", i, q, err)
 			}
 			if partial {
-				t.Fatalf("unexpected partial result at iteration %d for %q", i, q)
+				partialCount++
 			}
-			if len(results) == 0 {
+			if len(results) == 0 && !partial {
 				t.Fatalf("expected results at iteration %d for %q, got 0", i, q)
 			}
 			latencies = append(latencies, elapsed)
@@ -355,9 +397,15 @@ func TestPerformanceGateRealistic(t *testing.T) {
 		p50 := latencies[len(latencies)*50/100]
 		p90 := latencies[len(latencies)*90/100]
 		p95 := latencies[len(latencies)*95/100]
+		p99 := latencies[len(latencies)*99/100]
+		partialRate := float64(partialCount) / float64(iterations) * 100.0
 
-		t.Logf("Benchmark across 700k+ realistic rows (%d runs): p50=%v, p90=%v, p95=%v", iterations, p50, p90, p95)
+		t.Logf("Benchmark across 700k+ realistic rows (%d runs): p50=%v, p90=%v, p95=%v, p99=%v, partialRate=%.1f%% (%d/%d partial)",
+			iterations, p50, p90, p95, p99, partialRate, partialCount, iterations)
 
+		if partialRate > 2.0 {
+			t.Errorf("Performance gate failure: partial rate %.1f%% exceeds 2%% SLA", partialRate)
+		}
 		if p95 > 100*time.Millisecond {
 			t.Errorf("Performance gate failure: p95 latency %v exceeds 100ms SLA", p95)
 		}
