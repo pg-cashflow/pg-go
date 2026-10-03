@@ -447,23 +447,42 @@ func (r *SearchRepo) buildDuesQuery(p search.Params, tokens []search.Token, limi
 	}
 }
 
-// prefixRange computes the lower and upper bounds for a prefix match against
-// a text_pattern_ops B-Tree index using PostgreSQL's ~>=~ and ~<~ operators.
-// Returns ok=false if s is too short (<3 runes) or ends at MaxRune.
-func prefixRange(s string) (string, string, bool) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	runes := []rune(s)
-	if len(runes) < 3 {
+// prefixRange returns [lo, hi) bounds for a prefix match against a
+// text_pattern_ops btree on lower(col) (byte-wise / C ordering).
+// ok=false for tokens under 3 bytes or containing anything but printable ASCII;
+// callers then fall back to the trigram path.
+func prefixRange(s string) (lo, hi string, ok bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 3 {
 		return "", "", false
 	}
-	last := runes[len(runes)-1]
-	if last == utf8.MaxRune {
-		return "", "", false
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return "", "", false
+		}
 	}
-	upperRunes := make([]rune, len(runes))
-	copy(upperRunes, runes)
-	upperRunes[len(upperRunes)-1] = last + 1
-	return string(runes), string(upperRunes), true
+	lo = strings.ToLower(s)
+	b := []byte(lo)
+	b[len(b)-1]++ // <= 0x7f, still valid single-byte UTF-8
+	return lo, string(b), true
+}
+
+// identifierLike reports whether a token should be matched against reference
+// columns (upi_txn_id / txn_id): code-like ids, or long digit-only references
+// such as 12-digit UPI RRNs, which the tokenizer classifies as phone/short-number.
+func identifierLike(t search.Token) bool {
+	if t.Kind == search.TokenCode {
+		return true
+	}
+	if len(t.Raw) < 6 {
+		return false
+	}
+	for i := 0; i < len(t.Raw); i++ {
+		if t.Raw[i] < '0' || t.Raw[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, limit int) entityQuery {
@@ -480,7 +499,7 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 
 	for _, t := range tokens {
 		pLower, pUpper, ok := prefixRange(t.Raw)
-		if ok && t.Kind == search.TokenCode {
+		if ok && identifierLike(t) {
 			isCodeSearch = true
 			args = append(args, pLower, pUpper)
 			fastClauses = append(fastClauses, fmt.Sprintf("(p.upi_txn_id IS NOT NULL AND lower(p.upi_txn_id) ~>=~ $%d AND lower(p.upi_txn_id) ~<~ $%d)", len(args)-1, len(args)))
@@ -492,7 +511,13 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 
 		likeVal := search.LikePattern(t.Raw)
 		args = append(args, likeVal)
-		fallbackClauses = append(fallbackClauses, fmt.Sprintf("(p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\')", len(args)))
+		fallbackClauses = append(fallbackClauses,
+			fmt.Sprintf("((p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\') OR (p.upi_txn_id IS NOT NULL AND p.upi_txn_id ILIKE $%d ESCAPE '\\'))", len(args), len(args)))
+	}
+
+	fastOrder := ""
+	if isCodeSearch {
+		fastOrder = "\n\t\t\tORDER BY lower(p.upi_txn_id) USING ~<~"
 	}
 
 	args = append(args, limit)
@@ -522,7 +547,7 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 
 	// Two-stage lookup matching ADR-012 latency targets:
 	// Stage 1 (fast): Prefix range scan on upi_txn_id (via idx_payments_upi_prefix) or name scan on tenants (via idx_tenants_name_trgm)
-	// Stage 2 (fallback): raw_note trigram scan (via idx_payments_raw_note_trgm), gated by (SELECT count(*) FROM fast) < limit
+	// Stage 2 (fallback): raw_note and upi_txn_id trigram scan, gated by (SELECT count(*) FROM fast) < limit
 	sql := fmt.Sprintf(`
 		WITH fast AS MATERIALIZED (
 			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment') AS upi_txn_id, COALESCE(t.name, '') AS tenant_name, p.amount, p.created_at,
@@ -530,7 +555,7 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 			FROM payments p
 			INNER JOIN tenants t ON t.id = p.tenant_id
 			WHERE t.property_id = $1%s
-			  AND %s
+			  AND %s%s
 			LIMIT $%d
 		),
 		fallback AS (
@@ -554,6 +579,7 @@ func (r *SearchRepo) buildPaymentsQuery(p search.Params, tokens []search.Token, 
 		fastScore,
 		tenantFilter,
 		strings.Join(fastClauses, " AND "),
+		fastOrder,
 		limitIdx,
 		fallbackScore,
 		tenantFilter,
@@ -910,7 +936,8 @@ func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search
 
 		likeVal := search.LikePattern(t.Raw)
 		args = append(args, likeVal)
-		fallbackClauses = append(fallbackClauses, fmt.Sprintf("narration ILIKE $%d ESCAPE '\\'", len(args)))
+		fallbackClauses = append(fallbackClauses,
+			fmt.Sprintf("(narration ILIKE $%d ESCAPE '\\' OR txn_id ILIKE $%d ESCAPE '\\')", len(args), len(args)))
 	}
 
 	args = append(args, limit)
@@ -923,18 +950,19 @@ func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search
 			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
 			  CASE
 			    WHEN UPPER(txn_id) = UPPER($%d) THEN 1000
-			    WHEN txn_id ILIKE ($%d || '%%') THEN 800
+			    WHEN txn_id ILIKE ($%d || '%%%%') THEN 800
 			    ELSE 600
 			  END AS rank_score
 			FROM bank_transactions
 			WHERE property_id = $1
 			  AND %s
+			ORDER BY lower(txn_id) USING ~<~
 			LIMIT $%d
 		),
 		fallback AS (
 			SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date,
 			  CASE
-			    WHEN narration ILIKE ('%%' || $%d || '%%') THEN 400
+			    WHEN narration ILIKE ('%%%%' || $%d || '%%%%') OR txn_id ILIKE ('%%%%' || $%d || '%%%%') THEN 400
 			    ELSE 100
 			  END AS rank_score
 			FROM bank_transactions
@@ -954,7 +982,7 @@ func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search
 		qIdx, qIdx,
 		strings.Join(fastClauses, " AND "),
 		limitIdx,
-		qIdx,
+		qIdx, qIdx,
 		limitIdx,
 		strings.Join(fallbackClauses, " AND "),
 		limitIdx,

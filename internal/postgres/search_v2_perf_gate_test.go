@@ -3,26 +3,65 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
 
-// TestPerformanceGateRealistic validates the Search V2 performance requirements:
+func requireDisposableDB(t *testing.T, url string) {
+	t.Helper()
+	cfg, err := pgconn.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("bad DATABASE_URL: %v", err)
+	}
+	if !strings.HasSuffix(cfg.Database, "_perf") && os.Getenv("PERF_GATE_ALLOW_ANY_DB") != "1" {
+		t.Skipf("refusing to seed/delete in database %q; use a *_perf database or set PERF_GATE_ALLOW_ANY_DB=1", cfg.Database)
+	}
+}
+
+type tallyHandler struct {
+	mu     *sync.Mutex
+	counts map[string]int
+}
+
+func (h tallyHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h tallyHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "search query failed" && r.Message != "search query slow" {
+		return nil
+	}
+	typ := ""
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "type" {
+			typ = a.Value.String()
+		}
+		return true
+	})
+	h.mu.Lock()
+	h.counts[r.Message+" / "+typ]++
+	h.mu.Unlock()
+	return nil
+}
+func (h tallyHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h tallyHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestPerformanceStressReport validates Search V2 behavior under stress conditions (informational report):
 // 1. EXPLAIN verification asserting Index Scans and NO Sequential Scans on large tables.
-// 2. Realistic seed mix (~5k tenants, 300k dues, 300k payments, 100k events/txns).
-// 3. 200+ latency samples verifying p95 < 100ms.
+// 2. Stress seed mix (~5k tenants, 300k dues, 300k payments, 100k events/txns).
+// 3. 200+ latency samples reporting p50, p90, p95, p99 (informational; not a gating test).
 // 4. Budget test ensuring end-to-end latency stays within the 800ms budget under simulated load.
-func TestPerformanceGateRealistic(t *testing.T) {
+func TestPerformanceStressReport(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping realistic performance gate test in short mode")
 	}
@@ -34,6 +73,7 @@ func TestPerformanceGateRealistic(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set")
 	}
+	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -79,6 +119,13 @@ func TestPerformanceGateRealistic(t *testing.T) {
 	if m041SQL, err := os.ReadFile(m041Path); err == nil {
 		if _, err := pool.Exec(ctx, string(m041SQL)); err != nil {
 			t.Fatalf("apply migration 041 failed: %v", err)
+		}
+	}
+
+	m042Path := filepath.Join("..", "..", "migrations", "042_search_drop_redundant_global_trgm.sql")
+	if m042SQL, err := os.ReadFile(m042Path); err == nil {
+		if _, err := pool.Exec(ctx, string(m042SQL)); err != nil {
+			t.Fatalf("apply migration 042 failed: %v", err)
 		}
 	}
 
@@ -423,6 +470,11 @@ func TestPerformanceGateRealistic(t *testing.T) {
 			"TXN-" + runPrefix + "-100",
 		}
 
+		h := tallyHandler{mu: &sync.Mutex{}, counts: map[string]int{}}
+		oldLogger := slog.Default()
+		slog.SetDefault(slog.New(h))
+		defer slog.SetDefault(oldLogger)
+
 		iterations := 200
 		var latencies []time.Duration
 		var partialCount int
@@ -456,6 +508,7 @@ func TestPerformanceGateRealistic(t *testing.T) {
 
 		t.Logf("STRESS BENCHMARK across 700k+ rows (%d runs): p50=%v, p90=%v, p95=%v, p99=%v, partialRate=%.1f%% (%d/%d partial)",
 			iterations, p50, p90, p95, p99, partialRate, partialCount, iterations)
+		t.Logf("per-entity slow/failed tally: %v", h.counts)
 	})
 
 	// SECTION 4: Overall Budget Test (800ms SLA) under network/deadline budget
@@ -499,6 +552,7 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set")
 	}
+	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -514,8 +568,8 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Apply migrations 038, 039, 040, 041
-	for _, m := range []string{"038_search_v2_indexes.sql", "039_search_v2_tuning.sql", "040_search_property_scoped_trgm.sql", "041_search_prefix_pattern_ops.sql"} {
+	// Apply migrations 038, 039, 040, 041, 042
+	for _, m := range []string{"038_search_v2_indexes.sql", "039_search_v2_tuning.sql", "040_search_property_scoped_trgm.sql", "041_search_prefix_pattern_ops.sql", "042_search_drop_redundant_global_trgm.sql"} {
 		mPath := filepath.Join("..", "..", "migrations", m)
 		if mSQL, err := os.ReadFile(mPath); err == nil {
 			if _, err := pool.Exec(ctx, string(mSQL)); err != nil {
@@ -755,6 +809,39 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 		t.Fatalf("bulk seed bank_transactions failed: %v", err)
 	}
 
+	narrationOnlyToken := "SpecialSlowNarration" + runPrefix
+	_, err = pool.Exec(ctx, `
+		INSERT INTO bank_transactions (id, property_id, txn_id, amount_paise, row_type, txn_date, narration, dedup_hash, status)
+		VALUES (gen_random_uuid(), $1::uuid, 'TXN-' || $2 || '-SPEC', 500000, 'credit', CURRENT_DATE, 'Unmatched rent ' || $3, md5($1::text || $3), 'unmatched')`,
+		targetPropID, runPrefix, narrationOnlyToken,
+	)
+	if err != nil {
+		t.Fatalf("seed slow narration bank txn failed: %v", err)
+	}
+
+	txnFragment := "88442"
+	_, err = pool.Exec(ctx, `
+		INSERT INTO bank_transactions (id, property_id, txn_id, amount_paise, row_type, txn_date, narration, dedup_hash, status)
+		VALUES (gen_random_uuid(), $1::uuid, 'UTR20260930' || $2, 500000, 'credit', CURRENT_DATE, 'Bank NEFT deposit', md5($1::text || $2), 'unmatched')`,
+		targetPropID, txnFragment,
+	)
+	if err != nil {
+		t.Fatalf("seed slow txn fragment bank txn failed: %v", err)
+	}
+
+	digitOnlyUPIRef := "987654321099"
+	_, err = pool.Exec(ctx, `
+		WITH any_due AS (
+			SELECT id, tenant_id FROM dues WHERE property_id = $1::uuid LIMIT 1
+		)
+		INSERT INTO payments (id, due_id, tenant_id, upi_txn_id, amount, provider, matched_by, created_at)
+		SELECT gen_random_uuid(), id, tenant_id, $2, 500000, 'manual', 'manual', NOW() FROM any_due`,
+		targetPropID, digitOnlyUPIRef,
+	)
+	if err != nil {
+		t.Fatalf("seed digit-only UPI payment failed: %v", err)
+	}
+
 	_, err = pool.Exec(ctx, `
 		WITH t_arr AS (
 			SELECT array_agg(id) AS ids FROM tenants WHERE property_id = $1::uuid
@@ -871,6 +958,7 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 				FROM bank_transactions
 				WHERE property_id = $1
 				  AND lower(txn_id) ~>=~ $2 AND lower(txn_id) ~<~ $3
+				ORDER BY lower(txn_id) USING ~<~
 				LIMIT 5
 			),
 			fallback AS (
@@ -878,7 +966,7 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 				FROM bank_transactions
 				WHERE property_id = $1
 				  AND (SELECT count(*) FROM fast) < 5
-				  AND narration ILIKE $4
+				  AND (narration ILIKE $4 OR txn_id ILIKE $4)
 				LIMIT 5
 			)
 			SELECT id, txn_id, narration, amount_paise, status
@@ -907,66 +995,192 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 		if strings.Contains(planBank, "Seq Scan on bank_transactions") && !strings.Contains(planBank, "(never executed)") {
 			t.Errorf("Bank transactions query performed an executed Seq Scan on bank_transactions:\n%s", planBank)
 		}
+
+		// Verify 3 slow-path cases via EXPLAIN (ANALYZE, BUFFERS)
+		// Case 1: Digit-only UPI ref on payments
+		var planDigitUPI string
+		dLow, dUp, _ := prefixRange(digitOnlyUPIRef)
+		rows, err = pool.Query(ctx, `
+			EXPLAIN (ANALYZE, BUFFERS)
+			SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment'), COALESCE(t.name, '')
+			FROM payments p
+			JOIN tenants t ON t.id = p.tenant_id
+			WHERE t.property_id = $1
+			  AND lower(p.upi_txn_id) ~>=~ $2 AND lower(p.upi_txn_id) ~<~ $3
+			ORDER BY lower(p.upi_txn_id) USING ~<~
+			LIMIT 5`,
+			targetPropID, dLow, dUp,
+		)
+		if err != nil {
+			t.Fatalf("explain digit-only upi failed: %v", err)
+		}
+		for rows.Next() {
+			var line string
+			_ = rows.Scan(&line)
+			planDigitUPI += line + "\n"
+		}
+		rows.Close()
+		t.Logf("Strict Plan: Digit-Only UPI Ref on Payments (ANALYZE, BUFFERS):\n%s", planDigitUPI)
+
+		// Case 2: txn_id fragment on bank_transactions
+		var planTxnFrag string
+		rows, err = pool.Query(ctx, `
+			EXPLAIN (ANALYZE, BUFFERS)
+			WITH fast AS MATERIALIZED (
+				SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date, 1000 AS rank_score
+				FROM bank_transactions
+				WHERE property_id = $1
+				  AND lower(txn_id) ~>=~ $2 AND lower(txn_id) ~<~ $3
+				ORDER BY lower(txn_id) USING ~<~
+				LIMIT 5
+			),
+			fallback AS (
+				SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date, 400 AS rank_score
+				FROM bank_transactions
+				WHERE property_id = $1
+				  AND (SELECT count(*) FROM fast) < 5
+				  AND (narration ILIKE $4 OR txn_id ILIKE $4)
+				LIMIT 5
+			)
+			SELECT id, txn_id, narration, amount_paise, status
+			FROM (
+				SELECT * FROM fast
+				UNION ALL
+				SELECT * FROM fallback WHERE id NOT IN (SELECT id FROM fast)
+			) combined
+			ORDER BY rank_score DESC, txn_date DESC
+			LIMIT 5`,
+			targetPropID, "utr2026093088442", "utr2026093088443", "%88442%",
+		)
+		if err != nil {
+			t.Fatalf("explain bank txn fragment failed: %v", err)
+		}
+		for rows.Next() {
+			var line string
+			_ = rows.Scan(&line)
+			planTxnFrag += line + "\n"
+		}
+		rows.Close()
+		t.Logf("Strict Plan: Bank Txn Fragment (ANALYZE, BUFFERS):\n%s", planTxnFrag)
+
+		// Case 3: Narration-only token on bank_transactions
+		var planNarrOnly string
+		rows, err = pool.Query(ctx, `
+			EXPLAIN (ANALYZE, BUFFERS)
+			WITH fast AS MATERIALIZED (
+				SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date, 1000 AS rank_score
+				FROM bank_transactions
+				WHERE property_id = $1
+				  AND lower(txn_id) ~>=~ $2 AND lower(txn_id) ~<~ $3
+				ORDER BY lower(txn_id) USING ~<~
+				LIMIT 5
+			),
+			fallback AS (
+				SELECT id::text, txn_id, COALESCE(narration, '') AS narration, amount_paise, status, txn_date, 400 AS rank_score
+				FROM bank_transactions
+				WHERE property_id = $1
+				  AND (SELECT count(*) FROM fast) < 5
+				  AND (narration ILIKE $4 OR txn_id ILIKE $4)
+				LIMIT 5
+			)
+			SELECT id, txn_id, narration, amount_paise, status
+			FROM (
+				SELECT * FROM fast
+				UNION ALL
+				SELECT * FROM fallback WHERE id NOT IN (SELECT id FROM fast)
+			) combined
+			ORDER BY rank_score DESC, txn_date DESC
+			LIMIT 5`,
+			targetPropID, "specialslow", "specialslox", "%"+narrationOnlyToken+"%",
+		)
+		if err != nil {
+			t.Fatalf("explain bank narration only failed: %v", err)
+		}
+		for rows.Next() {
+			var line string
+			_ = rows.Scan(&line)
+			planNarrOnly += line + "\n"
+		}
+		rows.Close()
+		t.Logf("Strict Plan: Bank Narration-Only Token (ANALYZE, BUFFERS):\n%s", planNarrOnly)
 	})
 
-	// SECTION 2: 200+ Samples Latency Benchmark asserting p95 < 100ms & partialRate <= 2% (DECISIVE SHIP GATE)
-	t.Run("Strict 200+ Samples Latency Benchmark (p95 < 100ms, partialRate <= 2%)", func(t *testing.T) {
+	// SECTION 2: 400-Sample Classed Latency Benchmark asserting p95 < 100ms & partialRate <= 2% (DECISIVE SHIP GATE)
+	t.Run("Strict 400 Samples Classed Latency Benchmark (p95 < 100ms, partialRate <= 2%)", func(t *testing.T) {
 		repo := NewSearchRepo(pool)
 		svc := &search.Service{Repo: repo}
 
 		// Warm up query
 		_, _, _, _, _ = svc.Search(ctx, domain.RoleOwner, targetPropID, nil, "Tenant 250", 20, search.ModeLexical, nil)
 
-		queries := []string{
-			"Tenant 250",
-			runPrefix + "00100",
-			"UPI-" + runPrefix + "-" + runPrefix + "00500",
-			"TXN-" + runPrefix + "-50",
-			"Tenant 100",
-			"201",
-			"Tenant 50",
-			"TXN-" + runPrefix + "-100",
+		type qcase struct{ class, q string }
+		cases := []qcase{
+			{"fast", "Tenant 250"},
+			{"fast", "TXN-" + runPrefix + "-50"},
+			{"fast", "UPI-" + runPrefix + "-" + runPrefix + "00500"},
+			{"fast", "Tenant 100"},
+			{"fast", "201"},
+			{"slow-narration", narrationOnlyToken}, // seeded only in bank narration
+			{"slow-txn-fragment", txnFragment},     // last 5 chars of a seeded txn_id
+			{"slow-digit-ref", digitOnlyUPIRef},    // 12-digit seeded upi_txn_id
 		}
 
-		iterations := 200
-		var latencies []time.Duration
+		h := tallyHandler{mu: &sync.Mutex{}, counts: map[string]int{}}
+		oldLogger := slog.Default()
+		slog.SetDefault(slog.New(h))
+		defer slog.SetDefault(oldLogger)
+
+		iterations := 400 // >= 50 samples per class
+		byClass := map[string][]time.Duration{}
+		var allLatencies []time.Duration
 		var partialCount int
 
 		for i := 0; i < iterations; i++ {
-			q := queries[i%len(queries)]
+			c := cases[i%len(cases)]
 			start := time.Now()
-			_, _, results, partial, err := svc.Search(ctx, domain.RoleOwner, targetPropID, nil, q, 20, search.ModeLexical, nil)
-			elapsed := time.Since(start)
+			_, _, results, partial, err := svc.Search(ctx, domain.RoleOwner, targetPropID, nil, c.q, 20, search.ModeLexical, nil)
+			el := time.Since(start)
 			if err != nil {
-				t.Fatalf("strict benchmark search failed at iteration %d for %q: %v", i, q, err)
+				t.Fatalf("strict benchmark search failed at iteration %d for %q: %v", i, c.q, err)
 			}
 			if partial {
 				partialCount++
 			}
 			if len(results) == 0 && !partial {
-				t.Fatalf("expected results at iteration %d for %q, got 0", i, q)
+				t.Fatalf("class %s: expected results at iteration %d for %q, got 0", c.class, i, c.q) // recall assertion
 			}
-			latencies = append(latencies, elapsed)
+			byClass[c.class] = append(byClass[c.class], el)
+			allLatencies = append(allLatencies, el)
 		}
 
-		sort.Slice(latencies, func(i, j int) bool {
-			return latencies[i] < latencies[j]
-		})
-
-		p50 := latencies[len(latencies)*50/100]
-		p90 := latencies[len(latencies)*90/100]
-		p95 := latencies[len(latencies)*95/100]
-		p99 := latencies[len(latencies)*99/100]
-		partialRate := float64(partialCount) / float64(iterations) * 100.0
-
-		t.Logf("DECISIVE PRODUCTION GATE across 1,000 properties (%d runs): p50=%v, p90=%v, p95=%v, p99=%v, partialRate=%.1f%% (%d/%d partial)",
-			iterations, p50, p90, p95, p99, partialRate, partialCount, iterations)
-
-		if partialRate > 2.0 {
-			t.Errorf("SHIP-STOPPING FAILURE: partial rate %.1f%% exceeds 2%% SLA (%d partials)", partialRate, partialCount)
+		for class, ds := range byClass {
+			sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+			p50 := ds[len(ds)*50/100]
+			p90 := ds[len(ds)*90/100]
+			p95 := ds[len(ds)*95/100]
+			p99 := ds[len(ds)*99/100]
+			t.Logf("class=%-18s n=%d p50=%v p90=%v p95=%v p99=%v", class, len(ds), p50, p90, p95, p99)
+			if p95 > 100*time.Millisecond {
+				t.Errorf("SHIP-STOPPING: class %s p95 %v exceeds 100ms", class, p95)
+			}
 		}
-		if p95 > 100*time.Millisecond {
-			t.Errorf("SHIP-STOPPING FAILURE: p95 latency %v exceeds 100ms SLA", p95)
+
+		sort.Slice(allLatencies, func(i, j int) bool { return allLatencies[i] < allLatencies[j] })
+		totP50 := allLatencies[len(allLatencies)*50/100]
+		totP90 := allLatencies[len(allLatencies)*90/100]
+		totP95 := allLatencies[len(allLatencies)*95/100]
+		totP99 := allLatencies[len(allLatencies)*99/100]
+		rate := float64(partialCount) / float64(iterations) * 100.0
+
+		t.Logf("DECISIVE PRODUCTION GATE across 1,000 properties (%d runs): overall p50=%v, p90=%v, p95=%v, p99=%v, partialRate=%.1f%% (%d/%d partial)",
+			iterations, totP50, totP90, totP95, totP99, rate, partialCount, iterations)
+		t.Logf("per-entity slow/failed tally: %v", h.counts)
+
+		if rate > 2.0 {
+			t.Errorf("SHIP-STOPPING FAILURE: partial rate %.1f%% exceeds 2%% SLA (%d partials)", rate, partialCount)
+		}
+		if totP95 > 100*time.Millisecond {
+			t.Errorf("SHIP-STOPPING FAILURE: overall p95 latency %v exceeds 100ms SLA", totP95)
 		}
 	})
 

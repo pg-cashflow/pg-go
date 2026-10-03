@@ -65,6 +65,10 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	if m041SQL, err := os.ReadFile(m041Path); err == nil {
 		_, _ = pool.Exec(ctx, string(m041SQL))
 	}
+	m042Path := filepath.Join(migrationsDir, "042_search_drop_redundant_global_trgm.sql")
+	if m042SQL, err := os.ReadFile(m042Path); err == nil {
+		_, _ = pool.Exec(ctx, string(m042SQL))
+	}
 
 	repo := NewSearchRepo(pool)
 	searchSvc := &search.Service{Repo: repo}
@@ -214,6 +218,16 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		t.Fatalf("seed payments failed: %v", err)
 	}
 
+	payDigitRefID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payments (id, tenant_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
+		VALUES ($1, $2, 'bank', 500000, 'manual', '412345678901', 'Digit only UPI RRN payment', NOW())`,
+		payDigitRefID, rahul201ID,
+	)
+	if err != nil {
+		t.Fatalf("seed digit only payment failed: %v", err)
+	}
+
 	// Payment report:
 	_, err = pool.Exec(ctx, `
 		INSERT INTO payment_reports (id, due_id, property_id, tenant_id, upi_txn_id, amount, note, status, reported_by, created_at)
@@ -273,6 +287,16 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("seed bank transaction failed: %v", err)
+	}
+
+	bankRecallTxnID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO bank_transactions (id, property_id, txn_id, amount_paise, row_type, txn_date, narration, dedup_hash, status)
+		VALUES ($1, $2, 'UTR202609301234', 500000, 'credit', CURRENT_DATE, 'NEFT CR RENT SEP', 'dedup_hash_1234', 'unmatched')`,
+		bankRecallTxnID, propID,
+	)
+	if err != nil {
+		t.Fatalf("seed bank recall transaction failed: %v", err)
 	}
 
 	// Gateway settlement:
@@ -475,6 +499,68 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected bank transaction %s in results for narration search, got %+v", bankTxnID, results)
+		}
+	})
+
+	t.Run("Owner: digit-only 12-digit UPI reference exact and prefix match", func(t *testing.T) {
+		// 1. Full 12 digits
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "412345678901", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected payment hit for 12-digit UPI ref 412345678901, err=%v, count=%d", err, len(results))
+		}
+		if results[0].Type != search.TypePayment || results[0].ID != payDigitRefID.String() {
+			t.Errorf("expected payDigitRefID match, got %+v", results[0])
+		}
+
+		// 2. 6-digit prefix
+		_, _, results, _, err = searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "412345", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected payment hit for 6-digit prefix 412345, err=%v, count=%d", err, len(results))
+		}
+		found := false
+		for _, r := range results {
+			if r.Type == search.TypePayment && r.ID == payDigitRefID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected payDigitRefID in prefix results, got %+v", results)
+		}
+	})
+
+	t.Run("Owner: digit-only UPI reference suffix match via stage 2 fallback", func(t *testing.T) {
+		// Search last 6 digits of 412345678901
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "678901", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected stage 2 fallback hit for 678901, err=%v, count=%d", err, len(results))
+		}
+		found := false
+		for _, r := range results {
+			if r.Type == search.TypePayment && r.ID == payDigitRefID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected payDigitRefID in suffix results, got %+v", results)
+		}
+	})
+
+	t.Run("Owner: bank txn_id fragment match via stage 2 fallback ('1234' in 'UTR202609301234')", func(t *testing.T) {
+		_, _, results, _, err := searchSvc.Search(ctx, domain.RoleOwner, propID, nil, "1234", 20, search.ModeLexical, nil)
+		if err != nil || len(results) == 0 {
+			t.Fatalf("expected bank txn hit for fragment 1234, err=%v, count=%d", err, len(results))
+		}
+		found := false
+		for _, r := range results {
+			if r.Type == search.TypeBankTransaction && r.ID == bankRecallTxnID.String() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected bankRecallTxnID in fragment results, got %+v", results)
 		}
 	})
 
