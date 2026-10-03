@@ -387,8 +387,8 @@ func (r *SearchRepo) searchPayments(ctx context.Context, p search.Params, tokens
 	sql := fmt.Sprintf(`
 		SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment'), COALESCE(t.name, ''), p.amount
 		FROM payments p
-		LEFT JOIN tenants t ON t.id = p.tenant_id
-		WHERE (t.property_id = $1 OR p.tenant_id IN (SELECT id FROM tenants WHERE property_id = $1))%s
+		INNER JOIN tenants t ON t.id = p.tenant_id
+		WHERE t.property_id = $1%s
 		  AND %s
 		ORDER BY
 		  CASE
