@@ -101,7 +101,7 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, `
+		tag, insertErr := tx.Exec(ctx, `
 			INSERT INTO gateway_settlements (
 				id, property_id, cf_settlement_id, order_id, cf_payment_id,
 				payment_intent_id, payment_id, ingestion_source, utr, currency,
@@ -120,7 +120,7 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 				$20, $21, $22,
 				$23, $24, $25, $26,
 				NOW(), NOW()
-			)`,
+			) ON CONFLICT (cf_settlement_id, COALESCE(order_id, ''), COALESCE(cf_payment_id, '')) DO NOTHING`,
 			s.ID, s.PropertyID, s.CFSettlementID, s.OrderID, s.CFPaymentID,
 			s.PaymentIntentID, s.PaymentID, s.IngestionSource, s.UTR, s.Currency,
 			s.GrossAmountPaise, s.ServiceChargePaise, s.ServiceTaxPaise,
@@ -129,10 +129,42 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 			s.ReconciliationStatus, s.DiscrepancyReason, s.JournalEntryID,
 			s.ResolutionNotes, s.ResolvedBy, s.ResolvedAt, s.RawPayload,
 		)
+		if insertErr != nil {
+			return insertErr
+		}
+		if tag.RowsAffected() > 0 {
+			return tx.Commit(ctx)
+		}
+
+		// Another concurrent delivery won the insert race. Re-select the row FOR UPDATE.
+		err = tx.QueryRow(ctx, `
+			SELECT id, property_id, cf_settlement_id, order_id, cf_payment_id,
+			       payment_intent_id, payment_id, ingestion_source, utr, currency,
+			       gross_amount_paise, service_charge_paise, service_tax_paise,
+			       adjustment_paise, net_amount_paise, settlement_status,
+			       settled_on, settlement_initiated_on, transfer_time,
+			       reconciliation_status, discrepancy_reason, journal_entry_id,
+			       resolution_notes, resolved_by, resolved_at, raw_payload,
+			       created_at, updated_at
+			FROM gateway_settlements
+			WHERE cf_settlement_id = $1
+			  AND COALESCE(order_id, '') = $2
+			  AND COALESCE(cf_payment_id, '') = $3
+			FOR UPDATE`,
+			s.CFSettlementID, orderIDStr, cfPaymentIDStr,
+		).Scan(
+			&existing.ID, &existing.PropertyID, &existing.CFSettlementID, &existing.OrderID, &existing.CFPaymentID,
+			&existing.PaymentIntentID, &existing.PaymentID, &existing.IngestionSource, &existing.UTR, &existing.Currency,
+			&existing.GrossAmountPaise, &existing.ServiceChargePaise, &existing.ServiceTaxPaise,
+			&existing.AdjustmentPaise, &existing.NetAmountPaise, &existing.SettlementStatus,
+			&existing.SettledOn, &existing.SettlementInitiatedOn, &existing.TransferTime,
+			&existing.ReconciliationStatus, &existing.DiscrepancyReason, &existing.JournalEntryID,
+			&existing.ResolutionNotes, &existing.ResolvedBy, &existing.ResolvedAt, &existing.RawPayload,
+			&existing.CreatedAt, &existing.UpdatedAt,
+		)
 		if err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
 	} else if err != nil {
 		return err
 	}

@@ -126,6 +126,31 @@ func TestSettlementDecision_PropertyTests(t *testing.T) {
 				decidedPending.GrossAmountPaise, decidedPending.NetAmountPaise)
 		}
 
+		// 1b. PENDING row with ReconciliationStatus=matched allows provisional-to-final amount updates without discrepancy
+		pendingMatchedRow := &domain.GatewaySettlement{
+			SettlementStatus:     "PENDING",
+			ReconciliationStatus: domain.ReconMatched,
+			GrossAmountPaise:     100000,
+			NetAmountPaise:       98000,
+		}
+		pendingMatchedUpdate := &domain.GatewaySettlement{
+			SettlementStatus:     "PENDING",
+			ReconciliationStatus: domain.ReconMatched,
+			GrossAmountPaise:     110000,
+			NetAmountPaise:       108000,
+		}
+		decidedPendingMatched := DecideSettlementUpdate(pendingMatchedRow, pendingMatchedUpdate)
+		if decidedPendingMatched.ReconciliationStatus == domain.ReconDiscrepancy {
+			t.Fatalf("provisional-to-final change on PENDING row was incorrectly flagged as discrepancy")
+		}
+		if decidedPendingMatched.ReconciliationStatus != domain.ReconMatched {
+			t.Fatalf("expected reconciliation_status to stay matched, got %s", decidedPendingMatched.ReconciliationStatus)
+		}
+		if decidedPendingMatched.GrossAmountPaise != 110000 || decidedPendingMatched.NetAmountPaise != 108000 {
+			t.Fatalf("expected amounts to update on PENDING matched row, got gross=%d, net=%d",
+				decidedPendingMatched.GrossAmountPaise, decidedPendingMatched.NetAmountPaise)
+		}
+
 		// 2. Terminal SUCCESS row freezes amounts
 		succRow := &domain.GatewaySettlement{
 			SettlementStatus:     "SUCCESS",

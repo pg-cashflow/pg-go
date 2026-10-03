@@ -126,9 +126,9 @@ func DecideSettlementUpdate(existing, incoming *domain.GatewaySettlement) domain
 		updated.RawPayload = existing.RawPayload
 		updated.IngestionSource = existing.IngestionSource
 
-	case (existing.SettlementStatus == "SUCCESS" || existing.SettlementStatus == "REVERSED" || existing.ReconciliationStatus == domain.ReconMatched || existing.ReconciliationStatus == domain.ReconDiscrepancy) && diffAmounts:
-		// Conflicting amounts arrive for an already reconciled, terminal, or discrepancy settlement.
-		// Flip to discrepancy and freeze stored amounts.
+	case (existing.SettlementStatus == "SUCCESS" || existing.SettlementStatus == "REVERSED") && diffAmounts:
+		// Conflicting amounts arrive for a terminal settlement:
+		// Flip/keep discrepancy, set reason to amount_changed_after_reconciliation, and freeze stored amounts.
 		updated.ReconciliationStatus = domain.ReconDiscrepancy
 		reason := "amount_changed_after_reconciliation"
 		updated.DiscrepancyReason = &reason
@@ -145,7 +145,8 @@ func DecideSettlementUpdate(existing, incoming *domain.GatewaySettlement) domain
 		updated.IngestionSource = existing.IngestionSource
 
 	case existing.ReconciliationStatus == domain.ReconDiscrepancy:
-		// Sticky discrepancy: identical replay keeps existing discrepancy and amounts.
+		// Sticky discrepancy: once in discrepancy, only operator action can leave it.
+		// Replays (conflicting or identical) preserve existing discrepancy, reason, and stored amounts.
 		updated.ReconciliationStatus = domain.ReconDiscrepancy
 		updated.DiscrepancyReason = existing.DiscrepancyReason
 		updated.GrossAmountPaise = existing.GrossAmountPaise
@@ -159,8 +160,8 @@ func DecideSettlementUpdate(existing, incoming *domain.GatewaySettlement) domain
 		updated.RawPayload = existing.RawPayload
 		updated.IngestionSource = existing.IngestionSource
 
-	case existing.SettlementStatus == "SUCCESS" || existing.SettlementStatus == "REVERSED" || existing.ReconciliationStatus == domain.ReconMatched:
-		// Terminal or matched row with matching amounts: preserve status and figures.
+	case existing.SettlementStatus == "SUCCESS" || existing.SettlementStatus == "REVERSED":
+		// Terminal row with matching amounts: preserve status and figures.
 		updated.GrossAmountPaise = existing.GrossAmountPaise
 		updated.NetAmountPaise = existing.NetAmountPaise
 		updated.ServiceChargePaise = existing.ServiceChargePaise
@@ -171,20 +172,24 @@ func DecideSettlementUpdate(existing, incoming *domain.GatewaySettlement) domain
 		}
 
 	default:
-		// Non-terminal, non-reconciled (e.g. PENDING): amounts can be freely updated (provisional -> final)
+		// Non-terminal (e.g. PENDING): amounts can be freely updated (provisional -> final)
+		// Even if tentative reconciliation_status was 'matched', provisional-to-final amount changes
+		// are legitimate and must NOT be flagged as tampering/discrepancy.
 		updated.GrossAmountPaise = incoming.GrossAmountPaise
 		updated.NetAmountPaise = incoming.NetAmountPaise
 		updated.ServiceChargePaise = incoming.ServiceChargePaise
 		updated.ServiceTaxPaise = incoming.ServiceTaxPaise
 		updated.AdjustmentPaise = incoming.AdjustmentPaise
 		updated.IngestionSource = incoming.IngestionSource
-		if len(incoming.RawPayload) > 0 {
+		if len(incoming.RawPayload) > 0 && string(incoming.RawPayload) != "{}" {
 			updated.RawPayload = incoming.RawPayload
 		}
 		if incoming.ReconciliationStatus != "" {
 			updated.ReconciliationStatus = incoming.ReconciliationStatus
 		}
-		updated.DiscrepancyReason = incoming.DiscrepancyReason
+		if incoming.DiscrepancyReason != nil {
+			updated.DiscrepancyReason = incoming.DiscrepancyReason
+		}
 	}
 
 	return updated
