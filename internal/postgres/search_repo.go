@@ -585,10 +585,6 @@ func (r *SearchRepo) searchInspections(ctx context.Context, p search.Params, tok
 		sub = append(sub, fmt.Sprintf("inspection_type ILIKE $%d ESCAPE '\\'", len(args)))
 		sub = append(sub, fmt.Sprintf("(notes IS NOT NULL AND notes ILIKE $%d ESCAPE '\\')", len(args)))
 
-		// Plain text FTS query using 'simple' configuration
-		args = append(args, t.Raw)
-		sub = append(sub, fmt.Sprintf("(notes IS NOT NULL AND to_tsvector('simple', notes) @@ plainto_tsquery('simple', $%d))", len(args)))
-
 		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
 	}
 
@@ -646,9 +642,6 @@ func (r *SearchRepo) searchHazards(ctx context.Context, p search.Params, tokens 
 		sub = append(sub, fmt.Sprintf("category ILIKE $%d ESCAPE '\\'", len(args)))
 		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND description ILIKE $%d ESCAPE '\\')", len(args)))
 
-		args = append(args, t.Raw)
-		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND to_tsvector('simple', description) @@ plainto_tsquery('simple', $%d))", len(args)))
-
 		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
 	}
 
@@ -699,9 +692,6 @@ func (r *SearchRepo) searchViolations(ctx context.Context, p search.Params, toke
 		args = append(args, likeVal)
 		sub = append(sub, fmt.Sprintf("rule_code ILIKE $%d ESCAPE '\\'", len(args)))
 		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND description ILIKE $%d ESCAPE '\\')", len(args)))
-
-		args = append(args, t.Raw)
-		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND to_tsvector('simple', description) @@ plainto_tsquery('simple', $%d))", len(args)))
 
 		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
 	}
