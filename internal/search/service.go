@@ -2,6 +2,9 @@ package search
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -12,7 +15,8 @@ import (
 // Service orchestrates lexical search with RBAC types.
 // ADR-012: vector/hybrid search is permanently disabled.
 type Service struct {
-	Repo Repository
+	Repo  Repository
+	Cache *Cache // optional; nil disables caching
 }
 
 // Search executes a federated lexical query for the given role scope.
@@ -66,11 +70,40 @@ func (s *Service) Search(ctx context.Context, role domain.Role, propertyID uuid.
 		Types:      types,
 	}
 
-	lexical, partial, err := s.Repo.SearchLexical(ctx, p, types, perType)
-	if err != nil {
-		return q, ModeLexical, nil, partial, err
+	run := func(ctx context.Context) ([]Result, bool, error) {
+		lexical, partial, err := s.Repo.SearchLexical(ctx, p, types, perType)
+		if err != nil {
+			return nil, partial, err
+		}
+		return MergeResults(lexical, tokens, limit), partial, nil
 	}
 
-	return q, ModeLexical, MergeResults(lexical, tokens, limit), partial, nil
+	if s.Cache != nil {
+		key := cacheKey(role, propertyID, tenantID, limit, types, q)
+		// Detach from the first caller's cancellation: coalesced callers share this run.
+		base := context.WithoutCancel(ctx)
+		res, partial, err := s.Cache.Do(key, func() ([]Result, bool, error) {
+			cctx, cancel := context.WithTimeout(base, 800*time.Millisecond)
+			defer cancel()
+			return run(cctx)
+		})
+		return q, ModeLexical, res, partial, err
+	}
+
+	res, partial, err := run(ctx)
+	return q, ModeLexical, res, partial, err
 }
 
+// cacheKey includes every input that affects visibility or ranking.
+func cacheKey(role domain.Role, property uuid.UUID, tenant *uuid.UUID, limit int, types []EntityType, q string) string {
+	ts := make([]string, len(types))
+	for i, t := range types {
+		ts[i] = string(t)
+	}
+	sort.Strings(ts)
+	tid := ""
+	if tenant != nil {
+		tid = tenant.String()
+	}
+	return fmt.Sprintf("%s|%s|%s|%d|%s|%s", role, property, tid, limit, strings.Join(ts, ","), strings.ToLower(q))
+}

@@ -242,7 +242,7 @@ func main() {
 	}
 	searchRepo := postgres.NewSearchRepo(searchPool)
 	// ADR-012: vector/hybrid search permanently disabled.
-	searchSvc := &search.Service{Repo: searchRepo}
+	searchSvc := &search.Service{Repo: searchRepo, Cache: search.NewCache(5*time.Second, 2000)}
 
 	payoutRepo := postgres.NewPayoutRepo(pool, financeSvc)
 	attendanceRepo := postgres.NewAttendanceRepo(pool)
