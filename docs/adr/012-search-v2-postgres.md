@@ -50,6 +50,6 @@ The previous search implementation relied on a secondary `search_documents` tabl
 - Decommission `search_documents` table in a future forward-only migration once verified.
 
 ## Consequences
-- Sub-5ms search execution for standard lookups with zero index sync lag or stale data leaks.
+- Target < 5ms search execution for standard lookups, targeting zero index sync lag or stale data leaks through direct live-table queries.
 - DPDP compliance: no derived text copies, strict role-based PII scoping, and immediate reflection of updates/deletions.
 - Elimination of unneeded third-party dependencies, network hops, and operational services.

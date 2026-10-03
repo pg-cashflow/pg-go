@@ -40,44 +40,34 @@ func (s *Service) Search(ctx context.Context, role domain.Role, propertyID uuid.
 
 	types := filterTypes(AllowedTypes(role), typeFilter)
 	if len(types) == 0 {
-		return q, mode, nil, nil
+		return q, ModeLexical, nil, nil
 	}
 
-	perType := limit
-	if perType > 10 {
-		perType = 10
+	// ADR-012: Cap at 5 per entity type to prevent type starvation
+	perType := 5
+	if limit < perType {
+		perType = limit
 	}
 
+	tokens := TokenizeQuery(q)
 	p := Params{
 		Query:      q,
+		Tokens:     tokens,
 		Limit:      limit,
-		Mode:       mode,
+		PerType:    perType,
+		Mode:       ModeLexical,
 		PropertyID: propertyID,
 		TenantID:   tenantID,
 		Role:       string(role),
+		Types:      types,
 	}
 
 	lexical, err := s.Repo.SearchLexical(ctx, p, types, perType)
 	if err != nil {
-		return q, mode, nil, err
+		return q, ModeLexical, nil, err
 	}
 
-	if mode != ModeHybrid || s.Embedder == nil {
-		return q, ModeLexical, trimLimit(boostExactToken(q, lexical), limit), nil
-	}
-
-	vec, err := s.Embedder.Embed(ctx, q)
-	if err != nil {
-		return q, ModeLexical, trimLimit(boostExactToken(q, lexical), limit), nil
-	}
-
-	vector, err := s.Repo.SearchVector(ctx, p, perType, vec)
-	if err != nil {
-		return q, ModeLexical, trimLimit(boostExactToken(q, lexical), limit), nil
-	}
-
-	fused := FuseRRF([][]Result{boostExactToken(q, lexical), vector})
-	return q, ModeHybrid, trimLimit(fused, limit), nil
+	return q, ModeLexical, trimLimit(lexical, limit), nil
 }
 
 func boostExactToken(q string, rs []Result) []Result {

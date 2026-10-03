@@ -19,11 +19,17 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
+		if os.Getenv("REQUIRE_DB") == "1" {
+			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL not set")
+		}
 		t.Skip("DATABASE_URL not set, skipping live Postgres test")
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
+		if os.Getenv("REQUIRE_DB") == "1" {
+			t.Fatalf("REQUIRE_DB=1 but config load failed: %v", err)
+		}
 		t.Skip("config load failed, skipping live Postgres test")
 	}
 
@@ -545,6 +551,56 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 		}
 		if fetched.ResolutionNotes == nil || !strings.Contains(*fetched.ResolutionNotes, "Conflicting amounts received post-reconciliation") {
 			t.Fatalf("expected resolution notes alert, got %v", fetched.ResolutionNotes)
+		}
+
+		// 3. Second IDENTICAL conflicting delivery (proves discrepancy is sticky and amounts remain frozen)
+		if err := repo.UpsertSettlement(ctx, conflictingReplay); err != nil {
+			t.Fatalf("upsert 2nd conflicting replay failed: %v", err)
+		}
+		fetched2, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after 2nd conflicting replay failed: %v", err)
+		}
+		if fetched2.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected reconciliation_status 'discrepancy' preserved on 2nd replay, got %q", fetched2.ReconciliationStatus)
+		}
+		if fetched2.DiscrepancyReason == nil || *fetched2.DiscrepancyReason != "amount_changed_after_reconciliation" {
+			t.Fatalf("expected discrepancy_reason 'amount_changed_after_reconciliation' preserved on 2nd replay, got %v", fetched2.DiscrepancyReason)
+		}
+		if fetched2.GrossAmountPaise != 300000 || fetched2.NetAmountPaise != 300000 {
+			t.Fatalf("expected amounts preserved on 2nd conflicting delivery, got gross=%d, net=%d", fetched2.GrossAmountPaise, fetched2.NetAmountPaise)
+		}
+
+		// 4. Third conflicting delivery claiming even higher amounts
+		conflictingReplay3 := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			CFPaymentID:          &cfPaymentID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     400000,
+			NetAmountPaise:       400000,
+			ServiceChargePaise:   1000,
+			ServiceTaxPaise:      180,
+			SettlementStatus:     "SUCCESS",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{"tampered": 3}`),
+		}
+		if err := repo.UpsertSettlement(ctx, conflictingReplay3); err != nil {
+			t.Fatalf("upsert 3rd conflicting replay failed: %v", err)
+		}
+		fetched3, err := repo.GetSettlementByCFID(ctx, cfSettlementID, orderID, cfPaymentID)
+		if err != nil {
+			t.Fatalf("fetch after 3rd conflicting replay failed: %v", err)
+		}
+		if fetched3.ReconciliationStatus != domain.ReconDiscrepancy {
+			t.Fatalf("expected reconciliation_status 'discrepancy' preserved on 3rd replay, got %q", fetched3.ReconciliationStatus)
+		}
+		if fetched3.DiscrepancyReason == nil || *fetched3.DiscrepancyReason != "amount_changed_after_reconciliation" {
+			t.Fatalf("expected discrepancy_reason preserved on 3rd replay, got %v", fetched3.DiscrepancyReason)
+		}
+		if fetched3.GrossAmountPaise != 300000 || fetched3.NetAmountPaise != 300000 {
+			t.Fatalf("expected amounts preserved on 3rd conflicting delivery, got gross=%d, net=%d", fetched3.GrossAmountPaise, fetched3.NetAmountPaise)
 		}
 	})
 

@@ -58,177 +58,114 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 		}
 	}
 
-	query := `
-		INSERT INTO gateway_settlements (
-			id, property_id, cf_settlement_id, order_id, cf_payment_id,
-			payment_intent_id, payment_id, ingestion_source, utr, currency,
-			gross_amount_paise, service_charge_paise, service_tax_paise,
-			adjustment_paise, net_amount_paise, settlement_status,
-			settled_on, settlement_initiated_on, transfer_time,
-			reconciliation_status, discrepancy_reason, journal_entry_id,
-			resolution_notes, resolved_by, resolved_at, raw_payload,
-			created_at, updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9, $10,
-			$11, $12, $13,
-			$14, $15, $16,
-			$17, $18, $19,
-			$20, $21, $22,
-			$23, $24, $25, $26,
-			NOW(), NOW()
-		)
-		ON CONFLICT (cf_settlement_id, COALESCE(order_id, ''), COALESCE(cf_payment_id, ''))
-		DO UPDATE SET
-			property_id = COALESCE(EXCLUDED.property_id, gateway_settlements.property_id),
-			payment_intent_id = COALESCE(EXCLUDED.payment_intent_id, gateway_settlements.payment_intent_id),
-			payment_id = COALESCE(EXCLUDED.payment_id, gateway_settlements.payment_id),
-			ingestion_source = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.ingestion_source
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.ingestion_source
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.ingestion_source
-				ELSE EXCLUDED.ingestion_source
-			END,
-			-- Banking metadata (utr, settled_on, transfer_time) is intentionally updated on replay
-			-- even for manually reconciled rows, ensuring bank reference tie-outs receive official gateway metadata.
-			utr = CASE WHEN EXCLUDED.utr != '' THEN EXCLUDED.utr ELSE gateway_settlements.utr END,
-			gross_amount_paise = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.gross_amount_paise
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.gross_amount_paise
-				WHEN gateway_settlements.reconciliation_status IN ('matched', 'manually_reconciled') THEN gateway_settlements.gross_amount_paise
-				ELSE EXCLUDED.gross_amount_paise
-			END,
-			service_charge_paise = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.service_charge_paise
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.service_charge_paise
-				WHEN gateway_settlements.reconciliation_status IN ('matched', 'manually_reconciled') THEN gateway_settlements.service_charge_paise
-				ELSE EXCLUDED.service_charge_paise
-			END,
-			service_tax_paise = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.service_tax_paise
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.service_tax_paise
-				WHEN gateway_settlements.reconciliation_status IN ('matched', 'manually_reconciled') THEN gateway_settlements.service_tax_paise
-				ELSE EXCLUDED.service_tax_paise
-			END,
-			adjustment_paise = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.adjustment_paise
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.adjustment_paise
-				WHEN gateway_settlements.reconciliation_status IN ('matched', 'manually_reconciled') THEN gateway_settlements.adjustment_paise
-				ELSE EXCLUDED.adjustment_paise
-			END,
-			net_amount_paise = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.net_amount_paise
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.net_amount_paise
-				WHEN gateway_settlements.reconciliation_status IN ('matched', 'manually_reconciled') THEN gateway_settlements.net_amount_paise
-				ELSE EXCLUDED.net_amount_paise
-			END,
-			settlement_status = CASE
-				-- Terminal reversal cannot be overwritten by any state
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.settlement_status
-				-- Legitimate reversal wins over everything else (e.g. chargeback after SUCCESS)
-				WHEN EXCLUDED.settlement_status = 'REVERSED' THEN 'REVERSED'
-				-- Terminal SUCCESS cannot regress to PENDING or FAILED
-				WHEN gateway_settlements.settlement_status = 'SUCCESS' AND EXCLUDED.settlement_status IN ('PENDING', 'FAILED') THEN gateway_settlements.settlement_status
-				-- Terminal FAILED cannot regress to PENDING
-				WHEN gateway_settlements.settlement_status = 'FAILED' AND EXCLUDED.settlement_status = 'PENDING' THEN gateway_settlements.settlement_status
-				ELSE EXCLUDED.settlement_status
-			END,
-			settled_on = COALESCE(EXCLUDED.settled_on, gateway_settlements.settled_on),
-			settlement_initiated_on = COALESCE(EXCLUDED.settlement_initiated_on, gateway_settlements.settlement_initiated_on),
-			transfer_time = COALESCE(EXCLUDED.transfer_time, gateway_settlements.transfer_time),
-			reconciliation_status = CASE
-				-- 1. Post-reconciliation reversal re-opens discrepancy queue so operators can post reversing journal entry
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN 'discrepancy'
-				-- 2. Operator manual reconciliation is preserved against normal webhook replays (non-reversal)
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.reconciliation_status
-				-- 3. Differing amount replay on a matched or reversed row flips to discrepancy
-				WHEN (gateway_settlements.settlement_status = 'REVERSED' OR gateway_settlements.reconciliation_status = 'matched')
-				     AND (EXCLUDED.gross_amount_paise != gateway_settlements.gross_amount_paise OR
-				          EXCLUDED.net_amount_paise != gateway_settlements.net_amount_paise OR
-				          EXCLUDED.service_charge_paise != gateway_settlements.service_charge_paise OR
-				          EXCLUDED.service_tax_paise != gateway_settlements.service_tax_paise OR
-				          EXCLUDED.adjustment_paise != gateway_settlements.adjustment_paise)
-				     THEN 'discrepancy'
-				-- 4. Identical replay on already REVERSED row preserves existing reconciliation_status
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.reconciliation_status
-				-- 5. Replay on matched row preserves matched status
-				WHEN gateway_settlements.reconciliation_status = 'matched' THEN gateway_settlements.reconciliation_status
-				ELSE EXCLUDED.reconciliation_status
-			END,
-			discrepancy_reason = CASE
-				-- 1. Post-reconciliation reversal sets explicit reason for the operator queue
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN 'post_reconciliation_reversal'
-				-- 2. Operator manual reconciliation preserves discrepancy_reason
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.discrepancy_reason
-				-- 3. Differing amount replay on a matched or reversed row sets amount_changed_after_reconciliation
-				WHEN (gateway_settlements.settlement_status = 'REVERSED' OR gateway_settlements.reconciliation_status = 'matched')
-				     AND (EXCLUDED.gross_amount_paise != gateway_settlements.gross_amount_paise OR
-				          EXCLUDED.net_amount_paise != gateway_settlements.net_amount_paise OR
-				          EXCLUDED.service_charge_paise != gateway_settlements.service_charge_paise OR
-				          EXCLUDED.service_tax_paise != gateway_settlements.service_tax_paise OR
-				          EXCLUDED.adjustment_paise != gateway_settlements.adjustment_paise)
-				     THEN 'amount_changed_after_reconciliation'
-				-- 4. Identical replay on already REVERSED row preserves existing discrepancy_reason
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.discrepancy_reason
-				-- 5. Replay on matched row preserves existing discrepancy_reason
-				WHEN gateway_settlements.reconciliation_status = 'matched' THEN gateway_settlements.discrepancy_reason
-				ELSE EXCLUDED.discrepancy_reason
-			END,
-			resolution_notes = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' AND gateway_settlements.reconciliation_status = 'manually_reconciled' THEN
-					COALESCE(gateway_settlements.resolution_notes || ' | [SYSTEM ALERT: Reversal received post-reconciliation]', 'SYSTEM ALERT: Reversal received post-reconciliation')
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.resolution_notes
-				WHEN (gateway_settlements.settlement_status = 'REVERSED' OR gateway_settlements.reconciliation_status = 'matched')
-				     AND (EXCLUDED.gross_amount_paise != gateway_settlements.gross_amount_paise OR
-				          EXCLUDED.net_amount_paise != gateway_settlements.net_amount_paise OR
-				          EXCLUDED.service_charge_paise != gateway_settlements.service_charge_paise OR
-				          EXCLUDED.service_tax_paise != gateway_settlements.service_tax_paise OR
-				          EXCLUDED.adjustment_paise != gateway_settlements.adjustment_paise) THEN
-					COALESCE(gateway_settlements.resolution_notes || ' | [SYSTEM ALERT: Conflicting amounts received post-reconciliation]', 'SYSTEM ALERT: Conflicting amounts received post-reconciliation')
-				ELSE COALESCE(EXCLUDED.resolution_notes, gateway_settlements.resolution_notes)
-			END,
-			resolved_by = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN NULL
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.resolved_by
-				WHEN (gateway_settlements.settlement_status = 'REVERSED' OR gateway_settlements.reconciliation_status = 'matched')
-				     AND (EXCLUDED.gross_amount_paise != gateway_settlements.gross_amount_paise OR
-				          EXCLUDED.net_amount_paise != gateway_settlements.net_amount_paise OR
-				          EXCLUDED.service_charge_paise != gateway_settlements.service_charge_paise OR
-				          EXCLUDED.service_tax_paise != gateway_settlements.service_tax_paise OR
-				          EXCLUDED.adjustment_paise != gateway_settlements.adjustment_paise) THEN NULL
-				ELSE COALESCE(EXCLUDED.resolved_by, gateway_settlements.resolved_by)
-			END,
-			resolved_at = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN NULL
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.resolved_at
-				WHEN (gateway_settlements.settlement_status = 'REVERSED' OR gateway_settlements.reconciliation_status = 'matched')
-				     AND (EXCLUDED.gross_amount_paise != gateway_settlements.gross_amount_paise OR
-				          EXCLUDED.net_amount_paise != gateway_settlements.net_amount_paise OR
-				          EXCLUDED.service_charge_paise != gateway_settlements.service_charge_paise OR
-				          EXCLUDED.service_tax_paise != gateway_settlements.service_tax_paise OR
-				          EXCLUDED.adjustment_paise != gateway_settlements.adjustment_paise) THEN NULL
-				ELSE COALESCE(EXCLUDED.resolved_at, gateway_settlements.resolved_at)
-			END,
-			journal_entry_id = COALESCE(EXCLUDED.journal_entry_id, gateway_settlements.journal_entry_id),
-			raw_payload = CASE
-				WHEN EXCLUDED.settlement_status = 'REVERSED' AND gateway_settlements.settlement_status != 'REVERSED' THEN EXCLUDED.raw_payload
-				WHEN gateway_settlements.settlement_status = 'REVERSED' THEN gateway_settlements.raw_payload
-				WHEN gateway_settlements.reconciliation_status = 'manually_reconciled' THEN gateway_settlements.raw_payload
-				ELSE EXCLUDED.raw_payload
-			END,
-			updated_at = NOW()
-		RETURNING id, created_at, updated_at;
-	`
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
 
-	return r.pool.QueryRow(ctx, query,
-		s.ID, s.PropertyID, s.CFSettlementID, s.OrderID, s.CFPaymentID,
-		s.PaymentIntentID, s.PaymentID, s.IngestionSource, s.UTR, s.Currency,
-		s.GrossAmountPaise, s.ServiceChargePaise, s.ServiceTaxPaise,
-		s.AdjustmentPaise, s.NetAmountPaise, s.SettlementStatus,
-		s.SettledOn, s.SettlementInitiatedOn, s.TransferTime,
-		s.ReconciliationStatus, s.DiscrepancyReason, s.JournalEntryID,
-		s.ResolutionNotes, s.ResolvedBy, s.ResolvedAt, s.RawPayload,
-	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
+	orderIDStr := ""
+	if s.OrderID != nil {
+		orderIDStr = *s.OrderID
+	}
+	cfPaymentIDStr := ""
+	if s.CFPaymentID != nil {
+		cfPaymentIDStr = *s.CFPaymentID
+	}
+
+	var existing domain.GatewaySettlement
+	err = tx.QueryRow(ctx, `
+		SELECT id, property_id, cf_settlement_id, order_id, cf_payment_id,
+		       payment_intent_id, payment_id, ingestion_source, utr, currency,
+		       gross_amount_paise, service_charge_paise, service_tax_paise,
+		       adjustment_paise, net_amount_paise, settlement_status,
+		       settled_on, settlement_initiated_on, transfer_time,
+		       reconciliation_status, discrepancy_reason, journal_entry_id,
+		       resolution_notes, resolved_by, resolved_at, raw_payload,
+		       created_at, updated_at
+		FROM gateway_settlements
+		WHERE cf_settlement_id = $1
+		  AND COALESCE(order_id, '') = $2
+		  AND COALESCE(cf_payment_id, '') = $3
+		FOR UPDATE`,
+		s.CFSettlementID, orderIDStr, cfPaymentIDStr,
+	).Scan(
+		&existing.ID, &existing.PropertyID, &existing.CFSettlementID, &existing.OrderID, &existing.CFPaymentID,
+		&existing.PaymentIntentID, &existing.PaymentID, &existing.IngestionSource, &existing.UTR, &existing.Currency,
+		&existing.GrossAmountPaise, &existing.ServiceChargePaise, &existing.ServiceTaxPaise,
+		&existing.AdjustmentPaise, &existing.NetAmountPaise, &existing.SettlementStatus,
+		&existing.SettledOn, &existing.SettlementInitiatedOn, &existing.TransferTime,
+		&existing.ReconciliationStatus, &existing.DiscrepancyReason, &existing.JournalEntryID,
+		&existing.ResolutionNotes, &existing.ResolvedBy, &existing.ResolvedAt, &existing.RawPayload,
+		&existing.CreatedAt, &existing.UpdatedAt,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO gateway_settlements (
+				id, property_id, cf_settlement_id, order_id, cf_payment_id,
+				payment_intent_id, payment_id, ingestion_source, utr, currency,
+				gross_amount_paise, service_charge_paise, service_tax_paise,
+				adjustment_paise, net_amount_paise, settlement_status,
+				settled_on, settlement_initiated_on, transfer_time,
+				reconciliation_status, discrepancy_reason, journal_entry_id,
+				resolution_notes, resolved_by, resolved_at, raw_payload,
+				created_at, updated_at
+			) VALUES (
+				$1, $2, $3, $4, $5,
+				$6, $7, $8, $9, $10,
+				$11, $12, $13,
+				$14, $15, $16,
+				$17, $18, $19,
+				$20, $21, $22,
+				$23, $24, $25, $26,
+				NOW(), NOW()
+			)`,
+			s.ID, s.PropertyID, s.CFSettlementID, s.OrderID, s.CFPaymentID,
+			s.PaymentIntentID, s.PaymentID, s.IngestionSource, s.UTR, s.Currency,
+			s.GrossAmountPaise, s.ServiceChargePaise, s.ServiceTaxPaise,
+			s.AdjustmentPaise, s.NetAmountPaise, s.SettlementStatus,
+			s.SettledOn, s.SettlementInitiatedOn, s.TransferTime,
+			s.ReconciliationStatus, s.DiscrepancyReason, s.JournalEntryID,
+			s.ResolutionNotes, s.ResolvedBy, s.ResolvedAt, s.RawPayload,
+		)
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	} else if err != nil {
+		return err
+	}
+
+	updated := DecideSettlementUpdate(&existing, s)
+	_, err = tx.Exec(ctx, `
+		UPDATE gateway_settlements SET
+			property_id = $1, payment_intent_id = $2, payment_id = $3,
+			ingestion_source = $4, utr = $5, gross_amount_paise = $6,
+			service_charge_paise = $7, service_tax_paise = $8,
+			adjustment_paise = $9, net_amount_paise = $10,
+			settlement_status = $11, settled_on = $12,
+			settlement_initiated_on = $13, transfer_time = $14,
+			reconciliation_status = $15, discrepancy_reason = $16,
+			resolution_notes = $17, resolved_by = $18, resolved_at = $19,
+			journal_entry_id = $20, raw_payload = $21, updated_at = NOW()
+		WHERE id = $22`,
+		updated.PropertyID, updated.PaymentIntentID, updated.PaymentID,
+		updated.IngestionSource, updated.UTR, updated.GrossAmountPaise,
+		updated.ServiceChargePaise, updated.ServiceTaxPaise,
+		updated.AdjustmentPaise, updated.NetAmountPaise,
+		updated.SettlementStatus, updated.SettledOn,
+		updated.SettlementInitiatedOn, updated.TransferTime,
+		updated.ReconciliationStatus, updated.DiscrepancyReason,
+		updated.ResolutionNotes, updated.ResolvedBy, updated.ResolvedAt,
+		updated.JournalEntryID, updated.RawPayload,
+		existing.ID,
+	)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetSettlement retrieves a settlement record by its internal UUID.

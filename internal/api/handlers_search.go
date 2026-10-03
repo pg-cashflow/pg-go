@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -79,8 +78,6 @@ func (h *Handlers) Search(c *gin.Context) {
 		return
 	}
 
-	rewriteSearchPaths(claims.Role, results)
-
 	out := make([]gin.H, 0, len(results))
 	for _, r := range results {
 		out = append(out, gin.H{
@@ -88,7 +85,6 @@ func (h *Handlers) Search(c *gin.Context) {
 			"id":       r.ID,
 			"title":    r.Title,
 			"subtitle": r.Subtitle,
-			"path":     r.Path,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -96,30 +92,4 @@ func (h *Handlers) Search(c *gin.Context) {
 		"mode":    usedMode,
 		"results": out,
 	})
-}
-
-func rewriteSearchPaths(role domain.Role, results []search.Result) {
-	for i := range results {
-		switch results[i].Type {
-		case search.TypeTenant:
-			if role == domain.RoleManager {
-				results[i].Path = "/manager/inspections?q=" + url.QueryEscape(results[i].Title)
-			}
-		case search.TypeDue, search.TypePayment:
-			if role == domain.RoleTenant {
-				if results[i].Type == search.TypeDue {
-					results[i].Path = "/tenant/dues?q=" + url.QueryEscape(extractQueryToken(results[i].Path))
-				} else {
-					results[i].Path = "/tenant/payments?q=" + url.QueryEscape(extractQueryToken(results[i].Path))
-				}
-			}
-		}
-	}
-}
-
-func extractQueryToken(path string) string {
-	if idx := strings.Index(path, "?q="); idx >= 0 {
-		return path[idx+3:]
-	}
-	return path
 }

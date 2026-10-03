@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -16,125 +15,151 @@ type SearchRepo struct{ db DBTX }
 func NewSearchRepo(db DBTX) *SearchRepo { return &SearchRepo{db: db} }
 
 func (r *SearchRepo) SearchLexical(ctx context.Context, p search.Params, types []search.EntityType, perType int) ([]search.Result, error) {
+	if perType <= 0 {
+		perType = 5
+	}
+	tokens := p.Tokens
+	if len(tokens) == 0 && p.Query != "" {
+		tokens = search.TokenizeQuery(p.Query)
+	}
+	if len(tokens) == 0 {
+		return nil, nil
+	}
+
 	var out []search.Result
-	like := search.LikePattern(p.Query)
-	upper := strings.ToUpper(p.Query)
 
 	for _, t := range types {
 		switch t {
 		case search.TypeTenant:
-			if p.TenantID != nil {
+			if p.Role == string(domain.RoleTenant) || p.TenantID != nil {
 				continue
 			}
-			rs, err := r.searchTenants(ctx, p.PropertyID, p.Query, like, upper, perType)
+			rs, err := r.searchTenants(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeDue:
-			rs, err := r.searchDues(ctx, p.PropertyID, p.TenantID, like, upper, perType)
+			if p.Role == string(domain.RoleManager) {
+				continue
+			}
+			if p.Role == string(domain.RoleTenant) && p.TenantID == nil {
+				continue
+			}
+			rs, err := r.searchDues(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypePayment:
-			rs, err := r.searchPayments(ctx, p.PropertyID, p.TenantID, like, upper, perType)
+			if p.Role == string(domain.RoleManager) {
+				continue
+			}
+			if p.Role == string(domain.RoleTenant) && p.TenantID == nil {
+				continue
+			}
+			rs, err := r.searchPayments(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypePaymentReport:
-			if p.TenantID != nil {
+			if p.Role != string(domain.RoleOwner) {
 				continue
 			}
-			rs, err := r.searchPaymentReports(ctx, p.PropertyID, like, upper, perType)
+			rs, err := r.searchPaymentReports(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeJoinRequest:
-			if p.TenantID != nil {
+			if p.Role != string(domain.RoleOwner) {
 				continue
 			}
-			rs, err := r.searchJoinRequests(ctx, p.PropertyID, like, perType)
+			rs, err := r.searchJoinRequests(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeEvent:
-			if p.TenantID != nil {
+			if p.Role != string(domain.RoleOwner) {
 				continue
 			}
-			rs, err := r.searchEvents(ctx, p.PropertyID, like, perType)
+			rs, err := r.searchEvents(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeInspection:
-			if p.TenantID != nil {
+			if p.Role == string(domain.RoleTenant) {
 				continue
 			}
-			rs, err := r.searchInspections(ctx, p.PropertyID, like, perType)
+			rs, err := r.searchInspections(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeHazard:
-			if p.TenantID != nil {
+			if p.Role == string(domain.RoleTenant) {
 				continue
 			}
-			rs, err := r.searchHazards(ctx, p.PropertyID, like, perType)
+			rs, err := r.searchHazards(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeViolation:
-			if p.TenantID != nil {
+			if p.Role == string(domain.RoleTenant) {
 				continue
 			}
-			rs, err := r.searchViolations(ctx, p.PropertyID, like, perType)
+			rs, err := r.searchViolations(ctx, p, tokens, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
+
 		case search.TypeDocument:
-			// Vector index only; lexical document search uses title/body ILIKE fallback.
-			rs, err := r.searchDocumentsLexical(ctx, p, like, perType)
+			likeVal := search.LikePattern(p.Query)
+			rs, err := r.searchDocumentsLexical(ctx, p, likeVal, perType)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, rs...)
 		}
 	}
+
 	return out, nil
 }
 
-func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType int, embedding []float32) ([]search.Result, error) {
+func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, limit int, embedding []float32) ([]search.Result, error) {
 	allowedDocTypes := search.AllowedDocumentEntityTypes(domain.Role(p.Role))
 	if len(allowedDocTypes) == 0 {
 		return nil, nil
 	}
 
-	vec := pgVectorLiteral(embedding)
 	q := `
-		SELECT entity_type, entity_id::text, title, body,
-		       1 - (embedding <=> $3::vector) AS score
+		SELECT entity_type, entity_id::text, title, body
 		FROM search_documents
 		WHERE property_id = $1
 		  AND entity_type = ANY($4)`
-	args := []any{p.PropertyID, perType, vec, allowedDocTypes}
+	args := []any{p.PropertyID, pgVectorLiteral(embedding), limit, allowedDocTypes}
 	n := 5
 	if domain.Role(p.Role) == domain.RoleTenant {
 		if p.TenantID == nil {
-			return nil, nil // fail-closed: tenant role without tenant ID has zero document visibility
+			return nil, nil
 		}
-		q += ` AND tenant_id = $` + itoa(n)
+		q += fmt.Sprintf(` AND tenant_id = $%d`, n)
 		args = append(args, *p.TenantID)
-		n++
 	}
-	q += ` AND embedding IS NOT NULL
-		ORDER BY embedding <=> $3::vector
-		LIMIT $2`
+	q += ` ORDER BY embedding <=> $2 LIMIT $3`
 	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -143,8 +168,7 @@ func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType 
 	var out []search.Result
 	for rows.Next() {
 		var entityType, id, title, body string
-		var score float64
-		if err := rows.Scan(&entityType, &id, &title, &body, &score); err != nil {
+		if err := rows.Scan(&entityType, &id, &title, &body); err != nil {
 			return nil, err
 		}
 		out = append(out, search.Result{
@@ -152,216 +176,239 @@ func (r *SearchRepo) SearchVector(ctx context.Context, p search.Params, perType 
 			ID:       id,
 			Title:    title,
 			Subtitle: truncate(body, 80),
-			Path:     documentPath(entityType, id),
-			Score:    score,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) UpsertDocument(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, entityType string, entityID uuid.UUID, title, body string, embedding []float32) error {
-	if len(embedding) == 0 {
-		// Text-only: works with or without the optional pgvector column.
-		_, err := r.db.Exec(ctx, `
-			INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,NOW())
-			ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
-				tenant_id = EXCLUDED.tenant_id,
-				title = EXCLUDED.title,
-				body = EXCLUDED.body,
-				updated_at = NOW()`,
-			propertyID, tenantID, entityType, entityID, title, body)
-		return err
+func pgVectorLiteral(v []float32) string {
+	parts := make([]string, len(v))
+	for i, f := range v {
+		parts[i] = fmt.Sprintf("%g", f)
 	}
-	vec := pgVectorLiteral(embedding)
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, embedding, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7::vector,NOW())
-		ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
-			tenant_id = EXCLUDED.tenant_id,
-			title = EXCLUDED.title,
-			body = EXCLUDED.body,
-			embedding = EXCLUDED.embedding,
-			updated_at = NOW()`,
-		propertyID, tenantID, entityType, entityID, title, body, vec)
-	return err
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
-func (r *SearchRepo) DeleteDocument(ctx context.Context, propertyID uuid.UUID, entityType string, entityID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `DELETE FROM search_documents WHERE property_id=$1 AND entity_type=$2 AND entity_id=$3`,
-		propertyID, entityType, entityID)
-	return err
-}
+// searchTenants executes live search across tenants.
+// Manager: name, room, and exact 10-digit phone only (no partial phone).
+// Owner: name, room, and partial/full phone.
+// Multi-token: all tokens must match (AND conjunction).
+func (r *SearchRepo) searchTenants(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	isManager := p.Role == string(domain.RoleManager)
 
-func (r *SearchRepo) ListIndexSources(ctx context.Context, propertyID uuid.UUID) ([]search.IndexSource, error) {
-	var out []search.IndexSource
+	args := []any{p.PropertyID}
+	var tokenClauses []string
 
-	// Inspection notes
-	rows, err := r.db.Query(ctx, `
-		SELECT i.property_id, NULL::uuid, 'inspection', i.id,
-		       CONCAT('Inspection ', i.inspection_type), i.notes
-		FROM inspections i WHERE i.property_id = $1 AND i.notes <> ''`, propertyID)
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("name ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(room_number IS NOT NULL AND room_number ILIKE $%d ESCAPE '\\')", len(args)))
+
+		// Fuzzy typo tolerance on names only (4+ characters)
+		if len(t.Value) >= 4 {
+			args = append(args, t.Value)
+			sub = append(sub, fmt.Sprintf("($%d::text <%% name::text)", len(args)))
+		}
+
+		// Phone handling:
+		if isManager {
+			// Manager: exact 10-digit phone only (no partial scraping)
+			if t.Kind == search.TokenPhone && len(t.PhoneDigits) == 10 {
+				args = append(args, t.PhoneDigits)
+				sub = append(sub, fmt.Sprintf("(phone = $%d OR phone = '+91' || $%d)", len(args), len(args)))
+			}
+		} else {
+			// Owner: partial or full phone permitted
+			args = append(args, likeVal)
+			sub = append(sub, fmt.Sprintf("(phone IS NOT NULL AND phone ILIKE $%d ESCAPE '\\')", len(args)))
+		}
+
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, p.Query, search.LikePattern(p.Query), limit)
+	qIdx := len(args) - 2
+	prefixIdx := len(args) - 1
+	limitIdx := len(args)
+
+	sql := fmt.Sprintf(`
+		SELECT id::text, name, COALESCE(room_number, ''), status
+		FROM tenants
+		WHERE property_id = $1
+		  AND status != 'archived'
+		  AND %s
+		ORDER BY
+		  CASE
+		    WHEN UPPER(name) = UPPER($%d) THEN 1000
+		    WHEN name ILIKE $%d THEN 500
+		    WHEN ($%d::text <%% name::text) THEN 200
+		    ELSE 100
+		  END DESC,
+		  created_at DESC
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		qIdx, prefixIdx, qIdx, limitIdx,
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
-	out = append(out, scanSources(rows)...)
+	defer rows.Close()
 
-	rows2, err := r.db.Query(ctx, `
-		SELECT h.property_id, h.reported_by_tenant_id, 'hazard', h.id,
-		       CONCAT('Hazard ', h.category), h.description
-		FROM hazards h WHERE h.property_id = $1`, propertyID)
-	if err != nil {
-		return nil, err
+	var out []search.Result
+	for rows.Next() {
+		var id, name, room, status string
+		if err := rows.Scan(&id, &name, &room, &status); err != nil {
+			return nil, err
+		}
+		sub := status
+		if room != "" {
+			sub = fmt.Sprintf("Room %s · %s", room, status)
+		}
+		out = append(out, search.Result{
+			Type:     search.TypeTenant,
+			ID:       id,
+			Title:    name,
+			Subtitle: sub,
+		})
 	}
-	out = append(out, scanSources(rows2)...)
-
-	rows3, err := r.db.Query(ctx, `
-		SELECT v.property_id, v.tenant_id, 'violation', v.id,
-		       CONCAT('Violation ', v.rule_code), v.description
-		FROM violations v WHERE v.property_id = $1`, propertyID)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, scanSources(rows3)...)
-
-	rows4, err := r.db.Query(ctx, `
-		SELECT COALESCE(t.property_id, d.property_id), p.tenant_id, 'payment_note', p.id,
-		       COALESCE(p.upi_txn_id, 'Payment'), 
-		       TRIM(CONCAT_WS(' ', COALESCE(p.raw_note, ''), COALESCE(string_agg(DISTINCT d_alloc.due_code, ' '), '')))
-		FROM payments p
-		LEFT JOIN tenants t ON t.id = p.tenant_id
-		LEFT JOIN dues d ON d.id = p.due_id
-		LEFT JOIN payment_allocations pa ON pa.payment_id = p.id
-		LEFT JOIN dues d_alloc ON d_alloc.id = COALESCE(pa.due_id, p.due_id)
-		WHERE (d.property_id = $1 OR t.property_id = $1) AND COALESCE(p.raw_note, '') <> ''
-		GROUP BY p.id, p.tenant_id, p.upi_txn_id, p.raw_note, t.property_id, d.property_id`, propertyID)
-	if err != nil {
-		return nil, err
-	}
-	out = append(out, scanSources(rows4)...)
-
 	return out, nil
 }
 
-func scanSources(rows interface{ Next() bool; Scan(...any) error; Close() }) []search.IndexSource {
-	defer rows.Close()
-	var out []search.IndexSource
-	for rows.Next() {
-		var s search.IndexSource
-		if err := rows.Scan(&s.PropertyID, &s.TenantID, &s.EntityType, &s.EntityID, &s.Title, &s.Body); err != nil {
-			continue
+// searchDues searches dues for owner or scoped tenant.
+// Fuzzy matching is never allowed on due codes.
+func (r *SearchRepo) searchDues(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	tenantFilter := ""
+	if p.TenantID != nil {
+		args = append(args, *p.TenantID)
+		tenantFilter = fmt.Sprintf(" AND d.tenant_id = $%d", len(args))
+	}
+
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("d.due_code ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", len(args)))
+
+		if len(t.Value) >= 4 {
+			args = append(args, t.Value)
+			sub = append(sub, fmt.Sprintf("(t.name IS NOT NULL AND $%d::text <%% t.name::text)", len(args)))
 		}
-		out = append(out, s)
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
 	}
-	return out
-}
 
-func (r *SearchRepo) searchTenants(ctx context.Context, propertyID uuid.UUID, q, like, upper string, limit int) ([]search.Result, error) {
-	phoneDigits := search.ExtractPhoneDigits(q)
-	qSQL := `
-		SELECT id::text, name, COALESCE(room_number,''), status
-		FROM tenants
-		WHERE property_id = $1
-		  AND (
-		    name ILIKE $2 ESCAPE '\'
-		    OR COALESCE(room_number,'') ILIKE $2 ESCAPE '\'
-		    OR COALESCE(phone,'') ILIKE $2 ESCAPE '\'
-		    OR UPPER(COALESCE(phone,'')) = $3`
-	args := []any{propertyID, like, upper, limit}
-	if len(phoneDigits) >= 10 {
-		args = append(args, "%"+phoneDigits+"%")
-		qSQL += fmt.Sprintf(` OR COALESCE(phone,'') ILIKE $%d`, len(args))
-	}
-	qSQL += `
-		  )
-		ORDER BY name
-		LIMIT $4`
-	rows, err := r.db.Query(ctx, qSQL, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTenantResults(rows, "/owner/tenants?q=")
-}
+	args = append(args, p.Query, limit)
+	qIdx := len(args) - 1
+	limitIdx := len(args)
 
-func (r *SearchRepo) searchDues(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, like, upper string, limit int) ([]search.Result, error) {
-	q := `
-		SELECT d.id::text, d.due_code, d.status, COALESCE(t.name,'')
+	sql := fmt.Sprintf(`
+		SELECT d.id::text, d.due_code, d.status, COALESCE(t.name, '')
 		FROM dues d
 		LEFT JOIN tenants t ON t.id = d.tenant_id
-		WHERE d.property_id = $1`
-	args := []any{propertyID}
-	if tenantID != nil {
-		q += ` AND d.tenant_id = $2`
-		args = append(args, *tenantID)
-		q += ` AND (
-			d.due_code ILIKE $3 ESCAPE '\'
-			OR UPPER(d.due_code) = $4
-			OR COALESCE(t.name,'') ILIKE $3 ESCAPE '\'
-		)
-		ORDER BY d.due_date DESC
-		LIMIT $5`
-		args = append(args, like, upper, limit)
-	} else {
-		q += ` AND (
-			d.due_code ILIKE $2 ESCAPE '\'
-			OR UPPER(d.due_code) = $3
-			OR COALESCE(t.name,'') ILIKE $2 ESCAPE '\'
-		)
-		ORDER BY d.due_date DESC
-		LIMIT $4`
-		args = append(args, like, upper, limit)
-	}
-	rows, err := r.db.Query(ctx, q, args...)
+		WHERE d.property_id = $1%s
+		  AND %s
+		ORDER BY
+		  CASE
+		    WHEN UPPER(d.due_code) = UPPER($%d) THEN 1000
+		    WHEN d.due_code ILIKE $%d || '%%' THEN 500
+		    ELSE 100
+		  END DESC,
+		  d.due_date DESC
+		LIMIT $%d`,
+		tenantFilter,
+		strings.Join(tokenClauses, " AND "),
+		qIdx, qIdx, limitIdx,
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
 		var id, code, status, tenantName string
 		if err := rows.Scan(&id, &code, &status, &tenantName); err != nil {
 			return nil, err
 		}
-		path := "/owner/dues?q=" + code
-		if tenantID != nil {
-			path = "/tenant/dues?q=" + code
+		sub := status
+		if tenantName != "" {
+			sub = tenantName + " · " + status
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeDue,
 			ID:       id,
 			Title:    "Due " + code,
-			Subtitle: strings.TrimSpace(tenantName + " · " + status),
-			Path:     path,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchPayments(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, like, upper string, limit int) ([]search.Result, error) {
-	q := `
-		SELECT p.id::text, COALESCE(p.upi_txn_id,''), COALESCE(t.name,''), p.amount
-		FROM payments p
-		JOIN tenants t ON t.id = p.tenant_id
-		WHERE t.property_id = $1`
-	args := []any{propertyID, like, upper, limit}
-	if tenantID != nil {
-		q += ` AND p.tenant_id = $5`
-		args = append(args, *tenantID)
+// searchPayments searches payments.
+// UTR matching is exact or prefix substring only (NO fuzzy matching on money identifiers).
+func (r *SearchRepo) searchPayments(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	tenantFilter := ""
+	if p.TenantID != nil {
+		args = append(args, *p.TenantID)
+		tenantFilter = fmt.Sprintf(" AND p.tenant_id = $%d", len(args))
 	}
-	q += ` AND (
-			COALESCE(p.upi_txn_id,'') ILIKE $2 ESCAPE '\'
-			OR UPPER(COALESCE(p.upi_txn_id,'')) = $3
-			OR COALESCE(p.raw_note,'') ILIKE $2 ESCAPE '\'
-			OR t.name ILIKE $2 ESCAPE '\'
-		)
-		ORDER BY p.matched_at DESC
-		LIMIT $4`
-	rows, err := r.db.Query(ctx, q, args...)
+
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		likeIdx := len(args)
+
+		sub = append(sub, fmt.Sprintf("(p.upi_txn_id IS NOT NULL AND p.upi_txn_id ILIKE $%d ESCAPE '\\')", likeIdx))
+		sub = append(sub, fmt.Sprintf("(p.raw_note IS NOT NULL AND p.raw_note ILIKE $%d ESCAPE '\\')", likeIdx))
+		sub = append(sub, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", likeIdx))
+
+		if len(t.Value) >= 4 {
+			args = append(args, t.Value)
+			sub = append(sub, fmt.Sprintf("(t.name IS NOT NULL AND $%d::text <%% t.name::text)", len(args)))
+		}
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, p.Query, limit)
+	qIdx := len(args) - 1
+	limitIdx := len(args)
+
+	sql := fmt.Sprintf(`
+		SELECT p.id::text, COALESCE(p.upi_txn_id, 'Payment'), COALESCE(t.name, ''), p.amount
+		FROM payments p
+		LEFT JOIN tenants t ON t.id = p.tenant_id
+		WHERE (t.property_id = $1 OR p.tenant_id IN (SELECT id FROM tenants WHERE property_id = $1))%s
+		  AND %s
+		ORDER BY
+		  CASE
+		    WHEN UPPER(COALESCE(p.upi_txn_id, '')) = UPPER($%d) THEN 1000
+		    WHEN p.upi_txn_id ILIKE $%d || '%%' THEN 500
+		    ELSE 100
+		  END DESC,
+		  p.created_at DESC
+		LIMIT $%d`,
+		tenantFilter,
+		strings.Join(tokenClauses, " AND "),
+		qIdx, qIdx, limitIdx,
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
 		var id, utr, tenantName string
@@ -369,200 +416,363 @@ func (r *SearchRepo) searchPayments(ctx context.Context, propertyID uuid.UUID, t
 		if err := rows.Scan(&id, &utr, &tenantName, &amount); err != nil {
 			return nil, err
 		}
-		path := "/owner/payments?q=" + utr
-		if tenantID != nil {
-			path = "/tenant/payments?q=" + utr
+		sub := fmt.Sprintf("₹%d", amount/100)
+		if tenantName != "" {
+			sub = fmt.Sprintf("%s · ₹%d", tenantName, amount/100)
 		}
 		out = append(out, search.Result{
 			Type:     search.TypePayment,
 			ID:       id,
 			Title:    utr,
-			Subtitle: fmt.Sprintf("%s · ₹%d", tenantName, amount/100),
-			Path:     path,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchPaymentReports(ctx context.Context, propertyID uuid.UUID, like, upper string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT pr.id::text, pr.upi_txn_id, pr.status, COALESCE(t.name,'')
+func (r *SearchRepo) searchPaymentReports(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("(pr.upi_txn_id ILIKE $%d ESCAPE '\\')", len(args)))
+		sub = append(sub, fmt.Sprintf("(pr.note IS NOT NULL AND pr.note ILIKE $%d ESCAPE '\\')", len(args)))
+		sub = append(sub, fmt.Sprintf("(t.name IS NOT NULL AND t.name ILIKE $%d ESCAPE '\\')", len(args)))
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT pr.id::text, pr.upi_txn_id, pr.status, COALESCE(t.name, '')
 		FROM payment_reports pr
-		JOIN tenants t ON t.id = pr.tenant_id
+		LEFT JOIN tenants t ON t.id = pr.tenant_id
 		WHERE pr.property_id = $1
-		  AND (
-		    pr.upi_txn_id ILIKE $2 ESCAPE '\'
-		    OR UPPER(pr.upi_txn_id) = $3
-		    OR COALESCE(pr.note,'') ILIKE $2 ESCAPE '\'
-		  )
+		  AND %s
 		ORDER BY pr.created_at DESC
-		LIMIT $4`, propertyID, like, upper, limit)
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
 		var id, utr, status, tenantName string
 		if err := rows.Scan(&id, &utr, &status, &tenantName); err != nil {
 			return nil, err
 		}
+		sub := status
+		if tenantName != "" {
+			sub = tenantName + " · " + status
+		}
 		out = append(out, search.Result{
 			Type:     search.TypePaymentReport,
 			ID:       id,
-			Title:    "UTR " + utr,
-			Subtitle: tenantName + " · " + status,
-			Path:     "/owner/reports?q=" + utr,
+			Title:    "Report: " + utr,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchJoinRequests(ctx context.Context, propertyID uuid.UUID, like string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id::text, COALESCE(name, phone), status
+func (r *SearchRepo) searchJoinRequests(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("name ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(phone IS NOT NULL AND phone ILIKE $%d ESCAPE '\\')", len(args)))
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT id::text, name, status, phone
 		FROM join_requests
 		WHERE property_id = $1
-		  AND status IN ('pending', 'approved')
-		  AND (name ILIKE $2 ESCAPE '\' OR phone ILIKE $2 ESCAPE '\')
+		  AND %s
 		ORDER BY created_at DESC
-		LIMIT $3`, propertyID, like, limit)
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
-		var id, label, status string
-		if err := rows.Scan(&id, &label, &status); err != nil {
+		var id, name, status, phone string
+		if err := rows.Scan(&id, &name, &status, &phone); err != nil {
 			return nil, err
+		}
+		sub := "Join Request · " + status
+		if phone != "" {
+			sub = fmt.Sprintf("%s · %s", phone, status)
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeJoinRequest,
 			ID:       id,
-			Title:    label,
-			Subtitle: "Join · " + status,
-			Path:     "/owner/joins?q=" + label,
+			Title:    name,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchEvents(ctx context.Context, propertyID uuid.UUID, like string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id::text, event_type, occurred_at::text
+func (r *SearchRepo) searchEvents(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		tokenClauses = append(tokenClauses, fmt.Sprintf("event_type ILIKE $%d ESCAPE '\\'", len(args)))
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT id::text, event_type
 		FROM events
 		WHERE property_id = $1
-		  AND event_type ILIKE $2 ESCAPE '\'
+		  AND %s
 		ORDER BY occurred_at DESC
-		LIMIT $3`, propertyID, like, limit)
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
-		var id, evType, occurred string
-		if err := rows.Scan(&id, &evType, &occurred); err != nil {
+		var id, eventType string
+		if err := rows.Scan(&id, &eventType); err != nil {
 			return nil, err
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeEvent,
 			ID:       id,
-			Title:    evType,
-			Subtitle: occurred,
-			Path:     "/owner/events?q=" + evType,
+			Title:    eventType,
+			Subtitle: "Event",
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchInspections(ctx context.Context, propertyID uuid.UUID, like string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id::text, inspection_type, COALESCE(notes,'')
+func (r *SearchRepo) searchInspections(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("inspection_type ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(notes IS NOT NULL AND notes ILIKE $%d ESCAPE '\\')", len(args)))
+
+		// Plain text FTS query using 'simple' configuration
+		args = append(args, t.Raw)
+		sub = append(sub, fmt.Sprintf("(notes IS NOT NULL AND to_tsvector('simple', notes) @@ plainto_tsquery('simple', $%d))", len(args)))
+
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT id::text, inspection_type, COALESCE(notes, ''), passed
 		FROM inspections
 		WHERE property_id = $1
-		  AND (inspection_type ILIKE $2 ESCAPE '\' OR notes ILIKE $2 ESCAPE '\')
-		ORDER BY inspected_at DESC
-		LIMIT $3`, propertyID, like, limit)
+		  AND %s
+		ORDER BY created_at DESC
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
-		var id, typ, notes string
-		if err := rows.Scan(&id, &typ, &notes); err != nil {
+		var id, inspType, notes string
+		var passed bool
+		if err := rows.Scan(&id, &inspType, &notes, &passed); err != nil {
 			return nil, err
+		}
+		sub := "passed"
+		if !passed {
+			sub = "failed"
+		}
+		if notes != "" {
+			sub = sub + " · " + truncate(notes, 60)
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeInspection,
 			ID:       id,
-			Title:    "Inspection " + typ,
-			Subtitle: truncate(notes, 60),
-			Path:     "/manager/inspections/" + id,
+			Title:    "Inspection " + inspType,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchHazards(ctx context.Context, propertyID uuid.UUID, like string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id::text, category, description
+// searchHazards searches hazards.
+// CRITICAL: Hazard reporter name is NEVER searched to preserve reporter anonymity.
+func (r *SearchRepo) searchHazards(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("category ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND description ILIKE $%d ESCAPE '\\')", len(args)))
+
+		args = append(args, t.Raw)
+		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND to_tsvector('simple', description) @@ plainto_tsquery('simple', $%d))", len(args)))
+
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT id::text, category, COALESCE(description, ''), status
 		FROM hazards
 		WHERE property_id = $1
-		  AND (category ILIKE $2 ESCAPE '\' OR description ILIKE $2 ESCAPE '\')
+		  AND %s
 		ORDER BY created_at DESC
-		LIMIT $3`, propertyID, like, limit)
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
-		var id, cat, desc string
-		if err := rows.Scan(&id, &cat, &desc); err != nil {
+		var id, category, desc, status string
+		if err := rows.Scan(&id, &category, &desc, &status); err != nil {
 			return nil, err
+		}
+		sub := status
+		if desc != "" {
+			sub = truncate(desc, 80)
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeHazard,
 			ID:       id,
-			Title:    "Hazard " + cat,
-			Subtitle: truncate(desc, 60),
-			Path:     "/manager/hazards?q=" + url.QueryEscape(cat),
+			Title:    "Hazard " + category,
+			Subtitle: sub,
 		})
 	}
 	return out, nil
 }
 
-func (r *SearchRepo) searchViolations(ctx context.Context, propertyID uuid.UUID, like string, limit int) ([]search.Result, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT v.id::text, v.rule_code, v.description, COALESCE(t.name,'')
-		FROM violations v
-		JOIN tenants t ON t.id = v.tenant_id
-		WHERE v.property_id = $1
-		  AND (v.rule_code ILIKE $2 ESCAPE '\' OR v.description ILIKE $2 ESCAPE '\' OR t.name ILIKE $2 ESCAPE '\')
-		ORDER BY v.created_at DESC
-		LIMIT $3`, propertyID, like, limit)
+func (r *SearchRepo) searchViolations(ctx context.Context, p search.Params, tokens []search.Token, limit int) ([]search.Result, error) {
+	args := []any{p.PropertyID}
+	var tokenClauses []string
+	for _, t := range tokens {
+		var sub []string
+		likeVal := search.LikePattern(t.Raw)
+		args = append(args, likeVal)
+		sub = append(sub, fmt.Sprintf("rule_code ILIKE $%d ESCAPE '\\'", len(args)))
+		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND description ILIKE $%d ESCAPE '\\')", len(args)))
+
+		args = append(args, t.Raw)
+		sub = append(sub, fmt.Sprintf("(description IS NOT NULL AND to_tsvector('simple', description) @@ plainto_tsquery('simple', $%d))", len(args)))
+
+		tokenClauses = append(tokenClauses, "("+strings.Join(sub, " OR ")+")")
+	}
+
+	args = append(args, limit)
+	sql := fmt.Sprintf(`
+		SELECT id::text, rule_code, COALESCE(description, ''), severity
+		FROM violations
+		WHERE property_id = $1
+		  AND %s
+		ORDER BY created_at DESC
+		LIMIT $%d`,
+		strings.Join(tokenClauses, " AND "),
+		len(args),
+	)
+
+	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []search.Result
 	for rows.Next() {
-		var id, code, desc, tenantName string
-		if err := rows.Scan(&id, &code, &desc, &tenantName); err != nil {
+		var id, code, desc, severity string
+		if err := rows.Scan(&id, &code, &desc, &severity); err != nil {
 			return nil, err
+		}
+		sub := severity
+		if desc != "" {
+			sub = severity + " · " + truncate(desc, 60)
 		}
 		out = append(out, search.Result{
 			Type:     search.TypeViolation,
 			ID:       id,
 			Title:    "Violation " + code,
-			Subtitle: truncate(tenantName+" · "+desc, 60),
-			Path:     "/manager/violations?q=" + url.QueryEscape(code),
+			Subtitle: sub,
 		})
 	}
 	return out, nil
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func (r *SearchRepo) UpsertDocument(ctx context.Context, propertyID uuid.UUID, tenantID *uuid.UUID, entityType string, entityID uuid.UUID, title, body string, embedding []float32) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO search_documents (property_id, tenant_id, entity_type, entity_id, title, body, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (property_id, entity_type, entity_id) DO UPDATE SET
+			tenant_id = EXCLUDED.tenant_id,
+			title = EXCLUDED.title,
+			body = EXCLUDED.body,
+			updated_at = NOW()`,
+		propertyID, tenantID, entityType, entityID, title, body,
+	)
+	return err
+}
+
+func (r *SearchRepo) DeleteDocument(ctx context.Context, propertyID uuid.UUID, entityType string, entityID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `DELETE FROM search_documents WHERE property_id = $1 AND entity_type = $2 AND entity_id = $3`, propertyID, entityType, entityID)
+	return err
+}
+
+func (r *SearchRepo) ListIndexSources(_ context.Context, _ uuid.UUID) ([]search.IndexSource, error) {
+	return nil, nil
 }
 
 func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params, like string, limit int) ([]search.Result, error) {
@@ -581,11 +791,10 @@ func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params
 	n := 5
 	if domain.Role(p.Role) == domain.RoleTenant {
 		if p.TenantID == nil {
-			return nil, nil // fail-closed: tenant role without tenant ID has zero document visibility
+			return nil, nil
 		}
 		q += fmt.Sprintf(` AND tenant_id = $%d`, n)
 		args = append(args, *p.TenantID)
-		n++
 	}
 	q += ` ORDER BY updated_at DESC LIMIT $3`
 	rows, err := r.db.Query(ctx, q, args...)
@@ -604,64 +813,7 @@ func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params
 			ID:       id,
 			Title:    title,
 			Subtitle: truncate(body, 80),
-			Path:     documentPath(entityType, id),
 		})
 	}
 	return out, nil
-}
-
-func scanTenantResults(rows interface {
-	Next() bool
-	Scan(dest ...any) error
-	Close()
-}, pathPrefix string) ([]search.Result, error) {
-	defer rows.Close()
-	var out []search.Result
-	for rows.Next() {
-		var id, name, room, status string
-		if err := rows.Scan(&id, &name, &room, &status); err != nil {
-			return nil, err
-		}
-		sub := status
-		if room != "" {
-			sub = "Room " + room + " · " + status
-		}
-		out = append(out, search.Result{
-			Type:     search.TypeTenant,
-			ID:       id,
-			Title:    name,
-			Subtitle: sub,
-			Path:     pathPrefix + url.QueryEscape(name),
-		})
-	}
-	return out, nil
-}
-
-func documentPath(entityType, id string) string {
-	switch entityType {
-	case "inspection":
-		return "/manager/inspections/" + url.PathEscape(id)
-	case "hazard":
-		return "/manager/hazards"
-	case "violation":
-		return "/manager/violations"
-	default:
-		return "/owner/events"
-	}
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
-}
-
-func pgVectorLiteral(v []float32) string {
-	parts := make([]string, len(v))
-	for i, f := range v {
-		parts[i] = fmt.Sprintf("%g", f)
-	}
-	return "[" + strings.Join(parts, ",") + "]"
 }

@@ -7,14 +7,14 @@ func AllowedTypes(role domain.Role) []EntityType {
 	switch role {
 	case domain.RoleOwner:
 		return []EntityType{
-			TypeTenant, TypeDue, TypePayment, TypePaymentReport, TypeJoinRequest, TypeEvent, TypeDocument,
+			TypeTenant, TypeDue, TypePayment, TypePaymentReport, TypeJoinRequest, TypeEvent, TypeInspection, TypeHazard, TypeViolation,
 		}
 	case domain.RoleManager:
 		return []EntityType{
-			TypeTenant, TypeInspection, TypeHazard, TypeViolation, TypeDocument,
+			TypeTenant, TypeInspection, TypeHazard, TypeViolation,
 		}
 	case domain.RoleTenant:
-		return []EntityType{TypeDue, TypePayment, TypeDocument}
+		return []EntityType{TypeDue, TypePayment}
 	default:
 		return nil
 	}

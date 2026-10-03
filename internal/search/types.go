@@ -41,7 +41,9 @@ type Result struct {
 // Params are validated search inputs after RBAC scope is applied.
 type Params struct {
 	Query      string
+	Tokens     []Token
 	Limit      int
+	PerType    int
 	Mode       Mode
 	Types      []EntityType
 	PropertyID uuid.UUID
