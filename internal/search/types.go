@@ -1,7 +1,15 @@
 package search
 
 import (
+	"errors"
+
 	"github.com/google/uuid"
+)
+
+var (
+	ErrQueryRequired = errors.New("query required")
+	ErrQueryTooShort = errors.New("query too short")
+	ErrQueryTooLong  = errors.New("query too long")
 )
 
 // EntityType identifies a searchable hit kind.

@@ -2,7 +2,6 @@ package search
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -20,13 +19,13 @@ type Service struct {
 func (s *Service) Search(ctx context.Context, role domain.Role, propertyID uuid.UUID, tenantID *uuid.UUID, q string, limit int, mode Mode, typeFilter []EntityType) (string, Mode, []Result, error) {
 	q = NormalizeQuery(q)
 	if q == "" {
-		return q, ModeLexical, nil, fmt.Errorf("query required")
+		return q, ModeLexical, nil, ErrQueryRequired
 	}
 	if !ValidQueryLength(q) {
 		if utf8.RuneCountInString(q) > MaxQueryLength {
-			return q, ModeLexical, nil, fmt.Errorf("query too long")
+			return q, ModeLexical, nil, ErrQueryTooLong
 		}
-		return q, ModeLexical, nil, fmt.Errorf("query too short")
+		return q, ModeLexical, nil, ErrQueryTooShort
 	}
 	if limit <= 0 {
 		limit = 20

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,10 +31,6 @@ func (h *Handlers) Search(c *gin.Context) {
 		if n, err := strconv.Atoi(raw); err == nil {
 			limit = n
 		}
-	}
-	mode := search.ModeLexical
-	if strings.EqualFold(c.Query("mode"), "hybrid") {
-		mode = search.ModeHybrid
 	}
 	var typeFilter []search.EntityType
 	if raw := strings.TrimSpace(c.Query("types")); raw != "" {
@@ -66,11 +63,16 @@ func (h *Handlers) Search(c *gin.Context) {
 		tenantScope,
 		q,
 		limit,
-		mode,
+		search.ModeLexical,
 		typeFilter,
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "too short") || strings.Contains(err.Error(), "required") {
+		if errors.Is(err, search.ErrQueryRequired) ||
+			errors.Is(err, search.ErrQueryTooShort) ||
+			errors.Is(err, search.ErrQueryTooLong) ||
+			strings.Contains(err.Error(), "too short") ||
+			strings.Contains(err.Error(), "too long") ||
+			strings.Contains(err.Error(), "required") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -47,6 +48,25 @@ func TestSearchRBAC_tenantScopedRepo(t *testing.T) {
 	results, _ := body["results"].([]any)
 	if len(results) != 0 {
 		t.Fatalf("expected no cross-tenant leak, got %d results", len(results))
+	}
+
+	// 101-character query returns 400 Bad Request (not 500)
+	longQ := strings.Repeat("a", 101)
+	reqLong := httptest.NewRequest(http.MethodGet, "/api/search?q="+longQ, nil)
+	reqLong.Header.Set("Authorization", "Bearer "+tenantToken)
+	wLong := httptest.NewRecorder()
+	r.ServeHTTP(wLong, reqLong)
+	if wLong.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for 101-character query, got %d body=%s", wLong.Code, wLong.Body.String())
+	}
+
+	// 1-character query returns 400 Bad Request
+	reqShort := httptest.NewRequest(http.MethodGet, "/api/search?q=a", nil)
+	reqShort.Header.Set("Authorization", "Bearer "+tenantToken)
+	wShort := httptest.NewRecorder()
+	r.ServeHTTP(wShort, reqShort)
+	if wShort.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for 1-character query, got %d body=%s", wShort.Code, wShort.Body.String())
 	}
 }
 
