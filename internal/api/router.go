@@ -383,7 +383,7 @@ func NewRouter(d Deps) *gin.Engine {
 			tenant.POST("/referrals", h.TenantReferrals)
 		}
 
-		api.GET("/search", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), userOrIPRateLimit(30.0/60, 10), h.Search)
+		api.GET("/search", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), userOrIPRateLimit(120.0/60, 20), h.Search)
 
 		// Public locale registry
 		api.GET("/locales", h.ListLocales)
