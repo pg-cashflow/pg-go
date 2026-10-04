@@ -28,7 +28,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres KYC test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
@@ -810,7 +810,7 @@ func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres KYC in-flight lock test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)

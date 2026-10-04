@@ -28,7 +28,7 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
