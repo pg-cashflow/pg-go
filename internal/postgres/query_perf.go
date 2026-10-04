@@ -17,6 +17,21 @@ type queryPerfStartInfo struct {
 	argsCount int
 }
 
+var latencyBucketBounds = [...]time.Duration{
+	1 * time.Millisecond,
+	2 * time.Millisecond,
+	5 * time.Millisecond,
+	10 * time.Millisecond,
+	25 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+}
+
 // QueryPerfStats contains aggregated execution metrics for DB operations.
 type QueryPerfStats struct {
 	TotalQueries  uint64        `json:"total_queries"`
@@ -25,6 +40,9 @@ type QueryPerfStats struct {
 	TotalDuration time.Duration `json:"total_duration"`
 	AvgDuration   time.Duration `json:"avg_duration"`
 	MaxDuration   time.Duration `json:"max_duration"`
+	P50Duration   time.Duration `json:"p50_duration"`
+	P95Duration   time.Duration `json:"p95_duration"`
+	P99Duration   time.Duration `json:"p99_duration"`
 }
 
 // QueryPerfTracer implements pgx.QueryTracer to monitor query latency,
@@ -38,6 +56,7 @@ type QueryPerfTracer struct {
 	errorQueries atomic.Uint64
 	totalTimeNs  atomic.Int64
 	maxTimeNs    atomic.Int64
+	buckets      [len(latencyBucketBounds) + 1]atomic.Uint64
 }
 
 // NewQueryPerfTracer creates a new QueryPerfTracer with the given slow query threshold.
@@ -81,6 +100,16 @@ func (t *QueryPerfTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 
 	t.totalQueries.Add(1)
 	t.totalTimeNs.Add(durationNs)
+
+	// Record in latency histogram bucket
+	bIdx := len(latencyBucketBounds)
+	for i, b := range latencyBucketBounds {
+		if duration <= b {
+			bIdx = i
+			break
+		}
+	}
+	t.buckets[bIdx].Add(1)
 
 	// Update max duration atomically
 	for {
@@ -130,8 +159,35 @@ func (t *QueryPerfTracer) Stats() QueryPerfStats {
 	maxNs := t.maxTimeNs.Load()
 
 	var avg time.Duration
+	var p50, p95, p99 time.Duration
 	if total > 0 {
 		avg = time.Duration(totalNs / int64(total))
+
+		target50 := uint64(float64(total) * 0.50)
+		target95 := uint64(float64(total) * 0.95)
+		target99 := uint64(float64(total) * 0.99)
+
+		var cumulative uint64
+		p50Done, p95Done, p99Done := false, false, false
+		for i := 0; i <= len(latencyBucketBounds); i++ {
+			cumulative += t.buckets[i].Load()
+			bound := 10 * time.Second
+			if i < len(latencyBucketBounds) {
+				bound = latencyBucketBounds[i]
+			}
+			if !p50Done && cumulative >= target50 {
+				p50 = bound
+				p50Done = true
+			}
+			if !p95Done && cumulative >= target95 {
+				p95 = bound
+				p95Done = true
+			}
+			if !p99Done && cumulative >= target99 {
+				p99 = bound
+				p99Done = true
+			}
+		}
 	}
 
 	return QueryPerfStats{
@@ -141,6 +197,9 @@ func (t *QueryPerfTracer) Stats() QueryPerfStats {
 		TotalDuration: time.Duration(totalNs),
 		AvgDuration:   avg,
 		MaxDuration:   time.Duration(maxNs),
+		P50Duration:   p50,
+		P95Duration:   p95,
+		P99Duration:   p99,
 	}
 }
 

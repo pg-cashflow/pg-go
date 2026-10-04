@@ -37,3 +37,21 @@ type DepartureSettlementMirrorPayload struct {
 	ReceivableBalancePaise     int64     `json:"receivable_balance_paise"`
 	OccurredAt                 time.Time `json:"occurred_at"`
 }
+
+// PaymentAllocationItemPayload defines an individual allocation within a payment mirror payload.
+type PaymentAllocationItemPayload struct {
+	AmountPaise int64  `json:"amount_paise"`
+	DueKind     string `json:"due_kind"`
+}
+
+// PaymentMirrorPayload defines the serialized payload for payment collection and unapplied payment ledger mirrors.
+type PaymentMirrorPayload struct {
+	PropertyID     uuid.UUID                      `json:"property_id"`
+	PaymentID      uuid.UUID                      `json:"payment_id"`
+	Allocations    []PaymentAllocationItemPayload `json:"allocations,omitempty"`
+	UnappliedPaise int64                          `json:"unapplied_paise,omitempty"`
+	IsUnapplied    bool                           `json:"is_unapplied"`
+	MatchedAt      time.Time                      `json:"matched_at"`
+	MatchedBy      MatchedBy                      `json:"matched_by"`
+	AmountPaise    int64                          `json:"amount_paise"`
+}

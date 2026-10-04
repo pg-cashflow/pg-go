@@ -18,7 +18,7 @@ type LineSpec struct {
 func MakeLines(propertyID, sourceID uuid.UUID, sourceType string, occurredAt time.Time, specs []LineSpec) ([]domain.JournalLine, error) {
 	var debit, credit int64
 	out := make([]domain.JournalLine, 0, len(specs))
-	for _, s := range specs {
+	for i, s := range specs {
 		if s.Debit < 0 || s.Credit < 0 {
 			return nil, ErrUnbalancedJournal
 		}
@@ -27,8 +27,9 @@ func MakeLines(propertyID, sourceID uuid.UUID, sourceType string, occurredAt tim
 		}
 		debit += s.Debit
 		credit += s.Credit
+		lineID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("journal:%s:%s:%d:%s", sourceType, sourceID.String(), i, s.LineKind)))
 		out = append(out, domain.JournalLine{
-			ID:          uuid.New(),
+			ID:          lineID,
 			PropertyID:  propertyID,
 			AccountCode: s.Account,
 			DebitPaise:  s.Debit,

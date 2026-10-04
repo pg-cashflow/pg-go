@@ -69,17 +69,39 @@ func defaultPoolOptions(appName string) PoolOptions {
 		}
 	}
 
+	statementTimeout := 30 * time.Second
+	if s := os.Getenv("DATABASE_STATEMENT_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			statementTimeout = d
+		}
+	}
+	idleInTxTimeout := 60 * time.Second
+	if s := os.Getenv("DATABASE_IDLE_IN_TRANSACTION_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			idleInTxTimeout = d
+		}
+	}
+	lockTimeout := 10 * time.Second
+	if s := os.Getenv("DATABASE_LOCK_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			lockTimeout = d
+		}
+	}
+
 	return PoolOptions{
-		MaxConns:          maxConns,
-		MinConns:          minConns,
-		MaxConnLifetime:   maxLifetime,
-		MaxConnIdleTime:   maxIdle,
-		HealthCheckPeriod: 1 * time.Minute,
-		ConnectTimeout:    connectTimeout,
-		TCPKeepAlive:      tcpKeepAlive,
-		PgBouncer:         pgbouncer,
-		AppName:           appName,
-		Tracer:            NewQueryPerfTracer(slowQueryThreshold, nil),
+		MaxConns:                 maxConns,
+		MinConns:                 minConns,
+		MaxConnLifetime:          maxLifetime,
+		MaxConnIdleTime:          maxIdle,
+		HealthCheckPeriod:        1 * time.Minute,
+		ConnectTimeout:           connectTimeout,
+		TCPKeepAlive:             tcpKeepAlive,
+		PgBouncer:                pgbouncer,
+		AppName:                  appName,
+		StatementTimeout:         statementTimeout,
+		IdleInTransactionTimeout: idleInTxTimeout,
+		LockTimeout:              lockTimeout,
+		Tracer:                   NewQueryPerfTracer(slowQueryThreshold, nil),
 	}
 }
 

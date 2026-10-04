@@ -17,8 +17,10 @@ import (
 )
 
 type mockMirrorer struct {
-	calls []domain.DepartureSettlementMirrorPayload
-	fail  bool
+	calls          []domain.DepartureSettlementMirrorPayload
+	paymentCalls   []domain.PaymentMirrorPayload
+	unappliedCalls []domain.PaymentMirrorPayload
+	fail           bool
 }
 
 type mockAlerter struct {
@@ -51,6 +53,55 @@ func (m *mockMirrorer) MirrorDepartureSettlement(
 		OutstandingDuesNettedPaise: outstandingDuesNettedPaise,
 		ReceivableBalancePaise:     receivableBalancePaise,
 		OccurredAt:                 at,
+	})
+	return nil
+}
+
+func (m *mockMirrorer) MirrorPaymentAllocations(
+	ctx context.Context,
+	propertyID uuid.UUID,
+	p *domain.Payment,
+	allocations []PaymentAllocationItem,
+	unappliedPaise int64,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror payment failure")
+	}
+	var allocPayloads []domain.PaymentAllocationItemPayload
+	for _, a := range allocations {
+		allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
+			AmountPaise: a.AmountPaise,
+			DueKind:     string(a.DueKind),
+		})
+	}
+	m.paymentCalls = append(m.paymentCalls, domain.PaymentMirrorPayload{
+		PropertyID:     propertyID,
+		PaymentID:      p.ID,
+		Allocations:    allocPayloads,
+		UnappliedPaise: unappliedPaise,
+		IsUnapplied:    false,
+		MatchedAt:      p.MatchedAt,
+		MatchedBy:      p.MatchedBy,
+		AmountPaise:    int64(p.Amount),
+	})
+	return nil
+}
+
+func (m *mockMirrorer) MirrorUnappliedPayment(
+	ctx context.Context,
+	propertyID, paymentID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror unapplied failure")
+	}
+	m.unappliedCalls = append(m.unappliedCalls, domain.PaymentMirrorPayload{
+		PropertyID:  propertyID,
+		PaymentID:   paymentID,
+		AmountPaise: amountPaise,
+		IsUnapplied: true,
+		MatchedAt:   at,
 	})
 	return nil
 }

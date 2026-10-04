@@ -144,9 +144,16 @@ func Load() (*Config, error) {
 	if cfg.AppEnv == "production" && cfg.FirebaseProjectID == "" {
 		return nil, fmt.Errorf("FIREBASE_PROJECT_ID is required in production")
 	}
-	cashfreeOn := strings.TrimSpace(cfg.CashfreePGAppID) != "" && strings.TrimSpace(cfg.CashfreePGSecretKey) != ""
-	if cashfreeOn && strings.EqualFold(cfg.AppEnv, "production") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
-		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required in production when Cashfree PG is enabled")
+	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)
+	if cfAppID == "" {
+		cfAppID = strings.TrimSpace(cfg.CashfreeAppID)
+	}
+	cfSecret := strings.TrimSpace(cfg.CashfreePGSecretKey)
+	if cfSecret == "" {
+		cfSecret = strings.TrimSpace(cfg.CashfreeSecretKey)
+	}
+	if (cfAppID != "" || cfSecret != "") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
+		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
 	}
 	return cfg, nil
 }

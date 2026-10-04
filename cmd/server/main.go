@@ -255,6 +255,7 @@ func main() {
 	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, dueRepo, paymentRepo, financeSvc)
 	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(pool)
 	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
+	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(pool)
 
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
@@ -330,6 +331,7 @@ func main() {
 		SettlementReconciler:        settlementReconciler,
 		SettlementBalancerRepo:      settlementBalancerRepo,
 		SettlementBalancer:          settlementBalancer,
+		LedgerOutboxRepo:            ledgerOutboxRepo,
 	})
 
 	srv := &http.Server{
@@ -378,7 +380,6 @@ func main() {
 
 	// Financial Ledger Mirror Outbox Worker: polls pending departure mirror events on a 30s ticker.
 	if cfg.FinanceEnabled {
-		ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(pool)
 		deadLetterAlerter := finance.NewEmailDeadLetterNotifier(mail, cfg.AdminEmail)
 		if cfg.AdminPhone != "" && gateway != nil {
 			deadLetterAlerter.WithSMSBackstop(gateway, cfg.AdminPhone)

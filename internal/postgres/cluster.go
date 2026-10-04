@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,32 +19,38 @@ import (
 
 // PoolOptions holds configuration options for tuning an individual pgx connection pool.
 type PoolOptions struct {
-	MaxConns          int
-	MinConns          int
-	MaxConnLifetime   time.Duration
-	MaxConnIdleTime   time.Duration
-	HealthCheckPeriod time.Duration
-	ConnectTimeout    time.Duration
-	TCPKeepAlive      time.Duration
-	PgBouncer         bool
-	AppName           string
-	Tracer            pgx.QueryTracer
+	MaxConns                 int
+	MinConns                 int
+	MaxConnLifetime          time.Duration
+	MaxConnIdleTime          time.Duration
+	HealthCheckPeriod        time.Duration
+	ConnectTimeout           time.Duration
+	TCPKeepAlive             time.Duration
+	PgBouncer                bool
+	AppName                  string
+	StatementTimeout         time.Duration
+	IdleInTransactionTimeout time.Duration
+	LockTimeout              time.Duration
+	Tracer                   pgx.QueryTracer
 }
 
 // ClusterConfig configures a database cluster containing a primary node and optional read replicas.
 type ClusterConfig struct {
-	PrimaryURL         string
-	ReplicaURLs        []string
-	MaxConns           int
-	MinConns           int
-	MaxConnLifetime    time.Duration
-	MaxConnIdleTime    time.Duration
-	HealthCheckPeriod  time.Duration
-	ConnectTimeout     time.Duration
-	TCPKeepAlive       time.Duration
-	PgBouncer          bool
-	SlowQueryThreshold time.Duration
-	Logger             *slog.Logger
+	PrimaryURL               string
+	ReplicaURLs              []string
+	MaxConns                 int
+	MinConns                 int
+	MaxConnLifetime          time.Duration
+	MaxConnIdleTime          time.Duration
+	HealthCheckPeriod        time.Duration
+	ConnectTimeout           time.Duration
+	TCPKeepAlive             time.Duration
+	PgBouncer                bool
+	SlowQueryThreshold       time.Duration
+	StatementTimeout         time.Duration
+	IdleInTransactionTimeout time.Duration
+	LockTimeout              time.Duration
+	Logger                   *slog.Logger
 }
 
 // ClusterPoolHealth represents the health status of an individual pool in the cluster.
@@ -57,12 +64,21 @@ type ClusterPoolHealth struct {
 	IdleConns  int32         `json:"idle_conns"`
 }
 
+// ReplicaLagInfo captures streaming replication lag metrics from pg_stat_replication.
+type ReplicaLagInfo struct {
+	ClientAddr string `json:"client_addr"`
+	AppName    string `json:"application_name"`
+	State      string `json:"state"`
+	LagBytes   int64  `json:"lag_bytes"`
+}
+
 // ClusterHealthReport summarizes the overall health of the DB cluster.
 type ClusterHealthReport struct {
 	PrimaryHealthy  bool                `json:"primary_healthy"`
 	ReplicasTotal   int                 `json:"replicas_total"`
 	ReplicasHealthy int                 `json:"replicas_healthy"`
 	Pools           []ClusterPoolHealth `json:"pools"`
+	ReplicationLag  []ReplicaLagInfo    `json:"replication_lag,omitempty"`
 }
 
 // ClusterStats reports aggregated connection and query performance metrics.
@@ -167,6 +183,23 @@ func ConfigurePoolConfig(cfg *pgxpool.Config, opt PoolOptions) {
 	}
 	cfg.ConnConfig.RuntimeParams["application_name"] = appName
 
+	statementTimeout := opt.StatementTimeout
+	if statementTimeout <= 0 {
+		statementTimeout = 30 * time.Second
+	}
+	idleInTxTimeout := opt.IdleInTransactionTimeout
+	if idleInTxTimeout <= 0 {
+		idleInTxTimeout = 60 * time.Second
+	}
+	lockTimeout := opt.LockTimeout
+	if lockTimeout <= 0 {
+		lockTimeout = 10 * time.Second
+	}
+
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(statementTimeout.Milliseconds(), 10)
+	cfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = strconv.FormatInt(idleInTxTimeout.Milliseconds(), 10)
+	cfg.ConnConfig.RuntimeParams["lock_timeout"] = strconv.FormatInt(lockTimeout.Milliseconds(), 10)
+
 	// PgBouncer transaction-pooling compatibility:
 	// In PgBouncer transaction mode, prepared statements cannot be cached across transactions.
 	// Setting QueryExecModeSimpleProtocol and zeroing cache capacity guarantees zero prepared-statement collision errors.
@@ -199,16 +232,19 @@ func NewCluster(ctx context.Context, ccfg ClusterConfig) (*DBCluster, error) {
 
 	// Build default pool options
 	baseOpt := PoolOptions{
-		MaxConns:          ccfg.MaxConns,
-		MinConns:          ccfg.MinConns,
-		MaxConnLifetime:   ccfg.MaxConnLifetime,
-		MaxConnIdleTime:   ccfg.MaxConnIdleTime,
-		HealthCheckPeriod: ccfg.HealthCheckPeriod,
-		ConnectTimeout:    ccfg.ConnectTimeout,
-		TCPKeepAlive:      ccfg.TCPKeepAlive,
-		PgBouncer:         ccfg.PgBouncer,
-		AppName:           "pg-go-primary",
-		Tracer:            tracer,
+		MaxConns:                 ccfg.MaxConns,
+		MinConns:                 ccfg.MinConns,
+		MaxConnLifetime:          ccfg.MaxConnLifetime,
+		MaxConnIdleTime:          ccfg.MaxConnIdleTime,
+		HealthCheckPeriod:        ccfg.HealthCheckPeriod,
+		ConnectTimeout:           ccfg.ConnectTimeout,
+		TCPKeepAlive:             ccfg.TCPKeepAlive,
+		PgBouncer:                ccfg.PgBouncer,
+		StatementTimeout:         ccfg.StatementTimeout,
+		IdleInTransactionTimeout: ccfg.IdleInTransactionTimeout,
+		LockTimeout:              ccfg.LockTimeout,
+		AppName:                  "pg-go-primary",
+		Tracer:                   tracer,
 	}
 
 	primaryCfg, err := pgxpool.ParseConfig(ccfg.PrimaryURL)
@@ -450,7 +486,43 @@ func (c *DBCluster) Health(ctx context.Context) ClusterHealthReport {
 		report.Pools = append(report.Pools, rHealth)
 	}
 
+	if report.PrimaryHealthy && primary != nil {
+		report.ReplicationLag = c.checkReplicationLag(ctx, primary)
+	}
+
 	return report
+}
+
+func (c *DBCluster) checkReplicationLag(ctx context.Context, primary *pgxpool.Pool) []ReplicaLagInfo {
+	qCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	rows, err := primary.Query(qCtx, `
+		SELECT coalesce(client_addr::text, ''), coalesce(application_name, ''), coalesce(state, ''),
+		       coalesce(pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn), 0)::bigint
+		FROM pg_stat_replication`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var lags []ReplicaLagInfo
+	for rows.Next() {
+		var info ReplicaLagInfo
+		if err := rows.Scan(&info.ClientAddr, &info.AppName, &info.State, &info.LagBytes); err == nil {
+			if info.LagBytes > 100*1024*1024 { // 100MB threshold
+				if c.logger != nil {
+					c.logger.Warn("high replica lag detected",
+						slog.String("replica", info.AppName),
+						slog.String("addr", info.ClientAddr),
+						slog.Int64("lag_bytes", info.LagBytes),
+					)
+				}
+			}
+			lags = append(lags, info)
+		}
+	}
+	return lags
 }
 
 var dbCredsRegex = regexp.MustCompile(`postgres://([^:\s]+):([^@\s]+)@`)

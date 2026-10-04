@@ -261,6 +261,30 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 					return err
 				}
+				if h.LedgerOutboxRepo != nil {
+					payload, err := json.Marshal(domain.PaymentMirrorPayload{
+						PropertyID:  due0.PropertyID,
+						PaymentID:   p.ID,
+						IsUnapplied: true,
+						MatchedAt:   p.MatchedAt,
+						MatchedBy:   p.MatchedBy,
+						AmountPaise: int64(p.Amount),
+					})
+					if err != nil {
+						return err
+					}
+					outboxEvt := &domain.LedgerOutboxEvent{
+						EventType:      "payment_mirror",
+						PropertyID:     due0.PropertyID,
+						SourceID:       p.ID,
+						Payload:        payload,
+						IdempotencyKey: fmt.Sprintf("payment_mirror:%s", p.ID.String()),
+						MaxAttempts:    5,
+					}
+					if err := h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 
@@ -327,6 +351,45 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 				return err
 			}
+			if h.LedgerOutboxRepo != nil {
+				allocPayloads := make([]domain.PaymentAllocationItemPayload, 0, len(allocations))
+				for _, a := range allocations {
+					allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
+						AmountPaise: a.AmountPaise,
+						DueKind:     string(a.DueKind),
+					})
+				}
+				if len(allocPayloads) == 0 {
+					allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
+						AmountPaise: int64(p.Amount),
+						DueKind:     string(due0.Kind),
+					})
+				}
+				payload, err := json.Marshal(domain.PaymentMirrorPayload{
+					PropertyID:     due0.PropertyID,
+					PaymentID:      p.ID,
+					Allocations:    allocPayloads,
+					UnappliedPaise: unappliedPaise,
+					IsUnapplied:    false,
+					MatchedAt:      p.MatchedAt,
+					MatchedBy:      p.MatchedBy,
+					AmountPaise:    int64(p.Amount),
+				})
+				if err != nil {
+					return err
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      "payment_mirror",
+					PropertyID:     due0.PropertyID,
+					SourceID:       p.ID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payment_mirror:%s", p.ID.String()),
+					MaxAttempts:    5,
+				}
+				if err := h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 		if err != nil {
@@ -334,7 +397,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			return
 		}
 
-		if h.Finance != nil && committedPayment != nil && committedDue0 != nil {
+		if h.LedgerOutboxRepo == nil && h.Finance != nil && committedPayment != nil && committedDue0 != nil {
 			if isCommittedUnapplied {
 				if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, committedDue0.PropertyID, committedPayment.ID, int64(committedPayment.Amount), committedPayment.MatchedAt); mirrorErr != nil {
 					slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",

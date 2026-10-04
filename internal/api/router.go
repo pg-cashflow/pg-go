@@ -56,6 +56,7 @@ type Deps struct {
 	WebhookToleranceSec int
 	WebhookAPIVersion   string
 	Pool                *pgxpool.Pool
+	DBCluster           *postgres.DBCluster
 
 	Gamification      *gamification.Service
 	GamificationStore gamification.Store
@@ -86,6 +87,7 @@ type Deps struct {
 	PayoutChecksumSecret        string
 	CashfreePayoutWebhookSecret string
 	PayoutDispatcher            *finance.PayoutDispatcher
+	LedgerOutboxRepo            *postgres.LedgerOutboxRepo
 
 	AttendanceRepo *postgres.AttendanceRepo
 	AttendanceSvc  *attendance.Service
@@ -129,6 +131,7 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	r.Use(
+		RequestIDMiddleware(),
 		gin.Recovery(),
 		gin.LoggerWithConfig(gin.LoggerConfig{
 			Formatter: redactingLogFormatter,
@@ -141,7 +144,7 @@ func NewRouter(d Deps) *gin.Engine {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language"},
+			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language", "X-Request-ID", "X-Correlation-ID"},
 			AllowCredentials: false,
 			MaxAge:           12 * time.Hour,
 		}))
@@ -153,6 +156,7 @@ func NewRouter(d Deps) *gin.Engine {
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+	r.GET("/metrics", h.Metrics)
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
@@ -165,6 +169,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/healthz", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		})
+		api.GET("/metrics", h.Metrics)
 		api.GET("/push/vapid-public-key", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
 		})

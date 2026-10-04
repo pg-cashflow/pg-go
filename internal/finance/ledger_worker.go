@@ -22,6 +22,19 @@ type LedgerMirrorer interface {
 		depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, outstandingDuesNettedPaise, receivableBalancePaise int64,
 		at time.Time,
 	) error
+	MirrorPaymentAllocations(
+		ctx context.Context,
+		propertyID uuid.UUID,
+		p *domain.Payment,
+		allocations []PaymentAllocationItem,
+		unappliedPaise int64,
+	) error
+	MirrorUnappliedPayment(
+		ctx context.Context,
+		propertyID, paymentID uuid.UUID,
+		amountPaise int64,
+		at time.Time,
+	) error
 }
 
 // LedgerOutboxWorker polls and processes pending ledger outbox events to ensure zero ledger desynchronization.
@@ -174,6 +187,31 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			return fmt.Errorf("unmarshal payout batch transfer payload: %w", err)
 		}
 		return w.payoutDispatcher.DispatchBatch(ctx, batchID)
+	case "payment_mirror":
+		var p domain.PaymentMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal payment mirror payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		if p.IsUnapplied {
+			return w.mirrorer.MirrorUnappliedPayment(ctx, p.PropertyID, p.PaymentID, p.AmountPaise, p.MatchedAt)
+		}
+		allocs := make([]PaymentAllocationItem, 0, len(p.Allocations))
+		for _, a := range p.Allocations {
+			allocs = append(allocs, PaymentAllocationItem{
+				AmountPaise: a.AmountPaise,
+				DueKind:     domain.DueKind(a.DueKind),
+			})
+		}
+		paymentObj := &domain.Payment{
+			ID:        p.PaymentID,
+			Amount:    int(p.AmountPaise),
+			MatchedBy: p.MatchedBy,
+			MatchedAt: p.MatchedAt,
+		}
+		return w.mirrorer.MirrorPaymentAllocations(ctx, p.PropertyID, paymentObj, allocs, p.UnappliedPaise)
 	default:
 		return fmt.Errorf("unrecognized ledger outbox event type '%s'", evt.EventType)
 	}
