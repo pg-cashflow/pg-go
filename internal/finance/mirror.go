@@ -24,6 +24,16 @@ import (
 //    or when tenant credit balance is applied against due items (MirrorApplyCredit).
 // --------------------------------------------------------------------------
 
+type PaymentAllocationItem struct {
+	AmountPaise int64
+	DueKind     domain.DueKind
+}
+
+type RefundAllocationItem struct {
+	AmountPaise int64
+	DueKind     domain.DueKind
+}
+
 // MirrorPayment posts collection journal lines. Rent is recognized on collection.
 func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *domain.Due) error {
 	if s == nil || s.Store == nil || p == nil || due == nil {
@@ -31,6 +41,20 @@ func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *dom
 	}
 	amt := int64(p.Amount)
 	if amt <= 0 {
+		return nil
+	}
+	return s.MirrorPaymentAllocations(ctx, due.PropertyID, p, []PaymentAllocationItem{
+		{AmountPaise: amt, DueKind: due.Kind},
+	}, 0)
+}
+
+// MirrorPaymentAllocations posts collection journal lines broken down across dues and unapplied credits.
+func (s *Service) MirrorPaymentAllocations(ctx context.Context, propertyID uuid.UUID, p *domain.Payment, allocations []PaymentAllocationItem, unappliedPaise int64) error {
+	if s == nil || s.Store == nil || p == nil {
+		return nil
+	}
+	totalAmt := int64(p.Amount)
+	if totalAmt <= 0 {
 		return nil
 	}
 	at := p.MatchedAt
@@ -43,25 +67,52 @@ func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *dom
 	} else if p.MatchedBy == domain.MatchedByCashfree {
 		cashAcct = domain.AcctGatewayClearing
 	}
-	var specs []LineSpec
-	switch due.Kind {
-	case domain.DueKindDeposit:
-		specs = []LineSpec{
-			{Account: cashAcct, Debit: amt, LineKind: "cash_in"},
-			{Account: domain.AcctDepositLiability, Credit: amt, LineKind: "deposit_liability"},
+
+	accountTotals := make(map[string]int64)
+	for _, a := range allocations {
+		if a.AmountPaise <= 0 {
+			continue
 		}
-	case domain.DueKindElectricity, domain.DueKindWater:
-		specs = []LineSpec{
-			{Account: cashAcct, Debit: amt, LineKind: "cash_in"},
-			{Account: domain.AcctUtilityRecoveryRevenue, Credit: amt, LineKind: "utility_recovery"},
+		var crAccount string
+		switch a.DueKind {
+		case domain.DueKindDeposit:
+			crAccount = domain.AcctDepositLiability
+		case domain.DueKindElectricity, domain.DueKindWater:
+			crAccount = domain.AcctUtilityRecoveryRevenue
+		default:
+			crAccount = domain.AcctRentRevenue
 		}
-	default:
-		specs = []LineSpec{
-			{Account: cashAcct, Debit: amt, LineKind: "cash_in"},
-			{Account: domain.AcctRentRevenue, Credit: amt, LineKind: "rent_collected"},
-		}
+		accountTotals[crAccount] += a.AmountPaise
 	}
-	lines, err := MakeLines(due.PropertyID, p.ID, "payment", at, specs)
+	if unappliedPaise > 0 {
+		accountTotals[domain.AcctUnappliedReceipts] += unappliedPaise
+	}
+
+	specs := make([]LineSpec, 0, len(accountTotals)+1)
+	specs = append(specs, LineSpec{
+		Account:  cashAcct,
+		Debit:    totalAmt,
+		LineKind: "cash_in",
+	})
+
+	for acct, amt := range accountTotals {
+		lineKind := "rent_collected"
+		switch acct {
+		case domain.AcctDepositLiability:
+			lineKind = "deposit_liability"
+		case domain.AcctUtilityRecoveryRevenue:
+			lineKind = "utility_recovery"
+		case domain.AcctUnappliedReceipts:
+			lineKind = "unapplied_receipt"
+		}
+		specs = append(specs, LineSpec{
+			Account:  acct,
+			Credit:   amt,
+			LineKind: lineKind,
+		})
+	}
+
+	lines, err := MakeLines(propertyID, p.ID, "payment", at, specs)
 	if err != nil {
 		return err
 	}
@@ -69,10 +120,7 @@ func (s *Service) MirrorPayment(ctx context.Context, p *domain.Payment, due *dom
 	if err == ErrDuplicateIdempotency {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // MirrorUnappliedPayment posts unapplied payment lines: Dr gateway_clearing, Cr unapplied_receipts.
@@ -102,14 +150,44 @@ func (s *Service) MirrorRefund(ctx context.Context, propertyID, refundID uuid.UU
 	if s == nil || s.Store == nil || amountPaise <= 0 {
 		return nil
 	}
+	if isUnapplied {
+		if at.IsZero() {
+			at = s.Now()
+		}
+		lines, err := MakeLines(propertyID, refundID, "refund", at, []LineSpec{
+			{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "refund_reversal_dr"},
+			{Account: domain.AcctGatewayClearing, Credit: amountPaise, LineKind: "gateway_clearing_cr"},
+		})
+		if err != nil {
+			return err
+		}
+		err = s.Store.InsertJournal(ctx, lines)
+		if err == ErrDuplicateIdempotency {
+			return nil
+		}
+		return err
+	}
+	return s.MirrorRefundAllocations(ctx, propertyID, refundID, []RefundAllocationItem{
+		{AmountPaise: amountPaise, DueKind: dueKind},
+	}, at)
+}
+
+// MirrorRefundAllocations aggregates multiple refund allocations by account and posts a single balanced journal entry.
+func (s *Service) MirrorRefundAllocations(ctx context.Context, propertyID, refundID uuid.UUID, allocations []RefundAllocationItem, at time.Time) error {
+	if s == nil || s.Store == nil || len(allocations) == 0 {
+		return nil
+	}
 	if at.IsZero() {
 		at = s.Now()
 	}
-	var drAccount string
-	if isUnapplied {
-		drAccount = domain.AcctUnappliedReceipts
-	} else {
-		switch dueKind {
+	accountTotals := make(map[string]int64)
+	var totalPaise int64
+	for _, a := range allocations {
+		if a.AmountPaise <= 0 {
+			continue
+		}
+		var drAccount string
+		switch a.DueKind {
 		case domain.DueKindDeposit:
 			drAccount = domain.AcctDepositLiability
 		case domain.DueKindElectricity, domain.DueKindWater:
@@ -117,11 +195,49 @@ func (s *Service) MirrorRefund(ctx context.Context, propertyID, refundID uuid.UU
 		default:
 			drAccount = domain.AcctRentRevenue
 		}
+		accountTotals[drAccount] += a.AmountPaise
+		totalPaise += a.AmountPaise
 	}
-	lines, err := MakeLines(propertyID, refundID, "refund", at, []LineSpec{
-		{Account: drAccount, Debit: amountPaise, LineKind: "refund_reversal_dr"},
-		{Account: domain.AcctGatewayClearing, Credit: amountPaise, LineKind: "gateway_clearing_cr"},
+	if totalPaise <= 0 {
+		return nil
+	}
+
+	specs := make([]LineSpec, 0, len(accountTotals)+1)
+	if len(accountTotals) == 1 {
+		for acct, amt := range accountTotals {
+			specs = append(specs, LineSpec{
+				Account:  acct,
+				Debit:    amt,
+				LineKind: "refund_reversal_dr",
+			})
+		}
+	} else {
+		for acct, amt := range accountTotals {
+			lineKind := "refund_reversal_dr"
+			switch acct {
+			case domain.AcctDepositLiability:
+				lineKind = "refund_reversal_deposit_dr"
+			case domain.AcctUtilityRecoveryRevenue:
+				lineKind = "refund_reversal_utility_dr"
+			case domain.AcctRentRevenue:
+				lineKind = "refund_reversal_rent_dr"
+			case domain.AcctUnappliedReceipts:
+				lineKind = "refund_reversal_unapplied_dr"
+			}
+			specs = append(specs, LineSpec{
+				Account:  acct,
+				Debit:    amt,
+				LineKind: lineKind,
+			})
+		}
+	}
+	specs = append(specs, LineSpec{
+		Account:  domain.AcctGatewayClearing,
+		Credit:   totalPaise,
+		LineKind: "gateway_clearing_cr",
 	})
+
+	lines, err := MakeLines(propertyID, refundID, "refund", at, specs)
 	if err != nil {
 		return err
 	}
@@ -134,6 +250,12 @@ func (s *Service) MirrorRefund(ctx context.Context, propertyID, refundID uuid.UU
 
 func (s *Service) MirrorProration(ctx context.Context, due *domain.Due, original, prorated int64) error {
 	if s == nil || due == nil {
+		return nil
+	}
+	// Under collection-basis (cash-basis) revenue recognition, unpaid dues have never
+	// had journal lines or revenue recognized. Prorating an open/unpaid due requires
+	// no ledger lines, preventing artificial negative revenue and unbacked receivable credits.
+	if due.Status != domain.DueStatusPaid && due.Status != domain.DueStatusPartial {
 		return nil
 	}
 	diff := original - prorated

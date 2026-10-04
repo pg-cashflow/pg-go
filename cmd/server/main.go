@@ -203,7 +203,9 @@ func main() {
 	intelSvc := intelligence.NewService(financeRepo)
 	if cfg.FinanceEnabled {
 		paySvc.SetSettlementHook(func(ctx context.Context, p *domain.Payment, due *domain.Due) {
-			_ = financeSvc.MirrorPayment(ctx, p, due)
+			if err := financeSvc.MirrorPayment(ctx, p, due); err != nil {
+				logger.Error("LEDGER GAP: settlement hook MirrorPayment failed", "payment_id", p.ID, "due_id", due.ID, "err", err)
+			}
 		})
 		billingSvc.SetProrateHook(func(ctx context.Context, due *domain.Due, original, prorated int64) {
 			_ = financeSvc.MirrorProration(ctx, due, original, prorated)

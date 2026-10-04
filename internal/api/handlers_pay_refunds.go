@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -462,17 +463,21 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				)
 			}
 		} else {
+			items := make([]finance.RefundAllocationItem, 0, len(allocationsToCreate))
 			for _, item := range allocationsToCreate {
-				if mirrorErr := h.Finance.MirrorRefund(ctx, pid, rfRow.ID, item.amountPaise, false, item.dueKind, finTime); mirrorErr != nil {
-					// Ledger-gap: refund row is committed but the reversal journal failed.
-					// Log at ERROR for operator alerting; the refund record is authoritative.
-					slog.Error("LEDGER GAP: MirrorRefund (applied) failed after manual refund committed",
-						"refund_id", rfRow.ID,
-						"property_id", pid,
-						"amount_paise", item.amountPaise,
-						"err", mirrorErr,
-					)
-				}
+				items = append(items, finance.RefundAllocationItem{
+					AmountPaise: item.amountPaise,
+					DueKind:     item.dueKind,
+				})
+			}
+			if mirrorErr := h.Finance.MirrorRefundAllocations(ctx, pid, rfRow.ID, items, finTime); mirrorErr != nil {
+				// Ledger-gap: refund row is committed but the reversal journal failed.
+				// Log at ERROR for operator alerting; the refund record is authoritative.
+				slog.Error("LEDGER GAP: MirrorRefundAllocations failed after manual refund committed",
+					"refund_id", rfRow.ID,
+					"property_id", pid,
+					"err", mirrorErr,
+				)
 			}
 		}
 	}

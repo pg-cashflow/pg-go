@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -161,6 +162,14 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 	// When Pool & GatewayPaymentRepo are wired, run atomic resolve-then-lock settlement:
 	if h.Pool != nil && h.GatewayPaymentRepo != nil {
+		var (
+			committedPayment     *domain.Payment
+			committedDue0        *domain.Due
+			committedAllocations []finance.PaymentAllocationItem
+			committedUnapplied   int64
+			isCommittedUnapplied bool
+		)
+
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			txDueRepo := postgres.NewDueRepo(tx)
@@ -245,21 +254,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if err := txPayRepo.Create(ctx, p); err != nil {
 					return err
 				}
-				if h.Finance != nil {
-					if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, due0.PropertyID, p.ID, int64(succ.AmountPaise), at); mirrorErr != nil {
-						// Ledger-gap: the payment row is committed but its journal entry failed. The ledger
-						// write uses its own pool transaction (a dual write) and the DB triggers cannot see a
-						// row that was never inserted; the gap is surfaced by ledger_unposted_payments()
-						// (migration 044, ADR-016). Log at ERROR; do NOT roll back the payment to avoid
-						// re-crediting the customer.
-						slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",
-							"payment_id", p.ID,
-							"property_id", due0.PropertyID,
-							"amount_paise", succ.AmountPaise,
-							"err", mirrorErr,
-						)
-					}
-				}
+				committedPayment = p
+				committedDue0 = due0
+				isCommittedUnapplied = true
+
 				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 					return err
 				}
@@ -282,6 +280,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			}
 
 			remainingPaise := int64(succ.AmountPaise)
+			var allocations []finance.PaymentAllocationItem
 			for _, item := range snapshot {
 				if remainingPaise <= 0 {
 					break
@@ -297,6 +296,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if err := txPayRepo.CreateAllocation(ctx, p.ID, targetDue.ID, allocPaise); err != nil {
 					return err
 				}
+				allocations = append(allocations, finance.PaymentAllocationItem{
+					AmountPaise: allocPaise,
+					DueKind:     targetDue.Kind,
+				})
 				credit := targetDue.ApplyPayment(int(allocPaise), at)
 				if err := txDueRepo.Update(ctx, targetDue); err != nil {
 					return err
@@ -308,22 +311,19 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				}
 				remainingPaise -= allocPaise
 			}
-
-			if h.Finance != nil {
-				if mirrorErr := h.Finance.MirrorPayment(ctx, p, due0); mirrorErr != nil {
-					// Ledger-gap: the payment row is committed but its journal entry failed. The ledger
-					// write uses its own pool transaction (a dual write) and the DB triggers cannot see a
-					// row that was never inserted; the gap is surfaced by ledger_unposted_payments()
-					// (migration 044, ADR-016). Log at ERROR; do NOT roll back the payment to avoid
-					// re-crediting the customer.
-					slog.Default().Error("LEDGER GAP: MirrorPayment failed after payment committed",
-						"payment_id", p.ID,
-						"due_id", due0.ID,
-						"property_id", due0.PropertyID,
-						"err", mirrorErr,
-					)
+			unappliedPaise := remainingPaise
+			if unappliedPaise > 0 {
+				if _, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, unappliedPaise); err != nil {
+					return err
 				}
 			}
+
+			committedPayment = p
+			committedDue0 = due0
+			committedAllocations = allocations
+			committedUnapplied = unappliedPaise
+			isCommittedUnapplied = false
+
 			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 				return err
 			}
@@ -332,6 +332,34 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
 			return
+		}
+
+		if h.Finance != nil && committedPayment != nil && committedDue0 != nil {
+			if isCommittedUnapplied {
+				if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, committedDue0.PropertyID, committedPayment.ID, int64(committedPayment.Amount), committedPayment.MatchedAt); mirrorErr != nil {
+					slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",
+						"payment_id", committedPayment.ID,
+						"property_id", committedDue0.PropertyID,
+						"amount_paise", committedPayment.Amount,
+						"err", mirrorErr,
+					)
+				}
+			} else {
+				if len(committedAllocations) == 0 {
+					committedAllocations = append(committedAllocations, finance.PaymentAllocationItem{
+						AmountPaise: int64(committedPayment.Amount),
+						DueKind:     committedDue0.Kind,
+					})
+				}
+				if mirrorErr := h.Finance.MirrorPaymentAllocations(ctx, committedDue0.PropertyID, committedPayment, committedAllocations, committedUnapplied); mirrorErr != nil {
+					slog.Default().Error("LEDGER GAP: MirrorPaymentAllocations failed after payment committed",
+						"payment_id", committedPayment.ID,
+						"due_id", committedDue0.ID,
+						"property_id", committedDue0.PropertyID,
+						"err", mirrorErr,
+					)
+				}
+			}
 		}
 		if evtRecord.ID != uuid.Nil {
 			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
@@ -437,6 +465,13 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 	// Step 2: Lock hierarchy and forward-only status transition
 	if h.Pool != nil {
+		var (
+			committedRefund  *domain.GatewayRefund
+			committedDue     *domain.Due
+			committedIsUnapp bool
+			committedRefAmt  int64
+		)
+
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			txDueRepo := postgres.NewDueRepo(tx)
@@ -490,20 +525,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 			// Financial ledger reversal upon successful refund
 			if strings.EqualFold(ref.RefundStatus, "SUCCESS") {
-				now := time.Now().UTC()
 				if p.IsUnapplied {
-					if h.Finance != nil {
-						if mirrorErr := h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, true, d.Kind, now); mirrorErr != nil {
-							// Ledger-gap: refund row is committed but the reversal journal failed.
-							// Log at ERROR for operator alerting; do NOT roll back the refund record.
-							slog.Default().Error("LEDGER GAP: MirrorRefund (unapplied) failed after refund committed",
-								"refund_id", rfRow.ID,
-								"property_id", d.PropertyID,
-								"amount_paise", ref.RefundAmount,
-								"err", mirrorErr,
-							)
-						}
-					}
+					committedRefund = rfRow
+					committedDue = d
+					committedIsUnapp = true
+					committedRefAmt = ref.RefundAmount
 				} else {
 					if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
 						RefundID:    rfRow.ID,
@@ -515,18 +541,10 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 					if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
 						return err
 					}
-					if h.Finance != nil {
-						if mirrorErr := h.Finance.MirrorRefund(ctx, d.PropertyID, rfRow.ID, ref.RefundAmount, false, d.Kind, now); mirrorErr != nil {
-							// Ledger-gap: refund row is committed but the reversal journal failed.
-							// Log at ERROR for operator alerting; do NOT roll back the refund record.
-							slog.Default().Error("LEDGER GAP: MirrorRefund (applied) failed after refund committed",
-								"refund_id", rfRow.ID,
-								"property_id", d.PropertyID,
-								"amount_paise", ref.RefundAmount,
-								"err", mirrorErr,
-							)
-						}
-					}
+					committedRefund = rfRow
+					committedDue = d
+					committedIsUnapp = false
+					committedRefAmt = ref.RefundAmount
 				}
 			}
 			return nil
@@ -534,6 +552,20 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "refund settle failed"})
 			return
+		}
+
+		if h.Finance != nil && committedRefund != nil && committedDue != nil {
+			now := time.Now().UTC()
+			if mirrorErr := h.Finance.MirrorRefund(ctx, committedDue.PropertyID, committedRefund.ID, committedRefAmt, committedIsUnapp, committedDue.Kind, now); mirrorErr != nil {
+				// Ledger-gap: refund row is committed but the reversal journal failed.
+				// Log at ERROR for operator alerting; do NOT roll back the refund record.
+				slog.Default().Error("LEDGER GAP: MirrorRefund failed after refund committed",
+					"refund_id", committedRefund.ID,
+					"property_id", committedDue.PropertyID,
+					"amount_paise", committedRefAmt,
+					"err", mirrorErr,
+				)
+			}
 		}
 	} else if h.GatewayPaymentRepo != nil {
 		source := "system"

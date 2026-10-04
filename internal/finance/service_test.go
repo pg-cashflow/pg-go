@@ -427,4 +427,167 @@ func TestMirrorBankStatement_QuarantineAndAllocation_Balances(t *testing.T) {
 	}
 }
 
+func TestMirrorPaymentAllocations_MultiDueAndUnapplied(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+	pID := uuid.New()
+
+	p := &domain.Payment{
+		ID:        pID,
+		Amount:    3500000, // ₹35,000 total
+		MatchedBy: domain.MatchedByCashfree,
+		MatchedAt: time.Now().UTC(),
+	}
+
+	allocations := []PaymentAllocationItem{
+		{AmountPaise: 1000000, DueKind: domain.DueKindDeposit},     // ₹10,000 deposit
+		{AmountPaise: 2000000, DueKind: domain.DueKindRent},        // ₹20,000 rent
+		{AmountPaise: 200000, DueKind: domain.DueKindElectricity}, // ₹2,000 utility
+	}
+	unappliedPaise := int64(300000) // ₹3,000 overpayment / tenant credit
+
+	err := svc.MirrorPaymentAllocations(ctx, pid, p, allocations, unappliedPaise)
+	if err != nil {
+		t.Fatalf("MirrorPaymentAllocations failed: %v", err)
+	}
+
+	lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal failed: %v", err)
+	}
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 lines (1 debit + 4 credits), got %d", len(lines))
+	}
+
+	var totalDebit, totalCredit int64
+	seenLineKinds := make(map[string]bool)
+	for _, l := range lines {
+		if seenLineKinds[l.LineKind] {
+			t.Fatalf("duplicate line kind %q for source %v", l.LineKind, l.SourceID)
+		}
+		seenLineKinds[l.LineKind] = true
+		totalDebit += l.DebitPaise
+		totalCredit += l.CreditPaise
+
+		if l.DebitPaise > 0 {
+			if l.AccountCode != domain.AcctGatewayClearing || l.DebitPaise != 3500000 {
+				t.Errorf("unexpected debit line: %+v", l)
+			}
+		}
+		if l.CreditPaise > 0 {
+			switch l.AccountCode {
+			case domain.AcctDepositLiability:
+				if l.CreditPaise != 1000000 {
+					t.Errorf("deposit credit: want 1000000 got %d", l.CreditPaise)
+				}
+			case domain.AcctRentRevenue:
+				if l.CreditPaise != 2000000 {
+					t.Errorf("rent credit: want 2000000 got %d", l.CreditPaise)
+				}
+			case domain.AcctUtilityRecoveryRevenue:
+				if l.CreditPaise != 200000 {
+					t.Errorf("utility credit: want 200000 got %d", l.CreditPaise)
+				}
+			case domain.AcctUnappliedReceipts:
+				if l.CreditPaise != 300000 {
+					t.Errorf("unapplied credit: want 300000 got %d", l.CreditPaise)
+				}
+			default:
+				t.Errorf("unexpected credit account %s", l.AccountCode)
+			}
+		}
+	}
+	if totalDebit != totalCredit || totalDebit != 3500000 {
+		t.Fatalf("unbalanced journal: debits=%d credits=%d want 3500000", totalDebit, totalCredit)
+	}
+}
+
+func TestMirrorRefundAllocations_MultiDue(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+	refundID := uuid.New()
+
+	allocations := []RefundAllocationItem{
+		{AmountPaise: 500000, DueKind: domain.DueKindRent},    // ₹5,000 rent
+		{AmountPaise: 300000, DueKind: domain.DueKindDeposit}, // ₹3,000 deposit
+	}
+
+	err := svc.MirrorRefundAllocations(ctx, pid, refundID, allocations, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("MirrorRefundAllocations failed: %v", err)
+	}
+
+	lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil {
+		t.Fatalf("ListJournal failed: %v", err)
+	}
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (2 debits + 1 credit), got %d", len(lines))
+	}
+
+	var totalDebit, totalCredit int64
+	seenLineKinds := make(map[string]bool)
+	for _, l := range lines {
+		if seenLineKinds[l.LineKind] {
+			t.Fatalf("duplicate line kind %q for source %v", l.LineKind, l.SourceID)
+		}
+		seenLineKinds[l.LineKind] = true
+		totalDebit += l.DebitPaise
+		totalCredit += l.CreditPaise
+
+		if l.CreditPaise > 0 {
+			if l.AccountCode != domain.AcctGatewayClearing || l.CreditPaise != 800000 {
+				t.Errorf("unexpected credit line: %+v", l)
+			}
+		}
+	}
+	if totalDebit != totalCredit || totalDebit != 800000 {
+		t.Fatalf("unbalanced journal: debits=%d credits=%d want 800000", totalDebit, totalCredit)
+	}
+}
+
+func TestMirrorProration_UnpaidVsPaid(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+
+	// 1. Unpaid due: must be a no-op
+	unpaidDue := &domain.Due{
+		ID:         uuid.New(),
+		PropertyID: pid,
+		Status:     domain.DueStatusPending,
+	}
+	err := svc.MirrorProration(ctx, unpaidDue, 1000000, 800000)
+	if err != nil {
+		t.Fatalf("unpaid proration error: %v", err)
+	}
+	lines, err := st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil || len(lines) != 0 {
+		t.Fatalf("expected 0 lines for unpaid due proration, got %d (err: %v)", len(lines), err)
+	}
+
+	// 2. Paid due: must post balancing proration lines
+	paidDue := &domain.Due{
+		ID:         uuid.New(),
+		PropertyID: pid,
+		Status:     domain.DueStatusPaid,
+	}
+	err = svc.MirrorProration(ctx, paidDue, 1000000, 800000)
+	if err != nil {
+		t.Fatalf("paid proration error: %v", err)
+	}
+	lines, err = st.ListJournal(ctx, pid, time.Time{}, time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), "")
+	if err != nil || len(lines) != 2 {
+		t.Fatalf("expected 2 lines for paid due proration, got %d (err: %v)", len(lines), err)
+	}
+	if lines[0].DebitPaise != 200000 || lines[1].CreditPaise != 200000 {
+		t.Fatalf("unexpected proration lines: %+v", lines)
+	}
+}
+
 
