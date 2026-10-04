@@ -216,11 +216,15 @@ func (r *PaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventT
 	if provider == "" {
 		provider = "cashfree"
 	}
+	dedupKey := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
+	if len(dedupKey) > 128 {
+		dedupKey = dedupKey[:128]
+	}
 	tag, err := r.db.Exec(ctx, `
-		INSERT INTO processed_webhook_events (provider, event_type, provider_reference_id, event_status, created_at)
-		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (provider, event_type, provider_reference_id, event_status) DO NOTHING
-	`, provider, eventType, providerRefID, eventStatus)
+		INSERT INTO processed_webhook_events (dedup_key, provider, event_type, provider_reference_id, event_status, created_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT DO NOTHING
+	`, dedupKey, provider, eventType, providerRefID, eventStatus)
 	if err != nil {
 		return false, fmt.Errorf("payment: record processed event: %w", err)
 	}

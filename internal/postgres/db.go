@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -231,6 +232,8 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 
 		sum := sha256.Sum256(body)
 		checksum := hex.EncodeToString(sum[:])
+		lfSum := sha256.Sum256(bytes.ReplaceAll(body, []byte("\r\n"), []byte("\n")))
+		lfChecksum := hex.EncodeToString(lfSum[:])
 
 		// Check existence inside the locked transaction to prevent TOCTOU races between concurrent runners
 		var appliedChecksum *string
@@ -240,7 +243,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 			// Already applied. Verify the file has not been edited since.
 			if appliedChecksum == nil {
 				// Applied before checksums existed: record the current content (trust on first use).
-				if _, err := tx.Exec(ctx, `UPDATE schema_migrations SET checksum=$2 WHERE version=$1 AND checksum IS NULL`, name, checksum); err != nil {
+				if _, err := tx.Exec(ctx, `UPDATE schema_migrations SET checksum=$2 WHERE version=$1 AND checksum IS NULL`, name, lfChecksum); err != nil {
 					_ = tx.Rollback(ctx)
 					return fmt.Errorf("record checksum for %s: %w", name, err)
 				}
@@ -249,7 +252,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 				}
 				continue
 			}
-			if *appliedChecksum != checksum {
+			if *appliedChecksum != checksum && *appliedChecksum != lfChecksum {
 				_ = tx.Rollback(ctx)
 				return fmt.Errorf("migration %s was modified after it was applied (applied checksum %s, file checksum %s): never edit an applied migration, add a new one", name, *appliedChecksum, checksum)
 			}

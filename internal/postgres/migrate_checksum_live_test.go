@@ -200,3 +200,77 @@ func TestLivePostgresPropertyArchive(t *testing.T) {
 		t.Fatalf("expected ErrPropertyNotFound, got %v", err)
 	}
 }
+
+// TestLivePostgresMigrate_LineEndingNormalizationAndSemanticTamperRejection explicitly proves:
+// 1. CRLF version is accepted without modification error.
+// 2. LF version is accepted without modification error.
+// 3. Semantic content edits are strictly rejected with an invariant violation error.
+func TestLivePostgresMigrate_LineEndingNormalizationAndSemanticTamperRejection(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL not set, skipping live Postgres test")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skip("config load failed, skipping live Postgres test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+	}
+	defer pool.Close()
+
+	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	table := "mig_probe_norm_" + suffix
+	version := "zz_" + suffix + "_norm.sql"
+	dir := t.TempDir()
+	file := filepath.Join(dir, version)
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DROP TABLE IF EXISTS `+table)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE version = $1`, version)
+	})
+
+	// Step 1: Initial apply with LF line endings
+	lfContent := []byte("CREATE TABLE " + table + " (\n    id INT\n);\n")
+	if err := os.WriteFile(file, lfContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, dir); err != nil {
+		t.Fatalf("initial LF Migrate failed: %v", err)
+	}
+
+	// Step 2: Convert to CRLF line endings (e.g. Windows Git checkout) -> MUST BE ACCEPTED
+	crlfContent := []byte("CREATE TABLE " + table + " (\r\n    id INT\r\n);\r\n")
+	if err := os.WriteFile(file, crlfContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, dir); err != nil {
+		t.Fatalf("CRLF version was rejected: %v (line ending normalization invariant broken)", err)
+	}
+
+	// Step 3: Revert to LF line endings (e.g. Linux Git checkout) -> MUST BE ACCEPTED
+	if err := os.WriteFile(file, lfContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool, dir); err != nil {
+		t.Fatalf("LF version was rejected: %v", err)
+	}
+
+	// Step 4: Semantic content tampering -> MUST BE STRICTLY REJECTED
+	tamperedContent := []byte("CREATE TABLE " + table + " (\n    id INT,\n    tampered INT\n);\n")
+	if err := os.WriteFile(file, tamperedContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = Migrate(ctx, pool, dir)
+	if err == nil {
+		t.Fatalf("expected semantic edit to be rejected, but Migrate succeeded")
+	}
+	if !strings.Contains(err.Error(), "never edit an applied migration, add a new one") {
+		t.Fatalf("expected 'never edit an applied migration' error, got %v", err)
+	}
+}
+

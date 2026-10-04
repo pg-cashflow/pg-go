@@ -11,6 +11,7 @@ import (
 var (
 	ErrNotFound             = errors.New("not found")
 	ErrDuplicateIdempotency = errors.New("duplicate idempotency key")
+	ErrIdempotencyConflict  = errors.New("idempotency conflict: payload does not match existing record")
 	// ErrPeriodClosed: a ledger write targets an accounting period whose tie-out is closed
 	// (DB controls C-3/C-4, migration 044). Reopening is an audited, privileged act.
 	ErrPeriodClosed = errors.New("accounting period is closed")

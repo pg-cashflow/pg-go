@@ -15,6 +15,14 @@ type MetricsResponse struct {
 	Runtime   RuntimeMetrics   `json:"runtime"`
 	Database  DatabaseMetrics  `json:"database"`
 	QueryPerf QueryPerfSummary `json:"query_performance"`
+	Outbox    *OutboxMetrics   `json:"outbox,omitempty"`
+}
+
+type OutboxMetrics struct {
+	PendingCount        int64   `json:"pending_count"`
+	DeadLetterCount     int64   `json:"dead_letter_count"`
+	RetryingCount       int64   `json:"retrying_count"`
+	OldestPendingAgeSec float64 `json:"oldest_pending_age_sec"`
 }
 
 type RuntimeMetrics struct {
@@ -85,6 +93,19 @@ func (h *Handlers) Metrics(c *gin.Context) {
 		}
 	}
 
+	var outboxMetrics *OutboxMetrics
+	if h.LedgerOutboxRepo != nil {
+		stats, err := h.LedgerOutboxRepo.GetOutboxQueueStats(c.Request.Context())
+		if err == nil {
+			outboxMetrics = &OutboxMetrics{
+				PendingCount:        stats.PendingCount,
+				DeadLetterCount:     stats.DeadLetterCount,
+				RetryingCount:       stats.RetryingCount,
+				OldestPendingAgeSec: stats.OldestPendingAgeSec,
+			}
+		}
+	}
+
 	// Prometheus text format support
 	accept := c.GetHeader("Accept")
 	format := c.Query("format")
@@ -140,6 +161,32 @@ pg_query_duration_p99_ms %.3f
 			perfSummary.P95DurationMs,
 			perfSummary.P99DurationMs,
 		)
+
+		if outboxMetrics != nil {
+			promOutput += fmt.Sprintf(`
+# HELP ledger_outbox_pending_events Current number of pending ledger outbox events.
+# TYPE ledger_outbox_pending_events gauge
+ledger_outbox_pending_events %d
+
+# HELP ledger_outbox_dead_letter_events Total events in permanent failure / dead letter state.
+# TYPE ledger_outbox_dead_letter_events gauge
+ledger_outbox_dead_letter_events %d
+
+# HELP ledger_outbox_retrying_events Events currently retrying with attempt_count > 0.
+# TYPE ledger_outbox_retrying_events gauge
+ledger_outbox_retrying_events %d
+
+# HELP ledger_outbox_oldest_age_seconds Age of the oldest pending ledger outbox event in seconds.
+# TYPE ledger_outbox_oldest_age_seconds gauge
+ledger_outbox_oldest_age_seconds %.3f
+`,
+				outboxMetrics.PendingCount,
+				outboxMetrics.DeadLetterCount,
+				outboxMetrics.RetryingCount,
+				outboxMetrics.OldestPendingAgeSec,
+			)
+		}
+
 		c.Data(http.StatusOK, "text/plain; version=0.0.4; charset=utf-8", []byte(promOutput))
 		return
 	}
@@ -149,5 +196,6 @@ pg_query_duration_p99_ms %.3f
 		Runtime:   rtMetrics,
 		Database:  dbMetrics,
 		QueryPerf: perfSummary,
+		Outbox:    outboxMetrics,
 	})
 }

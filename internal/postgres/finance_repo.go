@@ -409,15 +409,59 @@ func (r *FinanceRepo) InsertJournal(ctx context.Context, lines []domain.JournalL
 	}
 
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		firstLine := lines[0]
+		existingRows, err := tx.Query(ctx, `
+			SELECT id, line_kind, account_code, debit_paise, credit_paise 
+			FROM financial_journal_entries 
+			WHERE source_type=$1 AND source_id=$2`, firstLine.SourceType, firstLine.SourceID)
+		if err != nil {
+			return mapLedgerPgErr(err)
+		}
+		defer existingRows.Close()
+
+		type lineSummary struct {
+			acct   string
+			debit  int64
+			credit int64
+		}
+		existingMap := make(map[string]lineSummary)
+		for existingRows.Next() {
+			var id uuid.UUID
+			var lKind, acct string
+			var dr, cr int64
+			if err := existingRows.Scan(&id, &lKind, &acct, &dr, &cr); err != nil {
+				return err
+			}
+			existingMap[lKind] = lineSummary{acct: acct, debit: dr, credit: cr}
+		}
+		if err := existingRows.Err(); err != nil {
+			return err
+		}
+
+		if len(existingMap) > 0 {
+			if len(existingMap) != len(lines) {
+				return fmt.Errorf("%w: journal source %s has %d existing lines but incoming has %d",
+					domain.ErrIdempotencyConflict, firstLine.SourceID, len(existingMap), len(lines))
+			}
+			for _, l := range lines {
+				ex, found := existingMap[l.LineKind]
+				if !found || ex.acct != l.AccountCode || ex.debit != l.DebitPaise || ex.credit != l.CreditPaise {
+					return fmt.Errorf("%w: journal line %s (%s) has conflicting values (existing %s dr:%d cr:%d vs incoming %s dr:%d cr:%d)",
+						domain.ErrIdempotencyConflict, l.ID, l.LineKind, ex.acct, ex.debit, ex.credit, l.AccountCode, l.DebitPaise, l.CreditPaise)
+				}
+			}
+			return domain.ErrDuplicateIdempotency
+		}
+
 		for _, l := range lines {
 			_, err := tx.Exec(ctx, `
 				INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
 				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 				l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
-			if isUnique(err) {
-				return domain.ErrDuplicateIdempotency
-			}
 			if err != nil {
+				if isUnique(err) {
+					return domain.ErrIdempotencyConflict
+				}
 				return mapLedgerPgErr(err)
 			}
 		}

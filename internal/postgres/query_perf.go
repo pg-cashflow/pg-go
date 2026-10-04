@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"log/slog"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -161,7 +162,9 @@ func (t *QueryPerfTracer) Stats() QueryPerfStats {
 	var avg time.Duration
 	var p50, p95, p99 time.Duration
 	if total > 0 {
-		avg = time.Duration(totalNs / int64(total))
+		if total <= math.MaxInt64 {
+			avg = time.Duration(totalNs / int64(total)) // #nosec G115 -- guarded by total <= math.MaxInt64
+		}
 
 		target50 := uint64(float64(total) * 0.50)
 		target95 := uint64(float64(total) * 0.95)

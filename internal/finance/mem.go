@@ -326,15 +326,25 @@ func (m *MemoryStore) ListAdvances(_ context.Context, propertyID uuid.UUID) ([]d
 func (m *MemoryStore) InsertJournal(_ context.Context, lines []domain.JournalLine) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	seen := map[string]struct{}{}
+	seen := map[string]domain.JournalLine{}
 	for _, l := range m.journal {
-		seen[l.SourceType+l.SourceID.String()+l.LineKind] = struct{}{}
+		seen[l.SourceType+l.SourceID.String()+l.LineKind] = l
 	}
+
+	hasDuplicate := false
 	for _, l := range lines {
 		k := l.SourceType + l.SourceID.String() + l.LineKind
-		if _, ok := seen[k]; ok {
-			return ErrDuplicateIdempotency
+		if existing, ok := seen[k]; ok {
+			if existing.AccountCode != l.AccountCode || existing.DebitPaise != l.DebitPaise || existing.CreditPaise != l.CreditPaise {
+				return domain.ErrIdempotencyConflict
+			}
+			hasDuplicate = true
+		} else if hasDuplicate {
+			return domain.ErrIdempotencyConflict
 		}
+	}
+	if hasDuplicate {
+		return ErrDuplicateIdempotency
 	}
 	m.journal = append(m.journal, lines...)
 	return nil

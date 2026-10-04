@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -57,6 +58,63 @@ func TestPaymentMirror_DeterministicLineIDs(t *testing.T) {
 		if lines1[i].ID == linesDiff[i].ID {
 			t.Errorf("different source ID must yield different line ID for index %d", i)
 		}
+	}
+}
+
+func TestPaymentMirror_ConflictDetection_MismatchedPayload(t *testing.T) {
+	mem := NewMemoryStore()
+	propID := uuid.New()
+	paymentID := uuid.New()
+	now := time.Now().UTC()
+
+	specsOriginal := []LineSpec{
+		{Account: domain.AcctGatewayClearing, Debit: 1500000, LineKind: "cash_in"},
+		{Account: domain.AcctRentRevenue, Credit: 1500000, LineKind: "rent_collected"},
+	}
+
+	lines1, err := MakeLines(propID, paymentID, "payment", now, specsOriginal)
+	if err != nil {
+		t.Fatalf("MakeLines 1: %v", err)
+	}
+
+	if err := mem.InsertJournal(context.Background(), lines1); err != nil {
+		t.Fatalf("initial journal insert: %v", err)
+	}
+
+	// 1. Re-inserting exact same lines returns ErrDuplicateIdempotency (harmless duplicate)
+	err = mem.InsertJournal(context.Background(), lines1)
+	if !errors.Is(err, ErrDuplicateIdempotency) {
+		t.Fatalf("expected ErrDuplicateIdempotency on exact duplicate, got: %v", err)
+	}
+
+	// 2. Inserting lines with SAME sourceID and lineKind but DIFFERENT amount must trigger ErrIdempotencyConflict
+	specsTamperedAmount := []LineSpec{
+		{Account: domain.AcctGatewayClearing, Debit: 9999999, LineKind: "cash_in"},
+		{Account: domain.AcctRentRevenue, Credit: 9999999, LineKind: "rent_collected"},
+	}
+	linesTamperedAmount, err := MakeLines(propID, paymentID, "payment", now, specsTamperedAmount)
+	if err != nil {
+		t.Fatalf("MakeLines tampered: %v", err)
+	}
+
+	err = mem.InsertJournal(context.Background(), linesTamperedAmount)
+	if !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("expected ErrIdempotencyConflict on tampered amount, got: %v", err)
+	}
+
+	// 3. Inserting lines with SAME sourceID and lineKind but DIFFERENT account must trigger ErrIdempotencyConflict
+	specsTamperedAccount := []LineSpec{
+		{Account: domain.AcctCash, Debit: 1500000, LineKind: "cash_in"},
+		{Account: domain.AcctRentRevenue, Credit: 1500000, LineKind: "rent_collected"},
+	}
+	linesTamperedAccount, err := MakeLines(propID, paymentID, "payment", now, specsTamperedAccount)
+	if err != nil {
+		t.Fatalf("MakeLines tampered account: %v", err)
+	}
+
+	err = mem.InsertJournal(context.Background(), linesTamperedAccount)
+	if !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("expected ErrIdempotencyConflict on tampered account, got: %v", err)
 	}
 }
 

@@ -162,14 +162,6 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 	// When Pool & GatewayPaymentRepo are wired, run atomic resolve-then-lock settlement:
 	if h.Pool != nil && h.GatewayPaymentRepo != nil {
-		var (
-			committedPayment     *domain.Payment
-			committedDue0        *domain.Due
-			committedAllocations []finance.PaymentAllocationItem
-			committedUnapplied   int64
-			isCommittedUnapplied bool
-		)
-
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			txDueRepo := postgres.NewDueRepo(tx)
@@ -254,14 +246,14 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if err := txPayRepo.Create(ctx, p); err != nil {
 					return err
 				}
-				committedPayment = p
-				committedDue0 = due0
-				isCommittedUnapplied = true
 
 				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 					return err
 				}
-				if h.LedgerOutboxRepo != nil {
+				if h.Finance != nil {
+					if h.LedgerOutboxRepo == nil {
+						return fmt.Errorf("CRITICAL: LedgerOutboxRepo is required when Finance is enabled")
+					}
 					payload, err := json.Marshal(domain.PaymentMirrorPayload{
 						PropertyID:  due0.PropertyID,
 						PaymentID:   p.ID,
@@ -342,16 +334,13 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				}
 			}
 
-			committedPayment = p
-			committedDue0 = due0
-			committedAllocations = allocations
-			committedUnapplied = unappliedPaise
-			isCommittedUnapplied = false
-
 			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
 				return err
 			}
-			if h.LedgerOutboxRepo != nil {
+			if h.Finance != nil {
+				if h.LedgerOutboxRepo == nil {
+					return fmt.Errorf("CRITICAL: LedgerOutboxRepo is required when Finance is enabled")
+				}
 				allocPayloads := make([]domain.PaymentAllocationItemPayload, 0, len(allocations))
 				for _, a := range allocations {
 					allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
@@ -397,33 +386,6 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			return
 		}
 
-		if h.LedgerOutboxRepo == nil && h.Finance != nil && committedPayment != nil && committedDue0 != nil {
-			if isCommittedUnapplied {
-				if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, committedDue0.PropertyID, committedPayment.ID, int64(committedPayment.Amount), committedPayment.MatchedAt); mirrorErr != nil {
-					slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",
-						"payment_id", committedPayment.ID,
-						"property_id", committedDue0.PropertyID,
-						"amount_paise", committedPayment.Amount,
-						"err", mirrorErr,
-					)
-				}
-			} else {
-				if len(committedAllocations) == 0 {
-					committedAllocations = append(committedAllocations, finance.PaymentAllocationItem{
-						AmountPaise: int64(committedPayment.Amount),
-						DueKind:     committedDue0.Kind,
-					})
-				}
-				if mirrorErr := h.Finance.MirrorPaymentAllocations(ctx, committedDue0.PropertyID, committedPayment, committedAllocations, committedUnapplied); mirrorErr != nil {
-					slog.Default().Error("LEDGER GAP: MirrorPaymentAllocations failed after payment committed",
-						"payment_id", committedPayment.ID,
-						"due_id", committedDue0.ID,
-						"property_id", committedDue0.PropertyID,
-						"err", mirrorErr,
-					)
-				}
-			}
-		}
 		if evtRecord.ID != uuid.Nil {
 			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
 		}

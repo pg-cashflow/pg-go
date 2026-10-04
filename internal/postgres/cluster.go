@@ -129,18 +129,18 @@ func RedactURL(rawURL string) string {
 // ConfigurePoolConfig applies socket-level keep-alives, connection timeouts, PgBouncer compatibility
 // modes, and statement cache tuning to a pgxpool.Config.
 func ConfigurePoolConfig(cfg *pgxpool.Config, opt PoolOptions) {
-	if opt.MaxConns <= 0 {
+	if opt.MaxConns <= 0 || opt.MaxConns > 10000 {
 		opt.MaxConns = 25
 	}
-	cfg.MaxConns = int32(opt.MaxConns)
+	cfg.MaxConns = int32(opt.MaxConns) // #nosec G115 -- bounded by [1, 10000]
 
-	if opt.MinConns < 0 {
+	if opt.MinConns < 0 || opt.MinConns > opt.MaxConns {
 		opt.MinConns = opt.MaxConns / 5
 		if opt.MinConns < 2 {
 			opt.MinConns = 2
 		}
 	}
-	cfg.MinConns = int32(opt.MinConns)
+	cfg.MinConns = int32(opt.MinConns) // #nosec G115 -- bounded by [0, MaxConns]
 
 	if opt.MaxConnLifetime <= 0 {
 		opt.MaxConnLifetime = time.Hour

@@ -1,8 +1,11 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -20,6 +23,11 @@ func NewLedgerOutboxRepo(db DBTX) *LedgerOutboxRepo {
 }
 
 // InsertLedgerOutboxEventTx inserts an outbox event within the domain write's transaction.
+// Idempotency guarantee:
+// - If an event with the same idempotency_key already exists with an IDENTICAL payload,
+//   it returns nil and sets evt.ID and evt.CreatedAt to the existing record.
+// - If an event with the same idempotency_key already exists with a DIFFERENT payload,
+//   it strictly returns domain.ErrIdempotencyConflict. Idempotency NEVER hides financial payload tampering.
 func (r *LedgerOutboxRepo) InsertLedgerOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error {
 	if evt.Payload == nil {
 		evt.Payload = json.RawMessage("{}")
@@ -27,15 +35,74 @@ func (r *LedgerOutboxRepo) InsertLedgerOutboxEventTx(ctx context.Context, tx pgx
 	if evt.MaxAttempts <= 0 {
 		evt.MaxAttempts = 5
 	}
+
+	var (
+		existingID      int64
+		existingPayload []byte
+		existingCreated time.Time
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT id, payload, created_at FROM ledger_outbox_events
+		WHERE idempotency_key = $1`, evt.IdempotencyKey,
+	).Scan(&existingID, &existingPayload, &existingCreated)
+
+	if err == nil {
+		// Existing record found with identical idempotency key.
+		// Compare payload values canonically to detect tampering.
+		if !jsonPayloadsMatch(existingPayload, evt.Payload) {
+			return fmt.Errorf("%w: idempotency key '%s' already exists with conflicting payload", domain.ErrIdempotencyConflict, evt.IdempotencyKey)
+		}
+		evt.ID = existingID
+		evt.CreatedAt = existingCreated
+		return nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
 	return tx.QueryRow(ctx, `
 		INSERT INTO ledger_outbox_events (
 			event_type, property_id, source_id, payload, idempotency_key, max_attempts
 		) VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (idempotency_key) DO UPDATE
-			SET payload = EXCLUDED.payload
 		RETURNING id, created_at`,
 		evt.EventType, evt.PropertyID, evt.SourceID, evt.Payload, evt.IdempotencyKey, evt.MaxAttempts,
 	).Scan(&evt.ID, &evt.CreatedAt)
+}
+
+func jsonPayloadsMatch(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	var valA, valB any
+	if err := json.Unmarshal(a, &valA); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &valB); err != nil {
+		return false
+	}
+	canonA, _ := json.Marshal(valA)
+	canonB, _ := json.Marshal(valB)
+	return bytes.Equal(canonA, canonB)
+}
+
+// OutboxQueueStats represents real-time health and lag metrics for the ledger outbox.
+type OutboxQueueStats struct {
+	PendingCount        int64   `json:"pending_count"`
+	DeadLetterCount     int64   `json:"dead_letter_count"`
+	RetryingCount       int64   `json:"retrying_count"`
+	OldestPendingAgeSec float64 `json:"oldest_pending_age_sec"`
+}
+
+// GetOutboxQueueStats queries operational metrics for Prometheus and health endpoints.
+func (r *LedgerOutboxRepo) GetOutboxQueueStats(ctx context.Context) (OutboxQueueStats, error) {
+	var s OutboxQueueStats
+	err := r.db.QueryRow(ctx, `
+		SELECT 
+			COALESCE(COUNT(*) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL), 0),
+			COALESCE(COUNT(*) FILTER (WHERE failed_at IS NOT NULL), 0),
+			COALESCE(COUNT(*) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL AND attempt_count > 0), 0),
+			COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at))) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL), 0)
+		FROM ledger_outbox_events`).Scan(&s.PendingCount, &s.DeadLetterCount, &s.RetryingCount, &s.OldestPendingAgeSec)
+	return s, err
 }
 
 // FetchPendingCandidateIDs returns IDs of pending ledger outbox events eligible for dispatch.
