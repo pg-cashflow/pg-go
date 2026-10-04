@@ -232,40 +232,40 @@ Low risk (owner-only route). Use sanitized message for consistency with other ro
 
 ### Step 2 — Payments (Cashfree)
 
-| Check                                          | Result        | Citation                                                          |
-| ---------------------------------------------- | ------------- | ----------------------------------------------------------------- |
-| HMAC uses `hmac.Equal` (constant-time)         | PASS          | `cashfree/client.go:164`                                          |
-| Webhook idempotent (duplicate event safe)      | PASS          | `handlers_pay.go:410-415`: `GetByCFPaymentID` + `ErrDuplicateTxn` |
-| Amount validated server-side vs. stored intent | PASS          | `handlers_pay.go:406-408`                                         |
-| `CASHFREE_ENV` env-driven, not hardcoded       | PASS          | `cashfree/client.go:27-32`                                        |
-| No sandbox/production URL confusion            | PASS          | `baseURL()` deterministic on `Env` string                         |
-| No TDR/surcharge code path                     | PASS          | Amount = `intent.AmountPaise` (DB-stored), no fee logic           |
-| Webhook not behind JWT middleware              | PASS          | `router.go:126` — unauthenticated group                           |
-| API errors fail safe (no silent success)       | PASS          | `handlers_pay.go:418-424`                                         |
-| Empty secret fails open                        | **HIGH (H1)** | `handlers_pay.go:374-376`                                         |
+| Check                                          | Result | Citation                                                                                                                              |
+| ---------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| HMAC uses `hmac.Equal` (constant-time)         | PASS   | `cashfree/client.go:164`                                                                                                              |
+| Webhook idempotent (duplicate event safe)      | PASS   | `handlers_pay.go:410-415`: `GetByCFPaymentID` + `ErrDuplicateTxn`                                                                    |
+| Amount validated server-side vs. stored intent | PASS   | `handlers_pay.go:406-408`                                                                                                             |
+| `CASHFREE_ENV` env-driven, not hardcoded       | PASS   | `cashfree/client.go:27-32`                                                                                                            |
+| No sandbox/production URL confusion            | PASS   | `baseURL()` deterministic on `Env` string                                                                                             |
+| No TDR/surcharge code path                     | PASS   | Amount = `intent.AmountPaise` (DB-stored), no fee logic                                                                               |
+| Webhook not behind JWT middleware              | PASS   | `router.go:126` — unauthenticated group                                                                                               |
+| API errors fail safe (no silent success)       | PASS   | `handlers_pay.go:418-424`                                                                                                             |
+| Empty secret fails open                        | PASS   | `internal/api/handlers_pay_webhooks.go:40-47`: 503 fail-closed when IntentStore wired; `validate.go:76-78`: startup validation reject |
 
 ### Step 3 — OTP / SMS
 
-| Check                                   | Result           | Citation                                                |
-| --------------------------------------- | ---------------- | ------------------------------------------------------- |
-| OTP comparison constant-time            | PASS             | `auth/otp.go:31-33`: `hmac.Equal`                       |
-| Server-enforced OTP expiry              | PASS             | `auth/service.go:124-126`                               |
-| Rate limit per phone                    | PASS             | `auth/service.go:81-88`: 3/10min                        |
-| Rate limit per IP                       | **MISSING (M2)** | No IP limiting anywhere                                 |
-| OTP entropy (6 digits + 5-attempt lock) | PASS             | `auth/otp.go:16`: `crypto/rand`                         |
-| SMS API keys not logged                 | PASS             | grep confirms clean                                     |
-| OTP attempt lockout                     | PASS             | `auth/service.go:127-129`: `ErrOTPLocked` at 5 attempts |
+| Check                                   | Result | Citation                                                                                                           |
+| --------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
+| OTP comparison constant-time            | PASS   | `auth/otp.go:31-33`: `hmac.Equal`                                                                                  |
+| Server-enforced OTP expiry              | PASS   | `auth/service.go:124-126`                                                                                          |
+| Rate limit per phone                    | PASS   | `auth/service.go:81-88`: 3/10min                                                                                   |
+| Rate limit per IP                       | PASS   | `internal/api/router.go:175,177`, `internal/api/ratelimit.go`: token-bucket per-IP middleware on OTP and Firebase |
+| OTP entropy (6 digits + 5-attempt lock) | PASS   | `auth/otp.go:16`: `crypto/rand`                                                                                    |
+| SMS API keys not logged                 | PASS   | grep confirms clean                                                                                                |
+| OTP attempt lockout                     | PASS   | `auth/service.go:127-129`: `ErrOTPLocked` at 5 attempts                                                            |
 
 ### Step 4 — Magic Links
 
-| Check                             | Result          | Citation                                          |
-| --------------------------------- | --------------- | ------------------------------------------------- |
-| Token uses `crypto/rand`          | PASS            | `domain/token.go:30`                              |
-| `math/rand` not used in magiclink | PASS            | grep: no results                                  |
-| Token is single-use               | PASS            | `magiclink/service.go:90-92`                      |
-| 72h TTL                           | PASS            | `domain/token.go:14`                              |
-| Token leaks into logs             | **MEDIUM (M3)** | `router.go:61` — gin.Logger logs `/p/<raw-token>` |
-| Token comparison constant-time    | PASS            | `magiclink/token.go:21-22`: `hmac.Equal`          |
+| Check                             | Result | Citation                                                                               |
+| --------------------------------- | ------ | -------------------------------------------------------------------------------------- |
+| Token uses `crypto/rand`          | PASS   | `domain/token.go:30`                                                                   |
+| `math/rand` not used in magiclink | PASS   | grep: no results                                                                       |
+| Token is single-use               | PASS   | `magiclink/service.go:90-92`                                                           |
+| 72h TTL                           | PASS   | `domain/token.go:14`                                                                   |
+| Token leaks into logs             | PASS   | `internal/api/router.go:108-134`: `redactingLogFormatter` redacts `/p/<token>` paths    |
+| Token comparison constant-time    | PASS   | `magiclink/token.go:21-22`: `hmac.Equal`                                               |
 
 ### Step 5 — Aadhaar QR
 
@@ -298,14 +298,14 @@ Low risk (owner-only route). Use sanitized message for consistency with other ro
 
 ### Step 8 — Secrets & Config
 
-| Check                                          | Result           | Citation                         |
-| ---------------------------------------------- | ---------------- | -------------------------------- |
-| Startup refuses empty `JWT_SECRET`             | PASS             | `config/config.go:78-79`         |
-| Startup refuses empty `OTP_HMAC_SECRET`        | PASS             | `config/config.go:81-83`         |
-| Startup refuses empty `MAGIC_LINK_HMAC_SECRET` | PASS             | `config/config.go:84-86`         |
-| Placeholder secret guard in production         | **MISSING (M1)** | No check for "change-me" values  |
-| `InsecureSkipVerify` anywhere                  | PASS             | grep: no results                 |
-| Firebase SA JSON not logged                    | PASS             | `main.go:114` — path string only |
+| Check                                          | Result | Citation                                                                                           |
+| ---------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------- |
+| Startup refuses empty `JWT_SECRET`             | PASS   | `config/config.go:78-79`                                                                           |
+| Startup refuses empty `OTP_HMAC_SECRET`        | PASS   | `config/config.go:81-83`                                                                           |
+| Startup refuses empty `MAGIC_LINK_HMAC_SECRET` | PASS   | `config/config.go:84-86`                                                                           |
+| Placeholder secret guard in production         | PASS   | `internal/config/validate.go:31-37`: `ValidateForRealDeployment` rejects "change-me" and len < 32  |
+| `InsecureSkipVerify` anywhere                  | PASS   | grep: no results                                                                                   |
+| Firebase SA JSON not logged                    | PASS   | `main.go:114` — path string only                                                                   |
 
 ### Step 9 — CORS & Transport
 
@@ -317,10 +317,10 @@ Low risk (owner-only route). Use sanitized message for consistency with other ro
 
 ### Step 10 — Logging & Error Responses
 
-| Check                                | Result        | Citation                           |
-| ------------------------------------ | ------------- | ---------------------------------- |
-| No raw DB errors to clients          | **HIGH (H2)** | `err.Error()` at 50+ handler sites |
-| No PII (phone, OTP, Aadhaar) in logs | PASS          | grep confirms clean                |
+| Check                                | Result | Citation                                                                                                                               |
+| ------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| No raw DB errors to clients          | PASS   | `internal/api/apierr.go:39-51`: `respondErr` wraps typed ClientError; all handlers sanitized; CI check in `security-lint.yml`       |
+| No PII (phone, OTP, Aadhaar) in logs | PASS   | grep confirms clean                                                                                                                    |
 
 ### Step 11 — Dependencies
 
@@ -359,7 +359,16 @@ these vulnerabilities.
 
 ### `gosec ./...`
 
-NOT CHECKED — not installed. All gosec rule categories manually grep-checked (SQLi, `math/rand`, `InsecureSkipVerify`, hardcoded credentials, file traversal). See checklist above.
+```
+Summary:
+  Gosec  : dev
+  Files  : 198
+  Lines  : 41626
+  Nosec  : 9
+  Issues : 0
+```
+
+PASS — 0 security issues detected across 198 Go source files and 41,626 lines of code.
 
 ### `gitleaks detect`
 
@@ -377,7 +386,6 @@ PASS — 0 secrets or credentials detected across all 98 git commits in history.
 
 | Area                                    | Reason                                                                                                                   |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `gosec` static analysis                 | Not installed. All gosec rule categories manually grep-checked (SQLi, `math/rand`, `InsecureSkipVerify`, hardcoded credentials, file traversal). Clean. |
 | HTTPS/HSTS enforcement                  | Assumed at reverse proxy. Infrastructure config not in repo.                                                             |
 | Actual `.env` secret values             | Production environment secret values not stored in repo (by design). `.env.example` used as config shape proxy.         |
 

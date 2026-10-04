@@ -70,10 +70,10 @@ func (h *Handlers) Search(c *gin.Context) {
 		if errors.Is(err, search.ErrQueryRequired) ||
 			errors.Is(err, search.ErrQueryTooShort) ||
 			errors.Is(err, search.ErrQueryTooLong) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+		respondErr(c, err)
 		return
 	}
 

@@ -27,7 +27,7 @@ type createStaffBody struct {
 
 func (h *Handlers) OwnerCreateStaffProfile(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -38,24 +38,24 @@ func (h *Handlers) OwnerCreateStaffProfile(c *gin.Context) {
 
 	var body createStaffBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	payeeID, err := uuid.Parse(strings.TrimSpace(body.PayeeID))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payee_id"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid payee_id"))
 		return
 	}
 
 	effectiveFrom, err := time.Parse("2006-01-02", strings.TrimSpace(body.EffectiveFrom))
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_from format (must be YYYY-MM-DD)"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid effective_from format (must be YYYY-MM-DD)"))
 		return
 	}
 
 	if body.BaseMonthlyWagePaise <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "base_monthly_wage_paise must be positive"})
+		respondErr(c, clientErr(http.StatusBadRequest, "base_monthly_wage_paise must be positive"))
 		return
 	}
 
@@ -72,7 +72,7 @@ func (h *Handlers) OwnerCreateStaffProfile(c *gin.Context) {
 
 	created, err := h.AttendanceRepo.CreateStaffProfile(c.Request.Context(), staff)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create staff profile"})
+		respondErr(c, err)
 		return
 	}
 
@@ -81,7 +81,7 @@ func (h *Handlers) OwnerCreateStaffProfile(c *gin.Context) {
 
 func (h *Handlers) OwnerListStaffProfiles(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -93,7 +93,7 @@ func (h *Handlers) OwnerListStaffProfiles(c *gin.Context) {
 	onlyActive := c.Query("active_only") != "false"
 	list, err := h.AttendanceRepo.ListStaffProfiles(c.Request.Context(), pid, onlyActive)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list staff profiles"})
+		respondErr(c, err)
 		return
 	}
 
@@ -107,7 +107,7 @@ type updateStaffStatusBody struct {
 
 func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -123,13 +123,13 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 
 	var body updateStaffStatusBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	status := domain.StaffProfileStatus(strings.TrimSpace(body.Status))
 	if status != domain.StaffActive && status != domain.StaffInactive {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "status must be 'active' or 'inactive'"})
+		respondErr(c, clientErr(http.StatusBadRequest, "status must be 'active' or 'inactive'"))
 		return
 	}
 
@@ -137,7 +137,7 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 	if body.EffectiveTo != nil && *body.EffectiveTo != "" {
 		parsed, err := time.Parse("2006-01-02", *body.EffectiveTo)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid effective_to format (must be YYYY-MM-DD)"})
+			respondErr(c, clientErr(http.StatusBadRequest, "invalid effective_to format (must be YYYY-MM-DD)"))
 			return
 		}
 		effectiveTo = &parsed
@@ -145,11 +145,11 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 
 	err := h.AttendanceRepo.UpdateStaffProfileStatus(c.Request.Context(), pid, staffID, status, effectiveTo)
 	if errors.Is(err, postgres.ErrStaffNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "staff profile not found"})
+		respondErr(c, clientErr(http.StatusNotFound, "staff profile not found"))
 		return
 	}
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update staff status"})
+		respondErr(c, err)
 		return
 	}
 
@@ -162,7 +162,7 @@ func (h *Handlers) OwnerUpdateStaffProfileStatus(c *gin.Context) {
 
 func (h *Handlers) OwnerGetLeavePolicy(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -173,7 +173,7 @@ func (h *Handlers) OwnerGetLeavePolicy(c *gin.Context) {
 
 	policy, err := h.AttendanceRepo.GetLeavePolicy(c.Request.Context(), pid)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get leave policy"})
+		respondErr(c, err)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (h *Handlers) OwnerGetLeavePolicy(c *gin.Context) {
 
 func (h *Handlers) OwnerUpdateLeavePolicy(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -193,12 +193,12 @@ func (h *Handlers) OwnerUpdateLeavePolicy(c *gin.Context) {
 
 	var body domain.LeavePolicyUpdateRequest
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	if body.MonthlyFreeLeaveDays < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "monthly_free_leave_days cannot be negative"})
+		respondErr(c, clientErr(http.StatusBadRequest, "monthly_free_leave_days cannot be negative"))
 		return
 	}
 
@@ -209,7 +209,7 @@ func (h *Handlers) OwnerUpdateLeavePolicy(c *gin.Context) {
 	if basis != domain.WorkingDaysBasisCalendarDays &&
 		basis != domain.WorkingDaysBasisFixed30 &&
 		basis != domain.WorkingDaysBasisExcludingSundays {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid working_days_basis"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid working_days_basis"))
 		return
 	}
 
@@ -222,7 +222,7 @@ func (h *Handlers) OwnerUpdateLeavePolicy(c *gin.Context) {
 
 	saved, err := h.AttendanceRepo.UpsertLeavePolicy(c.Request.Context(), policy)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update leave policy"})
+		respondErr(c, err)
 		return
 	}
 
@@ -235,7 +235,7 @@ func (h *Handlers) OwnerUpdateLeavePolicy(c *gin.Context) {
 
 func (h *Handlers) OwnerMarkDailyAttendance(c *gin.Context) {
 	if h.AttendanceSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -250,12 +250,12 @@ func (h *Handlers) OwnerMarkDailyAttendance(c *gin.Context) {
 
 	var req domain.MarkDailyAttendanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	if err := h.AttendanceSvc.MarkDailyAttendance(c.Request.Context(), pid, uid, req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 
@@ -264,7 +264,7 @@ func (h *Handlers) OwnerMarkDailyAttendance(c *gin.Context) {
 
 func (h *Handlers) OwnerListMonthlyAttendance(c *gin.Context) {
 	if h.AttendanceRepo == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -279,13 +279,13 @@ func (h *Handlers) OwnerListMonthlyAttendance(c *gin.Context) {
 	}
 
 	if _, err := time.Parse("2006-01", month); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid month format (must be YYYY-MM)"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid month format (must be YYYY-MM)"))
 		return
 	}
 
 	records, err := h.AttendanceRepo.ListAttendanceForMonth(c.Request.Context(), pid, month)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list attendance"})
+		respondErr(c, err)
 		return
 	}
 
@@ -305,7 +305,7 @@ type payrollCycleBody struct {
 
 func (h *Handlers) OwnerPreviewPayroll(c *gin.Context) {
 	if h.AttendanceSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -316,19 +316,19 @@ func (h *Handlers) OwnerPreviewPayroll(c *gin.Context) {
 
 	var body payrollCycleBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	cycleMonth := strings.TrimSpace(body.CycleMonth)
 	if _, err := time.Parse("2006-01", cycleMonth); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cycle_month format (must be YYYY-MM)"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid cycle_month format (must be YYYY-MM)"))
 		return
 	}
 
 	previews, err := h.AttendanceSvc.PreviewCyclePayroll(c.Request.Context(), pid, cycleMonth)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to preview payroll: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 
@@ -340,7 +340,7 @@ func (h *Handlers) OwnerPreviewPayroll(c *gin.Context) {
 
 func (h *Handlers) OwnerFinalizePayroll(c *gin.Context) {
 	if h.AttendanceSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "attendance service unavailable"})
+		respondErr(c, clientErr(http.StatusServiceUnavailable, "attendance service unavailable"))
 		return
 	}
 
@@ -355,19 +355,19 @@ func (h *Handlers) OwnerFinalizePayroll(c *gin.Context) {
 
 	var body payrollCycleBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
 	}
 
 	cycleMonth := strings.TrimSpace(body.CycleMonth)
 	if _, err := time.Parse("2006-01", cycleMonth); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cycle_month format (must be YYYY-MM)"})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid cycle_month format (must be YYYY-MM)"))
 		return
 	}
 
 	finalized, err := h.AttendanceSvc.FinalizePayrollCycleTx(c.Request.Context(), pid, uid, cycleMonth)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize payroll: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
 

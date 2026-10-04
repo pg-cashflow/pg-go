@@ -622,22 +622,22 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 	}
 	file, hdr, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file required"})
+		respondErr(c, clientErr(http.StatusBadRequest, "file required"))
 		return
 	}
 	defer file.Close()
 	if hdr.Size > maxCSVBytes {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file too large (max 5MB)"})
+		respondErr(c, clientErr(http.StatusBadRequest, "file too large (max 5MB)"))
 		return
 	}
 	limited := io.LimitReader(file, maxCSVBytes+1)
 	parseRes, err := csv.ParseWithMeta(limited)
 	if err != nil {
 		if errors.Is(err, csv.ErrUnknownSchema) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown CSV schema — required columns: date, note, and amount (or deposit/withdrawal)"})
+			respondErr(c, clientErr(http.StatusBadRequest, "unknown CSV schema — required columns: date, note, and amount (or deposit/withdrawal)"))
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "csv parse error: " + err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "csv parse error: invalid format or syntax"))
 		return
 	}
 	rows := parseRes.Rows
