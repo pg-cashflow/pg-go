@@ -142,7 +142,7 @@ func NewRouter(d Deps) *gin.Engine {
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language"},
-			AllowCredentials: true,
+			AllowCredentials: false,
 			MaxAge:           12 * time.Hour,
 		}))
 	}
@@ -261,6 +261,9 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/finance/statements/balance-sheet", h.OwnerStatementBalanceSheet)
 			owner.GET("/finance/statements/cash-flow", h.OwnerStatementCashFlow)
 			owner.GET("/finance/statements/trial-balance", h.OwnerStatementTrialBalance)
+			owner.GET("/finance/reports/clearing-drift", h.OwnerClearingDriftReport)
+			owner.GET("/finance/reports/deposit-reserve", h.OwnerDepositReserveReport)
+			owner.GET("/finance/reports/capital-payback", h.OwnerCapitalPaybackReport)
 			owner.GET("/finance/reconciling-items", h.OwnerReconcilingItems)
 			owner.GET("/finance/variance-bridge", h.FinanceVarianceBridge)
 			owner.GET("/finance/imports", h.ListExpenseImports)

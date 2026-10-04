@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -704,7 +704,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			if h.BankTxnRepo != nil {
 				inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, debitTxn)
 				if err != nil {
-					log.Printf("ERROR: ImportStatements saving debit transaction failed: %v", err)
+					slog.Error("ImportStatements saving debit transaction failed", "error", err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record debit transaction"})
 					return
 				}
@@ -763,7 +763,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		// unique constraint (source_type, source_id, line_kind) makes the entry idempotent.
 		if h.Finance != nil && h.FinanceEnabled {
 			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, sourceID, int64(row.AmountPaise), row.Date); err != nil {
-				log.Printf("ERROR: ImportStatements ledger mirror quarantine failed: %v", err)
+				slog.Error("ImportStatements ledger mirror quarantine failed", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial entry"})
 				return
 			}
@@ -772,7 +772,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		if h.BankTxnRepo != nil {
 			inserted, err := h.BankTxnRepo.InsertTransaction(c.Request.Context(), nil, creditTxn)
 			if err != nil {
-				log.Printf("ERROR: ImportStatements inserting bank transaction failed: %v", err)
+				slog.Error("ImportStatements inserting bank transaction failed", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record bank transaction"})
 				return
 			}
@@ -802,7 +802,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			}
 			if h.BankTxnRepo != nil {
 				if err := h.BankTxnRepo.UpdateStatus(c.Request.Context(), nil, creditTxn.ID, creditTxn.Status, nil, nil, nil, nil); err != nil {
-					log.Printf("ERROR: ImportStatements updating transaction status failed: %v", err)
+					slog.Error("ImportStatements updating transaction status failed", "error", err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update transaction status"})
 					return
 				}
@@ -820,7 +820,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				RowCount:   len(rows),
 				ImportedBy: uid,
 			}); err != nil {
-				log.Printf("ERROR: ImportStatements recording import log failed: %v", err)
+				slog.Error("ImportStatements recording import log failed", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record import log"})
 				return
 			}
@@ -889,7 +889,7 @@ func (h *Handlers) ClassifyBankTransaction(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "bank transaction not found"})
 			return
 		}
-		log.Printf("ERROR: ClassifyBankTransaction retrieving txn failed: %v", err)
+		slog.Error("ClassifyBankTransaction retrieving txn failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve transaction"})
 		return
 	}
@@ -897,14 +897,14 @@ func (h *Handlers) ClassifyBankTransaction(c *gin.Context) {
 	var entryID *uuid.UUID
 	if h.Finance != nil && h.FinanceEnabled && txn.RowType == "credit" {
 		if err := h.Finance.MirrorUnappliedReclassification(c.Request.Context(), pid, txn.ID, targetAcct, txn.AmountPaise, txn.TxnDate); err != nil {
-			log.Printf("ERROR: ClassifyBankTransaction ledger mirror reclassification failed: %v", err)
+			slog.Error("ClassifyBankTransaction ledger mirror reclassification failed", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial reclassification"})
 			return
 		}
 	}
 
 	if err := h.BankTxnRepo.Reclassify(c.Request.Context(), nil, txn.ID, req.Classification, entryID); err != nil {
-		log.Printf("ERROR: ClassifyBankTransaction reclassify failed: %v", err)
+		slog.Error("ClassifyBankTransaction reclassify failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update classification"})
 		return
 	}
@@ -965,7 +965,7 @@ func (h *Handlers) ListBankTransactions(c *gin.Context) {
 
 	txns, total, err := h.BankTxnRepo.ListByProperty(c.Request.Context(), pid, filter)
 	if err != nil {
-		log.Printf("ERROR: ListBankTransactions failed: %v", err)
+		slog.Error("ListBankTransactions failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list bank transactions"})
 		return
 	}
@@ -1011,7 +1011,7 @@ func (h *Handlers) ConfirmBankTransactionMatch(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "bank transaction not found"})
 			return
 		}
-		log.Printf("ERROR: ConfirmBankTransactionMatch retrieving txn failed: %v", err)
+		slog.Error("ConfirmBankTransactionMatch retrieving txn failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve bank transaction"})
 		return
 	}
@@ -1069,7 +1069,7 @@ func (h *Handlers) ConfirmBankTransactionMatch(c *gin.Context) {
 
 	if h.Finance != nil && h.FinanceEnabled {
 		if err := h.Finance.MirrorUnappliedAllocation(c.Request.Context(), pid, txn.ID, due.Kind, txn.AmountPaise, txn.TxnDate); err != nil {
-			log.Printf("ERROR: ConfirmBankTransactionMatch ledger mirror failed: %v", err)
+			slog.Error("ConfirmBankTransactionMatch ledger mirror failed", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial allocation"})
 			return
 		}
@@ -1077,7 +1077,7 @@ func (h *Handlers) ConfirmBankTransactionMatch(c *gin.Context) {
 
 	now := time.Now()
 	if err := h.BankTxnRepo.UpdateStatus(c.Request.Context(), nil, txn.ID, domain.BankTxnMatched, &due.ID, &uid, &now, nil); err != nil {
-		log.Printf("ERROR: ConfirmBankTransactionMatch updating txn status failed: %v", err)
+		slog.Error("ConfirmBankTransactionMatch updating txn status failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update bank transaction status"})
 		return
 	}
@@ -1119,7 +1119,7 @@ func (h *Handlers) RefundBankTransaction(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "bank transaction not found"})
 			return
 		}
-		log.Printf("ERROR: RefundBankTransaction retrieving txn failed: %v", err)
+		slog.Error("RefundBankTransaction retrieving txn failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve bank transaction"})
 		return
 	}
@@ -1139,7 +1139,7 @@ func (h *Handlers) RefundBankTransaction(c *gin.Context) {
 
 	if h.Finance != nil && h.FinanceEnabled {
 		if err := h.Finance.MirrorBankDepositRefund(c.Request.Context(), pid, txn.ID, txn.AmountPaise, txn.TxnDate); err != nil {
-			log.Printf("ERROR: RefundBankTransaction ledger mirror failed: %v", err)
+			slog.Error("RefundBankTransaction ledger mirror failed", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial refund"})
 			return
 		}
@@ -1147,7 +1147,7 @@ func (h *Handlers) RefundBankTransaction(c *gin.Context) {
 
 	now := time.Now()
 	if err := h.BankTxnRepo.UpdateStatus(c.Request.Context(), nil, txn.ID, domain.BankTxnRefunded, nil, &uid, &now, nil); err != nil {
-		log.Printf("ERROR: RefundBankTransaction updating txn status failed: %v", err)
+		slog.Error("RefundBankTransaction updating txn status failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update bank transaction status"})
 		return
 	}
@@ -1172,7 +1172,7 @@ func (h *Handlers) ListBankAccounts(c *gin.Context) {
 
 	accts, err := h.BankAccountRepo.ListByProperty(c.Request.Context(), pid)
 	if err != nil {
-		log.Printf("ERROR: ListBankAccounts failed: %v", err)
+		slog.Error("ListBankAccounts failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list bank accounts"})
 		return
 	}
@@ -1244,7 +1244,7 @@ func (h *Handlers) CreateBankAccount(c *gin.Context) {
 	}
 
 	if err := h.BankAccountRepo.Create(c.Request.Context(), acct); err != nil {
-		log.Printf("ERROR: CreateBankAccount failed: %v", err)
+		slog.Error("CreateBankAccount failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create bank account"})
 		return
 	}
@@ -1273,7 +1273,7 @@ func (h *Handlers) DeactivateBankAccount(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "bank account not found"})
 			return
 		}
-		log.Printf("ERROR: DeactivateBankAccount retrieving acct failed: %v", err)
+		slog.Error("DeactivateBankAccount retrieving acct failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve bank account"})
 		return
 	}
@@ -1284,7 +1284,7 @@ func (h *Handlers) DeactivateBankAccount(c *gin.Context) {
 	}
 
 	if err := h.BankAccountRepo.Deactivate(c.Request.Context(), acctID); err != nil {
-		log.Printf("ERROR: DeactivateBankAccount failed: %v", err)
+		slog.Error("DeactivateBankAccount failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to deactivate bank account"})
 		return
 	}

@@ -251,6 +251,10 @@ func main() {
 	attendanceSvc := attendance.NewService(pool, attendanceRepo, payoutRepo)
 	bankTxnRepo := postgres.NewBankTransactionRepo(pool)
 	bankAccountRepo := postgres.NewBankAccountRepo(pool)
+	settlementRepo := postgres.NewSettlementRepo(pool)
+	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, dueRepo, paymentRepo, financeSvc)
+	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(pool)
+	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
 
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
@@ -321,8 +325,10 @@ func main() {
 		AttendanceSvc:          attendanceSvc,
 		BankTxnRepo:            bankTxnRepo,
 		BankAccountRepo:        bankAccountRepo,
-		SettlementBalancerRepo: postgres.NewSettlementBalancerRepo(pool),
-		SettlementBalancer:     finance.NewSettlementBalancer(postgres.NewSettlementBalancerRepo(pool)),
+		SettlementRepo:         settlementRepo,
+		SettlementReconciler:   settlementReconciler,
+		SettlementBalancerRepo: settlementBalancerRepo,
+		SettlementBalancer:     settlementBalancer,
 	})
 
 	srv := &http.Server{

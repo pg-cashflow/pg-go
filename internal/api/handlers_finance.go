@@ -973,3 +973,55 @@ func (h *Handlers) PostMealPrep(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"prep": m})
 }
+
+// OwnerClearingDriftReport handles GET /owner/finance/reports/clearing-drift.
+func (h *Handlers) OwnerClearingDriftReport(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	rep, err := h.Finance.GetClearingDriftReport(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, rep)
+}
+
+// OwnerDepositReserveReport handles GET /owner/finance/reports/deposit-reserve.
+func (h *Handlers) OwnerDepositReserveReport(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	rep, err := h.Finance.GetDepositReserveReport(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, rep)
+}
+
+// OwnerCapitalPaybackReport handles GET /owner/finance/reports/capital-payback.
+func (h *Handlers) OwnerCapitalPaybackReport(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	rep, err := h.Finance.GetCapitalPaybackReport(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, rep)
+}
+

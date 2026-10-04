@@ -133,6 +133,60 @@ func TestOwnerFinancialStatementsAndReopenEndpoints(t *testing.T) {
 		}
 	}
 
+	// 5a. GET /api/owner/finance/reports/clearing-drift
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/finance/reports/clearing-drift", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for clearing-drift, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		var rep finance.ClearingDriftReport
+		if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+			t.Fatalf("unmarshal clearing-drift: %v", err)
+		}
+		if rep.PropertyID != propID {
+			t.Fatalf("expected propertyID %v, got %v", propID, rep.PropertyID)
+		}
+	}
+
+	// 5b. GET /api/owner/finance/reports/deposit-reserve
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/finance/reports/deposit-reserve", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for deposit-reserve, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		var rep finance.DepositReserveReport
+		if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+			t.Fatalf("unmarshal deposit-reserve: %v", err)
+		}
+		if rep.PropertyID != propID {
+			t.Fatalf("expected propertyID %v, got %v", propID, rep.PropertyID)
+		}
+	}
+
+	// 5c. GET /api/owner/finance/reports/capital-payback
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/finance/reports/capital-payback", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for capital-payback, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		var rep finance.CapitalPaybackReport
+		if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+			t.Fatalf("unmarshal capital-payback: %v", err)
+		}
+		if rep.PropertyID != propID {
+			t.Fatalf("expected propertyID %v, got %v", propID, rep.PropertyID)
+		}
+	}
+
 	// 6. POST /api/owner/finance/tie-out/reopen on an open period -> 400 Bad Request
 	{
 		// First compute tie out (creates open tie out)
