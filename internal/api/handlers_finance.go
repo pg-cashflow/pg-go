@@ -2,11 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
@@ -468,6 +471,210 @@ func (h *Handlers) CloseFinanceTieOut(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tie_out": t})
+}
+
+type ReopenTieOutRequest struct {
+	Period string `json:"period" binding:"required"`
+	Reason string `json:"reason" binding:"required"`
+	StepUpAuthInput
+}
+
+func (h *Handlers) ReopenFinanceTieOut(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	claims, _ := auth.ClaimsFromContext(c)
+	uid := claims.UserID
+
+	var req ReopenTieOutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apierr.RespondBindErr(c, "period and reason are required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	req.Period = strings.TrimSpace(req.Period)
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.Period == "" || req.Reason == "" {
+		apierr.RespondBindErr(c, "period and reason cannot be empty", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	// Enforce cryptographic step-up OTP / dual control before an owner can reopen a closed period
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
+		return
+	}
+
+	actor := fmt.Sprintf("owner:%s: %s", uid, req.Reason)
+	t, err := h.Finance.ReopenTieOut(c.Request.Context(), pid, req.Period, actor, req.Reason)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"tie_out": t,
+		"status":  "reopened",
+	})
+}
+
+func (h *Handlers) OwnerStatementIncome(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	from, to, err := finance.PeriodBounds(period)
+	if err != nil {
+		apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
+		return
+	}
+	lines, err := h.Finance.IncomeStatement(c.Request.Context(), pid, from, to)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"period": period,
+		"from":   from,
+		"to":     to,
+		"lines":  lines,
+	})
+}
+
+func (h *Handlers) OwnerStatementBalanceSheet(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	var to time.Time
+	if p := c.Query("period"); p != "" {
+		_, periodTo, err := finance.PeriodBounds(p)
+		if err != nil {
+			apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
+			return
+		}
+		to = periodTo
+	} else if toStr := c.Query("to"); toStr != "" {
+		parsed, err := time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			apierr.RespondBindErr(c, "invalid to timestamp, expected RFC3339", apierr.CodeRequestInvalidBody)
+			return
+		}
+		to = parsed
+	} else {
+		to = time.Now().UTC()
+	}
+	lines, err := h.Finance.BalanceSheet(c.Request.Context(), pid, to)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"as_of": to,
+		"lines": lines,
+	})
+}
+
+func (h *Handlers) OwnerStatementCashFlow(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	from, to, err := finance.PeriodBounds(period)
+	if err != nil {
+		apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
+		return
+	}
+	lines, err := h.Finance.CashFlow(c.Request.Context(), pid, from, to)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"period": period,
+		"from":   from,
+		"to":     to,
+		"lines":  lines,
+	})
+}
+
+func (h *Handlers) OwnerStatementTrialBalance(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	var to time.Time
+	if p := c.Query("period"); p != "" {
+		_, periodTo, err := finance.PeriodBounds(p)
+		if err != nil {
+			apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
+			return
+		}
+		to = periodTo
+	} else if toStr := c.Query("to"); toStr != "" {
+		parsed, err := time.Parse(time.RFC3339, toStr)
+		if err != nil {
+			apierr.RespondBindErr(c, "invalid to timestamp, expected RFC3339", apierr.CodeRequestInvalidBody)
+			return
+		}
+		to = parsed
+	} else {
+		to = time.Now().UTC()
+	}
+	lines, err := h.Finance.TrialBalance(c.Request.Context(), pid, to)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"as_of": to,
+		"lines": lines,
+	})
+}
+
+func (h *Handlers) OwnerReconcilingItems(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	var asOf time.Time
+	if asOfStr := c.Query("as_of"); asOfStr != "" {
+		parsed, err := time.Parse("2006-01-02", asOfStr)
+		if err != nil {
+			apierr.RespondBindErr(c, "invalid as_of date, expected YYYY-MM-DD", apierr.CodeRequestInvalidBody)
+			return
+		}
+		asOf = parsed
+	} else {
+		asOf = time.Now().UTC()
+	}
+	items, err := h.Finance.ReconcilingItems(c.Request.Context(), pid, asOf)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"as_of": asOf.Format("2006-01-02"),
+		"items": items,
+	})
 }
 
 func (h *Handlers) FinanceVarianceBridge(c *gin.Context) {

@@ -146,6 +146,32 @@ func (s *Service) CloseTieOut(ctx context.Context, propertyID uuid.UUID, period 
 	return t, nil
 }
 
+// ReopenTieOut reopens a previously closed period with an audited actor and reason.
+// Trigger C-3 in PostgreSQL audits this action immutably in ledger_control_overrides.
+func (s *Service) ReopenTieOut(ctx context.Context, propertyID uuid.UUID, period, actor, reason string) (*domain.PeriodTieOut, error) {
+	if reason == "" {
+		return nil, fmt.Errorf("%w: reason is required", ErrPeriodNotReopenable)
+	}
+	t, err := s.Store.GetTieOut(ctx, propertyID, period)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != "closed" {
+		return t, ErrPeriodNotReopenable
+	}
+	if err := s.Store.ReopenTieOut(ctx, propertyID, period, actor); err != nil {
+		return nil, err
+	}
+	t.Status = "open"
+	t.ClosedAt = nil
+	s.publish(ctx, propertyID, domain.EvtTieOutReopened, map[string]any{
+		"period": period,
+		"actor":  actor,
+		"reason": reason,
+	})
+	return t, nil
+}
+
 func (s *Service) RecurringTieOutAlert(ctx context.Context, propertyID uuid.UUID) bool {
 	list, err := s.Store.ListTieOuts(ctx, propertyID, 12)
 	if err != nil {

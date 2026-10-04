@@ -71,6 +71,8 @@ const (
 	EvtRecurringTieOutException EventType = "RecurringTieOutException"
 	EvtCriticalTieOutVariance   EventType = "CriticalTieOutVariance"
 	EvtPaymentReconciled        EventType = "PaymentReconciled"
+	EvtTieOutReopened           EventType = "TieOutReopened"
+	EvtReconcilingAlert         EventType = "ReconcilingAlert"
 )
 
 type Event struct {

@@ -34,6 +34,7 @@ type MemoryStore struct {
 	imports       map[string]domain.ExpenseImportSuggestion
 	prep          []domain.MealPrepActual
 	loyalty       map[uuid.UUID]domain.PropertyGamificationSettings
+	ownerUsers    map[uuid.UUID]uuid.UUID
 	idempotency   map[string]struct{}
 }
 
@@ -42,6 +43,7 @@ func NewMemoryStore() *MemoryStore {
 		policies:    map[uuid.UUID]domain.ApprovalPolicy{},
 		settings:    map[uuid.UUID]domain.PropertyFinanceSettings{},
 		loyalty:     map[uuid.UUID]domain.PropertyGamificationSettings{},
+		ownerUsers:  map[uuid.UUID]uuid.UUID{},
 		expenses:    map[uuid.UUID]domain.Expense{},
 		budgets:     map[string]domain.Budget{},
 		tieouts:     map[string]domain.PeriodTieOut{},
@@ -713,6 +715,113 @@ func (m *MemoryStore) GetMealPrep(_ context.Context, propertyID uuid.UUID, date 
 		}
 	}
 	return out, nil
+}
+
+func (m *MemoryStore) ReopenTieOut(_ context.Context, propertyID uuid.UUID, period, actor string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := propertyID.String() + period
+	t, ok := m.tieouts[key]
+	if !ok {
+		return ErrNotFound
+	}
+	if t.Status != "closed" {
+		return ErrPeriodNotReopenable
+	}
+	t.Status = "open"
+	t.ClosedAt = nil
+	m.tieouts[key] = t
+	return nil
+}
+
+func (m *MemoryStore) GetTrialBalance(_ context.Context, propertyID uuid.UUID, to time.Time) ([]domain.TrialBalanceLine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	accts := make(map[string]*domain.TrialBalanceLine)
+	for _, l := range m.journal {
+		if l.PropertyID == propertyID && (to.IsZero() || l.OccurredAt.Before(to)) {
+			row, ok := accts[l.AccountCode]
+			if !ok {
+				row = &domain.TrialBalanceLine{
+					AccountCode:  l.AccountCode,
+					AccountClass: "asset",
+				}
+				accts[l.AccountCode] = row
+			}
+			row.DebitPaise += l.DebitPaise
+			row.CreditPaise += l.CreditPaise
+			row.BalancePaise = row.DebitPaise - row.CreditPaise
+		}
+	}
+	out := make([]domain.TrialBalanceLine, 0, len(accts))
+	for _, v := range accts {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].AccountCode < out[j].AccountCode })
+	return out, nil
+}
+
+func (m *MemoryStore) GetIncomeStatement(_ context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.StatementLine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var rev, exp int64
+	for _, l := range m.journal {
+		if l.PropertyID == propertyID && !l.OccurredAt.Before(from) && l.OccurredAt.Before(to) {
+			if l.AccountCode == domain.AcctRentRevenue || l.AccountCode == domain.AcctUtilityRecoveryRevenue {
+				rev += (l.CreditPaise - l.DebitPaise)
+			} else if l.AccountCode == domain.AcctOperatingExpense || l.AccountCode == domain.AcctLoyaltyExpense || l.AccountCode == domain.AcctPaymentProcessingExpense {
+				exp += (l.DebitPaise - l.CreditPaise)
+			}
+		}
+	}
+	return []domain.StatementLine{
+		{Section: "total_revenue", AmountPaise: rev, SortOrder: 40},
+		{Section: "total_expense", AmountPaise: exp, SortOrder: 50},
+		{Section: "net_income", AmountPaise: rev - exp, SortOrder: 60},
+	}, nil
+}
+
+func (m *MemoryStore) GetBalanceSheet(_ context.Context, propertyID uuid.UUID, to time.Time) ([]domain.StatementLine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return []domain.StatementLine{
+		{Section: "total_assets", AmountPaise: 0, SortOrder: 40},
+		{Section: "total_liabilities", AmountPaise: 0, SortOrder: 41},
+		{Section: "total_equity", AmountPaise: 0, SortOrder: 42},
+		{Section: "check_difference", AmountPaise: 0, SortOrder: 50},
+	}, nil
+}
+
+func (m *MemoryStore) GetCashFlow(_ context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.CashFlowLine, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return []domain.CashFlowLine{
+		{Section: "opening_cash", AmountPaise: 0, SortOrder: 0},
+		{Section: "net_change", AmountPaise: 0, SortOrder: 30},
+		{Section: "closing_cash", AmountPaise: 0, SortOrder: 40},
+		{Section: "check_difference", AmountPaise: 0, SortOrder: 50},
+	}, nil
+}
+
+func (m *MemoryStore) GetReconcilingItems(_ context.Context, propertyID *uuid.UUID, asOf time.Time) ([]domain.ReconcilingItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return []domain.ReconcilingItem{}, nil
+}
+
+func (m *MemoryStore) SetPropertyOwnerUserID(propertyID, ownerID uuid.UUID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ownerUsers[propertyID] = ownerID
+}
+
+func (m *MemoryStore) GetPropertyOwnerUserID(_ context.Context, propertyID uuid.UUID) (uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if uid, ok := m.ownerUsers[propertyID]; ok {
+		return uid, nil
+	}
+	return uuid.MustParse("00000000-0000-0000-0000-000000000001"), nil
 }
 
 var _ Store = (*MemoryStore)(nil)

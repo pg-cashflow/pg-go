@@ -119,5 +119,5 @@ Severity reflects ledger-correctness impact, not likelihood. None of these were 
 2. [x] Apply 044 to staging; run `ledger_controls_test.sql` there (it rolls back and is safe on dev/staging, never production).
 3. [x] Run `go build ./... && go test ./...` across all 31 internal packages.
 4. [x] Resolved F1, F2, F3, F4, and F5 with post-commit mirroring, `MirrorRefundAllocations`, `MirrorPaymentAllocations`, settlement hook error alerting, and unpaid proration guards.
-5. [ ] Schedule R-3 (privileged reopen) before multi-owner SaaS.
-6. [ ] Wire `ledger_reconciling_items` into the existing alerting so `LEDGER GAP` logs are no longer the only signal.
+5. [x] Implemented R-3 (privileged reopen `POST /owner/finance/tie-out/reopen`) with cryptographic step-up reauth, audited via GUC `app.reopen_period` and logged to `ledger_control_overrides`.
+6. [x] Wired `ledger_reconciling_items` into `financial-summary` job via `ScanAndAlertReconcilingItems`, dispatching `DeadLetterNotifier` and publishing `EvtReconcilingAlert`.

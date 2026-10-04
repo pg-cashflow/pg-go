@@ -91,6 +91,8 @@ func financeClientErr(err error) error {
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinanceApprovalRequired)
 	case errors.Is(err, finance.ErrPeriodNotCloseable):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinancePeriodNotCloseable)
+	case errors.Is(err, finance.ErrPeriodNotReopenable):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinancePeriodNotReopenable)
 	case errors.Is(err, finance.ErrPeriodClosed):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeFinancePeriodClosed)
 	case errors.Is(err, finance.ErrNotFound):

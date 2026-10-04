@@ -71,6 +71,11 @@ func main() {
 		roiSvc = roi.NewService(finSvc)
 	}
 
+	var notifier finance.DeadLetterNotifier
+	if cfg.AdminEmail != "" && mail != nil {
+		notifier = finance.NewEmailDeadLetterNotifier(mail, cfg.AdminEmail)
+	}
+
 	job := &jobs.FinancialSummaryJob{
 		Properties:  propertyRepo,
 		Tenants:     tenantRepo,
@@ -78,6 +83,7 @@ func main() {
 		Finance:     finSvc,
 		ROI:         roiSvc,
 		Mailer:      mail,
+		Notifier:    notifier,
 		Events:      pub,
 		TemplateDir: tmplDir,
 		Log:         slog.Default(),

@@ -14,6 +14,8 @@ var (
 	// ErrPeriodClosed: a ledger write targets an accounting period whose tie-out is closed
 	// (DB controls C-3/C-4, migration 044). Reopening is an audited, privileged act.
 	ErrPeriodClosed = errors.New("accounting period is closed")
+	// ErrPeriodNotReopenable is returned when attempting to reopen an already-open period.
+	ErrPeriodNotReopenable = errors.New("accounting period is not closed")
 )
 
 // Chart of accounts (operating + capital). Amounts always paise.
@@ -482,4 +484,42 @@ func (b *DailySettlementBalance) EvaluateBalance() {
 	b.Discrepancies = items
 	b.DiscrepancyPaise = totalDiscrepancy
 	b.IsBalanced = (totalDiscrepancy == 0)
+}
+
+// StatementLine represents a line in the income statement or balance sheet.
+type StatementLine struct {
+	Section     string  `json:"section"`
+	AccountCode *string `json:"account_code,omitempty"`
+	AmountPaise int64   `json:"amount_paise"`
+	SortOrder   int     `json:"sort_order"`
+}
+
+// TrialBalanceLine represents an account row in the trial balance.
+type TrialBalanceLine struct {
+	AccountCode  string `json:"account_code"`
+	AccountClass string `json:"account_class"`
+	DebitPaise   int64  `json:"debit_paise"`
+	CreditPaise  int64  `json:"credit_paise"`
+	BalancePaise int64  `json:"balance_paise"`
+}
+
+// CashFlowLine represents a line in the direct-method cash flow statement.
+type CashFlowLine struct {
+	Section     string  `json:"section"`
+	Label       *string `json:"label,omitempty"`
+	AmountPaise int64   `json:"amount_paise"`
+	SortOrder   int     `json:"sort_order"`
+}
+
+// ReconcilingItem represents an open control or money-integrity item in the aged ledger review.
+type ReconcilingItem struct {
+	ItemType     string    `json:"item_type"`
+	PropertyID   uuid.UUID `json:"property_id"`
+	Ref          string    `json:"ref"`
+	AmountPaise  *int64    `json:"amount_paise,omitempty"`
+	OriginatedOn string    `json:"originated_on"`
+	AgeDays      int       `json:"age_days"`
+	AgeBucket    string    `json:"age_bucket"`
+	Category     string    `json:"category"`
+	Escalation   string    `json:"escalation"`
 }

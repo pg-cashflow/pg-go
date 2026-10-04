@@ -53,6 +53,7 @@ type FinancialSummaryJob struct {
 	Finance     FinanceSummaryProvider
 	ROI         ROISummaryProvider
 	Mailer      mailer.Mailer
+	Notifier    finance.DeadLetterNotifier
 	Events      events.Publisher
 	TemplateDir string
 	Log         *slog.Logger
@@ -138,6 +139,20 @@ func (j *FinancialSummaryJob) sendOne(ctx context.Context, p domain.Property, pe
 			}
 			if rep.BreakEven.BreakEvenOccupancyBPS > 0 {
 				data["BreakEvenOccupancy"] = fmt.Sprintf("%.1f%%", float64(rep.BreakEven.BreakEvenOccupancyBPS)/100.0)
+			}
+		}
+	}
+
+	if scanner, ok := j.Finance.(interface {
+		ScanAndAlertReconcilingItems(ctx context.Context, propertyID *uuid.UUID, asOf time.Time, notifier finance.DeadLetterNotifier) ([]domain.ReconcilingItem, error)
+	}); ok {
+		var notif finance.DeadLetterNotifier = j.Notifier
+		if notif == nil && j.Mailer != nil && p.OwnerEmail != "" {
+			notif = finance.NewEmailDeadLetterNotifier(j.Mailer, p.OwnerEmail)
+		}
+		if _, err := scanner.ScanAndAlertReconcilingItems(ctx, &p.ID, time.Now().UTC(), notif); err != nil {
+			if j.Log != nil {
+				j.Log.Warn("financial-summary: reconciling items scan failed", "property_id", p.ID, "err", err)
 			}
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
@@ -69,6 +70,13 @@ func main() {
 		Subject:         cfg.VAPIDSubject,
 	}, slog.Default())
 
+	var recurringScheduler jobs.RecurringExpenseScheduler
+	if cfg.FinanceEnabled {
+		financeRepo := postgres.NewFinanceRepo(pool)
+		finSvc := finance.NewService(financeRepo, pub)
+		recurringScheduler = finance.NewRecurringExpenseScheduler(finSvc, financeRepo, propertyRepo)
+	}
+
 	job := &jobs.BillingCycle{
 		Billing:          billingSvc,
 		Tenants:          tenantRepo,
@@ -76,6 +84,7 @@ func main() {
 		MagicLink:        magicSvc,
 		SMS:              gateway,
 		Push:             pushSvc,
+		RecurringExpenses: recurringScheduler,
 		Mailer:           mail,
 		Events:           pub,
 		BaseURL:          cfg.MagicLinkBaseURL,

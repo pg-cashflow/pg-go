@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -203,4 +204,108 @@ func (s *Service) GetCapitalPaybackReport(ctx context.Context, propertyID uuid.U
 		IsBreakevenAchieved:     isBreakeven,
 		PaybackPercentageBPS:    paybackBPS,
 	}, nil
+}
+
+// TrialBalance executes the ledger_trial_balance SQL function for the property as of to.
+func (s *Service) TrialBalance(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.TrialBalanceLine, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	if to.IsZero() {
+		to = s.Now()
+	}
+	return s.Store.GetTrialBalance(ctx, propertyID, to)
+}
+
+// IncomeStatement executes the ledger_income_statement SQL function for [from, to).
+func (s *Service) IncomeStatement(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.StatementLine, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	if from.IsZero() || to.IsZero() {
+		return nil, fmt.Errorf("income statement requires non-zero from and to timestamps")
+	}
+	return s.Store.GetIncomeStatement(ctx, propertyID, from, to)
+}
+
+// BalanceSheet executes the ledger_balance_sheet SQL function as of to.
+func (s *Service) BalanceSheet(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.StatementLine, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	if to.IsZero() {
+		to = s.Now()
+	}
+	return s.Store.GetBalanceSheet(ctx, propertyID, to)
+}
+
+// CashFlow executes the direct-method ledger_cash_flow SQL function for [from, to).
+func (s *Service) CashFlow(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.CashFlowLine, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	if from.IsZero() || to.IsZero() {
+		return nil, fmt.Errorf("cash flow requires non-zero from and to timestamps")
+	}
+	return s.Store.GetCashFlow(ctx, propertyID, from, to)
+}
+
+// ReconcilingItems returns open reconciling items from ledger_reconciling_items.
+func (s *Service) ReconcilingItems(ctx context.Context, propertyID uuid.UUID, asOf time.Time) ([]domain.ReconcilingItem, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	return s.Store.GetReconcilingItems(ctx, &propertyID, asOf)
+}
+
+// ScanAndAlertReconcilingItems scans for reconciling items across one or all properties,
+// emits loud slog.Error alarms for money-integrity issues and owner escalations, and
+// dispatches DeadLetterNotifier notifications (ADR-016 action item 6).
+func (s *Service) ScanAndAlertReconcilingItems(ctx context.Context, propertyID *uuid.UUID, asOf time.Time, notifier DeadLetterNotifier) ([]domain.ReconcilingItem, error) {
+	if s == nil || s.Store == nil {
+		return nil, ErrDisabled
+	}
+	items, err := s.Store.GetReconcilingItems(ctx, propertyID, asOf)
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		isMoneyIntegrity := it.ItemType == "payment_unposted" ||
+			it.ItemType == "payment_posting_orphan" ||
+			it.ItemType == "refund_posting_gap" ||
+			it.ItemType == "ledger_event_dead_letter"
+		if it.Escalation == "owner" || isMoneyIntegrity {
+			amt := int64(0)
+			if it.AmountPaise != nil {
+				amt = *it.AmountPaise
+			}
+			slog.Error("CRITICAL RECONCILING ITEM DETECTED: immediate operator action required",
+				"item_type", it.ItemType,
+				"property_id", it.PropertyID,
+				"ref", it.Ref,
+				"amount_paise", amt,
+				"age_days", it.AgeDays,
+				"category", it.Category,
+				"escalation", it.Escalation,
+			)
+			if notifier != nil {
+				evt := &domain.LedgerOutboxEvent{
+					ID:             0,
+					PropertyID:     it.PropertyID,
+					EventType:      "reconciling_anomaly:" + it.ItemType,
+					SourceID:       uuid.Nil,
+					IdempotencyKey: fmt.Sprintf("recon:%s:%s", it.ItemType, it.Ref),
+					MaxAttempts:    1,
+					CreatedAt:      s.Now(),
+				}
+				failureMsg := fmt.Sprintf("Reconciling item %s (ref %s, amount %d paise, age %d days, category %s, escalation %s)",
+					it.ItemType, it.Ref, amt, it.AgeDays, it.Category, it.Escalation)
+				_ = notifier.NotifyDeadLetter(ctx, evt, failureMsg)
+			}
+			if s.Pub != nil {
+				s.publish(ctx, it.PropertyID, domain.EvtReconcilingAlert, it)
+			}
+		}
+	}
+	return items, nil
 }

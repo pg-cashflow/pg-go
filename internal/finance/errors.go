@@ -18,6 +18,7 @@ var (
 	ErrOverpay              = errors.New("finance: payment exceeds remaining expense")
 	ErrUnbalancedJournal    = errors.New("finance: journal lines do not balance")
 	ErrPeriodNotCloseable   = errors.New("finance: unexplained tie-out difference blocks close")
+	ErrPeriodNotReopenable  = domain.ErrPeriodNotReopenable
 	ErrIdempotencyRequired  = errors.New("finance: Idempotency-Key required")
 	ErrInvalidAmount        = errors.New("finance: amount must be positive")
 	ErrInvalidKind          = errors.New("finance: invalid kind")

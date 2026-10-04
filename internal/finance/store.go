@@ -18,6 +18,8 @@ type Store interface {
 	SaveSettings(ctx context.Context, s domain.PropertyFinanceSettings) error
 	SaveUnifiedSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy, loyalty *domain.PropertyGamificationSettings) error
 
+	GetPropertyOwnerUserID(ctx context.Context, propertyID uuid.UUID) (uuid.UUID, error)
+
 	InsertCapital(ctx context.Context, tx *domain.CapitalTransaction) error
 	ListCapital(ctx context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error)
 	CountCapital(ctx context.Context, propertyID uuid.UUID) (int, error)
@@ -52,6 +54,7 @@ type Store interface {
 
 	GetTieOut(ctx context.Context, propertyID uuid.UUID, period string) (*domain.PeriodTieOut, error)
 	SaveTieOut(ctx context.Context, t *domain.PeriodTieOut) error
+	ReopenTieOut(ctx context.Context, propertyID uuid.UUID, period string, actor string) error
 	ListTieOuts(ctx context.Context, propertyID uuid.UUID, limit int) ([]domain.PeriodTieOut, error)
 
 	InsertApproval(ctx context.Context, a *domain.ApprovalRequest) error
@@ -80,4 +83,10 @@ type Store interface {
 
 	UpsertMealPrep(ctx context.Context, m *domain.MealPrepActual) error
 	GetMealPrep(ctx context.Context, propertyID uuid.UUID, date time.Time) ([]domain.MealPrepActual, error)
+
+	GetTrialBalance(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.TrialBalanceLine, error)
+	GetIncomeStatement(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.StatementLine, error)
+	GetBalanceSheet(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.StatementLine, error)
+	GetCashFlow(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.CashFlowLine, error)
+	GetReconcilingItems(ctx context.Context, propertyID *uuid.UUID, asOf time.Time) ([]domain.ReconcilingItem, error)
 }

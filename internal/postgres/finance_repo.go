@@ -232,6 +232,22 @@ func (r *FinanceRepo) CountCapital(ctx context.Context, propertyID uuid.UUID) (i
 	return n, err
 }
 
+func (r *FinanceRepo) GetPropertyOwnerUserID(ctx context.Context, propertyID uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := r.pool.QueryRow(ctx, `
+		SELECT id FROM users
+		WHERE property_id=$1 AND role='owner'
+		ORDER BY created_at ASC
+		LIMIT 1`, propertyID).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, domain.ErrNotFound
+		}
+		return uuid.Nil, err
+	}
+	return id, nil
+}
+
 func (r *FinanceRepo) InsertExpense(ctx context.Context, e *domain.Expense) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO expenses (id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, idempotency_key, occurred_at)
@@ -567,6 +583,31 @@ func (r *FinanceRepo) SaveTieOut(ctx context.Context, t *domain.PeriodTieOut) er
 	return mapLedgerPgErr(err)
 }
 
+func (r *FinanceRepo) ReopenTieOut(ctx context.Context, propertyID uuid.UUID, period string, actor string) error {
+	if r.pool == nil {
+		return fmt.Errorf("ReopenTieOut requires pool access, got nil pool")
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL app.actor = $1", actor); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "SET LOCAL app.reopen_period = 'on'"); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE period_tie_outs
+			SET status = 'open', closed_at = NULL, updated_at = NOW()
+			WHERE property_id = $1 AND period_month = $2`, propertyID, period)
+		if err != nil {
+			return mapLedgerPgErr(err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrNotFound
+		}
+		return nil
+	})
+}
+
 func (r *FinanceRepo) ListTieOuts(ctx context.Context, propertyID uuid.UUID, limit int) ([]domain.PeriodTieOut, error) {
 	if limit <= 0 {
 		limit = 12
@@ -856,6 +897,105 @@ func (r *FinanceRepo) GetMealPrep(ctx context.Context, propertyID uuid.UUID, dat
 			return nil, err
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (r *FinanceRepo) GetTrialBalance(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.TrialBalanceLine, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT account_code, account_class, debit_paise, credit_paise, balance_paise
+		FROM ledger_trial_balance($1, $2)`, propertyID, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.TrialBalanceLine
+	for rows.Next() {
+		var l domain.TrialBalanceLine
+		if err := rows.Scan(&l.AccountCode, &l.AccountClass, &l.DebitPaise, &l.CreditPaise, &l.BalancePaise); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (r *FinanceRepo) GetIncomeStatement(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.StatementLine, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT section, account_code, amount_paise, sort_order
+		FROM ledger_income_statement($1, $2, $3)`, propertyID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.StatementLine
+	for rows.Next() {
+		var l domain.StatementLine
+		if err := rows.Scan(&l.Section, &l.AccountCode, &l.AmountPaise, &l.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (r *FinanceRepo) GetBalanceSheet(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.StatementLine, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT section, account_code, amount_paise, sort_order
+		FROM ledger_balance_sheet($1, $2)`, propertyID, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.StatementLine
+	for rows.Next() {
+		var l domain.StatementLine
+		if err := rows.Scan(&l.Section, &l.AccountCode, &l.AmountPaise, &l.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (r *FinanceRepo) GetCashFlow(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.CashFlowLine, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT section, label, amount_paise, sort_order
+		FROM ledger_cash_flow($1, $2, $3)`, propertyID, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.CashFlowLine
+	for rows.Next() {
+		var l domain.CashFlowLine
+		if err := rows.Scan(&l.Section, &l.Label, &l.AmountPaise, &l.SortOrder); err != nil {
+			return nil, err
+		}
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+func (r *FinanceRepo) GetReconcilingItems(ctx context.Context, propertyID *uuid.UUID, asOf time.Time) ([]domain.ReconcilingItem, error) {
+	var dateArg any
+	if !asOf.IsZero() {
+		dateArg = asOf.Format("2006-01-02")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT item_type, property_id, ref, amount_paise, originated_on::text, age_days, age_bucket, category, escalation
+		FROM ledger_reconciling_items($1, COALESCE($2::date, (now() AT TIME ZONE 'UTC')::date))`, propertyID, dateArg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.ReconcilingItem
+	for rows.Next() {
+		var item domain.ReconcilingItem
+		if err := rows.Scan(&item.ItemType, &item.PropertyID, &item.Ref, &item.AmountPaise, &item.OriginatedOn, &item.AgeDays, &item.AgeBucket, &item.Category, &item.Escalation); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
 	}
 	return out, rows.Err()
 }

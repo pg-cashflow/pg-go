@@ -57,6 +57,7 @@ const (
 	CodeFinancePolicyExceeded     Code = "finance.policyExceeded"
 	CodeFinanceApprovalRequired   Code = "finance.approvalRequired"
 	CodeFinancePeriodNotCloseable Code = "finance.periodNotCloseable"
+	CodeFinancePeriodNotReopenable Code = "finance.periodNotReopenable"
 	CodeFinancePeriodClosed       Code = "finance.periodClosed"
 	CodeFinanceNotFound           Code = "finance.notFound"
 	CodeFinanceForbidden          Code = "finance.forbidden"
@@ -123,6 +124,7 @@ var AllCodes = []Code{
 	CodeFinancePolicyExceeded,
 	CodeFinanceApprovalRequired,
 	CodeFinancePeriodNotCloseable,
+	CodeFinancePeriodNotReopenable,
 	CodeFinancePeriodClosed,
 	CodeFinanceNotFound,
 	CodeFinanceForbidden,

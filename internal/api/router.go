@@ -256,6 +256,12 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/finance/approvals/:id/:action", h.DecideFinanceApproval)
 			owner.GET("/finance/tie-out", h.FinanceTieOut)
 			owner.POST("/finance/tie-out/close", h.CloseFinanceTieOut)
+			owner.POST("/finance/tie-out/reopen", h.ReopenFinanceTieOut)
+			owner.GET("/finance/statements/income-statement", h.OwnerStatementIncome)
+			owner.GET("/finance/statements/balance-sheet", h.OwnerStatementBalanceSheet)
+			owner.GET("/finance/statements/cash-flow", h.OwnerStatementCashFlow)
+			owner.GET("/finance/statements/trial-balance", h.OwnerStatementTrialBalance)
+			owner.GET("/finance/reconciling-items", h.OwnerReconcilingItems)
 			owner.GET("/finance/variance-bridge", h.FinanceVarianceBridge)
 			owner.GET("/finance/imports", h.ListExpenseImports)
 
