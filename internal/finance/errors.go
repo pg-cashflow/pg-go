@@ -10,6 +10,7 @@ import (
 var (
 	ErrDuplicateIdempotency = domain.ErrDuplicateIdempotency
 	ErrNotFound             = domain.ErrNotFound
+	ErrPeriodClosed         = domain.ErrPeriodClosed
 	ErrForbidden            = errors.New("finance: forbidden")
 	ErrPolicyExceeded       = errors.New("finance: spend policy exceeded")
 	ErrApprovalRequired     = errors.New("finance: owner approval required")

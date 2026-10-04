@@ -73,6 +73,7 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `finance.policyExceeded` | 400 | Finance | Spend policy exceeded |
 | `finance.approvalRequired` | 400 | Finance | Owner approval required before payment |
 | `finance.periodNotCloseable` | 400 | Finance | Unexplained difference blocks period close |
+| `finance.periodClosed` | 409 | Finance | Write targets a closed accounting period; reopening is an audited privileged act |
 | `finance.notFound` | 404 | Finance | Financial entity not found |
 | `finance.forbidden` | 403 | Finance | Forbidden financial action |
 | `finance.disabled` | 503 | Finance | Financial subsystem is disabled |
@@ -864,7 +865,8 @@ Validation & error responses:
 | **Finance** | `finance.expenseNotPayable` | 400 | Expense is pending maker-checker approval or already paid |
 | **Finance** | `finance.policyExceeded` | 400 | Expense exceeds manager discretionary spending policy limit |
 | **Finance** | `finance.approvalRequired` | 400 | Expense requires owner approval before disbursement |
-| **Finance** | `finance.periodNotCloseable` | 400 | Period tie-out has unexplained variance and cannot close |
+| **Finance** | `finance.periodNotCloseable` | 400 | Period tie-out has unexplained variance, or the period has not yet ended, and cannot close |
+| **Finance** | `finance.periodClosed` | 409 | Posting or recompute targets a closed accounting period (ledger controls C-3/C-4) |
 | **Finance** | `finance.notFound` | 404 | Financial transaction, budget, or expense record not found |
 | **Finance** | `finance.forbidden` | 403 | User does not have authorization for this financial mutation |
 | **Finance** | `finance.disabled` | 503 | Financial intelligence engine is disabled in property settings |

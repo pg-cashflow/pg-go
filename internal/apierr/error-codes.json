@@ -43,6 +43,7 @@
   "finance.policyExceeded",
   "finance.approvalRequired",
   "finance.periodNotCloseable",
+  "finance.periodClosed",
   "finance.notFound",
   "finance.forbidden",
   "finance.disabled",

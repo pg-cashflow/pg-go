@@ -247,10 +247,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				}
 				if h.Finance != nil {
 					if mirrorErr := h.Finance.MirrorUnappliedPayment(ctx, due0.PropertyID, p.ID, int64(succ.AmountPaise), at); mirrorErr != nil {
-						// Ledger-gap: payment row is committed but the journal entry failed.
-						// The C-2 deferred trigger will reject a future unbalanced commit for this
-						// source_id. Log at ERROR for operator alerting; do NOT roll back the
-						// payment to avoid re-crediting the customer.
+						// Ledger-gap: the payment row is committed but its journal entry failed. The ledger
+						// write uses its own pool transaction (a dual write) and the DB triggers cannot see a
+						// row that was never inserted; the gap is surfaced by ledger_unposted_payments()
+						// (migration 044, ADR-016). Log at ERROR; do NOT roll back the payment to avoid
+						// re-crediting the customer.
 						slog.Default().Error("LEDGER GAP: MirrorUnappliedPayment failed after payment committed",
 							"payment_id", p.ID,
 							"property_id", due0.PropertyID,
@@ -310,10 +311,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 			if h.Finance != nil {
 				if mirrorErr := h.Finance.MirrorPayment(ctx, p, due0); mirrorErr != nil {
-					// Ledger-gap: payment row is committed but the journal entry failed.
-					// The C-2 deferred trigger will reject a future unbalanced commit for this
-					// source_id. Log at ERROR for operator alerting; do NOT roll back the
-					// payment to avoid re-crediting the customer.
+					// Ledger-gap: the payment row is committed but its journal entry failed. The ledger
+					// write uses its own pool transaction (a dual write) and the DB triggers cannot see a
+					// row that was never inserted; the gap is surfaced by ledger_unposted_payments()
+					// (migration 044, ADR-016). Log at ERROR; do NOT roll back the payment to avoid
+					// re-crediting the customer.
 					slog.Default().Error("LEDGER GAP: MirrorPayment failed after payment committed",
 						"payment_id", p.ID,
 						"due_id", due0.ID,
@@ -623,4 +625,3 @@ func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWeb
 	// Returning HTTP 200 OK acknowledges the webhook delivery to prevent gateway retry storms.
 	c.Status(http.StatusOK)
 }
-

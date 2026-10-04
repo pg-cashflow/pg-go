@@ -11,6 +11,9 @@ import (
 var (
 	ErrNotFound             = errors.New("not found")
 	ErrDuplicateIdempotency = errors.New("duplicate idempotency key")
+	// ErrPeriodClosed: a ledger write targets an accounting period whose tie-out is closed
+	// (DB controls C-3/C-4, migration 044). Reopening is an audited, privileged act.
+	ErrPeriodClosed = errors.New("accounting period is closed")
 )
 
 // Chart of accounts (operating + capital). Amounts always paise.
@@ -480,6 +483,3 @@ func (b *DailySettlementBalance) EvaluateBalance() {
 	b.DiscrepancyPaise = totalDiscrepancy
 	b.IsBalanced = (totalDiscrepancy == 0)
 }
-
-
-

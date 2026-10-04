@@ -273,3 +273,45 @@ input:checked + .slider:before { transform: translateX(20px); }
   border: 1px solid #166534;
 }
 
+/* Keyboard Navigation for Owner Ledger */
+.card.keyboard-selected {
+  outline: 2px solid var(--accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+  background: #fffef9;
+}
+.kbd-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.45rem 0.65rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.kbd-hint kbd {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-family: monospace;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--ink);
+}
+.active-tag {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-family: monospace;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  padding: 0.1rem 0.4rem;
+  border-radius: 9999px;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}

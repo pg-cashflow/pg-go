@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +21,16 @@ func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, perio
 	if err != nil {
 		return nil, err
 	}
+	// A closed period is frozen (DB control C-3): return the closing snapshot untouched.
+	// Recomputing would be rejected by the database and, more importantly, would let a
+	// read endpoint rewrite an audited close.
+	existing, err := s.Store.GetTieOut(ctx, propertyID, period)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if existing != nil && existing.Status == "closed" {
+		return existing, nil
+	}
 	ledgerRent, err := s.Store.SumAccountNetCredit(ctx, propertyID, domain.AcctRentRevenue, from, to)
 	if err != nil {
 		return nil, err
@@ -33,10 +44,6 @@ func (s *Service) ComputeTieOut(ctx context.Context, propertyID uuid.UUID, perio
 			Note:             "unexplained collections vs ledger rent_revenue",
 			UnresolvedMonths: 1,
 		})
-	}
-	existing, err := s.Store.GetTieOut(ctx, propertyID, period)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
 	}
 	t := &domain.PeriodTieOut{
 		PropertyID:       propertyID,
@@ -117,7 +124,20 @@ func (s *Service) CloseTieOut(ctx context.Context, propertyID uuid.UUID, period 
 		s.publish(ctx, propertyID, domain.EvtPeriodTieOutBlocked, t)
 		return t, ErrPeriodNotCloseable
 	}
+	// Closing is idempotent: an already-closed period is returned as-is (the DB would reject a rewrite).
+	if t.Status == "closed" {
+		return t, nil
+	}
+	// A period may only close after it has ended (UTC, matching PeriodBounds and the DB lock).
+	// Closing mid-month would reject every later webhook/bank posting for that month (control C-4).
+	_, periodEnd, err := PeriodBounds(period)
+	if err != nil {
+		return nil, err
+	}
 	now := s.Now()
+	if now.Before(periodEnd) {
+		return t, fmt.Errorf("%w: period %s has not ended", ErrPeriodNotCloseable, period)
+	}
 	t.Status = "closed"
 	t.ClosedAt = &now
 	if err := s.Store.SaveTieOut(ctx, t); err != nil {

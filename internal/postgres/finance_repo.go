@@ -29,6 +29,17 @@ func isUnique(err error) bool {
 	return errors.As(err, &e) && e.Code == "23505"
 }
 
+// mapLedgerPgErr translates the closed-period SQLSTATEs raised by the ledger triggers
+// (migration 044) into domain.ErrPeriodClosed: LG001 = posting into a closed period,
+// LG004 = closed period tie-out is frozen. Other errors pass through unchanged.
+func mapLedgerPgErr(err error) error {
+	var e *pgconn.PgError
+	if errors.As(err, &e) && (e.Code == "LG001" || e.Code == "LG004") {
+		return fmt.Errorf("%w: %s", domain.ErrPeriodClosed, e.Message)
+	}
+	return err
+}
+
 func (r *FinanceRepo) EnsureDefaults(ctx context.Context, propertyID uuid.UUID) error {
 	if r.pool == nil {
 		return fmt.Errorf("EnsureDefaults requires pool access, got nil pool")
@@ -391,7 +402,7 @@ func (r *FinanceRepo) InsertJournal(ctx context.Context, lines []domain.JournalL
 				return domain.ErrDuplicateIdempotency
 			}
 			if err != nil {
-				return err
+				return mapLedgerPgErr(err)
 			}
 		}
 		return nil
@@ -553,7 +564,7 @@ func (r *FinanceRepo) SaveTieOut(ctx context.Context, t *domain.PeriodTieOut) er
 			closed_at=EXCLUDED.closed_at,
 			updated_at=NOW()`,
 		t.ID, t.PropertyID, t.PeriodMonth, t.ReconTotalPaise, t.LedgerTotalPaise, t.DifferencePaise, b, t.Status, t.ClosedAt)
-	return err
+	return mapLedgerPgErr(err)
 }
 
 func (r *FinanceRepo) ListTieOuts(ctx context.Context, propertyID uuid.UUID, limit int) ([]domain.PeriodTieOut, error) {

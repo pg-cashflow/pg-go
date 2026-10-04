@@ -540,10 +540,15 @@ async function showOwner(err) {
   });
 
   const rbox = n.querySelector("#reports");
-  if (!(reports.payment_reports || []).length) rbox.innerHTML = "<p>No UTR reports waiting.</p>";
-  (reports.payment_reports || []).forEach((r) => {
-    const c = el(`<div class="card">
-      <p>UTR <strong>${esc(r.upi_txn_id)}</strong> · ${rupees(r.amount)}</p>
+  const reportsList = reports.payment_reports || [];
+  if (!reportsList.length) {
+    rbox.innerHTML = "<p>No UTR reports waiting.</p>";
+  } else {
+    rbox.innerHTML = `<div class="kbd-hint">⌨️ <strong>Keyboard:</strong> <kbd>↑</kbd> <kbd>↓</kbd> navigate <kbd>Enter</kbd> confirm payment verification <kbd>R</kbd> reject</div>`;
+  }
+  reportsList.forEach((r, idx) => {
+    const c = el(`<div class="card nav-card" tabindex="0" data-idx="${idx}">
+      <p>UTR <strong>${esc(r.upi_txn_id)}</strong> · ${rupees(r.amount)} <span class="active-tag hidden">Active</span></p>
       <p class="muted">due ${esc(r.due_id)}</p>
       <div class="row">
         <button data-act="ok">Confirm</button>
@@ -562,9 +567,15 @@ async function showOwner(err) {
   });
 
   const dbox = n.querySelector("#dues");
-  (dues.dues || []).filter((d) => d.status === "pending" || d.status === "partial").forEach((d) => {
-    const c = el(`<div class="card">
-      <p>${esc(d.kind)} ${esc(d.due_code)} · ${rupees(d.amount)} · ${esc(d.status)}</p>
+  const pendingDues = (dues.dues || []).filter((d) => d.status === "pending" || d.status === "partial");
+  if (!pendingDues.length) {
+    dbox.innerHTML = "<p>No pending dues.</p>";
+  } else {
+    dbox.innerHTML = `<div class="kbd-hint">⌨️ <strong>Keyboard:</strong> <kbd>↑</kbd> <kbd>↓</kbd> navigate <kbd>Enter</kbd> mark cash paid & verify payment</div>`;
+  }
+  pendingDues.forEach((d, idx) => {
+    const c = el(`<div class="card nav-card" tabindex="0" data-idx="${idx}">
+      <p>${esc(d.kind)} ${esc(d.due_code)} · ${rupees(d.amount)} · ${esc(d.status)} <span class="active-tag hidden">Active</span></p>
       <div class="row">
         <button class="secondary" data-act="cash">Mark cash paid</button>
       </div>
@@ -667,6 +678,76 @@ async function showOwner(err) {
     catch (e) { showOwner(e); }
   };
   render(n);
+
+  // Keyboard navigation for owner ledger (reports and dues)
+  setTimeout(() => {
+    const activeSection = document.querySelector(`#${tab}`);
+    if (!activeSection) return;
+    const cards = Array.from(activeSection.querySelectorAll(".nav-card"));
+    if (!cards.length) return;
+
+    let selectedIdx = 0;
+    const highlightCard = (idx) => {
+      cards.forEach((card, i) => {
+        const isCurrent = i === idx;
+        card.classList.toggle("keyboard-selected", isCurrent);
+        const tag = card.querySelector(".active-tag");
+        if (tag) tag.classList.toggle("hidden", !isCurrent);
+        if (isCurrent) {
+          card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      });
+    };
+
+    cards.forEach((card, i) => {
+      card.addEventListener("click", () => {
+        selectedIdx = i;
+        highlightCard(selectedIdx);
+      });
+    });
+
+    highlightCard(0);
+
+    if (window._ownerKeyHandler) {
+      window.removeEventListener("keydown", window._ownerKeyHandler);
+    }
+
+    window._ownerKeyHandler = (e) => {
+      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT")) return;
+      const currentActiveSection = document.querySelector(`#${tab}`);
+      if (!currentActiveSection) return;
+      const currentCards = Array.from(currentActiveSection.querySelectorAll(".nav-card"));
+      if (!currentCards.length) return;
+
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        selectedIdx = Math.min(selectedIdx + 1, currentCards.length - 1);
+        highlightCard(selectedIdx);
+      } else if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        selectedIdx = Math.max(selectedIdx - 1, 0);
+        highlightCard(selectedIdx);
+      } else if (e.key === "Enter") {
+        const currentCard = currentCards[selectedIdx];
+        if (currentCard) {
+          e.preventDefault();
+          const confirmBtn = currentCard.querySelector("[data-act=ok]") || currentCard.querySelector("[data-act=cash]");
+          if (confirmBtn) confirmBtn.click();
+        }
+      } else if (e.key === "r" || e.key === "R") {
+        const currentCard = currentCards[selectedIdx];
+        if (currentCard) {
+          const rejectBtn = currentCard.querySelector("[data-act=no]");
+          if (rejectBtn) {
+            e.preventDefault();
+            rejectBtn.click();
+          }
+        }
+      }
+    };
+
+    window.addEventListener("keydown", window._ownerKeyHandler);
+  }, 50);
 }
 
 async function showTenant(err) {

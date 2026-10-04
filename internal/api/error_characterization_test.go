@@ -76,6 +76,7 @@ func TestFinanceClientErrorCharacterization(t *testing.T) {
 		{finance.ErrPolicyExceeded, http.StatusBadRequest, finance.ErrPolicyExceeded.Error(), apierr.CodeFinancePolicyExceeded},
 		{finance.ErrApprovalRequired, http.StatusBadRequest, finance.ErrApprovalRequired.Error(), apierr.CodeFinanceApprovalRequired},
 		{finance.ErrPeriodNotCloseable, http.StatusBadRequest, finance.ErrPeriodNotCloseable.Error(), apierr.CodeFinancePeriodNotCloseable},
+		{finance.ErrPeriodClosed, http.StatusConflict, finance.ErrPeriodClosed.Error(), apierr.CodeFinancePeriodClosed},
 		{finance.ErrNotFound, http.StatusNotFound, "not found", apierr.CodeFinanceNotFound},
 		{finance.ErrForbidden, http.StatusForbidden, "forbidden", apierr.CodeFinanceForbidden},
 		{finance.ErrDisabled, http.StatusServiceUnavailable, "finance disabled", apierr.CodeFinanceDisabled},
@@ -486,4 +487,3 @@ func TestScopeClaimsCharacterization(t *testing.T) {
 		}
 	})
 }
-
