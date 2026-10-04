@@ -103,6 +103,7 @@ func TestLiveAttendanceAndPayrollHTTPFlow(t *testing.T) {
 	h := &Handlers{
 		Deps: Deps{
 			Pool:           pool,
+			PayoutRepo:     payoutRepo,
 			AttendanceRepo: attendanceRepo,
 			AttendanceSvc:  attendanceSvc,
 		},
@@ -129,7 +130,24 @@ func TestLiveAttendanceAndPayrollHTTPFlow(t *testing.T) {
 		owner.POST("/payroll/finalize", h.OwnerFinalizePayroll)
 	}
 
-	// 1. Create Staff Profile
+	// 1a. Attempt to create staff profile with non-existent or cross-property payee_id (IDOR guard)
+	foreignPayeeBody := map[string]interface{}{
+		"payee_id":                uuid.New().String(),
+		"name":                    "Imposter Staff",
+		"role":                    "Infiltrator",
+		"base_monthly_wage_paise": 100000,
+		"effective_from":          "2026-09-01",
+	}
+	foreignPayload, _ := json.Marshal(foreignPayeeBody)
+	wBadPayee := httptest.NewRecorder()
+	reqBadPayee, _ := http.NewRequest(http.MethodPost, "/owner/staff", bytes.NewReader(foreignPayload))
+	reqBadPayee.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(wBadPayee, reqBadPayee)
+	if wBadPayee.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found on cross-property/non-existent payee, got %d (body: %s)", wBadPayee.Code, wBadPayee.Body.String())
+	}
+
+	// 1b. Create Staff Profile
 	createBody := map[string]interface{}{
 		"payee_id":                payeeID.String(),
 		"name":                    "Sunil Security",
@@ -167,7 +185,23 @@ func TestLiveAttendanceAndPayrollHTTPFlow(t *testing.T) {
 		t.Fatalf("expected 200 OK on PUT /owner/attendance/leave-policy, got %d", w.Code)
 	}
 
-	// 3. Mark Daily Attendance (28 days present, 2 days absent)
+	// 3a. Reject attendance for non-existent or foreign staff
+	badAttReq := domain.MarkDailyAttendanceRequest{
+		WorkDate: "2026-09-01",
+		Entries: []domain.DailyAttendanceEntry{
+			{StaffID: uuid.New(), Status: domain.AttendancePresent},
+		},
+	}
+	pBad, _ := json.Marshal(badAttReq)
+	wBadAtt := httptest.NewRecorder()
+	rBadAtt, _ := http.NewRequest(http.MethodPost, "/owner/attendance/daily", bytes.NewReader(pBad))
+	rBadAtt.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(wBadAtt, rBadAtt)
+	if wBadAtt.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request on foreign staff attendance, got %d", wBadAtt.Code)
+	}
+
+	// 3b. Mark Daily Attendance (28 days present, 2 days absent)
 	for day := 1; day <= 28; day++ {
 		wDate := fmt.Sprintf("2026-09-%02d", day)
 		attReq := domain.MarkDailyAttendanceRequest{

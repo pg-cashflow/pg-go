@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -57,6 +58,22 @@ func (h *Handlers) OwnerCreateStaffProfile(c *gin.Context) {
 	if body.BaseMonthlyWagePaise <= 0 {
 		respondErr(c, clientErr(http.StatusBadRequest, "base_monthly_wage_paise must be positive"))
 		return
+	}
+
+	if h.PayoutRepo != nil {
+		payee, err := h.PayoutRepo.GetPayeeByID(c.Request.Context(), payeeID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				respondErr(c, clientErr(http.StatusNotFound, "payee not found"))
+				return
+			}
+			respondErr(c, err)
+			return
+		}
+		if payee.PropertyID != pid {
+			respondErr(c, clientErr(http.StatusNotFound, "payee not found"))
+			return
+		}
 	}
 
 	staff := domain.StaffProfile{

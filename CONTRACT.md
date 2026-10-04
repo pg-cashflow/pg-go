@@ -208,9 +208,15 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | POST | `/api/owner/dues/:id/waive` | None | Waives remaining balance of due. Returns updated `Due`. |
 | POST | `/api/owner/dues/:id/match` | `{ "amount": int, "upi_txn_id": string }` | Manual match for bank/UPI payment. Returns created `Payment`. |
 | POST | `/api/owner/dues/:id/mark-cash-paid` | `{ "amount": int, "note"?: string }` | All-or-nothing cash settlement. Returns created `Payment`. |
+| POST | `/api/owner/dues/bulk-mark-paid/preview` | `{ "due_ids": uuid[] }` | Computes eligible dues and total paise, filtering settled/foreign dues. Returns `{ "eligible_count": int, "total_amount_paise": int64, "total_amount_rupees": float, "eligible_dues": EligibleDueItem[], "skipped_dues": SkippedDueItem[] }`. |
+| POST | `/api/owner/dues/bulk-mark-paid/confirm` | `{ "due_ids": uuid[], "confirmed_total_paise": int64, "note"?: string }` | Verifies re-entered total paise matches eligible sum, then atomically marks all cash paid under a shared batch reference. Returns `{ "settled_count": int, "total_amount_paise": int64, "batch_ref": string, "payments": Payment[] }`. |
 | GET | `/api/owner/dues/:id/qr` | None | Dynamic PNG QR image bytes. Returns 409 in Cashfree mode. |
 | GET | `/api/owner/dues/:id/pay` | None | JSON pay payload (see Pay JSON schema). |
 | POST | `/api/owner/dues/:id/token` | None | Creates 72-hour magic payment token. Returns `{ "path": string, "url": string, "wa_me": string }`. |
+| GET | `/api/owner/occupancy` | None | Aggregated bed capacity, occupancy counts, vacant beds, and floor/room vacancy breakdown. Returns `{ "occupancy_rate_bps": int, "total_capacity": int, "occupied_beds": int, "vacant_beds": int, "floors": FloorOccupancy[] }`. |
+| GET | `/api/owner/calendar/token` | None | Generates HMAC-signed iCal calendar feed subscription URL. Returns `{ "property_id": uuid, "token": string, "calendar_url": string }`. |
+| GET | `/api/owner/settings` | None | Returns active property settings `{ "settings": PropertySettings }`. |
+| PATCH | `/api/owner/settings` | `{ "payout_auto_dispatch"?: bool, "reminder_offsets"?: int[], "reminder_catch_up_days"?: int, "active_modules"?: map[string]bool, "auto_apply_credit"?: bool }` | Updates property settings. Returns `{ "settings": PropertySettings }`. |
 | GET | `/api/owner/payment-reports` | Query: `status` (`pending_review`\|`confirmed`\|`rejected`) | `{ "payment_reports": PaymentReport[] }` (includes `image_hash`, `is_duplicate`, `ocr_*` fields). |
 | POST | `/api/owner/payment-reports/:id/confirm` | None | Confirms reported payment → executes `ManualMatch`. Returns `{ "report": PaymentReport, "payment": Payment }`. |
 | POST | `/api/owner/payment-reports/:id/reject` | `{ "note"?: string }` (optional) | Rejects payment report with reason note. Returns `{ "report": PaymentReport }`. |
@@ -237,7 +243,48 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | GET | `/api/owner/payouts/payees` | None | Lists verified payout payees scoped to owner property. Returns `{ "payees": PayoutPayee[] }`. |
 | GET | `/api/owner/payouts/items/unbatched` | None | Lists unbatched payout items (`status = 'pending'`, `batch_id = NULL`) awaiting batch packaging. Returns `{ "items": PayoutItem[] }`. |
 | POST | `/api/owner/payouts/batches` | `{ "notes"?: string }` | Atomically packages all pending unbatched payout items into an immutable batch with deterministic `batch_number` (`BATCH-YYYYMMDD-<hex>`) and HMAC-SHA256 checksum (`file_checksum`). Returns 201 `{ "batch": PayoutBatch, "items": PayoutItem[] }`. |
+| POST | `/api/owner/payouts/batches/:id/approve` | `{ "expected_item_count": int, "expected_total_paise": int64, "step_up_otp"?: string, "firebase_id_token"?: string }` | Dual-control maker-checker approval. On multi-owner properties enforces `claims.UserID != batch.CreatedBy`; on solo-owner properties requires cryptographic step-up reauthentication. Returns `{ "batch": PayoutBatch }`. |
+| POST | `/api/owner/payouts/batches/:id/approve/request-otp` | None | Dispatches purpose-parameterized SMS OTP to owner phone for batch approval step-up reauthentication. Returns `{ "ok": true }`. |
 | GET | `/api/owner/payouts/batches/:id/export` | None | Exports batch instruction sheet as CSV download. Sets headers `Content-Type: text/csv`, `Content-Disposition: attachment; filename="payout_<batch_number>.csv"`, and `X-Batch-Checksum: <hmac-sha256>`. |
+| POST | `/api/owner/payouts/batches/:id/dispatch` | `{ "mode": "cashfree" }` | Dispatches approved batch to Cashfree Transfers V2 API. Idempotent per batch. Returns `{ "batch": PayoutBatch, "dispatched_count": int, "results": ... }`. |
+
+### Bank Accounts & Transaction Reconciliation (Owner, Track O)
+
+| Method | Path | Body / Query | Response / Notes |
+| ------ | ---- | ------------ | ---------------- |
+| GET | `/api/owner/bank-accounts` | None | Lists active bank accounts for property. Returns `{ "bank_accounts": BankAccount[] }`. |
+| POST | `/api/owner/bank-accounts` | `{ "bank_name": string, "account_type"?: "savings"\|"current", "account_number_last4": string, "label"?: string, "statement_profile"?: string }` | Creates bank account tracking record. Returns 201 `BankAccount`. |
+| DELETE | `/api/owner/bank-accounts/:id` | None | Soft-deactivates bank account. Returns 200 `{ "status": "deactivated" }`. |
+| GET | `/api/owner/statements/transactions` | Query: `account_id` (uuid), `status` (`unmatched`\|`matched`\|`refunded`\|`classified`), `from`, `to` (`YYYY-MM-DD`) | Lists ingested bank statement transactions. Returns `{ "transactions": BankTransaction[] }`. |
+| POST | `/api/owner/statements/transactions/:id/confirm` | `{ "target_due_id"?: uuid }` | Confirms match between bank transaction and due (Tier 2 heuristic promotion to settled payment with ledger mirror). Returns `{ "status": "matched", "transaction": BankTransaction }`. |
+| POST | `/api/owner/statements/transactions/:id/refund` | None | Marks unidentified deposit refunded back to sender. Returns `{ "transaction": BankTransaction }`. |
+| POST | `/api/owner/statements/transactions/:id/classify` | `{ "classification": "capital_injection"\|"vendor_refund"\|"other_income", "notes"?: string }` | Classifies non-rent bank transaction into appropriate general ledger category. Returns `{ "transaction": BankTransaction }`. |
+
+### Gateway Settlements & EOD Balancer (Owner, Tracks N & P)
+
+| Method | Path | Body / Query | Response / Notes |
+| ------ | ---- | ------------ | ---------------- |
+| GET | `/api/owner/settlements` | Query: `status` (`pending`\|`reconciled`\|`discrepant`), `limit` | Lists Cashfree gateway settlement records. Returns `{ "settlements": SettlementRecord[] }`. |
+| GET | `/api/owner/settlements/:id` | None | Retrieves detailed settlement record with order-to-intent reconciliation items. Returns `SettlementRecord`. |
+| POST | `/api/owner/settlements/:id/resolve` | `{ "resolution_action": "accept_variance"\|"manual_adjust", "notes": string, "step_up_otp"?: string }` | Human-gated maker-checker discrepancy resolution for gateway settlement differences. Returns `{ "settlement": SettlementRecord }`. |
+| GET | `/api/owner/settlements/eod-balance` | Query: `date=YYYY-MM-DD` (defaults to today) | Fetches Multi-Way End-of-Day balance snapshot reconciling gateway in-transit, bank cleared, unapplied receipts, and general ledger. Returns `DailySettlementBalance`. |
+| POST | `/api/owner/settlements/eod-balance/run` | `{ "date": "YYYY-MM-DD" }` | Computes and persists durable daily settlement balance snapshot. Returns 200/201 `DailySettlementBalance`. |
+| GET | `/api/owner/settlements/eod-balance/history` | Query: `from`, `to` (`YYYY-MM-DD`) | Lists historical daily settlement balance snapshots for trend and variance audit. Returns `{ "history": DailySettlementBalance[] }`. |
+
+### Staff Attendance & Payroll Subsystem (Owner, Track M)
+
+| Method | Path | Body / Query | Response / Notes |
+| ------ | ---- | ------------ | ---------------- |
+| POST | `/api/owner/staff` | `{ "payee_id": uuid, "name": string, "role": string, "phone"?: string, "base_monthly_wage_paise": int64, "effective_from": "YYYY-MM-DD" }` | Provisions staff profile linked to verified property payee. Returns 201 `StaffProfile`. |
+| GET | `/api/owner/staff` | Query: `active_only` (bool, default true) | Lists staff profiles for property. Returns `{ "staff": StaffProfile[] }`. |
+| PUT | `/api/owner/staff/:id/status` | `{ "status": "active"\|"inactive", "effective_to"?: "YYYY-MM-DD" }` | Updates staff active status and end-of-employment date. Returns `{ "message": "staff status updated" }`. |
+| GET | `/api/owner/attendance/leave-policy` | None | Retrieves property leave policy and paid holidays. Returns `LeavePolicy`. |
+| PUT | `/api/owner/attendance/leave-policy` | `{ "monthly_free_leave_days": int, "paid_holidays": string[], "working_days_basis": "calendar_days"\|"fixed_30"\|"working_days_excluding_sundays" }` | Upserts property leave policy rules. Returns updated `LeavePolicy`. |
+| POST | `/api/owner/attendance/daily` | `{ "work_date": "YYYY-MM-DD", "entries": [{ "staff_id": uuid, "status": "present"\|"absent"\|"paid_leave"\|"half_day"\|"holiday", "notes"?: string }] }` | Records daily bulk attendance check-in for staff. Returns `{ "message": "attendance recorded successfully" }`. |
+| GET | `/api/owner/attendance/monthly` | Query: `month=YYYY-MM` (defaults to current month) | Lists all daily attendance check-in records for given month. Returns `{ "month": string, "records": AttendanceRecord[] }`. |
+| POST | `/api/owner/payroll/calculate` | `{ "cycle_month": "YYYY-MM" }` | Previews monthly wage calculations and proration for all active staff without persisting. Returns `{ "cycle_month": string, "calculations": WageCalculation[] }`. |
+| POST | `/api/owner/payroll/finalize` | `{ "cycle_month": "YYYY-MM" }` | Atomically calculates, freezes immutable monthly wage snapshots, and injects unbatched `payout_items` (`PayeeTypeStaff`) into the payout pipeline. Returns `{ "cycle_month": string, "finalized": WageCalculation[] }`. |
+
 
 ### Facility & Gamification (Owner)
 
@@ -1242,6 +1289,127 @@ The KYC subsystem accepts asynchronous verification outcomes from Cashfree Secur
   "status": "pending",
   "created_at": "2026-09-15T10:00:00Z",
   "updated_at": "2026-09-15T10:30:00Z"
+}
+```
+
+### 7. Bank Account & Bank Transaction
+```json
+// Bank Account
+{
+  "id": "18cfb704-5f5c-44bf-a9f4-18c9ecf83e58",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "bank_name": "HDFC Bank",
+  "account_type": "current",
+  "account_number_last4": "4321",
+  "label": "Primary Operations Account",
+  "statement_profile": "hdfc",
+  "is_active": true,
+  "created_at": "2026-09-01T00:00:00Z",
+  "updated_at": "2026-09-01T00:00:00Z"
+}
+
+// Bank Transaction
+{
+  "id": "39ecb815-6a6d-45cf-ba05-29d0fdf94f69",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "account_id": "18cfb704-5f5c-44bf-a9f4-18c9ecf83e58",
+  "txn_date": "2026-09-05",
+  "value_date": "2026-09-05",
+  "description": "UPI/424912345678/RENT/PG-RENT02",
+  "ref_number": "424912345678",
+  "txn_type": "credit",
+  "amount_paise": 550000,
+  "balance_paise": 12500000,
+  "status": "matched",
+  "matched_due_id": "d2b51417-e7bc-487f-b905-095511fb1a02",
+  "matched_by": "76ba3f53-271d-4076-96ad-d00730d8ebc1",
+  "matched_at": "2026-09-05T10:15:00Z"
+}
+```
+
+### 8. Gateway Settlement & Multi-Way Daily Settlement Balance
+```json
+// Daily Settlement Balance Snapshot
+{
+  "id": "5a0dc926-7b7e-46df-cb16-30e1aef05a70",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "balance_date": "2026-09-15",
+  "gateway_gross_paise": 5000000,
+  "gateway_fee_paise": 100000,
+  "gateway_tax_paise": 18000,
+  "gateway_net_paise": 4882000,
+  "gateway_in_transit_paise": 0,
+  "bank_opening_paise": 10000000,
+  "bank_inflows_paise": 4882000,
+  "bank_outflows_paise": 1175000,
+  "bank_closing_paise": 13707000,
+  "unapplied_receipts_paise": 0,
+  "gl_bank_balance_paise": 13707000,
+  "gl_clearing_balance_paise": 0,
+  "gl_unapplied_balance_paise": 0,
+  "clearing_variance_paise": 0,
+  "bank_variance_paise": 0,
+  "unapplied_variance_paise": 0,
+  "status": "balanced",
+  "computed_at": "2026-09-15T23:59:59Z"
+}
+```
+
+### 9. Staff Profile & Daily Attendance Record
+```json
+// Staff Profile
+{
+  "id": "6b1ed037-8c8f-47ef-dc27-41f2bff16b81",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "payee_id": "a9ed6286-5040-43a9-c9d0-0330630b1ef4",
+  "name": "Sunil Kumar",
+  "role": "Security Guard",
+  "phone": "+919876543220",
+  "base_monthly_wage_paise": 2400000,
+  "effective_from": "2026-08-01T00:00:00Z",
+  "status": "active",
+  "created_at": "2026-08-01T00:00:00Z",
+  "updated_at": "2026-08-01T00:00:00Z"
+}
+
+// Attendance Record
+{
+  "id": "7c2fe148-9d9a-48f0-ed38-5203c0027c92",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "staff_id": "6b1ed037-8c8f-47ef-dc27-41f2bff16b81",
+  "work_date": "2026-09-01T00:00:00Z",
+  "status": "present",
+  "recorded_by": "76ba3f53-271d-4076-96ad-d00730d8ebc1",
+  "created_at": "2026-09-01T08:00:00Z",
+  "updated_at": "2026-09-01T08:00:00Z"
+}
+```
+
+### 10. Monthly Wage Calculation Snapshot
+```json
+{
+  "id": "8d30f259-0e0b-4901-fe49-6314d1138da3",
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "staff_id": "6b1ed037-8c8f-47ef-dc27-41f2bff16b81",
+  "cycle_month": "2026-09",
+  "base_monthly_wage_paise": 2400000,
+  "prorated_base_wage_paise": 2400000,
+  "total_basis_days": 30,
+  "employed_basis_days": 30,
+  "days_present": 28.0,
+  "days_paid_leave": 0.0,
+  "days_holiday": 0.0,
+  "days_absent": 2.0,
+  "days_unrecorded": 0.0,
+  "free_leave_days_allowed": 2.0,
+  "excess_absent_days": 0.0,
+  "per_day_rate_paise": 80000,
+  "total_deduction_paise": 0,
+  "net_wage_paise": 2400000,
+  "payout_item_id": "cb0f84a8-7262-45cb-ebf2-2552852d3016",
+  "status": "batched",
+  "calculated_at": "2026-09-30T23:59:59Z",
+  "finalized_by": "76ba3f53-271d-4076-96ad-d00730d8ebc1"
 }
 ```
 

@@ -2,6 +2,7 @@ package attendance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -55,6 +56,34 @@ func (s *Service) MarkDailyAttendance(
 	workDate, err := time.Parse("2006-01-02", req.WorkDate)
 	if err != nil {
 		return fmt.Errorf("invalid work_date (expected YYYY-MM-DD): %w", err)
+	}
+
+	if len(req.Entries) == 0 {
+		return errors.New("no attendance entries provided")
+	}
+
+	staffList, err := s.attendanceRepo.ListStaffProfiles(ctx, propertyID, false)
+	if err != nil {
+		return fmt.Errorf("list staff: %w", err)
+	}
+	validStaff := make(map[uuid.UUID]bool, len(staffList))
+	for _, st := range staffList {
+		validStaff[st.ID] = true
+	}
+
+	seenStaff := make(map[uuid.UUID]bool, len(req.Entries))
+	for _, e := range req.Entries {
+		if !validStaff[e.StaffID] {
+			return fmt.Errorf("staff %s not found for property", e.StaffID)
+		}
+		if seenStaff[e.StaffID] {
+			return fmt.Errorf("duplicate entry for staff %s in same request", e.StaffID)
+		}
+		seenStaff[e.StaffID] = true
+
+		if !domain.IsValidAttendanceStatus(e.Status) {
+			return fmt.Errorf("invalid attendance status '%s' for staff %s", e.Status, e.StaffID)
+		}
 	}
 
 	return s.attendanceRepo.UpsertDailyAttendanceBatchTx(ctx, nil, propertyID, recordedBy, workDate, req.Entries)

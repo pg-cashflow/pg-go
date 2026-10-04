@@ -61,6 +61,16 @@ const (
 	AttendanceHoliday   AttendanceStatus = "holiday"
 )
 
+// IsValidAttendanceStatus returns true if the status is one of the valid attendance states.
+func IsValidAttendanceStatus(s AttendanceStatus) bool {
+	switch s {
+	case AttendancePresent, AttendanceAbsent, AttendancePaidLeave, AttendanceHalfDay, AttendanceHoliday:
+		return true
+	default:
+		return false
+	}
+}
+
 // AttendanceRecord tracks daily attendance for a single staff member on a specific date.
 type AttendanceRecord struct {
 	ID         uuid.UUID        `json:"id"`
