@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
@@ -17,7 +18,6 @@ import (
 	"golang.org/x/time/rate"
 )
 
-
 // ---------------------------------------------------------------------------
 // Rate limiting by tenant_id (not IP) for KYC initiation.
 // The RequireTenant group middleware runs first and populates auth.ContextTenantKey,
@@ -27,15 +27,36 @@ import (
 // tenantIDRateLimit returns a per-tenant-ID token-bucket middleware. The limiter
 // map is local to each returned closure, so different routes get independent budgets.
 //
+// Memory bounding: tracks up to 5,000 unique tenant IDs with a 30-minute idle TTL.
+// When capacity is reached, expired entries are purged; if still full, the oldest
+// entry is evicted. This matches the bounding strategy of ipRateLimitBounded.
+//
 // NOTE: Single-process in-memory limitation:
-// This rate limiter maintains an in-memory map of token buckets per instance. If pg-go is
-// scaled to multiple replicas/pods behind a load balancer, each instance enforces its own
-// limit independently, allowing a tenant to consume up to N × burst requests across N replicas.
-// For multi-replica horizontal scaling, replace this with a distributed limiter (e.g. Redis
-// sliding window or Postgres advisory/token store).
+// This rate limiter maintains an in-memory map per process instance. In a
+// multi-replica deployment each instance enforces its own limit independently,
+// allowing a tenant up to N × burst across N replicas. For true distributed
+// enforcement, replace with a Redis sliding window or Postgres advisory store.
 func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
+	const (
+		maxEntries = 5000
+		entryTTL   = 30 * time.Minute
+	)
+
+	type entry struct {
+		limiter  *rate.Limiter
+		lastSeen time.Time
+	}
+
 	var mu sync.Mutex
-	limiters := make(map[string]*rate.Limiter)
+	limiters := make(map[string]*entry)
+
+	sweep := func(now time.Time) {
+		for k, e := range limiters {
+			if now.Sub(e.lastSeen) > entryTTL {
+				delete(limiters, k)
+			}
+		}
+	}
 
 	return func(c *gin.Context) {
 		v, ok := c.Get(auth.ContextTenantKey)
@@ -49,16 +70,40 @@ func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 			return
 		}
 		key := t.ID.String()
+		now := time.Now()
 
 		mu.Lock()
-		l, ok := limiters[key]
+		e, ok := limiters[key]
 		if !ok {
-			l = rate.NewLimiter(rate.Limit(rps), burst)
-			limiters[key] = l
+			if len(limiters) >= maxEntries {
+				sweep(now)
+			}
+			if len(limiters) >= maxEntries {
+				// Evict oldest entry if still at capacity after sweep.
+				var oldestKey string
+				var oldestTime time.Time
+				for k, v := range limiters {
+					if oldestKey == "" || v.lastSeen.Before(oldestTime) {
+						oldestKey = k
+						oldestTime = v.lastSeen
+					}
+				}
+				if oldestKey != "" {
+					delete(limiters, oldestKey)
+				}
+			}
+			e = &entry{
+				limiter:  rate.NewLimiter(rate.Limit(rps), burst),
+				lastSeen: now,
+			}
+			limiters[key] = e
+		} else {
+			e.lastSeen = now
 		}
+		allowed := e.limiter.Allow()
 		mu.Unlock()
 
-		if !l.Allow() {
+		if !allowed {
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
 			return
 		}

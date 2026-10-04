@@ -198,13 +198,13 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		return nil, ErrRefreshTokenExpired
 	}
 
-	// 3. Mark current token revoked with timestamp
+	// 4. Mark current token revoked with timestamp
 	now := time.Now().UTC()
 	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = $1 WHERE id = $2`, now, current.ID); err != nil {
 		return nil, fmt.Errorf("revoke current token: %w", err)
 	}
 
-	// 4. Insert new rotated token with inherited immutable family_started_at
+	// 5. Insert new rotated token with inherited immutable family_started_at
 	if newRT.ID == uuid.Nil {
 		newRT.ID = uuid.New()
 	}

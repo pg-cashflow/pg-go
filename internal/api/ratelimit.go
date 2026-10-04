@@ -34,69 +34,7 @@ func ipRateLimit(rps float64, burst int) gin.HandlerFunc {
 	return ipRateLimitBounded(rps, burst, defaultMaxIPEntries, defaultEntryTTL)
 }
 
-func ipRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration) gin.HandlerFunc {
-	var mu sync.Mutex
-	limiters := make(map[string]*ipLimiterEntry)
-
-	sweep := func(now time.Time) {
-		for ip, e := range limiters {
-			if now.Sub(e.lastSeen) > ttl {
-				delete(limiters, ip)
-			}
-		}
-	}
-
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		now := time.Now()
-
-		mu.Lock()
-		e, ok := limiters[ip]
-		if !ok {
-			if len(limiters) >= maxEntries {
-				sweep(now)
-			}
-			if len(limiters) >= maxEntries {
-				// Evict oldest entry if still at or above capacity
-				var oldestIP string
-				var oldestTime time.Time
-				for k, v := range limiters {
-					if oldestIP == "" || v.lastSeen.Before(oldestTime) {
-						oldestIP = k
-						oldestTime = v.lastSeen
-					}
-				}
-				if oldestIP != "" {
-					delete(limiters, oldestIP)
-				}
-			}
-			e = &ipLimiterEntry{
-				limiter:  rate.NewLimiter(rate.Limit(rps), burst),
-				lastSeen: now,
-			}
-			limiters[ip] = e
-		} else {
-			e.lastSeen = now
-		}
-		allowed := e.limiter.Allow()
-		mu.Unlock()
-
-		if !allowed {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
-			return
-		}
-		c.Next()
-	}
-}
-
-// userOrIPRateLimit returns a token-bucket rate limiter that keys on the authenticated
-// user ID (claims.UserID) to prevent mobile carrier NAT IP sharing collisions.
-// If unauthenticated, it safely falls back to ClientIP.
-func userOrIPRateLimit(rps float64, burst int) gin.HandlerFunc {
-	return userOrIPRateLimitBounded(rps, burst, defaultMaxIPEntries, defaultEntryTTL)
-}
-
-func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration) gin.HandlerFunc {
+func keyedRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration, keyFn func(*gin.Context) string) gin.HandlerFunc {
 	var mu sync.Mutex
 	limiters := make(map[string]*ipLimiterEntry)
 
@@ -109,10 +47,7 @@ func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.D
 	}
 
 	return func(c *gin.Context) {
-		key := c.ClientIP()
-		if claims, ok := auth.ClaimsFromContext(c); ok && claims.UserID != uuid.Nil {
-			key = "usr:" + claims.UserID.String()
-		}
+		key := keyFn(c)
 		now := time.Now()
 
 		mu.Lock()
@@ -122,6 +57,7 @@ func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.D
 				sweep(now)
 			}
 			if len(limiters) >= maxEntries {
+				// Evict oldest entry if still at or above capacity
 				var oldestKey string
 				var oldestTime time.Time
 				for k, v := range limiters {
@@ -151,4 +87,26 @@ func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.D
 		}
 		c.Next()
 	}
+}
+
+func ipRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration) gin.HandlerFunc {
+	return keyedRateLimitBounded(rps, burst, maxEntries, ttl, func(c *gin.Context) string {
+		return c.ClientIP()
+	})
+}
+
+// userOrIPRateLimit returns a token-bucket rate limiter that keys on the authenticated
+// user ID (claims.UserID) to prevent mobile carrier NAT IP sharing collisions.
+// If unauthenticated, it safely falls back to ClientIP.
+func userOrIPRateLimit(rps float64, burst int) gin.HandlerFunc {
+	return userOrIPRateLimitBounded(rps, burst, defaultMaxIPEntries, defaultEntryTTL)
+}
+
+func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.Duration) gin.HandlerFunc {
+	return keyedRateLimitBounded(rps, burst, maxEntries, ttl, func(c *gin.Context) string {
+		if claims, ok := auth.ClaimsFromContext(c); ok && claims.UserID != uuid.Nil {
+			return "usr:" + claims.UserID.String()
+		}
+		return c.ClientIP()
+	})
 }

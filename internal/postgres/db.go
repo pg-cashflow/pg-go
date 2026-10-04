@@ -17,19 +17,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse database url: %w", err)
-	}
-
+func defaultPoolOptions(appName string) PoolOptions {
 	maxConns := 25
 	if s := os.Getenv("DATABASE_MAX_CONNS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			maxConns = n
 		}
 	}
-	cfg.MaxConns = int32(maxConns)
 	minConns := maxConns / 5
 	if minConns < 2 {
 		minConns = 2
@@ -39,20 +33,69 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 			minConns = n
 		}
 	}
-	cfg.MinConns = int32(minConns)
-	cfg.MaxConnLifetime = time.Hour
+	maxLifetime := time.Hour
 	if s := os.Getenv("DATABASE_MAX_CONN_LIFETIME"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			cfg.MaxConnLifetime = d
+			maxLifetime = d
 		}
 	}
-	cfg.MaxConnIdleTime = 15 * time.Minute
+	maxIdle := 15 * time.Minute
 	if s := os.Getenv("DATABASE_MAX_CONN_IDLE_TIME"); s != "" {
 		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			cfg.MaxConnIdleTime = d
+			maxIdle = d
 		}
 	}
-	cfg.HealthCheckPeriod = 1 * time.Minute
+	connectTimeout := 10 * time.Second
+	if s := os.Getenv("DATABASE_CONNECT_TIMEOUT"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			connectTimeout = d
+		}
+	}
+	tcpKeepAlive := 30 * time.Second
+	if s := os.Getenv("DATABASE_TCP_KEEPALIVE"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			tcpKeepAlive = d
+		}
+	}
+	pgbouncer := false
+	if s := strings.ToLower(os.Getenv("DATABASE_PGBOUNCER")); s == "1" || s == "true" || s == "yes" {
+		pgbouncer = true
+	}
+
+	slowQueryThreshold := 100 * time.Millisecond
+	if s := os.Getenv("DATABASE_SLOW_QUERY_THRESHOLD"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			slowQueryThreshold = d
+		}
+	}
+
+	return PoolOptions{
+		MaxConns:          maxConns,
+		MinConns:          minConns,
+		MaxConnLifetime:   maxLifetime,
+		MaxConnIdleTime:   maxIdle,
+		HealthCheckPeriod: 1 * time.Minute,
+		ConnectTimeout:    connectTimeout,
+		TCPKeepAlive:      tcpKeepAlive,
+		PgBouncer:         pgbouncer,
+		AppName:           appName,
+		Tracer:            NewQueryPerfTracer(slowQueryThreshold, nil),
+	}
+}
+
+func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+
+	opt := defaultPoolOptions("pg-go-main")
+	// If URL points to standard PgBouncer port 6432, auto-enable PgBouncer mode
+	if cfg.ConnConfig.Port == 6432 {
+		opt.PgBouncer = true
+	}
+	ConfigurePoolConfig(cfg, opt)
+
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
@@ -72,23 +115,28 @@ func NewSearchPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, erro
 		return nil, fmt.Errorf("parse database url for search pool: %w", err)
 	}
 
+	opt := defaultPoolOptions("pg-go-search")
 	maxConns := 10
 	if s := os.Getenv("SEARCH_DATABASE_MAX_CONNS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			maxConns = n
 		}
 	}
-	cfg.MaxConns = int32(maxConns)
+	opt.MaxConns = maxConns
 	minConns := 2
 	if s := os.Getenv("SEARCH_DATABASE_MIN_CONNS"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
 			minConns = n
 		}
 	}
-	cfg.MinConns = int32(minConns)
-	cfg.MaxConnLifetime = 30 * time.Minute
-	cfg.MaxConnIdleTime = 5 * time.Minute
-	cfg.HealthCheckPeriod = 1 * time.Minute
+	opt.MinConns = minConns
+	opt.MaxConnLifetime = 30 * time.Minute
+	opt.MaxConnIdleTime = 5 * time.Minute
+
+	if cfg.ConnConfig.Port == 6432 {
+		opt.PgBouncer = true
+	}
+	ConfigurePoolConfig(cfg, opt)
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

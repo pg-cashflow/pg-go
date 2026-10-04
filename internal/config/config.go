@@ -9,108 +9,113 @@ import (
 )
 
 type Config struct {
-	DatabaseURL                  string
-	JWTSecret                    string
-	OTPHMACSecret                string
-	MagicLinkHMACSecret          string
-	MagicLinkBaseURL             string
-	SMSPrimaryURL                string
-	SMSPrimaryAPIKey             string
-	SMSFallbackURL               string
-	SMSFallbackAPIKey            string
-	SMTPHost                     string
-	SMTPPort                     string
-	SMTPUsername                 string
-	SMTPPassword                 string
-	SMTPFrom                     string
-	VAPIDPublicKey               string
-	VAPIDPrivateKey              string
-	VAPIDSubject                 string
-	HTTPAddr                     string
-	AppEnv                       string
-	CORSAllowedOrigins           []string
-	FrontendURL                  string
-	FirebaseProjectID            string
-	FirebaseCredentials          string
-	CashfreeAppID                string // Deprecated: alias for CashfreePGAppID
-	CashfreeSecretKey            string // Deprecated: alias for CashfreePGSecretKey
-	CashfreePGAppID              string
-	CashfreePGSecretKey          string
-	CashfreeKYCAppID             string
-	CashfreeKYCSecretKey         string
-	CashfreeEnv                  string
-	CashfreeWebhookSecret        string
-	WebhookTimestampToleranceSec int
-	OrderExpiryDuration          time.Duration
-	OrderPollerBufferDuration    time.Duration
-	WebhookAPIVersion            string
-	AadhaarQRPublicKeyPEM        string
-	KYCIdentitySecret            string
-	KYCDigiLockerRedirectURL     string
-	CashfreePayoutClientID      string
-	CashfreePayoutClientSecret  string
-	CashfreePayoutAPIVersion    string
-	CashfreePayoutFundsourceID  string
-	CashfreePayoutWebhookSecret string
+	DatabaseURL                       string
+	JWTSecret                         string
+	OTPHMACSecret                     string
+	MagicLinkHMACSecret               string
+	MagicLinkBaseURL                  string
+	SMSPrimaryURL                     string
+	SMSPrimaryAPIKey                  string
+	SMSFallbackURL                    string
+	SMSFallbackAPIKey                 string
+	SMTPHost                          string
+	SMTPPort                          string
+	SMTPUsername                      string
+	SMTPPassword                      string
+	SMTPFrom                          string
+	VAPIDPublicKey                    string
+	VAPIDPrivateKey                   string
+	VAPIDSubject                      string
+	HTTPAddr                          string
+	AppEnv                            string
+	CORSAllowedOrigins                []string
+	FrontendURL                       string
+	FirebaseProjectID                 string
+	FirebaseCredentials               string
+	CashfreeAppID                     string // Deprecated: alias for CashfreePGAppID
+	CashfreeSecretKey                 string // Deprecated: alias for CashfreePGSecretKey
+	CashfreePGAppID                   string
+	CashfreePGSecretKey               string
+	CashfreeKYCAppID                  string
+	CashfreeKYCSecretKey              string
+	CashfreeEnv                       string
+	CashfreeWebhookSecret             string
+	WebhookTimestampToleranceSec      int
+	OrderExpiryDuration               time.Duration
+	OrderPollerBufferDuration         time.Duration
+	WebhookAPIVersion                 string
+	AadhaarQRPublicKeyPEM             string
+	KYCIdentitySecret                 string
+	KYCDigiLockerRedirectURL          string
+	CashfreePayoutClientID            string
+	CashfreePayoutClientSecret        string
+	CashfreePayoutAPIVersion          string
+	CashfreePayoutFundsourceID        string
+	CashfreePayoutWebhookSecret       string
 	CashfreePayoutEnv                 string
 	CashfreePayoutAutoDispatchEnabled bool
-	FinanceEnabled                     bool
-	IntelligenceEnabled          bool
-	AdminEmail                   string
-	AdminPhone                   string
-	TrustedProxies               []string
+	FinanceEnabled                    bool
+	IntelligenceEnabled               bool
+	AdminEmail                        string
+	AdminPhone                        string
+	TrustedProxies                    []string
+	// PayoutExportChecksumSecret signs the HMAC on CSV payout batch exports.
+	// If unset, falls back to JWTSecret (see handlers_payouts.go:getChecksumSecret).
+	// Set CF_PAYOUT_EXPORT_SECRET to an independent high-entropy value.
+	PayoutExportChecksumSecret string
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		AdminEmail:                   envFirst("ADMIN_EMAIL", "ALERT_EMAIL", "SMTP_FROM"),
-		AdminPhone:                   envFirst("ADMIN_PHONE", "ALERT_PHONE"),
-		DatabaseURL:           os.Getenv("DATABASE_URL"),
-		JWTSecret:             os.Getenv("JWT_SECRET"),
-		OTPHMACSecret:         os.Getenv("OTP_HMAC_SECRET"),
-		MagicLinkHMACSecret:   os.Getenv("MAGIC_LINK_HMAC_SECRET"),
-		MagicLinkBaseURL:      os.Getenv("MAGIC_LINK_BASE_URL"),
-		SMSPrimaryURL:         os.Getenv("SMS_PRIMARY_URL"),
-		SMSPrimaryAPIKey:      os.Getenv("SMS_PRIMARY_API_KEY"),
-		SMSFallbackURL:        os.Getenv("SMS_FALLBACK_URL"),
-		SMSFallbackAPIKey:     os.Getenv("SMS_FALLBACK_API_KEY"),
-		SMTPHost:              os.Getenv("SMTP_HOST"),
-		SMTPPort:              envOr("SMTP_PORT", "587"),
-		SMTPUsername:          os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:          os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:              os.Getenv("SMTP_FROM"),
-		VAPIDPublicKey:        os.Getenv("VAPID_PUBLIC_KEY"),
-		VAPIDPrivateKey:       os.Getenv("VAPID_PRIVATE_KEY"),
-		VAPIDSubject:          os.Getenv("VAPID_SUBJECT"),
-		HTTPAddr:              envOr("HTTP_ADDR", ":8080"),
-		AppEnv:                envOr("APP_ENV", "development"),
-		CORSAllowedOrigins:    splitOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
-		TrustedProxies:         splitOrigins(os.Getenv("TRUSTED_PROXIES")),
-		FrontendURL:           os.Getenv("FRONTEND_URL"),
-		FirebaseProjectID:     os.Getenv("FIREBASE_PROJECT_ID"),
-		FirebaseCredentials:   os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-		CashfreePGAppID:              envFirst("CASHFREE_PG_APP_ID", "CASHFREE_APP_ID"),
-		CashfreePGSecretKey:          envFirst("CASHFREE_PG_SECRET_KEY", "CASHFREE_SECRET_KEY"),
-		CashfreeKYCAppID:             os.Getenv("CASHFREE_KYC_APP_ID"),
-		CashfreeKYCSecretKey:         os.Getenv("CASHFREE_KYC_SECRET_KEY"),
-		CashfreeEnv:                  envOr("CASHFREE_ENV", "sandbox"),
-		CashfreeWebhookSecret:        envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),
-		CashfreePayoutClientID:      os.Getenv("CF_PAYOUT_CLIENT_ID"),
-		CashfreePayoutClientSecret:  os.Getenv("CF_PAYOUT_CLIENT_SECRET"),
-		CashfreePayoutAPIVersion:    envOr("CF_PAYOUT_API_VERSION", "2024-01-01"),
-		CashfreePayoutFundsourceID:  os.Getenv("CF_PAYOUT_FUNDSOURCE_ID"),
-		CashfreePayoutWebhookSecret: os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
-		CashfreePayoutEnv:           envOr("CF_PAYOUT_ENV", "sandbox"),
+		AdminEmail:                        envFirst("ADMIN_EMAIL", "ALERT_EMAIL", "SMTP_FROM"),
+		AdminPhone:                        envFirst("ADMIN_PHONE", "ALERT_PHONE"),
+		DatabaseURL:                       os.Getenv("DATABASE_URL"),
+		JWTSecret:                         os.Getenv("JWT_SECRET"),
+		OTPHMACSecret:                     os.Getenv("OTP_HMAC_SECRET"),
+		MagicLinkHMACSecret:               os.Getenv("MAGIC_LINK_HMAC_SECRET"),
+		MagicLinkBaseURL:                  os.Getenv("MAGIC_LINK_BASE_URL"),
+		SMSPrimaryURL:                     os.Getenv("SMS_PRIMARY_URL"),
+		SMSPrimaryAPIKey:                  os.Getenv("SMS_PRIMARY_API_KEY"),
+		SMSFallbackURL:                    os.Getenv("SMS_FALLBACK_URL"),
+		SMSFallbackAPIKey:                 os.Getenv("SMS_FALLBACK_API_KEY"),
+		SMTPHost:                          os.Getenv("SMTP_HOST"),
+		SMTPPort:                          envOr("SMTP_PORT", "587"),
+		SMTPUsername:                      os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:                      os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                          os.Getenv("SMTP_FROM"),
+		VAPIDPublicKey:                    os.Getenv("VAPID_PUBLIC_KEY"),
+		VAPIDPrivateKey:                   os.Getenv("VAPID_PRIVATE_KEY"),
+		VAPIDSubject:                      os.Getenv("VAPID_SUBJECT"),
+		HTTPAddr:                          envOr("HTTP_ADDR", ":8080"),
+		AppEnv:                            envOr("APP_ENV", "development"),
+		CORSAllowedOrigins:                splitOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		TrustedProxies:                    splitOrigins(os.Getenv("TRUSTED_PROXIES")),
+		FrontendURL:                       os.Getenv("FRONTEND_URL"),
+		FirebaseProjectID:                 os.Getenv("FIREBASE_PROJECT_ID"),
+		FirebaseCredentials:               os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+		CashfreePGAppID:                   envFirst("CASHFREE_PG_APP_ID", "CASHFREE_APP_ID"),
+		CashfreePGSecretKey:               envFirst("CASHFREE_PG_SECRET_KEY", "CASHFREE_SECRET_KEY"),
+		CashfreeKYCAppID:                  os.Getenv("CASHFREE_KYC_APP_ID"),
+		CashfreeKYCSecretKey:              os.Getenv("CASHFREE_KYC_SECRET_KEY"),
+		CashfreeEnv:                       envOr("CASHFREE_ENV", "sandbox"),
+		CashfreeWebhookSecret:             envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),
+		CashfreePayoutClientID:            os.Getenv("CF_PAYOUT_CLIENT_ID"),
+		CashfreePayoutClientSecret:        os.Getenv("CF_PAYOUT_CLIENT_SECRET"),
+		CashfreePayoutAPIVersion:          envOr("CF_PAYOUT_API_VERSION", "2024-01-01"),
+		CashfreePayoutFundsourceID:        os.Getenv("CF_PAYOUT_FUNDSOURCE_ID"),
+		CashfreePayoutWebhookSecret:       os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
+		CashfreePayoutEnv:                 envOr("CF_PAYOUT_ENV", "sandbox"),
 		CashfreePayoutAutoDispatchEnabled: envBoolDefaultFalse("CF_PAYOUT_AUTO_DISPATCH_ENABLED"),
-		WebhookTimestampToleranceSec: envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
-		OrderExpiryDuration:          envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
-		OrderPollerBufferDuration:    envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
-		WebhookAPIVersion:            envOr("CASHFREE_API_VERSION", "2025-01-01"),
-		AadhaarQRPublicKeyPEM:        os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
-		KYCIdentitySecret:            os.Getenv("KYC_IDENTITY_SECRET"),
-		KYCDigiLockerRedirectURL:     os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
-		FinanceEnabled:               envBoolDefaultTrue("FINANCE_ENABLED"),
-		IntelligenceEnabled:          envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
+		WebhookTimestampToleranceSec:      envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
+		OrderExpiryDuration:               envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
+		OrderPollerBufferDuration:         envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
+		WebhookAPIVersion:                 envOr("CASHFREE_API_VERSION", "2025-01-01"),
+		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
+		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
+		KYCDigiLockerRedirectURL:          os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
+		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
+		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
+		PayoutExportChecksumSecret:        os.Getenv("CF_PAYOUT_EXPORT_SECRET"),
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
@@ -226,4 +231,3 @@ func envDurationOr(k string, def time.Duration) time.Duration {
 	}
 	return d
 }
-
