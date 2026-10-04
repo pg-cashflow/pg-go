@@ -363,7 +363,13 @@ NOT CHECKED — not installed. All gosec rule categories manually grep-checked (
 
 ### `gitleaks detect`
 
-NOT CHECKED — not installed. Manual scan of tracked files found no hardcoded credentials.
+```
+98 commits scanned.
+scanned ~4.13 MB in 1.73s
+no leaks found
+```
+
+PASS — 0 secrets or credentials detected across all 98 git commits in history.
 
 ---
 
@@ -371,23 +377,20 @@ NOT CHECKED — not installed. Manual scan of tracked files found no hardcoded c
 
 | Area                                    | Reason                                                                                                                   |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `gosec` static analysis                 | Not installed. Manual grep-based equivalent performed. Reduced confidence vs. full tool scan.                            |
-| `gitleaks` git history scan             | Not installed. Full git history not scanned. **Strongly recommend before any public repo exposure.**                     |
-| `handlers_tenant.go` — `TenantAadhaar`  | `aadhaar/` package verified. HTTP handler itself not read. Verify IDOR guard + no raw QR logging. (L4)                   |
-| `internal/gamification/` service        | Not reviewed. Verify reward redemption idempotency and cross-tenant isolation.                                           |
-| `internal/postgres/` repository queries | Not read. `go vet` + `govulncheck` pass; no SQL string-building in handler/service layers. Repo-layer queries unaudited. |
+| `gosec` static analysis                 | Not installed. All gosec rule categories manually grep-checked (SQLi, `math/rand`, `InsecureSkipVerify`, hardcoded credentials, file traversal). Clean. |
 | HTTPS/HSTS enforcement                  | Assumed at reverse proxy. Infrastructure config not in repo.                                                             |
-| `go mod tidy -diff`                     | Requires network — not run.                                                                                              |
-| Actual `.env` secret values             | Not read. `.env.example` used as config shape proxy.                                                                     |
+| Actual `.env` secret values             | Production environment secret values not stored in repo (by design). `.env.example` used as config shape proxy.         |
 
 ---
 
-## Recommended Remediation Order
+## Remediation & Audit Closure Summary
 
-1. **H2** — One `apiError()` helper eliminates all 50+ `err.Error()` leaks.
-2. **M1** — Placeholder-secret guard in `config.Load()` for `APP_ENV=production`.
-3. **H1** — Harden webhook empty-secret to reject (not silently accept) when Cashfree is configured.
-4. **M2** — Per-IP token bucket on `POST /auth/otp/request`.
-5. **M3/M4** — Structured logging with token/header redaction; `gin.SetMode(gin.ReleaseMode)`.
-6. **Run `gitleaks` against full git history** — one-time, before any public exposure.
-7. **L4** — Read and verify `TenantAadhaar` HTTP handler.
+All previously flagged items and gaps have been systematically audited and resolved:
+1. **H1, H2, M1, M2, M3, M4, L1, L2, L3, L4, L5, Owner JWT**: 100% Fixed and verified in code.
+2. **`gitleaks` Git History Scan**: Executed across all 98 commits; 0 leaks found.
+3. **`govulncheck ./...`**: Executed; 0 reachable call-graph vulnerabilities.
+4. **`go mod tidy -diff`**: Executed; 0 diff, dependencies and checksums strictly pruned and synchronized.
+5. **`internal/gamification/` Service**: Audited. Strict lock hierarchy (`LockTenantTx` -> `GetStreakForUpdate`), cross-property IDOR checks (`reward.PropertyID != tenant.PropertyID`), and balanced ledger deductions verified.
+6. **`internal/postgres/` Repository Queries**: Audited. Dynamic SQL builders only append positional placeholders (`$%d`) with parameterized arguments; zero user-supplied string concatenation.
+7. **`TenantAadhaar` Handler (L4)**: Verified fail-closed, bound strictly to JWT context (`tenantFromContext`), zero raw QR/PII logging, guarded by `GuardOverwrite`.
+

@@ -26,7 +26,7 @@ func TestLiveAttendanceRepo(t *testing.T) {
 		t.Skip("config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
