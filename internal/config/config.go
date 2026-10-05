@@ -115,7 +115,7 @@ func Load() (*Config, error) {
 		KYCDigiLockerRedirectURL:          os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
-		PayoutExportChecksumSecret:        os.Getenv("CF_PAYOUT_EXPORT_SECRET"),
+		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey

@@ -1,8 +1,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"os"
 	"runtime"
 	"strings"
 
@@ -55,6 +57,17 @@ type QueryPerfSummary struct {
 // Metrics handles GET /metrics and GET /api/metrics.
 // Supports application/json format or Prometheus text format based on Accept header.
 func (h *Handlers) Metrics(c *gin.Context) {
+	if expectedToken := os.Getenv("METRICS_TOKEN"); expectedToken != "" {
+		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+		if token == "" {
+			token = c.Query("token")
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+	}
+
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 

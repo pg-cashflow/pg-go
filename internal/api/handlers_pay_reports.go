@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 const maxReportImage = 2 << 20
@@ -233,25 +235,66 @@ func (h *Handlers) ConfirmPaymentReport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rep, err := h.ReportStore.GetByID(c.Request.Context(), id)
-	if err != nil || rep.PropertyID != pid {
+
+	var rep *domain.PaymentReport
+	var p *domain.Payment
+
+	confirmOp := func(ctx context.Context, store ReportStore) error {
+		r, err := store.GetByIDForUpdate(ctx, id)
+		if err != nil {
+			return err
+		}
+		if r.PropertyID != pid {
+			return domain.ErrNotFound
+		}
+		rep = r
+		if rep.Status != domain.ReportPendingReview {
+			return nil
+		}
+		matched, err := h.Payments.ManualMatch(ctx, rep.DueID, rep.Amount, rep.UPITxnID, uid)
+		if err != nil {
+			return err
+		}
+		p = matched
+		now := p.MatchedAt
+		rep.Status = domain.ReportConfirmed
+		rep.ReviewedBy = &uid
+		rep.ReviewedAt = &now
+		return store.UpdateReview(ctx, rep)
+	}
+
+	if h.Pool != nil {
+		err := postgres.WithinTx(c.Request.Context(), h.Pool, func(tx pgx.Tx) error {
+			txStore := postgres.NewPaymentReportRepo(tx)
+			return confirmOp(postgres.ContextWithTx(c.Request.Context(), tx), txStore)
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, domain.ErrNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+			respondErr(c, paymentClientErr(err))
+			return
+		}
+	} else {
+		if err := confirmOp(c.Request.Context(), h.ReportStore); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, domain.ErrNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+			respondErr(c, paymentClientErr(err))
+			return
+		}
+	}
+
+	if rep == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if rep.Status != domain.ReportPendingReview {
+	if rep.Status != domain.ReportConfirmed {
 		c.JSON(http.StatusOK, rep)
 		return
 	}
-	p, err := h.Payments.ManualMatch(c.Request.Context(), rep.DueID, rep.Amount, rep.UPITxnID, uid)
-	if err != nil {
-		respondErr(c, paymentClientErr(err))
-		return
-	}
-	now := p.MatchedAt
-	rep.Status = domain.ReportConfirmed
-	rep.ReviewedBy = &uid
-	rep.ReviewedAt = &now
-	_ = h.ReportStore.UpdateReview(c.Request.Context(), rep)
 	c.JSON(http.StatusOK, gin.H{"report": rep, "payment": p})
 }
 

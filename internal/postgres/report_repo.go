@@ -60,6 +60,10 @@ func (r *PaymentReportRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.
 	return scanReport(r.db.QueryRow(ctx, `SELECT `+reportCols+` FROM payment_reports WHERE id=$1`, id))
 }
 
+func (r *PaymentReportRepo) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.PaymentReport, error) {
+	return scanReport(r.db.QueryRow(ctx, `SELECT `+reportCols+` FROM payment_reports WHERE id=$1 FOR UPDATE`, id))
+}
+
 func (r *PaymentReportRepo) GetByUPITxnID(ctx context.Context, txnID string) (*domain.PaymentReport, error) {
 	return scanReport(r.db.QueryRow(ctx, `SELECT `+reportCols+` FROM payment_reports WHERE upi_txn_id=$1`, txnID))
 }
@@ -71,7 +75,7 @@ func (r *PaymentReportRepo) ListByProperty(ctx context.Context, propertyID uuid.
 		q += ` AND status=$2`
 		args = append(args, *status)
 	}
-	q += ` ORDER BY created_at DESC`
+	q += ` ORDER BY created_at DESC, id DESC LIMIT 50`
 	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -89,7 +93,7 @@ func (r *PaymentReportRepo) ListByProperty(ctx context.Context, propertyID uuid.
 }
 
 func (r *PaymentReportRepo) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.PaymentReport, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+reportCols+` FROM payment_reports WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	rows, err := r.db.Query(ctx, `SELECT `+reportCols+` FROM payment_reports WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 50`, tenantID)
 	if err != nil {
 		return nil, err
 	}

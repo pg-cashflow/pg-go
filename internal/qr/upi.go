@@ -11,7 +11,16 @@ import (
 // GenerateUPILink builds a static personal-VPA UPI intent URL.
 // am is rupees (paise/100); tn is always PG-<due_code>. Room is appended to pn when set.
 func GenerateUPILink(vpa, ownerName string, amountPaise int64, dueCode, room string) string {
-	rupees := float64(amountPaise) / 100.0
+	sign := ""
+	p := amountPaise
+	if p < 0 {
+		sign = "-"
+		p = -p
+	}
+	whole := p / 100
+	rem := p % 100
+	amStr := fmt.Sprintf("%s%d.%02d", sign, whole, rem)
+
 	pn := strings.TrimSpace(ownerName)
 	if r := strings.TrimSpace(room); r != "" {
 		if pn == "" {
@@ -23,7 +32,7 @@ func GenerateUPILink(vpa, ownerName string, amountPaise int64, dueCode, room str
 	q := url.Values{}
 	q.Set("pa", strings.TrimSpace(vpa))
 	q.Set("pn", pn)
-	q.Set("am", fmt.Sprintf("%.2f", rupees))
+	q.Set("am", amStr)
 	q.Set("cu", "INR")
 	q.Set("tn", domain.UPINote(dueCode))
 	return "upi://pay?" + q.Encode()

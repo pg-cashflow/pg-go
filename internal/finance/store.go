@@ -25,11 +25,13 @@ type Store interface {
 	CountCapital(ctx context.Context, propertyID uuid.UUID) (int, error)
 
 	InsertExpense(ctx context.Context, e *domain.Expense) error
+	InsertExpenseAtomic(ctx context.Context, e *domain.Expense, lines []domain.JournalLine, approval *domain.ApprovalRequest) error
 	GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error)
 	ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error)
 	UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error
 
 	InsertExpensePayment(ctx context.Context, p *domain.ExpensePayment) error
+	RecordExpensePaymentAtomic(ctx context.Context, p *domain.ExpensePayment, lines []domain.JournalLine, adv *domain.ManagerAdvance) (*domain.Expense, error)
 	ListExpensePayments(ctx context.Context, expenseID uuid.UUID) ([]domain.ExpensePayment, error)
 	SumExpensePayments(ctx context.Context, expenseID uuid.UUID) (int64, error)
 	SumManagerSpend(ctx context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error)

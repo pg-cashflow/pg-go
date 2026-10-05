@@ -36,22 +36,24 @@ type MemoryStore struct {
 	loyalty       map[uuid.UUID]domain.PropertyGamificationSettings
 	ownerUsers    map[uuid.UUID]uuid.UUID
 	idempotency   map[string]struct{}
+	tenantCredits map[uuid.UUID]int64
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		policies:    map[uuid.UUID]domain.ApprovalPolicy{},
-		settings:    map[uuid.UUID]domain.PropertyFinanceSettings{},
-		loyalty:     map[uuid.UUID]domain.PropertyGamificationSettings{},
-		ownerUsers:  map[uuid.UUID]uuid.UUID{},
-		expenses:    map[uuid.UUID]domain.Expense{},
-		budgets:     map[string]domain.Budget{},
-		tieouts:     map[string]domain.PeriodTieOut{},
-		approvals:   map[uuid.UUID]domain.ApprovalRequest{},
-		leakage:     map[uuid.UUID]domain.LeakageEvent{},
-		recs:        map[uuid.UUID]domain.Recommendation{},
-		imports:     map[string]domain.ExpenseImportSuggestion{},
-		idempotency: map[string]struct{}{},
+		policies:      map[uuid.UUID]domain.ApprovalPolicy{},
+		settings:      map[uuid.UUID]domain.PropertyFinanceSettings{},
+		loyalty:       map[uuid.UUID]domain.PropertyGamificationSettings{},
+		ownerUsers:    map[uuid.UUID]uuid.UUID{},
+		expenses:      map[uuid.UUID]domain.Expense{},
+		budgets:       map[string]domain.Budget{},
+		tieouts:       map[string]domain.PeriodTieOut{},
+		approvals:     map[uuid.UUID]domain.ApprovalRequest{},
+		leakage:       map[uuid.UUID]domain.LeakageEvent{},
+		recs:          map[uuid.UUID]domain.Recommendation{},
+		imports:       map[string]domain.ExpenseImportSuggestion{},
+		idempotency:   map[string]struct{}{},
+		tenantCredits: map[uuid.UUID]int64{},
 	}
 }
 
@@ -185,6 +187,32 @@ func (m *MemoryStore) InsertExpense(_ context.Context, e *domain.Expense) error 
 	return nil
 }
 
+func (m *MemoryStore) InsertExpenseAtomic(_ context.Context, e *domain.Expense, lines []domain.JournalLine, approval *domain.ApprovalRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.claim(e.PropertyID.String() + ":exp:" + e.IdempotencyKey); err != nil {
+		return err
+	}
+	if e.ID == uuid.Nil {
+		e.ID = uuid.New()
+	}
+	m.expenses[e.ID] = *e
+	if approval != nil {
+		if approval.ID == uuid.Nil {
+			approval.ID = uuid.New()
+		}
+		m.approvals[approval.ID] = *approval
+	}
+	for _, l := range lines {
+		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+		if err := m.claim(key); err != nil {
+			return err
+		}
+		m.journal = append(m.journal, l)
+	}
+	return nil
+}
+
 func (m *MemoryStore) GetExpense(_ context.Context, id uuid.UUID) (*domain.Expense, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -232,6 +260,60 @@ func (m *MemoryStore) InsertExpensePayment(_ context.Context, p *domain.ExpenseP
 	}
 	m.payments = append(m.payments, *p)
 	return nil
+}
+
+func (m *MemoryStore) RecordExpensePaymentAtomic(_ context.Context, p *domain.ExpensePayment, lines []domain.JournalLine, adv *domain.ManagerAdvance) (*domain.Expense, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	e, ok := m.expenses[p.ExpenseID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if e.PropertyID != p.PropertyID {
+		return nil, ErrForbidden
+	}
+	if e.Status != domain.ExpenseApproved && e.Status != domain.ExpensePaid {
+		return nil, ErrExpenseNotPayable
+	}
+	var paid int64
+	for _, ep := range m.payments {
+		if ep.ExpenseID == p.ExpenseID {
+			paid += ep.AmountPaise
+		}
+	}
+	if paid+p.AmountPaise > e.AmountPaise {
+		return nil, ErrOverpay
+	}
+
+	if err := m.claim(p.PropertyID.String() + ":pay:" + p.IdempotencyKey); err != nil {
+		return nil, err
+	}
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
+	m.payments = append(m.payments, *p)
+
+	if adv != nil {
+		if err := m.claim(adv.PropertyID.String() + ":adv:" + adv.ID.String()); err == nil {
+			m.advances = append(m.advances, *adv)
+		}
+	}
+
+	for _, l := range lines {
+		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+		if err := m.claim(key); err != nil {
+			return nil, err
+		}
+		m.journal = append(m.journal, l)
+	}
+
+	if paid+p.AmountPaise == e.AmountPaise {
+		e.Status = domain.ExpensePaid
+		m.expenses[e.ID] = e
+	}
+	cp := e
+	return &cp, nil
 }
 
 func (m *MemoryStore) ListExpensePayments(_ context.Context, expenseID uuid.UUID) ([]domain.ExpensePayment, error) {
@@ -832,6 +914,38 @@ func (m *MemoryStore) GetPropertyOwnerUserID(_ context.Context, propertyID uuid.
 		return uid, nil
 	}
 	return uuid.MustParse("00000000-0000-0000-0000-000000000001"), nil
+}
+
+func (m *MemoryStore) SaveInitialManagerSpend(propertyID, managerID uuid.UUID, amountPaise int64, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.payments = append(m.payments, domain.ExpensePayment{
+		ID:          uuid.New(),
+		PropertyID:  propertyID,
+		PayerUserID: managerID,
+		PayerRole:   domain.PayerManager,
+		AmountPaise: amountPaise,
+		OccurredAt:  at,
+	})
+}
+
+func (m *MemoryStore) AddTenantCredit(_ context.Context, tenantID uuid.UUID, deltaPaise int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tenantCredits == nil {
+		m.tenantCredits = make(map[uuid.UUID]int64)
+	}
+	m.tenantCredits[tenantID] = m.tenantCredits[tenantID] + deltaPaise
+	return nil
+}
+
+func (m *MemoryStore) GetTenantCredit(tenantID uuid.UUID) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.tenantCredits == nil {
+		return 0
+	}
+	return m.tenantCredits[tenantID]
 }
 
 var _ Store = (*MemoryStore)(nil)

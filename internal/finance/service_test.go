@@ -2,6 +2,8 @@ package finance
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -587,6 +589,71 @@ func TestMirrorProration_UnpaidVsPaid(t *testing.T) {
 	}
 	if lines[0].DebitPaise != 200000 || lines[1].CreditPaise != 200000 {
 		t.Fatalf("unexpected proration lines: %+v", lines)
+	}
+}
+
+// TestPayExpense_Concurrency_Bound proves INV-004:
+// Concurrent payments against an expense can NEVER settle more than the approved expense amount.
+func TestPayExpense_Concurrency_Bound(t *testing.T) {
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+	ctx := context.Background()
+	pid := uuid.New()
+	owner := uuid.New()
+
+	e, _, err := svc.CreateExpense(ctx, CreateExpenseInput{
+		PropertyID: pid, ActorID: owner, ActorRole: string(domain.RoleOwner),
+		CategoryCode: "vendor", AmountPaise: 10_000_00, IdempotencyKey: "exp-conc",
+	})
+	if err != nil {
+		t.Fatalf("create expense: %v", err)
+	}
+
+	const workers = 10
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func(workerID int) {
+			_, err := svc.PayExpense(ctx, PayExpenseInput{
+				ExpenseID:      e.ID,
+				PropertyID:     pid,
+				ActorID:        owner,
+				ActorRole:      domain.PayerOwner,
+				AmountPaise:    6_000_00, // 6,000 INR each; expense is 10,000 INR. Only 1 can succeed, rest must fail.
+				Method:         "bank",
+				IdempotencyKey: fmt.Sprintf("pay-worker-%d", workerID),
+			})
+			errs <- err
+		}(i)
+	}
+
+	var successes, overpays int
+	for i := 0; i < workers; i++ {
+		err := <-errs
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrOverpay) {
+			overpays++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	if successes != 1 {
+		t.Errorf("expected exactly 1 successful payment of 6000 on a 10000 limit, got %d successes", successes)
+	}
+	if overpays != workers-1 {
+		t.Errorf("expected %d overpay rejections, got %d", workers-1, overpays)
+	}
+
+	totalPaid, err := st.SumExpensePayments(ctx, e.ID)
+	if err != nil {
+		t.Fatalf("sum payments: %v", err)
+	}
+	if totalPaid > e.AmountPaise {
+		t.Fatalf("CRITICAL INVARIANT VIOLATION INV-004: total paid %d exceeds expense amount %d", totalPaid, e.AmountPaise)
+	}
+	if totalPaid != 6_000_00 {
+		t.Fatalf("expected total paid 600000, got %d", totalPaid)
 	}
 }
 

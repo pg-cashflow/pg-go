@@ -82,12 +82,14 @@ func (r *DueRepo) HasOpenRentDue(ctx context.Context, tenantID uuid.UUID) (bool,
 }
 
 type DueListFilter struct {
-	PropertyID uuid.UUID
-	TenantID   *uuid.UUID
-	Kind       *domain.DueKind
-	Status     *domain.DueStatus
-	Limit      int
-	Offset     int
+	PropertyID    uuid.UUID
+	TenantID      *uuid.UUID
+	Kind          *domain.DueKind
+	Status        *domain.DueStatus
+	Limit         int
+	Offset        int
+	CursorDueDate *time.Time
+	CursorID      *uuid.UUID
 }
 
 func (r *DueRepo) List(ctx context.Context, f DueListFilter) ([]domain.Due, error) {
@@ -110,13 +112,21 @@ func (r *DueRepo) List(ctx context.Context, f DueListFilter) ([]domain.Due, erro
 		args = append(args, *f.Status)
 		n++
 	}
-	b.WriteString(` ORDER BY due_date DESC`)
-	if f.Limit > 0 {
-		fmt.Fprintf(&b, ` LIMIT $%d`, n)
-		args = append(args, f.Limit)
-		n++
+	if f.CursorDueDate != nil && f.CursorID != nil {
+		fmt.Fprintf(&b, ` AND (due_date, id) < ($%d, $%d)`, n, n+1)
+		args = append(args, *f.CursorDueDate, *f.CursorID)
+		n += 2
 	}
-	if f.Offset > 0 {
+	b.WriteString(` ORDER BY due_date DESC, id DESC`)
+	limit := f.Limit
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	fmt.Fprintf(&b, ` LIMIT $%d`, n)
+	args = append(args, limit)
+	n++
+
+	if f.CursorDueDate == nil && f.Offset > 0 {
 		fmt.Fprintf(&b, ` OFFSET $%d`, n)
 		args = append(args, f.Offset)
 		n++

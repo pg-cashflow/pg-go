@@ -165,14 +165,16 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 		OccurredAt:     at,
 		CreatedAt:      at,
 	}
-	if err := s.Store.InsertExpense(ctx, e); err != nil {
-		return nil, nil, err
-	}
-	s.publish(ctx, in.PropertyID, domain.EvtExpenseCreated, e)
+	var lines []domain.JournalLine
 	if status == domain.ExpenseApproved {
-		if err := s.postExpenseAccrual(ctx, e); err != nil {
+		l, err := MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
+			{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
+			{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},
+		})
+		if err != nil {
 			return nil, nil, err
 		}
+		lines = l
 	} else {
 		approval = &domain.ApprovalRequest{
 			ID:          uuid.New(),
@@ -184,10 +186,11 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 			Status:      "pending",
 			CreatedAt:   at,
 		}
-		if err := s.Store.InsertApproval(ctx, approval); err != nil {
-			return nil, nil, err
-		}
 	}
+	if err := s.Store.InsertExpenseAtomic(ctx, e, lines, approval); err != nil {
+		return nil, nil, err
+	}
+	s.publish(ctx, in.PropertyID, domain.EvtExpenseCreated, e)
 	if in.Emergency {
 		s.publish(ctx, in.PropertyID, domain.EvtExpenseApproved, map[string]any{"expense_id": e.ID, "emergency": true})
 	}
@@ -222,31 +225,14 @@ func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.E
 	if in.AmountPaise <= 0 {
 		return nil, ErrInvalidAmount
 	}
-	e, err := s.Store.GetExpense(ctx, in.ExpenseID)
-	if err != nil {
-		return nil, err
-	}
-	if e.PropertyID != in.PropertyID {
-		return nil, ErrForbidden
-	}
-	if e.Status != domain.ExpenseApproved && e.Status != domain.ExpensePaid {
-		return nil, ErrExpenseNotPayable
-	}
-	paid, err := s.Store.SumExpensePayments(ctx, e.ID)
-	if err != nil {
-		return nil, err
-	}
-	if paid+in.AmountPaise > e.AmountPaise {
-		return nil, ErrOverpay
-	}
 	if in.Method == "" {
 		in.Method = "cash"
 	}
 	at := s.Now()
 	p := &domain.ExpensePayment{
 		ID:             uuid.New(),
-		ExpenseID:      e.ID,
-		PropertyID:     e.PropertyID,
+		ExpenseID:      in.ExpenseID,
+		PropertyID:     in.PropertyID,
 		AmountPaise:    in.AmountPaise,
 		PayerRole:      in.ActorRole,
 		PayerUserID:    in.ActorID,
@@ -254,47 +240,46 @@ func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.E
 		IdempotencyKey: in.IdempotencyKey,
 		OccurredAt:     at,
 	}
-	if err := s.Store.InsertExpensePayment(ctx, p); err != nil {
-		return nil, err
-	}
 	acct := domain.AcctCash
 	if in.Method == "bank" || in.Method == "upi" {
 		acct = domain.AcctBank
 	}
 	var specs []LineSpec
+	var adv *domain.ManagerAdvance
 	if in.ActorRole == domain.PayerManager {
 		specs = []LineSpec{
 			{Account: domain.AcctAccountsPayable, Debit: in.AmountPaise, LineKind: "payable_clear"},
 			{Account: domain.AcctManagerAdvancePayable, Credit: in.AmountPaise, LineKind: "advance_cr"},
 		}
-		adv := &domain.ManagerAdvance{
+		adv = &domain.ManagerAdvance{
 			ID:               uuid.New(),
-			PropertyID:       e.PropertyID,
+			PropertyID:       in.PropertyID,
 			ManagerUserID:    in.ActorID,
 			ExpensePaymentID: p.ID,
 			AmountPaise:      in.AmountPaise,
 			OccurredAt:       at,
 		}
-		if err := s.Store.InsertAdvance(ctx, adv); err != nil {
-			return nil, err
-		}
-		s.publish(ctx, e.PropertyID, domain.EvtManagerAdvanceCreated, adv)
 	} else {
 		specs = []LineSpec{
 			{Account: domain.AcctAccountsPayable, Debit: in.AmountPaise, LineKind: "payable_clear"},
 			{Account: acct, Credit: in.AmountPaise, LineKind: "cash_out"},
 		}
 	}
-	lines, err := MakeLines(e.PropertyID, p.ID, "expense_payment", at, specs)
+	lines, err := MakeLines(in.PropertyID, p.ID, "expense_payment", at, specs)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+
+	exp, err := s.Store.RecordExpensePaymentAtomic(ctx, p, lines, adv)
+	if err != nil {
 		return nil, err
 	}
-	if paid+in.AmountPaise == e.AmountPaise {
-		_ = s.Store.UpdateExpenseStatus(ctx, e.ID, domain.ExpensePaid)
-		s.publish(ctx, e.PropertyID, domain.EvtExpensePaid, p)
+
+	if in.ActorRole == domain.PayerManager && adv != nil {
+		s.publish(ctx, exp.PropertyID, domain.EvtManagerAdvanceCreated, adv)
+	}
+	if exp.Status == domain.ExpensePaid {
+		s.publish(ctx, exp.PropertyID, domain.EvtExpensePaid, p)
 	}
 	return p, nil
 }

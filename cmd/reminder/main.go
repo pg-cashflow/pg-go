@@ -90,6 +90,17 @@ func main() {
 		Log:         slog.Default(),
 		CatchUpDays: 2,
 	}
+
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "rent_reminders")
+	if err != nil {
+		log.Fatalf("failed to acquire job lock: %v", err)
+	}
+	if !acquired {
+		slog.Info("another rent reminder job is currently running, exiting gracefully")
+		os.Exit(0)
+	}
+	defer release(context.Background())
+
 	if err := job.Run(ctx); err != nil {
 		log.Fatal(err)
 	}

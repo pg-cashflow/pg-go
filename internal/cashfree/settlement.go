@@ -161,22 +161,47 @@ func parseSingleOrderSettlement(raw []byte, fallbackOrderID string) (OrderSettle
 			stlmObj, _ := m["settlement_details"].(map[string]any)
 
 			rec.OrderID = getString(ordObj, "order_id")
-			rec.GrossAmountPaise = getAmountPaise(ordObj, "order_amount")
+			var err error
+			rec.GrossAmountPaise, err = getAmountPaise(ordObj, "order_amount")
+			if err != nil {
+				return OrderSettlementRecord{}, fmt.Errorf("parse nested order_amount: %w", err)
+			}
 
 			rec.CFPaymentID = coerceString(payObj["cf_payment_id"])
 			if rec.GrossAmountPaise == 0 {
-				rec.GrossAmountPaise = getAmountPaise(payObj, "payment_amount")
+				rec.GrossAmountPaise, err = getAmountPaise(payObj, "payment_amount")
+				if err != nil {
+					return OrderSettlementRecord{}, fmt.Errorf("parse nested payment_amount: %w", err)
+				}
 			}
-			rec.ServiceChargePaise = getAmountPaise(payObj, "service_charge")
+			rec.ServiceChargePaise, err = getAmountPaise(payObj, "service_charge")
+			if err != nil {
+				return OrderSettlementRecord{}, fmt.Errorf("parse nested service_charge: %w", err)
+			}
 			if rec.ServiceChargePaise == 0 {
-				rec.ServiceChargePaise = getAmountPaise(payObj, "pg_service_charge")
+				rec.ServiceChargePaise, err = getAmountPaise(payObj, "pg_service_charge")
+				if err != nil {
+					return OrderSettlementRecord{}, fmt.Errorf("parse nested pg_service_charge: %w", err)
+				}
 			}
-			rec.ServiceTaxPaise = getAmountPaise(payObj, "service_tax")
+			rec.ServiceTaxPaise, err = getAmountPaise(payObj, "service_tax")
+			if err != nil {
+				return OrderSettlementRecord{}, fmt.Errorf("parse nested service_tax: %w", err)
+			}
 			if rec.ServiceTaxPaise == 0 {
-				rec.ServiceTaxPaise = getAmountPaise(payObj, "pg_service_tax")
+				rec.ServiceTaxPaise, err = getAmountPaise(payObj, "pg_service_tax")
+				if err != nil {
+					return OrderSettlementRecord{}, fmt.Errorf("parse nested pg_service_tax: %w", err)
+				}
 			}
-			rec.AdjustmentPaise = getAmountPaise(payObj, "adjustment")
-			rec.NetAmountPaise = getAmountPaise(payObj, "settlement_amount")
+			rec.AdjustmentPaise, err = getAmountPaise(payObj, "adjustment")
+			if err != nil {
+				return OrderSettlementRecord{}, fmt.Errorf("parse nested adjustment: %w", err)
+			}
+			rec.NetAmountPaise, err = getAmountPaise(payObj, "settlement_amount")
+			if err != nil {
+				return OrderSettlementRecord{}, fmt.Errorf("parse nested settlement_amount: %w", err)
+			}
 
 			if stlmObj != nil {
 				rec.CFSettlementID = coerceString(stlmObj["cf_settlement_id"])
@@ -210,17 +235,39 @@ func parseSingleOrderSettlement(raw []byte, fallbackOrderID string) (OrderSettle
 	}
 	rec.Status = getString(m, "status")
 
-	rec.GrossAmountPaise = getAmountPaise(m, "order_amount")
+	var err error
+	rec.GrossAmountPaise, err = getAmountPaise(m, "order_amount")
+	if err != nil {
+		return OrderSettlementRecord{}, fmt.Errorf("parse order_amount: %w", err)
+	}
 	if rec.GrossAmountPaise == 0 {
-		rec.GrossAmountPaise = getAmountPaise(m, "payment_amount")
+		rec.GrossAmountPaise, err = getAmountPaise(m, "payment_amount")
+		if err != nil {
+			return OrderSettlementRecord{}, fmt.Errorf("parse payment_amount: %w", err)
+		}
 	}
-	rec.NetAmountPaise = getAmountPaise(m, "settlement_amount")
+	rec.NetAmountPaise, err = getAmountPaise(m, "settlement_amount")
+	if err != nil {
+		return OrderSettlementRecord{}, fmt.Errorf("parse settlement_amount: %w", err)
+	}
 	if rec.NetAmountPaise == 0 {
-		rec.NetAmountPaise = getAmountPaise(m, "amount_settled")
+		rec.NetAmountPaise, err = getAmountPaise(m, "amount_settled")
+		if err != nil {
+			return OrderSettlementRecord{}, fmt.Errorf("parse amount_settled: %w", err)
+		}
 	}
-	rec.ServiceChargePaise = getAmountPaise(m, "service_charge")
-	rec.ServiceTaxPaise = getAmountPaise(m, "service_tax")
-	rec.AdjustmentPaise = getAmountPaise(m, "adjustment")
+	rec.ServiceChargePaise, err = getAmountPaise(m, "service_charge")
+	if err != nil {
+		return OrderSettlementRecord{}, fmt.Errorf("parse service_charge: %w", err)
+	}
+	rec.ServiceTaxPaise, err = getAmountPaise(m, "service_tax")
+	if err != nil {
+		return OrderSettlementRecord{}, fmt.Errorf("parse service_tax: %w", err)
+	}
+	rec.AdjustmentPaise, err = getAmountPaise(m, "adjustment")
+	if err != nil {
+		return OrderSettlementRecord{}, fmt.Errorf("parse adjustment: %w", err)
+	}
 
 	tStr := getString(m, "transfer_time")
 	if tStr == "" {
@@ -244,14 +291,35 @@ func ParseSettlementWebhook(raw []byte) (*SettlementWebhookRecord, error) {
 		return nil, fmt.Errorf("missing settlement_id in webhook payload")
 	}
 
+	gross, err := coercePaise(s.PaymentAmount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid gross payment amount: %w", err)
+	}
+	net, err := coercePaise(s.AmountSettled)
+	if err != nil {
+		return nil, fmt.Errorf("invalid net settled amount: %w", err)
+	}
+	fee, err := coercePaise(s.ServiceCharge)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service charge: %w", err)
+	}
+	tax, err := coercePaise(s.ServiceTax)
+	if err != nil {
+		return nil, fmt.Errorf("invalid service tax: %w", err)
+	}
+	adj, err := coercePaise(s.Adjustment)
+	if err != nil {
+		return nil, fmt.Errorf("invalid adjustment: %w", err)
+	}
+
 	rec := &SettlementWebhookRecord{
 		CFSettlementID:     stlmID,
 		Status:             strings.ToUpper(strings.TrimSpace(s.Status)),
-		GrossAmountPaise:   coercePaise(s.PaymentAmount),
-		NetAmountPaise:     coercePaise(s.AmountSettled),
-		ServiceChargePaise: coercePaise(s.ServiceCharge),
-		ServiceTaxPaise:    coercePaise(s.ServiceTax),
-		AdjustmentPaise:    coercePaise(s.Adjustment),
+		GrossAmountPaise:   gross,
+		NetAmountPaise:     net,
+		ServiceChargePaise: fee,
+		ServiceTaxPaise:    tax,
+		AdjustmentPaise:    adj,
 		UTR:                coerceString(s.UTR),
 		EventType:          strings.TrimSpace(payload.Type),
 		RawPayload:         raw,
@@ -298,53 +366,69 @@ func getString(m map[string]any, k string) string {
 	return ""
 }
 
-func getAmountPaise(m map[string]any, k string) int64 {
+func getAmountPaise(m map[string]any, k string) (int64, error) {
 	val, ok := m[k]
 	if !ok || val == nil {
-		return 0
+		return 0, nil
 	}
 	return coercePaise(val)
 }
 
-func coercePaise(val any) int64 {
+func coercePaise(val any) (int64, error) {
 	if val == nil {
-		return 0
+		return 0, nil
 	}
 	switch v := val.(type) {
 	case string:
-		p, err := ParseRupeesToPaise(v)
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, nil
+		}
+		p, err := ParseRupeesToPaise(s)
 		if err == nil {
-			return p
+			if p < 0 {
+				return 0, fmt.Errorf("negative amount: %s", s)
+			}
+			return p, nil
 		}
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			p, _ := ParseRupeesToPaise(strconv.FormatFloat(f, 'f', 2, 64))
-			return p
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			if f < 0 {
+				return 0, fmt.Errorf("negative amount: %s", s)
+			}
+			return ParseRupeesToPaise(strconv.FormatFloat(f, 'f', 2, 64))
 		}
-		return 0
+		return 0, fmt.Errorf("unparseable amount string %q: %w", s, err)
 	case json.Number:
 		p, err := ParseRupeesToPaise(v.String())
-		if err == nil {
-			return p
+		if err != nil {
+			return 0, fmt.Errorf("unparseable json number %s: %w", v.String(), err)
 		}
-		return 0
+		if p < 0 {
+			return 0, fmt.Errorf("negative json number: %s", v.String())
+		}
+		return p, nil
 	case float64:
-		p, err := ParseRupeesToPaise(strconv.FormatFloat(v, 'f', 2, 64))
-		if err == nil {
-			return p
+		if v < 0 {
+			return 0, fmt.Errorf("negative float amount: %v", v)
 		}
-		return 0
+		return ParseRupeesToPaise(strconv.FormatFloat(v, 'f', 2, 64))
 	case float32:
-		p, err := ParseRupeesToPaise(strconv.FormatFloat(float64(v), 'f', 2, 64))
-		if err == nil {
-			return p
+		if v < 0 {
+			return 0, fmt.Errorf("negative float amount: %v", v)
 		}
-		return 0
+		return ParseRupeesToPaise(strconv.FormatFloat(float64(v), 'f', 2, 64))
 	case int64:
-		return v * 100
+		if v < 0 {
+			return 0, fmt.Errorf("negative integer amount: %d", v)
+		}
+		return v * 100, nil
 	case int:
-		return int64(v) * 100
+		if v < 0 {
+			return 0, fmt.Errorf("negative integer amount: %d", v)
+		}
+		return int64(v) * 100, nil
 	default:
-		return 0
+		return 0, fmt.Errorf("unsupported amount type %T: %v", val, val)
 	}
 }
 

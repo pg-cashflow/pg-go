@@ -2,9 +2,8 @@
 name: Rent reminders
 
 on:
-  # Schedule disabled until production server and database are provisioned
-  # schedule:
-  #   - cron: "30 3 * * *"
+  schedule:
+    - cron: "30 3 * * *"
   workflow_dispatch:
 
 jobs:

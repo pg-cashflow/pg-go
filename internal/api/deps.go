@@ -169,6 +169,7 @@ type JoinService interface {
 type ReportStore interface {
 	Create(ctx context.Context, p *domain.PaymentReport) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentReport, error)
+	GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.PaymentReport, error)
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.PaymentReport, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID, status *domain.PaymentReportStatus) ([]domain.PaymentReport, error)
 	UpdateReview(ctx context.Context, p *domain.PaymentReport) error

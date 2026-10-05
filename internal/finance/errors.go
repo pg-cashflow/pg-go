@@ -11,11 +11,11 @@ var (
 	ErrDuplicateIdempotency = domain.ErrDuplicateIdempotency
 	ErrNotFound             = domain.ErrNotFound
 	ErrPeriodClosed         = domain.ErrPeriodClosed
-	ErrForbidden            = errors.New("finance: forbidden")
+	ErrForbidden            = domain.ErrForbidden
 	ErrPolicyExceeded       = errors.New("finance: spend policy exceeded")
 	ErrApprovalRequired     = errors.New("finance: owner approval required")
-	ErrExpenseNotPayable    = errors.New("finance: expense cannot accept payment")
-	ErrOverpay              = errors.New("finance: payment exceeds remaining expense")
+	ErrExpenseNotPayable    = domain.ErrExpenseNotPayable
+	ErrOverpay              = domain.ErrOverpay
 	ErrUnbalancedJournal    = errors.New("finance: journal lines do not balance")
 	ErrPeriodNotCloseable   = errors.New("finance: unexplained tie-out difference blocks close")
 	ErrPeriodNotReopenable  = domain.ErrPeriodNotReopenable

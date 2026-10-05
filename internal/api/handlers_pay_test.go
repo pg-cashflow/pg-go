@@ -474,6 +474,10 @@ func (s *stubReportStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Paym
 	return nil, pgx.ErrNoRows
 }
 
+func (s *stubReportStore) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.PaymentReport, error) {
+	return s.GetByID(ctx, id)
+}
+
 func (s *stubReportStore) GetByUPITxnID(_ context.Context, txnID string) (*domain.PaymentReport, error) {
 	r := s.reports[txnID]
 	if r == nil {

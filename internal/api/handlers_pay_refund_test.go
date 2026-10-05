@@ -690,9 +690,9 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 
 	// Seed Payment of ₹11,000 covering both cycles
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
-		VALUES ($1, $2, 1100000, 'cashfree', 'cashfree', $3, $3, NOW())
-	`, paymentID, tenantID, cfPaymentID)
+		INSERT INTO payments (id, property_id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
+		VALUES ($1, $4, $2, 1100000, 'cashfree', 'cashfree', $3, $3, NOW())
+	`, paymentID, tenantID, cfPaymentID, propID)
 	if err != nil {
 		t.Fatalf("seed payment: %v", err)
 	}
@@ -908,9 +908,9 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 	cfOrderID := "order_guard_" + uuid.New().String()[:8]
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
-		VALUES ($1, $2, 550000, 'cashfree', 'cashfree', $3, $3, NOW())
-	`, paymentID, tenantID, cfPaymentID)
+		INSERT INTO payments (id, property_id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
+		VALUES ($1, $4, $2, 550000, 'cashfree', 'cashfree', $3, $3, NOW())
+	`, paymentID, tenantID, cfPaymentID, propID)
 	if err != nil {
 		t.Fatalf("seed payment: %v", err)
 	}

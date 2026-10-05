@@ -254,8 +254,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		// Insert payment and allocation for 550000
 		payID := uuid.New()
 		_, err = pool.Exec(ctx, `
-			INSERT INTO payments (id, tenant_id, due_id, amount, matched_by, provider, is_unapplied)
-			VALUES ($1, $2, $3, 550000, 'cash', 'cash', false)`, payID, tenantID, dueID,
+			INSERT INTO payments (id, tenant_id, property_id, due_id, amount, matched_by, provider, is_unapplied)
+			VALUES ($1, $2, $4, $3, 550000, 'cash', 'cash', false)`, payID, tenantID, dueID, propID,
 		)
 		if err != nil {
 			t.Fatalf("insert payment: %v", err)
@@ -350,8 +350,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		// Insert payment and allocation for 300000
 		payID := uuid.New()
 		_, err = pool.Exec(ctx, `
-			INSERT INTO payments (id, tenant_id, due_id, amount, matched_by, provider, is_unapplied)
-			VALUES ($1, $2, $3, 300000, 'cash', 'cash', false)`, payID, tenantID, dueID,
+			INSERT INTO payments (id, tenant_id, property_id, due_id, amount, matched_by, provider, is_unapplied)
+			VALUES ($1, $2, $4, $3, 300000, 'cash', 'cash', false)`, payID, tenantID, dueID, propID,
 		)
 		if err != nil {
 			t.Fatalf("insert payment: %v", err)
@@ -555,8 +555,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		// 1. Initial payment of ₹5,500
 		payID := uuid.New()
 		_, err = pool.Exec(ctx, `
-			INSERT INTO payments (id, tenant_id, due_id, amount, matched_by, provider, is_unapplied)
-			VALUES ($1, $2, $3, 550000, 'cash', 'cash', false)`, payID, tenantID, dueID,
+			INSERT INTO payments (id, tenant_id, property_id, due_id, amount, matched_by, provider, is_unapplied)
+			VALUES ($1, $2, $4, $3, 550000, 'cash', 'cash', false)`, payID, tenantID, dueID, propID,
 		)
 		if err != nil {
 			t.Fatalf("insert payment: %v", err)

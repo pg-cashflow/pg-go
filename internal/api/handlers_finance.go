@@ -34,6 +34,12 @@ func requireIdem(c *gin.Context) (string, bool) {
 	return k, true
 }
 
+var istZone = time.FixedZone("IST", 5*3600+1800)
+
+func currentISTMonth() string {
+	return time.Now().In(istZone).Format("2006-01")
+}
+
 func (h *Handlers) FinanceSummary(c *gin.Context) {
 	if !h.financeReady(c) {
 		return
@@ -42,7 +48,7 @@ func (h *Handlers) FinanceSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	recon, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, err)
@@ -70,7 +76,7 @@ func (h *Handlers) FinanceLedger(c *gin.Context) {
 	if !ok {
 		return
 	}
-	from, to, err := finance.PeriodBounds(c.DefaultQuery("period", time.Now().UTC().Format("2006-01")))
+	from, to, err := finance.PeriodBounds(c.DefaultQuery("period", currentISTMonth()))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "period must be YYYY-MM"})
 		return
@@ -450,7 +456,7 @@ func (h *Handlers) FinanceTieOut(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	recon, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, err)
@@ -472,7 +478,7 @@ func (h *Handlers) CloseFinanceTieOut(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	t, err := h.Finance.CloseTieOut(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, financeClientErr(err))
@@ -535,7 +541,7 @@ func (h *Handlers) OwnerStatementIncome(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	from, to, err := finance.PeriodBounds(period)
 	if err != nil {
 		apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
@@ -599,7 +605,7 @@ func (h *Handlers) OwnerStatementCashFlow(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	from, to, err := finance.PeriodBounds(period)
 	if err != nil {
 		apierr.RespondBindErr(c, "invalid period, expected YYYY-MM", apierr.CodeRequestInvalidBody)
@@ -693,7 +699,7 @@ func (h *Handlers) FinanceVarianceBridge(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	recon, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, err)
@@ -729,7 +735,7 @@ func (h *Handlers) OwnerROI(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := c.DefaultQuery("period", time.Now().UTC().Format("2006-01"))
+	period := c.DefaultQuery("period", currentISTMonth())
 	recon, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, err)
@@ -924,7 +930,7 @@ func (h *Handlers) OwnerForecast(c *gin.Context) {
 	if !ok {
 		return
 	}
-	period := time.Now().UTC().Format("2006-01")
+	period := currentISTMonth()
 	recon, err := h.Payments.BuildSummary(c.Request.Context(), pid, period)
 	if err != nil {
 		respondErr(c, err)

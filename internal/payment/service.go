@@ -144,9 +144,6 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 	if err != nil {
 		return nil, err
 	}
-	if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
-		return nil, ErrDueNotOpen
-	}
 	if txnID != "" {
 		if norm, nErr := domain.NormalizeUTR(txnID); nErr == nil {
 			txnID = norm
@@ -159,6 +156,9 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
 		}
+	}
+	if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
+		return nil, ErrDueNotOpen
 	}
 	var txnPtr *string
 	if txnID != "" {
@@ -192,6 +192,16 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 		return nil, err
 	}
 
+	// Idempotency and UTR uniqueness check (INV-001)
+	if existing, err := s.payments.GetByUPITxnID(ctx, normUTR); err == nil && existing != nil {
+		if existing.DueID == in.DueID && existing.Amount == in.AmountPaise {
+			return existing, nil
+		}
+		return nil, ErrDuplicateTxn
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
 	due, err := s.dues.GetByID(ctx, in.DueID)
 	if err != nil {
 		return nil, err
@@ -201,16 +211,6 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 	}
 	if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
 		return nil, ErrDueNotOpen
-	}
-
-	// Idempotency and UTR uniqueness check
-	if existing, err := s.payments.GetByUPITxnID(ctx, normUTR); err == nil && existing != nil {
-		if existing.DueID == in.DueID && existing.Amount == in.AmountPaise {
-			return existing, nil
-		}
-		return nil, ErrDuplicateTxn
-	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
 	}
 
 	var notePtr *string
@@ -635,17 +635,7 @@ func addTenantCredit(ctx context.Context, tenants TenantRepository, tenantID uui
 	if creditPaise == 0 {
 		return nil
 	}
-	if adder, ok := tenants.(interface {
-		AddCredit(ctx context.Context, id uuid.UUID, deltaPaise int64) error
-	}); ok {
-		return adder.AddCredit(ctx, tenantID, creditPaise)
-	}
-	tenant, err := tenants.GetByID(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	tenant.CreditBalancePaise += creditPaise
-	return tenants.Update(ctx, tenant)
+	return tenants.AddCredit(ctx, tenantID, creditPaise)
 }
 
 func (s *Service) findDepositDue(ctx context.Context, tenantID uuid.UUID) (*domain.Due, error) {

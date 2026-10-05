@@ -96,7 +96,7 @@ func (r *PayoutRepo) GetPayeeByHash(ctx context.Context, propertyID uuid.UUID, h
 }
 
 func (r *PayoutRepo) ListPayeesByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutPayee, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE property_id=$1 ORDER BY name ASC`, propertyID)
+	rows, err := r.pool.Query(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE property_id=$1 ORDER BY name ASC, id ASC LIMIT 50`, propertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -919,10 +919,10 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 			var pid uuid.UUID
 			err = tx.QueryRow(ctx, `
 				INSERT INTO payments (
-					tenant_id, due_id, amount, matched_by, provider, raw_note, is_unapplied, payer_type, matched_at, created_at
-				) VALUES ($1, $2, $3, 'deposit_netting', 'internal', 'Settled via departure deposit deduction', false, 'tenant', $4, $4)
+					tenant_id, property_id, due_id, amount, matched_by, provider, raw_note, is_unapplied, payer_type, matched_at, created_at
+				) VALUES ($1, $2, $3, $4, 'deposit_netting', 'internal', 'Settled via departure deposit deduction', false, 'tenant', $5, $5)
 				RETURNING id`,
-				tenantID, cycleDue.ID, shortfall, now,
+				tenantID, cycleDue.PropertyID, cycleDue.ID, shortfall, now,
 			).Scan(&pid)
 			if err != nil {
 				return nil, fmt.Errorf("insert internal payment: %w", err)
@@ -1031,10 +1031,10 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 				var pid uuid.UUID
 				err = tx.QueryRow(ctx, `
 					INSERT INTO payments (
-						tenant_id, due_id, amount, matched_by, provider, raw_note, is_unapplied, payer_type, matched_at, created_at
-					) VALUES ($1, $2, $3, 'deposit_netting', 'internal', 'Settled via departure deposit deduction', false, 'tenant', $4, $4)
+						tenant_id, property_id, due_id, amount, matched_by, provider, raw_note, is_unapplied, payer_type, matched_at, created_at
+					) VALUES ($1, $2, $3, $4, 'deposit_netting', 'internal', 'Settled via departure deposit deduction', false, 'tenant', $5, $5)
 					RETURNING id`,
-					tenantID, d.ID, int(unpaid), now,
+					tenantID, d.PropertyID, d.ID, unpaid, now,
 				).Scan(&pid)
 				if err != nil {
 					return nil, fmt.Errorf("insert internal payment for open due %s: %w", d.ID, err)

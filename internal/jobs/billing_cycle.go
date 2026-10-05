@@ -216,6 +216,9 @@ func (j *BillingCycle) processTenant(ctx context.Context, t domain.Tenant) error
 }
 
 func (j *BillingCycle) processNotifications(ctx context.Context, t domain.Tenant, due *domain.Due) error {
+	if j.MagicLink == nil {
+		return nil
+	}
 	path, err := j.MagicLink.CreatePaymentToken(ctx, due.ID)
 	if err != nil {
 		return fmt.Errorf("magic link: %w", err)
@@ -226,8 +229,8 @@ func (j *BillingCycle) processNotifications(ctx context.Context, t domain.Tenant
 		return nil
 	}
 
-	rupees := float64(due.Amount) / 100.0
-	msg := fmt.Sprintf("Rent ₹%.0f due today — pay: %s", rupees, payURL)
+	rupees := due.Amount / 100
+	msg := fmt.Sprintf("Rent ₹%d due today — pay: %s", rupees, payURL)
 	if t.Phone != nil && j.SMS != nil {
 		if err := j.SMS.Send(ctx, *t.Phone, msg); err != nil {
 			log := j.Log
@@ -245,7 +248,7 @@ func (j *BillingCycle) processNotifications(ctx context.Context, t domain.Tenant
 	}
 	if j.Push != nil {
 		payload := fmt.Appendf(nil, `{"title":"Rent due","body":%q,"url":%q}`,
-			fmt.Sprintf("Rent ₹%.0f due today", rupees), payURL)
+			fmt.Sprintf("Rent ₹%d due today", rupees), payURL)
 		_ = j.Push.Send(ctx, t.ID, payload)
 	}
 	return nil

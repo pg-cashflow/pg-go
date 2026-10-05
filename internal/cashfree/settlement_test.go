@@ -232,3 +232,40 @@ func TestClient_GetOrderSettlements_HTTP(t *testing.T) {
 		t.Errorf("unexpected amounts: gross %d, net %d", recs[0].GrossAmountPaise, recs[0].NetAmountPaise)
 	}
 }
+
+func TestCoercePaise_FailClosed(t *testing.T) {
+	// Valid cases
+	val, err := coercePaise("5500.50")
+	if err != nil || val != 550050 {
+		t.Fatalf("expected 550050, got %d, err %v", val, err)
+	}
+	val, err = coercePaise(100)
+	if err != nil || val != 10000 {
+		t.Fatalf("expected 10000, got %d, err %v", val, err)
+	}
+	val, err = coercePaise(int64(250))
+	if err != nil || val != 25000 {
+		t.Fatalf("expected 25000, got %d, err %v", val, err)
+	}
+	val, err = coercePaise(nil)
+	if err != nil || val != 0 {
+		t.Fatalf("expected 0, nil for nil, got %d, err %v", val, err)
+	}
+
+	// Fail-closed invalid cases
+	invalidInputs := []any{
+		"not-a-number",
+		"-100.50",
+		-50,
+		int64(-20),
+		float64(-1.5),
+		struct{}{},
+		[]int{1, 2},
+	}
+	for _, in := range invalidInputs {
+		_, err := coercePaise(in)
+		if err == nil {
+			t.Errorf("expected error for invalid input %v (%T), got nil", in, in)
+		}
+	}
+}

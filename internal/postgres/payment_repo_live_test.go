@@ -286,9 +286,9 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 	// 8. Verify Defense-in-Depth: uq_refunds_reference partial unique index on gateway_refunds
 	basePaymentID := uuid.New()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
-		VALUES ($1, $2, 550000, 'cashfree', 'cashfree', $3, $3, NOW())`,
-		basePaymentID, tenantID, "cf_pay_"+uuid.New().String()[:8],
+		INSERT INTO payments (id, tenant_id, property_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
+		VALUES ($1, $2, $3, 550000, 'cashfree', 'cashfree', $4, $4, NOW())`,
+		basePaymentID, tenantID, propID, "cf_pay_"+uuid.New().String()[:8],
 	)
 	if err != nil {
 		t.Fatalf("insert base payment: %v", err)

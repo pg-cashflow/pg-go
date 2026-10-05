@@ -565,13 +565,5 @@ func (s *Service) ApplyCredit(ctx context.Context, tenantID uuid.UUID, creditPai
 		}
 		return s.tenants.Update(ctx, t)
 	}
-	t, err := s.tenants.GetByID(ctx, tenantID)
-	if err != nil {
-		return err
-	}
-	t.CreditBalancePaise += creditPaise
-	if t.CreditBalancePaise < 0 {
-		t.CreditBalancePaise = 0
-	}
-	return s.tenants.Update(ctx, t)
+	return errors.New("tenant: repository does not support atomic credit mutation")
 }

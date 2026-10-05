@@ -2,9 +2,8 @@
 name: Billing cycle
 
 on:
-  # Schedule disabled until production server and database are provisioned
-  # schedule:
-  #   - cron: "35 18 * * *"
+  schedule:
+    - cron: "35 18 * * *"
   workflow_dispatch:
 
 jobs:

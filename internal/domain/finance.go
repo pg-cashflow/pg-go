@@ -17,6 +17,9 @@ var (
 	ErrPeriodClosed = errors.New("accounting period is closed")
 	// ErrPeriodNotReopenable is returned when attempting to reopen an already-open period.
 	ErrPeriodNotReopenable = errors.New("accounting period is not closed")
+	ErrForbidden           = errors.New("forbidden")
+	ErrExpenseNotPayable   = errors.New("expense cannot accept payment")
+	ErrOverpay             = errors.New("payment exceeds remaining expense")
 )
 
 // Chart of accounts (operating + capital). Amounts always paise.

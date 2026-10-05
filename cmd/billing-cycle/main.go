@@ -91,6 +91,17 @@ func main() {
 		Log:              slog.Default(),
 		ErrOpenDueExists: billing.ErrOpenDueExists,
 	}
+
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "billing_cycle")
+	if err != nil {
+		log.Fatalf("failed to acquire job lock: %v", err)
+	}
+	if !acquired {
+		slog.Info("another billing-cycle job is currently running, exiting gracefully")
+		os.Exit(0)
+	}
+	defer release(context.Background())
+
 	if err := job.Run(ctx); err != nil {
 		log.Fatal(err)
 	}

@@ -77,6 +77,8 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 			}
 			if propID != uuid.Nil {
 				p.PropertyID = &propID
+			} else {
+				return fmt.Errorf("cannot create payment: missing or unresolvable property_id")
 			}
 		}
 		err := repo.db.QueryRow(ctx, `
@@ -152,7 +154,8 @@ func (r *PaymentRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID, 
 		SELECT DISTINCT ` + paymentCols + `
 		FROM payments p
 		WHERE (
-			p.due_id IN (SELECT id FROM dues WHERE property_id=$1)
+			p.property_id = $1
+			OR p.due_id IN (SELECT id FROM dues WHERE property_id=$1)
 			OR p.id IN (SELECT pa.payment_id FROM payment_allocations pa JOIN dues d ON d.id = pa.due_id WHERE d.property_id=$1)
 			OR p.tenant_id IN (SELECT id FROM tenants WHERE property_id=$1)
 		)`
@@ -161,7 +164,7 @@ func (r *PaymentRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID, 
 		q += ` AND matched_by=$2`
 		args = append(args, *matchedBy)
 	}
-	q += ` ORDER BY matched_at DESC`
+	q += ` ORDER BY matched_at DESC, id DESC LIMIT 50`
 	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -229,15 +232,11 @@ func (r *PaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventT
 	if provider == "" {
 		provider = "cashfree"
 	}
-	dedupKey := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
-	if len(dedupKey) > 128 {
-		dedupKey = dedupKey[:128]
-	}
 	tag, err := r.db.Exec(ctx, `
-		INSERT INTO processed_webhook_events (dedup_key, provider, event_type, provider_reference_id, event_status, created_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT DO NOTHING
-	`, dedupKey, provider, eventType, providerRefID, eventStatus)
+		INSERT INTO processed_webhook_events (provider, event_type, provider_reference_id, event_status, created_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (provider, event_type, provider_reference_id, event_status) DO NOTHING
+	`, provider, eventType, providerRefID, eventStatus)
 	if err != nil {
 		return false, fmt.Errorf("payment: record processed event: %w", err)
 	}
@@ -523,7 +522,7 @@ func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uu
 		args = append(args, *before)
 		argIdx++
 	}
-	q += fmt.Sprintf(" ORDER BY matched_at DESC LIMIT $%d", argIdx)
+	q += fmt.Sprintf(" ORDER BY matched_at DESC, id DESC LIMIT $%d", argIdx)
 	args = append(args, limit)
 
 	rows, err := r.db.Query(ctx, q, args...)

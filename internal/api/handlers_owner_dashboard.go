@@ -333,7 +333,7 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 	})
 }
 
-func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, months int) []MonthlyCashFlowItem {
+func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, months int) ([]MonthlyCashFlowItem, error) {
 	if months <= 0 {
 		months = 6
 	}
@@ -351,7 +351,10 @@ func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, mo
 		var collected int64
 		if h.Payments != nil {
 			recon, err := h.Payments.BuildSummary(ctx, pid, period)
-			if err == nil && recon != nil {
+			if err != nil {
+				return nil, fmt.Errorf("payments summary for %s: %w", period, err)
+			}
+			if recon != nil {
 				collected = recon.RentCollected
 			}
 		}
@@ -359,7 +362,10 @@ func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, mo
 		var expenses int64
 		if h.Finance != nil {
 			sum, err := h.Finance.OperatingSummary(ctx, pid, period, collected)
-			if err == nil && sum != nil {
+			if err != nil {
+				return nil, fmt.Errorf("operating summary for %s: %w", period, err)
+			}
+			if sum != nil {
 				expenses = sum.OpexPaise
 			}
 		}
@@ -371,7 +377,7 @@ func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, mo
 			NetCashFlowPaise:     collected - expenses,
 		})
 	}
-	return items
+	return items, nil
 }
 
 // OwnerDashboardSummary handles GET /owner/dashboard/summary (Requirements 1 & 8 & 20).
@@ -404,7 +410,11 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	var pendingRent int64
 	if h.Payments != nil {
 		recon, err := h.Payments.BuildSummary(ctx, pid, period)
-		if err == nil && recon != nil {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build payments summary: " + err.Error()})
+			return
+		}
+		if recon != nil {
 			rentCollected = recon.RentCollected
 			pendingRent = recon.OutstandingRent
 		}
@@ -413,7 +423,11 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	var totalExpense int64
 	if h.Finance != nil {
 		sum, err := h.Finance.OperatingSummary(ctx, pid, period, rentCollected)
-		if err == nil && sum != nil {
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build operating summary: " + err.Error()})
+			return
+		}
+		if sum != nil {
 			totalExpense = sum.OpexPaise
 		}
 	}
@@ -425,7 +439,11 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		collectionPct = float64(rentCollected) / float64(totalBilled) * 100.0
 	}
 
-	monthlyCashFlow := h.computeMonthlyCashFlow(ctx, pid, 6)
+	monthlyCashFlow, err := h.computeMonthlyCashFlow(ctx, pid, 6)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to compute monthly cash flow: " + err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, OwnerDashboardSummaryResponse{
 		PropertyID: pid,
@@ -464,7 +482,11 @@ func (h *Handlers) OwnerMonthlyCashFlow(c *gin.Context) {
 			months = n
 		}
 	}
-	cf := h.computeMonthlyCashFlow(c.Request.Context(), pid, months)
+	cf, err := h.computeMonthlyCashFlow(c.Request.Context(), pid, months)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to compute monthly cash flow: " + err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"property_id": pid,
 		"cash_flow":   cf,
@@ -661,29 +683,66 @@ func (h *Handlers) BulkMarkCashPaidConfirm(c *gin.Context) {
 	})
 }
 
-// Generate calendar token scoped to property
-func generateCalendarToken(propertyID uuid.UUID, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("calendar_feed:" + propertyID.String()))
-	sig := hex.EncodeToString(mac.Sum(nil))
-	return fmt.Sprintf("%s.%s", propertyID.String(), sig[:32])
+// escapeICalText escapes special characters according to RFC 5545 text rules
+func escapeICalText(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `;`, `\;`)
+	s = strings.ReplaceAll(s, `,`, `\,`)
+	s = strings.ReplaceAll(s, "\r\n", `\n`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\n`)
+	return s
 }
 
-// Verify calendar token scoped to property
+// Generate calendar token scoped to property with optional expiration
+func generateCalendarToken(propertyID uuid.UUID, secret string, expiresAt ...time.Time) string {
+	exp := time.Now().UTC().Add(90 * 24 * time.Hour).Unix()
+	if len(expiresAt) > 0 && !expiresAt[0].IsZero() {
+		exp = expiresAt[0].UTC().Unix()
+	}
+	payload := fmt.Sprintf("calendar_feed:%s:%d", propertyID.String(), exp)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(payload))
+	sig := hex.EncodeToString(mac.Sum(nil))
+	return fmt.Sprintf("%s.%d.%s", propertyID.String(), exp, sig[:32])
+}
+
+// Verify calendar token scoped to property, enforcing expiration
 func verifyCalendarToken(token, secret string) (uuid.UUID, bool) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return uuid.Nil, false
+	if len(parts) == 3 {
+		propID, err := uuid.Parse(parts[0])
+		if err != nil {
+			return uuid.Nil, false
+		}
+		exp, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || time.Now().UTC().Unix() > exp {
+			return uuid.Nil, false
+		}
+		payload := fmt.Sprintf("calendar_feed:%s:%d", propID.String(), exp)
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(payload))
+		sig := hex.EncodeToString(mac.Sum(nil))
+		if !hmac.Equal([]byte(parts[2]), []byte(sig[:32])) {
+			return uuid.Nil, false
+		}
+		return propID, true
 	}
-	propID, err := uuid.Parse(parts[0])
-	if err != nil {
-		return uuid.Nil, false
+	if len(parts) == 2 {
+		propID, err := uuid.Parse(parts[0])
+		if err != nil {
+			return uuid.Nil, false
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte("calendar_feed:" + propID.String()))
+		sig := hex.EncodeToString(mac.Sum(nil))
+		expected := fmt.Sprintf("%s.%s", propID.String(), sig[:32])
+		if !hmac.Equal([]byte(token), []byte(expected)) {
+			return uuid.Nil, false
+		}
+		return propID, true
 	}
-	expected := generateCalendarToken(propID, secret)
-	if !hmac.Equal([]byte(token), []byte(expected)) {
-		return uuid.Nil, false
-	}
-	return propID, true
+	return uuid.Nil, false
 }
 
 // OwnerGetCalendarToken handles GET /owner/calendar/token.
@@ -774,7 +833,7 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 	b.WriteString("PRODID:-//PG Cashflow//Rent Calendar//EN\r\n")
 	b.WriteString("CALSCALE:GREGORIAN\r\n")
 	b.WriteString("METHOD:PUBLISH\r\n")
-	b.WriteString(fmt.Sprintf("X-WR-CALNAME:Rent Dues - %s\r\n", prop.Name))
+	b.WriteString(fmt.Sprintf("X-WR-CALNAME:Rent Dues - %s\r\n", escapeICalText(prop.Name)))
 	b.WriteString("X-WR-TIMEZONE:Asia/Kolkata\r\n")
 
 	nowStamp := time.Now().UTC().Format("20060102T150405Z")
@@ -788,7 +847,7 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 		b.WriteString(fmt.Sprintf("DTSTAMP:%s\r\n", nowStamp))
 		b.WriteString(fmt.Sprintf("DTSTART;VALUE=DATE:%s\r\n", k))
 		b.WriteString(fmt.Sprintf("SUMMARY:Rent Due: %d dues (₹%.0f)\r\n", s.Count, rupees))
-		b.WriteString(fmt.Sprintf("DESCRIPTION:Aggregated rent dues for %s: %d pending dues totaling ₹%.2f.\r\n", prop.Name, s.Count, rupees))
+		b.WriteString(fmt.Sprintf("DESCRIPTION:Aggregated rent dues for %s: %d pending dues totaling ₹%.2f.\r\n", escapeICalText(prop.Name), s.Count, rupees))
 		b.WriteString("STATUS:CONFIRMED\r\n")
 		b.WriteString("TRANSP:TRANSPARENT\r\n")
 		b.WriteString("END:VEVENT\r\n")

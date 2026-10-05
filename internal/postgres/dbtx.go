@@ -47,8 +47,26 @@ type DBTX interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+type txContextKey struct{}
+
+// ContextWithTx stores a pgx.Tx in the context for propagation into downstream transactions.
+func ContextWithTx(ctx context.Context, tx pgx.Tx) context.Context {
+	return context.WithValue(ctx, txContextKey{}, tx)
+}
+
+// TxFromContext retrieves an active pgx.Tx from the context if present.
+func TxFromContext(ctx context.Context) (pgx.Tx, bool) {
+	tx, ok := ctx.Value(txContextKey{}).(pgx.Tx)
+	return tx, ok
+}
+
 // WithinTx runs fn inside a transaction. Commits on nil error; rolls back otherwise.
+// If the context already carries an active pgx.Tx via ContextWithTx, fn is executed directly
+// within that existing transaction to guarantee cross-service atomicity without duplicate connections.
 func WithinTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
+	if existingTx, ok := TxFromContext(ctx); ok {
+		return fn(existingTx)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)

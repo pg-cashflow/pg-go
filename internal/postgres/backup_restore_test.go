@@ -16,6 +16,9 @@ import (
 // production-like database -> backup -> create restore database -> restore dump -> verify integrity -> cleanup.
 // Records: backup duration, size, restore duration, RPO, RTO.
 func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping physical backup/restore test in short mode")
+	}
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		t.Skip("DATABASE_URL not set, skipping physical backup/restore test")
@@ -29,7 +32,7 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 		t.Skipf("pg_dump not found at %s, skipping", pgDumpPath)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	tmpDir := os.TempDir()

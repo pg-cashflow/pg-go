@@ -401,6 +401,16 @@ func (h *Handlers) ListDues(c *gin.Context) {
 		}
 	}
 	f := postgres.DueListFilter{PropertyID: pid, Limit: limit, Offset: offset}
+	if cd := c.Query("cursor_due_date"); cd != "" {
+		if t, err := time.Parse(time.RFC3339, cd); err == nil {
+			f.CursorDueDate = &t
+		}
+	}
+	if cid := c.Query("cursor_id"); cid != "" {
+		if u, err := uuid.Parse(cid); err == nil {
+			f.CursorID = &u
+		}
+	}
 	if tid := c.Query("tenant_id"); tid != "" {
 		id, err := uuid.Parse(tid)
 		if err == nil {
@@ -423,7 +433,15 @@ func (h *Handlers) ListDues(c *gin.Context) {
 	if len(list) > limit {
 		list = list[:limit]
 	}
-	c.JSON(http.StatusOK, gin.H{"dues": list, "limit": limit, "offset": offset})
+	resp := gin.H{"dues": list, "limit": limit, "offset": offset}
+	if len(list) == limit {
+		last := list[len(list)-1]
+		resp["next_cursor"] = gin.H{
+			"cursor_due_date": last.DueDate.Format(time.RFC3339),
+			"cursor_id":       last.ID,
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // WaiveDue handles POST /owner/dues/:id/waive.
@@ -627,8 +645,8 @@ func (h *Handlers) DueToken(c *gin.Context) {
 	tenant, _ := h.TenantStore.GetByID(c.Request.Context(), due.TenantID)
 	var wa string
 	if tenant != nil {
-		rupees := float64(due.Amount) / 100.0
-		msg := "Pay rent ₹" + strconv.FormatFloat(rupees, 'f', 0, 64) + " — " + url
+		rupees := due.Amount / 100
+		msg := "Pay rent ₹" + strconv.FormatInt(rupees, 10) + " — " + url
 		wa = magiclink.BuildWALink(tenant.Phone, msg)
 	}
 	c.JSON(http.StatusOK, gin.H{"path": path, "url": url, "wa_me": wa})
@@ -1440,7 +1458,7 @@ func (h *Handlers) OwnerVerifyPayment(c *gin.Context) {
 	}
 	normUTR, err := domain.NormalizeUTR(in.UPITxnID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid upi_txn_id: "+err.Error()))
 		return
 	}
 	p, err := h.Payments.VerifyPayment(c.Request.Context(), payment.VerifyPaymentInput{

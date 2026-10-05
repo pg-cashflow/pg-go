@@ -259,6 +259,157 @@ func (r *FinanceRepo) InsertExpense(ctx context.Context, e *domain.Expense) erro
 	return err
 }
 
+func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense, lines []domain.JournalLine, approval *domain.ApprovalRequest) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if e.RoomID != nil {
+		var roomPropID uuid.UUID
+		err = tx.QueryRow(ctx, `SELECT property_id FROM rooms WHERE id=$1`, *e.RoomID).Scan(&roomPropID)
+		if errors.Is(err, pgx.ErrNoRows) || roomPropID != e.PropertyID {
+			return fmt.Errorf("room does not belong to property: %w", domain.ErrForbidden)
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO expenses (id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, idempotency_key, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		e.ID, e.PropertyID, e.CategoryCode, nullIfEmpty(e.VendorName), nullIfEmpty(e.Description), e.AmountPaise, e.Status, e.Emergency, e.RoomID, e.CreatedBy, e.CreatedByRole, e.IdempotencyKey, e.OccurredAt)
+	if isUnique(err) {
+		return domain.ErrDuplicateIdempotency
+	}
+	if err != nil {
+		return fmt.Errorf("insert expense: %w", err)
+	}
+
+	if approval != nil {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO approval_requests (id, property_id, kind, subject_id, amount_paise, requested_by, status, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+			approval.ID, approval.PropertyID, approval.Kind, approval.SubjectID, approval.AmountPaise, approval.RequestedBy, approval.Status, approval.CreatedAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert approval: %w", err)
+		}
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.ExpensePayment, lines []domain.JournalLine, adv *domain.ManagerAdvance) (*domain.Expense, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var e domain.Expense
+	var vendor, desc *string
+	err = tx.QueryRow(ctx, `
+		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
+		FROM expenses WHERE id=$1 FOR UPDATE`, p.ExpenseID).Scan(
+		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if vendor != nil {
+		e.VendorName = *vendor
+	}
+	if desc != nil {
+		e.Description = *desc
+	}
+	if e.PropertyID != p.PropertyID {
+		return nil, domain.ErrForbidden
+	}
+	if e.Status != domain.ExpenseApproved && e.Status != domain.ExpensePaid {
+		return nil, domain.ErrExpenseNotPayable
+	}
+
+	var paid int64
+	err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise), 0) FROM expense_payments WHERE expense_id=$1`, p.ExpenseID).Scan(&paid)
+	if err != nil {
+		return nil, fmt.Errorf("sum expense payments: %w", err)
+	}
+	if paid+p.AmountPaise > e.AmountPaise {
+		return nil, domain.ErrOverpay
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO expense_payments (id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, idempotency_key, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		p.ID, p.ExpenseID, p.PropertyID, p.AmountPaise, p.PayerRole, p.PayerUserID, p.Method, p.IdempotencyKey, p.OccurredAt)
+	if isUnique(err) {
+		return nil, domain.ErrDuplicateIdempotency
+	}
+	if err != nil {
+		return nil, fmt.Errorf("insert expense payment: %w", err)
+	}
+
+	if adv != nil {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO manager_advances (id, property_id, manager_user_id, expense_payment_id, amount_paise, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6)`,
+			adv.ID, adv.PropertyID, adv.ManagerUserID, adv.ExpensePaymentID, adv.AmountPaise, adv.OccurredAt)
+		if isUnique(err) {
+			return nil, domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return nil, fmt.Errorf("insert advance: %w", err)
+		}
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return nil, domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return nil, fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	if paid+p.AmountPaise == e.AmountPaise {
+		e.Status = domain.ExpensePaid
+		_, err = tx.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, e.ID, e.Status)
+		if err != nil {
+			return nil, fmt.Errorf("update expense status: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+
+	return &e, nil
+}
+
 func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error) {
 	e := &domain.Expense{}
 	var vendor, desc *string
@@ -281,7 +432,7 @@ func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Exp
 func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, category_code, COALESCE(vendor_name,''), COALESCE(description,''), amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
-		FROM expenses WHERE property_id=$1 ORDER BY occurred_at DESC`, propertyID)
+		FROM expenses WHERE property_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 50`, propertyID)
 	if err != nil {
 		return nil, err
 	}
