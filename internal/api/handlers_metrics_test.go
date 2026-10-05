@@ -64,3 +64,34 @@ func TestMetricsEndpoint_Prometheus(t *testing.T) {
 		t.Errorf("expected prometheus output to contain 'pg_query_duration_p95_ms', got:\n%s", body)
 	}
 }
+
+func TestMetricsEndpoint_ProductionAuthRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{}
+
+	r := gin.New()
+	r.GET("/metrics", h.Metrics)
+
+	// In production with no token configured, must fail closed with 401
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("METRICS_TOKEN", "")
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized in production without token, got %d", w.Code)
+	}
+
+	// In production with token configured, valid token succeeds
+	t.Setenv("METRICS_TOKEN", "secret-test-token")
+	reqAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqAuth.Header.Set("Authorization", "Bearer secret-test-token")
+	wAuth := httptest.NewRecorder()
+	r.ServeHTTP(wAuth, reqAuth)
+
+	if wAuth.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK with valid bearer token, got %d", wAuth.Code)
+	}
+}

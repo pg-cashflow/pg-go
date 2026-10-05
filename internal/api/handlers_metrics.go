@@ -57,7 +57,17 @@ type QueryPerfSummary struct {
 // Metrics handles GET /metrics and GET /api/metrics.
 // Supports application/json format or Prometheus text format based on Accept header.
 func (h *Handlers) Metrics(c *gin.Context) {
-	if expectedToken := os.Getenv("METRICS_TOKEN"); expectedToken != "" {
+	expectedToken := os.Getenv("METRICS_TOKEN")
+	if expectedToken == "" {
+		env := strings.ToLower(os.Getenv("APP_ENV"))
+		if env == "" {
+			env = strings.ToLower(os.Getenv("ENVIRONMENT"))
+		}
+		if env == "production" || env == "prod" || os.Getenv("METRICS_REQUIRE_AUTH") == "true" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication in production"})
+			return
+		}
+	} else {
 		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		if token == "" {
 			token = c.Query("token")

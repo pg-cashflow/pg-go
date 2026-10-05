@@ -360,7 +360,7 @@ func (r *PaymentRepo) GetPaymentRefundedPaise(ctx context.Context, paymentID uui
 }
 
 func (r *PaymentRepo) ListRefundsByPayment(ctx context.Context, paymentID uuid.UUID) ([]domain.GatewayRefund, error) {
-	rows, err := r.db.Query(ctx, `SELECT `+refundCols+` FROM gateway_refunds WHERE payment_id=$1 ORDER BY created_at ASC`, paymentID)
+	rows, err := r.db.Query(ctx, `SELECT `+refundCols+` FROM gateway_refunds WHERE payment_id=$1 ORDER BY created_at ASC LIMIT 100`, paymentID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,220 @@
+package postgres
+
+import (
+	"context"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
+)
+
+// TestLivePostgresFailClosedRLS verifies that Row-Level Security on financial and tenant tables
+// strictly isolates properties, fails closed when un-scoped, and cleans up pool connection state.
+func TestLivePostgresFailClosedRLS(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL not set, skipping live Postgres RLS test")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skip("config load failed, skipping live Postgres RLS test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+	}
+	defer pool.Close()
+
+	propA := uuid.New()
+	propB := uuid.New()
+
+	invA := "IA" + uuid.New().String()[:6]
+	invB := "IB" + uuid.New().String()[:6]
+
+	// Seed properties directly under maintenance mode or superuser
+	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL app.ledger_maintenance = 'on'"); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+			VALUES ($1, 'Property Alpha RLS', '100 Alpha St', '+919999900010', 'alpha@upi', 'Owner Alpha', 'alpha@example.com', $3),
+			       ($2, 'Property Beta RLS', '200 Beta Ave', '+919999900020', 'beta@upi', 'Owner Beta', 'beta@example.com', $4)
+			ON CONFLICT (id) DO NOTHING;
+		`, propA, propB, invA, invB)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("failed seeding test properties: %v", err)
+	}
+
+	// Create a non-superuser application role for testing RLS if not exists
+	_, err = pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'test_rls_app_user') THEN
+				CREATE ROLE test_rls_app_user;
+				GRANT USAGE ON SCHEMA public TO test_rls_app_user;
+				GRANT ALL ON ALL TABLES IN SCHEMA public TO test_rls_app_user;
+			END IF;
+		END
+		$$;
+	`)
+	if err != nil {
+		t.Fatalf("failed creating test_rls_app_user: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = WithinTx(context.Background(), pool, func(tx pgx.Tx) error {
+			_, _ = tx.Exec(context.Background(), "SET LOCAL app.ledger_maintenance = 'on'")
+			_, _ = tx.Exec(context.Background(), "DELETE FROM tenants WHERE property_id IN ($1, $2)", propA, propB)
+			_, _ = tx.Exec(context.Background(), "DELETE FROM properties WHERE id IN ($1, $2)", propA, propB)
+			return nil
+		})
+	})
+
+	tenantA := uuid.New()
+	tenantB := uuid.New()
+	phoneA := "+91" + strconv.FormatInt(time.Now().UnixNano()%10000000000, 10)
+	phoneB := "+91" + strconv.FormatInt((time.Now().UnixNano()+1)%10000000000, 10)
+
+	ctxA := requestscope.WithPropertyID(ctx, propA)
+	ctxB := requestscope.WithPropertyID(ctx, propB)
+
+	// Insert tenants under Property A and Property B using ScopedDB
+	err = WithinTx(ctxA, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+			VALUES ($1, $2, 'Tenant Alpha', $3, 15000, 5, 'active')
+		`, tenantA, propA, phoneA)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert tenant A under scope A failed: %v", err)
+	}
+
+	err = WithinTx(ctxB, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+			VALUES ($1, $2, 'Tenant Beta', $3, 18000, 5, 'active')
+		`, tenantB, propB, phoneB)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("insert tenant B under scope B failed: %v", err)
+	}
+
+	t.Run("Scoped Query Only Sees Scoped Property Rows", func(t *testing.T) {
+		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+				return err
+			}
+			rows, err := tx.Query(ctx, `SELECT id, property_id FROM tenants WHERE property_id IN ($1, $2)`, propA, propB)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+
+			foundA := false
+			foundB := false
+			for rows.Next() {
+				var id, pid uuid.UUID
+				if err := rows.Scan(&id, &pid); err != nil {
+					return err
+				}
+				if pid == propA {
+					foundA = true
+				}
+				if pid == propB {
+					foundB = true
+				}
+			}
+			if !foundA {
+				t.Errorf("expected to find tenant A under scope A, but did not")
+			}
+			if foundB {
+				t.Errorf("SECURITY VIOLATION: tenant B leaked into scope A query!")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("query under scope A failed: %v", err)
+		}
+	})
+
+	t.Run("Cross-Property Attempt Filtered By RLS Policy", func(t *testing.T) {
+		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+				return err
+			}
+			var count int
+			err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM tenants WHERE id = $1`, tenantB).Scan(&count)
+			if err != nil {
+				return err
+			}
+			if count != 0 {
+				t.Fatalf("SECURITY VIOLATION: cross-property query saw %d rows for tenant B under scope A", count)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("cross-property query returned error: %v", err)
+		}
+	})
+
+	t.Run("Unscoped Connection Fails Closed (Zero Rows)", func(t *testing.T) {
+		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+				return err
+			}
+			// In an un-scoped tx, current_setting('app.current_property_id', true) is empty.
+			// RLS policy requires NULLIF(...) IS NOT NULL, so zero rows must be returned.
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM tenants WHERE id IN ($1, $2)`, tenantA, tenantB).Scan(&count); err != nil {
+				return err
+			}
+			if count != 0 {
+				t.Errorf("SECURITY VIOLATION: unscoped transaction saw %d tenants (expected fail-closed 0 rows)", count)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("unscoped tx failed: %v", err)
+		}
+	})
+
+	t.Run("WithinTx Sets Scope And Cleans Up", func(t *testing.T) {
+		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+				return err
+			}
+			var count int
+			if err := tx.QueryRow(ctxA, `SELECT COUNT(*) FROM tenants WHERE id = $1`, tenantA).Scan(&count); err != nil {
+				return err
+			}
+			if count != 1 {
+				t.Errorf("expected WithinTx with ctxA to see 1 tenant, got %d", count)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("WithinTx failed: %v", err)
+		}
+	})
+}

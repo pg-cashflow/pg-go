@@ -257,13 +257,26 @@ func TestLivePostgresConcurrentRotation(t *testing.T) {
 		t.Fatalf("expected root token to be revoked after concurrent rotation")
 	}
 
-	// 2. Verify that the number of active (unrevoked) tokens in DB equals the number of successes
+	// 2. Verify that exactly 1 active (unrevoked) successor token exists in DB,
+	// preventing multiple unrevoked child tokens from being minted on concurrent retransmit (M-01).
 	var activeTokensInDB int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE`, familyID).Scan(&activeTokensInDB); err != nil {
 		t.Fatalf("count active tokens in db: %v", err)
 	}
-	if activeTokensInDB != successCount {
-		t.Fatalf("expected active tokens in DB (%d) to equal successCount (%d)", activeTokensInDB, successCount)
+	if activeTokensInDB != 1 {
+		t.Fatalf("expected exactly 1 active successor token in DB, got %d", activeTokensInDB)
+	}
+
+	// Verify all successful workers received the same successor token ID
+	var firstTokenID uuid.UUID
+	for i := 0; i < concurrency; i++ {
+		if results[i] == nil && tokens[i] != nil {
+			if firstTokenID == uuid.Nil {
+				firstTokenID = tokens[i].ID
+			} else if tokens[i].ID != firstTokenID {
+				t.Errorf("worker %d got different token ID %s, expected %s", i, tokens[i].ID, firstTokenID)
+			}
+		}
 	}
 
 	// 3. Verify that all tokens in the family (root and children) strictly share the root's family_started_at
@@ -290,8 +303,8 @@ func TestLivePostgresConcurrentRotation(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows error: %v", err)
 	}
-	if totalRows != 1+successCount {
-		t.Fatalf("expected total tokens in family to be %d (1 root + %d successes), got %d", 1+successCount, successCount, totalRows)
+	if totalRows != 2 {
+		t.Fatalf("expected total tokens in family to be 2 (1 root + 1 successor), got %d", totalRows)
 	}
 
 	// 4. Verify all worker-returned tokens have the identical family_started_at

@@ -112,8 +112,9 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	}
 
 	var current domain.RefreshToken
+	var replacedBy *uuid.UUID
 	query := `
-		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
+		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at, replaced_by
 		FROM refresh_tokens
 		WHERE token_hash = $1
 		FOR UPDATE
@@ -121,7 +122,7 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	err = tx.QueryRow(ctx, query, oldHash).Scan(
 		&current.ID, &current.UserID, &current.FamilyID,
 		&current.TokenHash, &current.ExpiresAt, &current.Revoked,
-		&current.RevokedAt, &current.FamilyStartedAt, &current.CreatedAt,
+		&current.RevokedAt, &current.FamilyStartedAt, &current.CreatedAt, &replacedBy,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrRefreshTokenNotFound
@@ -145,29 +146,26 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 
 		// Grace window check: only applies if the family has not been nuked (active tokens exist)
 		// and this token was revoked within the last 15 seconds.
-		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 15*time.Second {
-			// Issue a fresh child token in the same family so client gets a working unrevoked token
-			now := time.Now().UTC()
-			if newRT.ID == uuid.Nil {
-				newRT.ID = uuid.New()
-			}
-			newRT.FamilyID = current.FamilyID
-			newRT.UserID = current.UserID
-			newRT.FamilyStartedAt = familyStarted
-			newRT.CreatedAt = now
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-				newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.CreatedAt,
-			); err != nil {
-				return nil, fmt.Errorf("insert grace-window child token: %w", err)
-			}
-			if r.pool != nil {
-				if err := tx.Commit(ctx); err != nil {
-					return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
+		// Rather than minting an unconstrained new child on every replay, we return the existing successor token.
+		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 15*time.Second && replacedBy != nil {
+			var successor domain.RefreshToken
+			querySuccessor := `
+				SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
+				FROM refresh_tokens
+				WHERE id = $1
+			`
+			if err := tx.QueryRow(ctx, querySuccessor, *replacedBy).Scan(
+				&successor.ID, &successor.UserID, &successor.FamilyID,
+				&successor.TokenHash, &successor.ExpiresAt, &successor.Revoked,
+				&successor.RevokedAt, &successor.FamilyStartedAt, &successor.CreatedAt,
+			); err == nil && !successor.Revoked {
+				if r.pool != nil {
+					if err := tx.Commit(ctx); err != nil {
+						return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
+					}
 				}
+				return &successor, nil
 			}
-			return newRT, nil
 		}
 
 		// Replay attack confirmed or family already nuked: ensure entire family is revoked!
@@ -198,13 +196,8 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		return nil, ErrRefreshTokenExpired
 	}
 
-	// 4. Mark current token revoked with timestamp
+	// 4. Insert new rotated token with inherited immutable family_started_at first so FK is satisfied
 	now := time.Now().UTC()
-	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = $1 WHERE id = $2`, now, current.ID); err != nil {
-		return nil, fmt.Errorf("revoke current token: %w", err)
-	}
-
-	// 5. Insert new rotated token with inherited immutable family_started_at
 	if newRT.ID == uuid.Nil {
 		newRT.ID = uuid.New()
 	}
@@ -212,12 +205,18 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	newRT.UserID = current.UserID
 	newRT.FamilyStartedAt = familyStarted
 	newRT.CreatedAt = now
+
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("insert rotated token: %w", err)
+	}
+
+	// 5. Mark current token revoked with timestamp and pointer to successor token
+	if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = $1, replaced_by = $2 WHERE id = $3`, now, newRT.ID, current.ID); err != nil {
+		return nil, fmt.Errorf("revoke current token: %w", err)
 	}
 
 	if r.pool != nil {

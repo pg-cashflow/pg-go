@@ -332,7 +332,7 @@ func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, proper
 }
 
 func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC`, batchID)
+	rows, err := r.pool.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +370,7 @@ func (r *PayoutRepo) GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.Pa
 }
 
 func (r *PayoutRepo) ListBatchesByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutBatch, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE property_id=$1 ORDER BY created_at DESC`, propertyID)
+	rows, err := r.pool.Query(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE property_id=$1 ORDER BY created_at DESC LIMIT 100`, propertyID)
 	if err != nil {
 		return nil, err
 	}

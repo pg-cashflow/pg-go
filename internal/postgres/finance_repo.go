@@ -245,7 +245,7 @@ func (r *FinanceRepo) InsertCapitalAtomic(ctx context.Context, txRecord *domain.
 func (r *FinanceRepo) ListCapital(ctx context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, owner_user_id, kind, amount_paise, COALESCE(purpose,''), reference, occurred_at, created_at
-		FROM capital_transactions WHERE property_id=$1 ORDER BY occurred_at`, propertyID)
+		FROM capital_transactions WHERE property_id=$1 ORDER BY occurred_at DESC LIMIT 200`, propertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +514,7 @@ func (r *FinanceRepo) InsertExpensePayment(ctx context.Context, p *domain.Expens
 func (r *FinanceRepo) ListExpensePayments(ctx context.Context, expenseID uuid.UUID) ([]domain.ExpensePayment, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, occurred_at
-		FROM expense_payments WHERE expense_id=$1 ORDER BY occurred_at`, expenseID)
+		FROM expense_payments WHERE expense_id=$1 ORDER BY occurred_at ASC LIMIT 100`, expenseID)
 	if err != nil {
 		return nil, err
 	}
@@ -616,7 +616,7 @@ func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UU
 func (r *FinanceRepo) ListAdvances(ctx context.Context, propertyID uuid.UUID) ([]domain.ManagerAdvance, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, manager_user_id, expense_payment_id, amount_paise, occurred_at
-		FROM manager_advances WHERE property_id=$1 ORDER BY occurred_at DESC`, propertyID)
+		FROM manager_advances WHERE property_id=$1 ORDER BY occurred_at DESC LIMIT 200`, propertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -720,7 +720,7 @@ func (r *FinanceRepo) ListJournal(ctx context.Context, propertyID uuid.UUID, fro
 		q += ` AND account_code=$` + itoa(n)
 		args = append(args, account)
 	}
-	q += ` ORDER BY occurred_at`
+	q += ` ORDER BY occurred_at ASC LIMIT 1000`
 	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -943,7 +943,7 @@ func (r *FinanceRepo) GetApproval(ctx context.Context, id uuid.UUID) (*domain.Ap
 func (r *FinanceRepo) ListApprovals(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.ApprovalRequest, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, kind, subject_id, amount_paise, requested_by, status, decided_by, decided_at, COALESCE(note,''), created_at
-		FROM approval_requests WHERE property_id=$1 AND ($2='' OR status=$2) ORDER BY created_at DESC`, propertyID, status)
+		FROM approval_requests WHERE property_id=$1 AND ($2='' OR status=$2) ORDER BY created_at DESC LIMIT 100`, propertyID, status)
 	if err != nil {
 		return nil, err
 	}

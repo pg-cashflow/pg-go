@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // RoomOccupancy represents the occupancy status of an individual room.
@@ -707,7 +708,7 @@ func generateCalendarToken(propertyID uuid.UUID, secret string, expiresAt ...tim
 	return fmt.Sprintf("%s.%d.%s", propertyID.String(), exp, sig[:32])
 }
 
-// Verify calendar token scoped to property, enforcing expiration
+// Verify calendar token scoped to property, enforcing expiration (M-02)
 func verifyCalendarToken(token, secret string) (uuid.UUID, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) == 3 {
@@ -728,20 +729,6 @@ func verifyCalendarToken(token, secret string) (uuid.UUID, bool) {
 		}
 		return propID, true
 	}
-	if len(parts) == 2 {
-		propID, err := uuid.Parse(parts[0])
-		if err != nil {
-			return uuid.Nil, false
-		}
-		mac := hmac.New(sha256.New, []byte(secret))
-		mac.Write([]byte("calendar_feed:" + propID.String()))
-		sig := hex.EncodeToString(mac.Sum(nil))
-		expected := fmt.Sprintf("%s.%s", propID.String(), sig[:32])
-		if !hmac.Equal([]byte(token), []byte(expected)) {
-			return uuid.Nil, false
-		}
-		return propID, true
-	}
 	return uuid.Nil, false
 }
 
@@ -754,6 +741,17 @@ func (h *Handlers) OwnerGetCalendarToken(c *gin.Context) {
 	}
 
 	tok := generateCalendarToken(pid, h.JWTSecret)
+	if h.Pool != nil {
+		hash := sha256.Sum256([]byte(tok))
+		tokenHash := hex.EncodeToString(hash[:])
+		expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
+		_, _ = h.Pool.Exec(c.Request.Context(), `
+			INSERT INTO property_calendar_tokens (property_id, token_hash, expires_at)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (token_hash) DO NOTHING
+		`, pid, tokenHash, expiresAt)
+	}
+
 	baseURL := h.MagicLinkBaseURL
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
@@ -771,6 +769,10 @@ func (h *Handlers) OwnerGetCalendarToken(c *gin.Context) {
 // Public feed authenticated via property-scoped token query parameter.
 // Outputs standard RFC 5545 iCalendar format with anonymized aggregated dues.
 func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Referrer-Policy", "no-referrer")
+
 	token := c.Query("token")
 	if token == "" {
 		c.String(http.StatusUnauthorized, "missing token")
@@ -783,7 +785,9 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	ctx := requestscope.WithPropertyID(c.Request.Context(), propID)
+	c.Request = c.Request.WithContext(ctx)
+
 	prop, err := h.PropertyStore.GetByID(ctx, propID)
 	if err != nil {
 		c.String(http.StatusNotFound, "property not found")

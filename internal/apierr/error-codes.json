@@ -34,6 +34,7 @@
   "payment.emptyTxnId",
   "payment.ambiguousMatch",
   "payment.noMatch",
+  "payment.invalidAmount",
   "finance.duplicateRequest",
   "finance.idempotencyRequired",
   "finance.invalidAmount",

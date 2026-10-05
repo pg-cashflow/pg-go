@@ -183,7 +183,9 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 			RawPayload:       raw,
 			ProcessingStatus: "received",
 		}); aerr != nil {
-			slog.Warn("failed to persist settlement webhook audit event", "error", aerr)
+			slog.Error("failed to persist settlement webhook audit event", "error", aerr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
+			return
 		}
 	}
 

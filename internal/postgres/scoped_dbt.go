@@ -35,7 +35,7 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
 	if hasProp && propID != uuid.Nil {
-		if _, err := conn.Exec(ctx, "SET app.current_property_id = $1", propID.String()); err != nil {
+		if _, err := conn.Exec(ctx, "SELECT set_config('app.current_property_id', $1, false)", propID.String()); err != nil {
 			conn.Conn().Close(ctx)
 			return pgconn.CommandTag{}, fmt.Errorf("set app.current_property_id: %w", err)
 		}
@@ -65,7 +65,7 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 	}
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
 	if hasProp && propID != uuid.Nil {
-		if _, err := tx.Exec(ctx, "SET LOCAL app.current_property_id = $1", propID.String()); err != nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propID.String()); err != nil {
 			_ = tx.Rollback(ctx)
 			conn.Release()
 			return nil, fmt.Errorf("set local app.current_property_id: %w", err)
