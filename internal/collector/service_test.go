@@ -29,7 +29,7 @@ func (s *stubIntents) LatestOpenForDue(context.Context, uuid.UUID) (*domain.Paym
 
 type stubCF struct{ n int }
 
-func (s *stubCF) CreateUPIOrder(context.Context, string, int, string, string) (string, *time.Time, error) {
+func (s *stubCF) CreateUPIOrder(context.Context, string, int64, string, string) (string, *time.Time, error) {
 	s.n++
 	exp := time.Now().Add(time.Hour)
 	return "sess_1", &exp, nil

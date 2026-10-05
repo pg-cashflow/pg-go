@@ -64,7 +64,7 @@ type createOrderResp struct {
 	PaymentSessionID string `json:"payment_session_id"`
 }
 
-func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int, customerPhone, note string) (string, *time.Time, error) {
+func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
 	if !c.cfg.Enabled() {
 		return "", nil, fmt.Errorf("cashfree: not configured")
 	}
@@ -79,7 +79,7 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 
 	body := createOrderBody{
 		OrderID:       orderID,
-		OrderAmount:   json.Number(FormatPaiseToRupees(int64(amountPaise))),
+		OrderAmount:   json.Number(FormatPaiseToRupees(amountPaise)),
 		OrderCurrency: "INR",
 		Customer:      map[string]any{"customer_id": orderID, "customer_phone": customerPhone},
 		OrderMeta: map[string]any{
@@ -122,7 +122,7 @@ type fetchPaymentsResp struct {
 	Payments []rawPaymentItem `json:"payments"`
 }
 
-func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int, ok bool, err error) {
+func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error) {
 	if !c.cfg.Enabled() {
 		return "", "", 0, false, fmt.Errorf("cashfree: not configured")
 	}
@@ -155,7 +155,7 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 			if pErr != nil {
 				return "", "", 0, false, fmt.Errorf("cashfree fetch parse amount: %w", pErr)
 			}
-			return p.CFPaymentID.String(), p.BankReference, int(parsedPaise), true, nil
+			return p.CFPaymentID.String(), p.BankReference, parsedPaise, true, nil
 		}
 	}
 	return "", "", 0, false, nil

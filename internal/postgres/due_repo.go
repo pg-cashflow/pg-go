@@ -155,7 +155,7 @@ func (r *DueRepo) ActivePendingRentDues(ctx context.Context) ([]domain.Due, erro
 	return scanDues(rows)
 }
 
-func (r *DueRepo) FindByAmountAndDateWindow(ctx context.Context, propertyID uuid.UUID, amount int, from, to time.Time) ([]domain.Due, error) {
+func (r *DueRepo) FindByAmountAndDateWindow(ctx context.Context, propertyID uuid.UUID, amount int64, from, to time.Time) ([]domain.Due, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT `+dueCols+` FROM dues
 		WHERE property_id=$1 AND amount=$2 AND status IN ('pending','partial')

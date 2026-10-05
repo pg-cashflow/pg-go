@@ -111,7 +111,7 @@ type sandboxPaymentService struct {
 	mu           sync.Mutex
 	settleCalls  int
 	dedupSeen    map[string]bool
-	onSettlement func(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string) (*domain.Payment, error)
+	onSettlement func(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string) (*domain.Payment, error)
 }
 
 func newSandboxPaymentService() *sandboxPaymentService {
@@ -120,16 +120,16 @@ func newSandboxPaymentService() *sandboxPaymentService {
 	}
 }
 
-func (s *sandboxPaymentService) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
+func (s *sandboxPaymentService) MatchPayment(context.Context, uuid.UUID, string, int64, time.Time, string) (*domain.Payment, error) {
 	return nil, nil
 }
-func (s *sandboxPaymentService) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+func (s *sandboxPaymentService) SuggestMatch(context.Context, uuid.UUID, int64, time.Time, string) (*payment.MatchResult, error) {
 	return nil, nil
 }
-func (s *sandboxPaymentService) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
+func (s *sandboxPaymentService) ManualMatch(context.Context, uuid.UUID, int64, string, uuid.UUID) (*domain.Payment, error) {
 	return nil, nil
 }
-func (s *sandboxPaymentService) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
+func (s *sandboxPaymentService) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	return nil, nil
 }
 func (s *sandboxPaymentService) SettleDeposit(context.Context, uuid.UUID, int64, string) error {
@@ -138,8 +138,14 @@ func (s *sandboxPaymentService) SettleDeposit(context.Context, uuid.UUID, int64,
 func (s *sandboxPaymentService) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	return nil, nil
 }
+func (s *sandboxPaymentService) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	return nil, nil
+}
+func (s *sandboxPaymentService) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
+	return nil, nil
+}
 
-func (s *sandboxPaymentService) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
+func (s *sandboxPaymentService) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(dedupKey) > 0 && dedupKey[0] != "" {
@@ -174,7 +180,7 @@ func TestMoneyRail_DuplicateWebhook_Idempotent(t *testing.T) {
 	tenantID := uuid.New()
 	orderID := "order_test_dup_123"
 	cfPaymentID := "99887766"
-	amountPaise := 550000 // 5,500.00 INR
+	amountPaise := int64(550000) // 5,500.00 INR
 
 	// Seed due & intent
 	due := &domain.Due{
@@ -206,7 +212,7 @@ func TestMoneyRail_DuplicateWebhook_Idempotent(t *testing.T) {
 	stubGateway := newThreadSafeGatewayRepo()
 
 	paySvc := newSandboxPaymentService()
-	paySvc.onSettlement = func(ctx context.Context, dID uuid.UUID, amt int, txnID string) (*domain.Payment, error) {
+	paySvc.onSettlement = func(ctx context.Context, dID uuid.UUID, amt int64, txnID string) (*domain.Payment, error) {
 		mu.Lock()
 		paymentCount++
 		mu.Unlock()

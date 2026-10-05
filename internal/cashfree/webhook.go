@@ -58,7 +58,7 @@ type SuccessWebhook struct {
 	OrderID       string
 	CFPaymentID   string
 	BankReference string
-	AmountPaise   int
+	AmountPaise   int64
 	PaymentStatus string
 	PaymentTime   string
 }
@@ -75,7 +75,7 @@ type FailedWebhook struct {
 	Type          string
 	OrderID       string
 	CFPaymentID   string
-	AmountPaise   int
+	AmountPaise   int64
 	PaymentStatus string
 	FailureReason string
 }
@@ -143,7 +143,7 @@ func ParseWebhook(raw []byte) (any, string, error) {
 			OrderID:       p.Order.OrderID,
 			CFPaymentID:   p.Payment.CFPaymentID.String(),
 			BankReference: p.Payment.BankReference,
-			AmountPaise:   int(paise),
+			AmountPaise:   paise,
 			PaymentStatus: p.Payment.PaymentStatus,
 			PaymentTime:   p.Payment.PaymentTime,
 		}, evtType, nil
@@ -175,7 +175,7 @@ func ParseWebhook(raw []byte) (any, string, error) {
 			Type:          evtType,
 			OrderID:       p.Order.OrderID,
 			CFPaymentID:   p.Payment.CFPaymentID.String(),
-			AmountPaise:   int(paise),
+			AmountPaise:   paise,
 			PaymentStatus: p.Payment.PaymentStatus,
 			FailureReason: reason,
 		}, evtType, nil

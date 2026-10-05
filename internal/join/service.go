@@ -74,11 +74,11 @@ type UserLinker interface {
 }
 
 type TenantCreator interface {
-	CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error)
+	CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error)
 }
 
 type TenantTxCreator interface {
-	CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error)
+	CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error)
 }
 
 type PendingOnboarder interface {
@@ -90,11 +90,11 @@ type PendingOnboarderTx interface {
 }
 
 type TermsAssigner interface {
-	AssignTerms(ctx context.Context, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error)
+	AssignTerms(ctx context.Context, tenantID uuid.UUID, room *string, rentAmount int64, dueDay int16, depositPaise int64, noticePeriodDays int16) (*domain.Tenant, error)
 }
 
 type TermsAssignerTx interface {
-	AssignTermsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error)
+	AssignTermsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, room *string, rentAmount int64, dueDay int16, depositPaise int64, noticePeriodDays int16) (*domain.Tenant, error)
 }
 
 type Service struct {
@@ -358,9 +358,9 @@ func (s *Service) List(ctx context.Context, propertyID uuid.UUID, status *domain
 
 type ActivateInput struct {
 	RoomNumber       *string
-	RentAmount       int
+	RentAmount       int64
 	DueDay           int16
-	DepositAmount    int
+	DepositAmount    int64
 	NoticePeriodDays int16
 }
 

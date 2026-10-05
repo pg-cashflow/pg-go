@@ -171,23 +171,29 @@ type dedupStubPay struct {
 	seen map[string]bool
 }
 
-func (s *dedupStubPay) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
+func (s *dedupStubPay) MatchPayment(context.Context, uuid.UUID, string, int64, time.Time, string) (*domain.Payment, error) {
 	panic("unused")
 }
-func (s *dedupStubPay) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+func (s *dedupStubPay) SuggestMatch(context.Context, uuid.UUID, int64, time.Time, string) (*payment.MatchResult, error) {
 	panic("unused")
 }
-func (s *dedupStubPay) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
+func (s *dedupStubPay) ManualMatch(context.Context, uuid.UUID, int64, string, uuid.UUID) (*domain.Payment, error) {
 	panic("unused")
 }
-func (s *dedupStubPay) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
+func (s *dedupStubPay) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	panic("unused")
 }
 func (s *dedupStubPay) SettleDeposit(context.Context, uuid.UUID, int64, string) error { panic("unused") }
 func (s *dedupStubPay) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	panic("unused")
 }
-func (s *dedupStubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
+func (s *dedupStubPay) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	panic("unused")
+}
+func (s *dedupStubPay) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
+	panic("unused")
+}
+func (s *dedupStubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := txnID
@@ -428,7 +434,7 @@ func TestC_BillingCycleGenerationIdempotency(t *testing.T) {
 	}
 	duesTable := make(map[cycleKey]*domain.Due)
 
-	createDueIdempotent := func(tID uuid.UUID, start time.Time, amount int) (*domain.Due, bool) {
+	createDueIdempotent := func(tID uuid.UUID, start time.Time, amount int64) (*domain.Due, bool) {
 		k := cycleKey{tenantID: tID, start: start}
 		if existing, ok := duesTable[k]; ok {
 			return existing, false // already exists (ON CONFLICT DO NOTHING)

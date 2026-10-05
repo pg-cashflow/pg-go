@@ -212,9 +212,9 @@ func (h *Handlers) ListJoinRequests(c *gin.Context) {
 
 type activateJoinBody struct {
 	RoomNumber       *string `json:"room_number"`
-	RentAmount       int     `json:"rent_amount" binding:"required"`
+	RentAmount       int64   `json:"rent_amount" binding:"required"`
 	DueDay           int16   `json:"due_day" binding:"required"`
-	DepositAmount    int     `json:"deposit_amount"`
+	DepositAmount    int64   `json:"deposit_amount"`
 	NoticePeriodDays int16   `json:"notice_period_days"`
 }
 

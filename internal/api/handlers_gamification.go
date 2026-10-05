@@ -753,7 +753,7 @@ func (h *Handlers) ManagerSubmitVendorInspection(c *gin.Context) {
 		VendorName   string `json:"vendor_name"`
 		ScorePercent int    `json:"score_percent"`
 		Notes        string `json:"notes"`
-		PenaltyPaise int    `json:"penalty_paise"`
+		PenaltyPaise int64  `json:"penalty_paise"`
 		PhotoBase64  string `json:"photo_base64"`
 	}
 

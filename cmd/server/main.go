@@ -24,6 +24,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/finance"
@@ -211,9 +212,9 @@ func main() {
 			_ = financeSvc.MirrorProration(ctx, due, original, prorated)
 		})
 		gamificationSvc.SetFinanceHooks(
-			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int) {
+			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64) {
 				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("pts:%d", entry.ID)))
-				amt := int64(entry.Delta) * int64(pointValuePaise)
+				amt := int64(entry.Delta) * pointValuePaise
 				_ = financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt)
 			},
 			func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64) {
@@ -257,6 +258,12 @@ func main() {
 	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
 	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(pool)
 
+	payoutSecret := cfg.PayoutExportChecksumSecret
+	if payoutSecret == "" {
+		payoutSecret = cfg.JWTSecret
+	}
+	payoutEncryptionKey := crypto.DeriveKey(payoutSecret)
+
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
 		payoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
@@ -265,7 +272,7 @@ func main() {
 			APIVersion:   cfg.CashfreePayoutAPIVersion,
 			Env:          cfg.CashfreePayoutEnv,
 		})
-		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID)
+		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
 	} else if cfg.CashfreePayoutAutoDispatchEnabled {
 		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
@@ -322,6 +329,7 @@ func main() {
 		PayoutRepo:                  payoutRepo,
 		PayoutDispatcher:            payoutDispatcher,
 		PayoutChecksumSecret:        cfg.PayoutExportChecksumSecret,
+		PayoutEncryptionKey:         payoutEncryptionKey,
 		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
 		AttendanceRepo:              attendanceRepo,
 		AttendanceSvc:               attendanceSvc,

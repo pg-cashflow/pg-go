@@ -78,7 +78,7 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 }
 
 // CreateDepositDue creates a one-time deposit due.
-func (s *Service) CreateDepositDue(ctx context.Context, tenant *domain.Tenant, amountPaise int) (*domain.Due, error) {
+func (s *Service) CreateDepositDue(ctx context.Context, tenant *domain.Tenant, amountPaise int64) (*domain.Due, error) {
 	if tenant == nil {
 		return nil, fmt.Errorf("billing: tenant is required")
 	}

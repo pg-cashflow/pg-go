@@ -53,7 +53,7 @@ func (m *memPush) DeleteByTenant(_ context.Context, tenantID uuid.UUID) error {
 
 type noopBilling struct{}
 
-func (noopBilling) CreateDepositDue(context.Context, *domain.Tenant, int) (*domain.Due, error) {
+func (noopBilling) CreateDepositDue(context.Context, *domain.Tenant, int64) (*domain.Due, error) {
 	return &domain.Due{ID: uuid.New(), Kind: domain.DueKindDeposit}, nil
 }
 

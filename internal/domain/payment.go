@@ -28,7 +28,7 @@ type Payment struct {
 	CFPaymentID       *string    `json:"cf_payment_id,omitempty"`
 	ProviderPaymentID *string    `json:"provider_payment_id,omitempty"`
 	Provider          string     `json:"provider,omitempty"`
-	Amount            int        `json:"amount"` // in paise
+	Amount            int64      `json:"amount"` // in paise
 	MatchedBy         MatchedBy  `json:"matched_by"`
 	RecordedBy        *uuid.UUID `json:"recorded_by,omitempty"`
 	MatchedAt         time.Time  `json:"matched_at"`

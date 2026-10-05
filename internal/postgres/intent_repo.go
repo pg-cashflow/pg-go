@@ -199,7 +199,7 @@ func (r *PaymentIntentRepo) GetReusableIntentUnderLock(ctx context.Context, tena
 	return scanIntent(row)
 }
 
-func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int, minRemaining time.Duration) (*domain.PaymentIntent, error) {
+func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int64, minRemaining time.Duration) (*domain.PaymentIntent, error) {
 	if len(dueIDs) == 0 {
 		return nil, errors.New("dueIDs required")
 	}

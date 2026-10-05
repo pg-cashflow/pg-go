@@ -198,18 +198,18 @@ func (m *mockBankAccountStore) Deactivate(_ context.Context, id uuid.UUID) error
 type mockCSVPaymentService struct {
 	suggestResult *payment.MatchResult
 	suggestErr    error
-	manualMatchFn func(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
+	manualMatchFn func(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
 }
 
-func (m *mockCSVPaymentService) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
+func (m *mockCSVPaymentService) MatchPayment(context.Context, uuid.UUID, string, int64, time.Time, string) (*domain.Payment, error) {
 	return nil, errors.New("auto-settlement gated off")
 }
 
-func (m *mockCSVPaymentService) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+func (m *mockCSVPaymentService) SuggestMatch(context.Context, uuid.UUID, int64, time.Time, string) (*payment.MatchResult, error) {
 	return m.suggestResult, m.suggestErr
 }
 
-func (m *mockCSVPaymentService) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
+func (m *mockCSVPaymentService) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
 	if m.manualMatchFn != nil {
 		return m.manualMatchFn(ctx, dueID, amountPaise, txnID, recordedBy)
 	}
@@ -222,7 +222,7 @@ func (m *mockCSVPaymentService) ManualMatch(ctx context.Context, dueID uuid.UUID
 		MatchedAt:  time.Now(),
 	}, nil
 }
-func (m *mockCSVPaymentService) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
+func (m *mockCSVPaymentService) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	return nil, nil
 }
 func (m *mockCSVPaymentService) SettleDeposit(context.Context, uuid.UUID, int64, string) error {
@@ -231,7 +231,13 @@ func (m *mockCSVPaymentService) SettleDeposit(context.Context, uuid.UUID, int64,
 func (m *mockCSVPaymentService) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	return nil, nil
 }
-func (m *mockCSVPaymentService) GatewaySettle(context.Context, uuid.UUID, int, string, ...string) (*domain.Payment, error) {
+func (m *mockCSVPaymentService) GatewaySettle(context.Context, uuid.UUID, int64, string, ...string) (*domain.Payment, error) {
+	return nil, nil
+}
+func (m *mockCSVPaymentService) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	return nil, nil
+}
+func (m *mockCSVPaymentService) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
 	return nil, nil
 }
 

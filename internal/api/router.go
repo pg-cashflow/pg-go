@@ -85,6 +85,7 @@ type Deps struct {
 
 	PayoutRepo                  *postgres.PayoutRepo
 	PayoutChecksumSecret        string
+	PayoutEncryptionKey         []byte
 	CashfreePayoutWebhookSecret string
 	PayoutDispatcher            *finance.PayoutDispatcher
 	LedgerOutboxRepo            *postgres.LedgerOutboxRepo

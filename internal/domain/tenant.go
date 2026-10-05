@@ -22,11 +22,11 @@ type Tenant struct {
 	RoomNumber         *string      `json:"room_number,omitempty"`
 	RoomID             *uuid.UUID   `json:"room_id,omitempty"`
 	AadhaarLast4       *string      `json:"aadhaar_last4,omitempty"`
-	RentAmount         int          `json:"rent_amount"` // paise; 0 while pending_allocation
+	RentAmount         int64        `json:"rent_amount"` // paise; 0 while pending_allocation
 	DueDay             *int16       `json:"due_day,omitempty"`
 	NoticePeriodDays   int16        `json:"notice_period_days"`
 	NoticeGivenAt      *time.Time   `json:"notice_given_at,omitempty"`
-	CreditBalancePaise int          `json:"credit_balance_paise"`
+	CreditBalancePaise int64        `json:"credit_balance_paise"`
 	Status             TenantStatus `json:"status"`
 	PermanentAddress   string       `json:"permanent_address,omitempty"`
 	CurrentAddress     string       `json:"current_address,omitempty"`
@@ -83,7 +83,7 @@ type NewTenantInput struct {
 	RoomNumber       *string
 	RoomID           *uuid.UUID
 	AadhaarLast4     *string
-	RentAmount       int
+	RentAmount       int64
 	DueDay           int16
 	NoticePeriodDays int16
 	PermanentAddress string

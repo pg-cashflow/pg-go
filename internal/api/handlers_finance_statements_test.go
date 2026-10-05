@@ -23,19 +23,19 @@ func (d *dummyPaymentSummaryBuilder) BuildSummary(_ context.Context, _ uuid.UUID
 	return &payment.ReconciliationSummary{Period: period}, nil
 }
 
-func (d *dummyPaymentSummaryBuilder) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
+func (d *dummyPaymentSummaryBuilder) MatchPayment(context.Context, uuid.UUID, string, int64, time.Time, string) (*domain.Payment, error) {
 	return nil, nil
 }
 
-func (d *dummyPaymentSummaryBuilder) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+func (d *dummyPaymentSummaryBuilder) SuggestMatch(context.Context, uuid.UUID, int64, time.Time, string) (*payment.MatchResult, error) {
 	return nil, nil
 }
 
-func (d *dummyPaymentSummaryBuilder) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
+func (d *dummyPaymentSummaryBuilder) ManualMatch(context.Context, uuid.UUID, int64, string, uuid.UUID) (*domain.Payment, error) {
 	return nil, nil
 }
 
-func (d *dummyPaymentSummaryBuilder) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
+func (d *dummyPaymentSummaryBuilder) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	return nil, nil
 }
 
@@ -43,7 +43,15 @@ func (d *dummyPaymentSummaryBuilder) SettleDeposit(context.Context, uuid.UUID, i
 	return nil
 }
 
-func (d *dummyPaymentSummaryBuilder) GatewaySettle(context.Context, uuid.UUID, int, string, ...string) (*domain.Payment, error) {
+func (d *dummyPaymentSummaryBuilder) GatewaySettle(context.Context, uuid.UUID, int64, string, ...string) (*domain.Payment, error) {
+	return nil, nil
+}
+
+func (d *dummyPaymentSummaryBuilder) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	return nil, nil
+}
+
+func (d *dummyPaymentSummaryBuilder) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
 	return nil, nil
 }
 

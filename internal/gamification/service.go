@@ -135,7 +135,7 @@ type Service struct {
 	blobs      BlobStore
 	logger     *slog.Logger
 	now        func() time.Time
-	onPoints   func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int)
+	onPoints   func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64)
 	onRedeem   func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64)
 }
 
@@ -213,8 +213,11 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 	if err != nil {
 		return 0, err
 	}
-	budgetPoints := settings.MonthlyBudgetPaise / settings.PointValuePaise
-	if propEarned+rule.Points > budgetPoints {
+	var budgetPoints int64
+	if settings.PointValuePaise > 0 {
+		budgetPoints = settings.MonthlyBudgetPaise / settings.PointValuePaise
+	}
+	if int64(propEarned+rule.Points) > budgetPoints {
 		return 0, fmt.Errorf("%w: property monthly cap %d points reached", ErrPropertyBudgetExceeded, budgetPoints)
 	}
 
@@ -259,7 +262,7 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 }
 
 func (s *Service) SetFinanceHooks(
-	onPoints func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int),
+	onPoints func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64),
 	onRedeem func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64),
 ) {
 	s.onPoints = onPoints

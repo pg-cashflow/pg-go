@@ -17,12 +17,12 @@ func NewPaymentRepo(db DBTX) *PaymentRepo { return &PaymentRepo{db: db} }
 
 func (r *PaymentRepo) WithTx(tx pgx.Tx) *PaymentRepo { return &PaymentRepo{db: tx} }
 
-const paymentCols = `id, due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at`
+const paymentCols = `id, due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id`
 
 func scanPayment(row pgx.Row) (*domain.Payment, error) {
 	var p domain.Payment
 	var dueID *uuid.UUID
-	err := row.Scan(&p.ID, &dueID, &p.TenantID, &p.UPITxnID, &p.CFPaymentID, &p.ProviderPaymentID, &p.Provider, &p.Amount, &p.MatchedBy, &p.RecordedBy, &p.MatchedAt, &p.RawNote, &p.IsUnapplied, &p.CreatedAt)
+	err := row.Scan(&p.ID, &dueID, &p.TenantID, &p.UPITxnID, &p.CFPaymentID, &p.ProviderPaymentID, &p.Provider, &p.Amount, &p.MatchedBy, &p.RecordedBy, &p.MatchedAt, &p.RawNote, &p.IsUnapplied, &p.CreatedAt, &p.PropertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -66,11 +66,24 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 		if p.DueID != uuid.Nil {
 			dueIDArg = &p.DueID
 		}
+		// Resolve property_id if omitted
+		if p.PropertyID == nil || *p.PropertyID == uuid.Nil {
+			var propID uuid.UUID
+			if p.DueID != uuid.Nil {
+				_ = repo.db.QueryRow(ctx, `SELECT property_id FROM dues WHERE id = $1`, p.DueID).Scan(&propID)
+			}
+			if propID == uuid.Nil && p.TenantID != uuid.Nil {
+				_ = repo.db.QueryRow(ctx, `SELECT property_id FROM tenants WHERE id = $1`, p.TenantID).Scan(&propID)
+			}
+			if propID != uuid.Nil {
+				p.PropertyID = &propID
+			}
+		}
 		err := repo.db.QueryRow(ctx, `
-			INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 			RETURNING id`,
-			dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt,
+			dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt, p.PropertyID,
 		).Scan(&p.ID)
 		if err != nil {
 			return err
@@ -443,6 +456,12 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 		out = append(out, ref)
 	}
 	return out, rows.Err()
+}
+
+func (r *PaymentRepo) HasCorrection(ctx context.Context, paymentID uuid.UUID) (bool, error) {
+	var exists bool
+	err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM financial_corrections WHERE original_payment_id = $1)`, paymentID).Scan(&exists)
+	return exists, err
 }
 
 func (r *PaymentRepo) RecordCorrection(ctx context.Context, c *domain.FinancialCorrection) error {

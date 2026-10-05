@@ -96,7 +96,7 @@ type stubTenants struct {
 	lastIn  domain.NewTenantInput
 }
 
-func (s *stubTenants) CreateTenant(_ context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+func (s *stubTenants) CreateTenant(_ context.Context, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error) {
 	s.lastIn = in
 	due := in.DueDay
 	s.created = &domain.Tenant{
@@ -151,7 +151,7 @@ type depositBilling struct {
 	created int
 }
 
-func (d *depositBilling) CreateDepositDue(_ context.Context, tenant *domain.Tenant, amountPaise int) (*domain.Due, error) {
+func (d *depositBilling) CreateDepositDue(_ context.Context, tenant *domain.Tenant, amountPaise int64) (*domain.Due, error) {
 	d.created++
 	return &domain.Due{ID: uuid.New(), TenantID: tenant.ID, Amount: amountPaise, Kind: domain.DueKindDeposit}, nil
 }

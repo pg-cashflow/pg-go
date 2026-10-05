@@ -27,7 +27,7 @@ type PayoutPayee struct {
 	Phone                  *string    `json:"phone,omitempty"`
 	AccountNumberEncrypted []byte     `json:"-"`
 	AccountNumberLast4     *string    `json:"account_number_last4,omitempty"`
-	AccountNumberHash      string     `json:"account_number_hash"`
+	AccountNumberHash      string     `json:"-"`
 	IFSC                   *string    `json:"ifsc,omitempty"`
 	BankName               *string    `json:"bank_name,omitempty"`
 	UPIVPA                 *string    `json:"upi_vpa,omitempty"`

@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -318,8 +319,13 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 		} else {
 			last4 = &raw
 		}
-		// Envelope encryption placeholder: store bytes
-		encryptedAcct = []byte(raw)
+		enc, err := crypto.Encrypt(h.getPayoutEncryptionKey(), []byte(raw))
+		if err != nil {
+			slog.Error("OwnerCreatePayee: failed to encrypt bank account", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to secure bank account"})
+			return
+		}
+		encryptedAcct = enc
 	} else {
 		acctIdentifier = strings.TrimSpace(*body.UPIVPA)
 	}
@@ -750,6 +756,13 @@ func (h *Handlers) getChecksumSecret() string {
 		return h.JWTSecret
 	}
 	return "payout_checksum_secret"
+}
+
+func (h *Handlers) getPayoutEncryptionKey() []byte {
+	if len(h.PayoutEncryptionKey) == 32 {
+		return h.PayoutEncryptionKey
+	}
+	return crypto.DeriveKey(h.getChecksumSecret())
 }
 
 func (h *Handlers) getPropertySettings(ctx context.Context, pid uuid.UUID) (*domain.PropertySettings, error) {

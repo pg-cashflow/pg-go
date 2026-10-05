@@ -21,7 +21,7 @@ var (
 type DueView struct {
 	TokenID      uuid.UUID  `json:"token_id"`
 	Due          domain.Due `json:"due"`
-	AmountPaise  int        `json:"amount_paise"`
+	AmountPaise  int64      `json:"amount_paise"`
 	OwnerName    string     `json:"owner_name"`
 	PropertyName string     `json:"property_name"`
 	UPIVPA       string     `json:"-"` // for QR generation; not always exposed

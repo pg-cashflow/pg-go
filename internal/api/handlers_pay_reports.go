@@ -20,7 +20,7 @@ const maxReportImage = 2 << 20
 
 type reportBody struct {
 	UPITxnID string `json:"upi_txn_id" binding:"required"`
-	Amount   int    `json:"amount"`
+	Amount   int64  `json:"amount"`
 	Note     string `json:"note"`
 }
 
@@ -49,13 +49,13 @@ func (h *Handlers) TenantSubmitReport(c *gin.Context) {
 	}
 
 	var txnID string
-	var amount int
+	var amount int64
 	var note string
 	var img []byte
 	ct := c.ContentType()
 	if strings.HasPrefix(ct, "multipart/") {
 		txnID = strings.TrimSpace(c.PostForm("upi_txn_id"))
-		amount = atoi(c.PostForm("amount"))
+		amount = atoi64(c.PostForm("amount"))
 		note = c.PostForm("note")
 		if f, err := c.FormFile("image"); err == nil && f != nil {
 			if f.Size > maxReportImage {
@@ -180,13 +180,13 @@ func tenantReportResponse(p *domain.PaymentReport) gin.H {
 	}
 }
 
-func atoi(s string) int {
-	n := 0
+func atoi64(s string) int64 {
+	var n int64
 	for _, r := range s {
 		if r < '0' || r > '9' {
 			return n
 		}
-		n = n*10 + int(r-'0')
+		n = n*10 + int64(r-'0')
 	}
 	return n
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -101,7 +102,7 @@ func (s *Service) fireSettle(ctx context.Context, p *domain.Payment, dueID uuid.
 // MatchPayment matches a CSV bank row to a due and records the payment.
 // Invariant: ONLY deterministic matches (DueCode) are auto-settled. Heuristic matches (AmountDateWindow)
 // return ErrRequiresConfirmation to prevent silent cross-attribution between identical due amounts.
-func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int, txnDate time.Time, note string) (*domain.Payment, error) {
+func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int64, txnDate time.Time, note string) (*domain.Payment, error) {
 	if txnID != "" {
 		if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
 			return nil, ErrDuplicateTxn
@@ -133,12 +134,12 @@ func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID 
 }
 
 // SuggestMatch evaluates a bank statement row and returns candidate match results without mutating or settling the due.
-func (s *Service) SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*MatchResult, error) {
+func (s *Service) SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int64, txnDate time.Time, note string) (*MatchResult, error) {
 	return s.matcher.Match(ctx, propertyID, amountPaise, txnDate, note)
 }
 
 // ManualMatch records an owner-confirmed match with UTR normalization and idempotent replay.
-func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
+func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
 	due, err := s.dues.GetByID(ctx, dueID)
 	if err != nil {
 		return nil, err
@@ -170,7 +171,7 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 type VerifyPaymentInput struct {
 	PropertyID  uuid.UUID
 	DueID       uuid.UUID
-	AmountPaise int
+	AmountPaise int64
 	UTR         string
 	RecordedBy  uuid.UUID
 	Note        string
@@ -223,7 +224,7 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 type CorrectPaymentInput struct {
 	PropertyID      uuid.UUID
 	PaymentID       uuid.UUID
-	CorrectedAmount int
+	CorrectedAmount int64
 	CorrectedUTR    string
 	Reason          string
 	CorrectedBy     uuid.UUID
@@ -245,6 +246,19 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 			return nil, err
 		}
 		normUTR = nu
+	}
+
+	// Invariant INV-008: Check if payment already has an active correction
+	if checker, ok := s.payments.(interface {
+		HasCorrection(ctx context.Context, paymentID uuid.UUID) (bool, error)
+	}); ok {
+		has, err := checker.HasCorrection(ctx, in.PaymentID)
+		if err != nil {
+			return nil, err
+		}
+		if has {
+			return nil, errors.New("payment: already corrected (only single correction permitted per payment)")
+		}
 	}
 
 	orig, err := s.payments.GetByID(ctx, in.PaymentID)
@@ -340,7 +354,7 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 }
 
 // GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id and optional dedupKey.
-func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
+func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	if strings.TrimSpace(txnID) == "" {
 		return nil, ErrEmptyTxnID
 	}
@@ -358,7 +372,7 @@ func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPais
 
 // MarkCashPaid records a full cash settlement of the remaining due amount.
 // D2 LOCKED: amount MUST equal due.Amount (current remaining). No cash partials.
-func (s *Service) MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int, recordedBy uuid.UUID, note string) (*domain.Payment, error) {
+func (s *Service) MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int64, recordedBy uuid.UUID, note string) (*domain.Payment, error) {
 	var notePtr *string
 	if note != "" {
 		notePtr = &note
@@ -384,6 +398,7 @@ func (s *Service) MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise
 		}
 
 		p := &domain.Payment{
+			PropertyID: &due.PropertyID,
 			DueID:      due.ID,
 			TenantID:   due.TenantID,
 			Amount:     amountPaise,
@@ -404,7 +419,7 @@ func (s *Service) MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise
 		cashPayload, _ := json.Marshal(domain.CashPaymentRecordedPayload{
 			DueID:       due.ID.String(),
 			DueCode:     due.DueCode,
-			AmountPaise: int64(amountPaise),
+			AmountPaise: amountPaise,
 			RecordedBy:  recordedBy.String(),
 			Note:        note,
 		})
@@ -467,7 +482,7 @@ func (s *Service) SettleDeposit(ctx context.Context, tenantID uuid.UUID, refunde
 func (s *Service) settleMatched(
 	ctx context.Context,
 	dueID uuid.UUID,
-	amountPaise int,
+	amountPaise int64,
 	matchedBy domain.MatchedBy,
 	txnID *string,
 	recordedBy *uuid.UUID,
@@ -507,6 +522,7 @@ func (s *Service) settleMatched(
 					overpaymentNote = *rawNote + " (" + overpaymentNote + ")"
 				}
 				p := &domain.Payment{
+					PropertyID: &due.PropertyID,
 					DueID:      due.ID,
 					TenantID:   due.TenantID,
 					UPITxnID:   txnID,
@@ -526,7 +542,7 @@ func (s *Service) settleMatched(
 					DueID:       due.ID.String(),
 					PaymentID:   p.ID.String(),
 					TenantID:    due.TenantID.String(),
-					AmountPaise: int64(amountPaise),
+					AmountPaise: amountPaise,
 					MatchedBy:   string(matchedBy),
 					Reason:      "due_already_closed",
 				})
@@ -553,6 +569,7 @@ func (s *Service) settleMatched(
 		}
 
 		p := &domain.Payment{
+			PropertyID: &due.PropertyID,
 			DueID:      due.ID,
 			TenantID:   due.TenantID,
 			UPITxnID:   txnID,
@@ -575,7 +592,7 @@ func (s *Service) settleMatched(
 			DueID:       due.ID.String(),
 			PaymentID:   p.ID.String(),
 			MatchedBy:   string(matchedBy),
-			AmountPaise: int64(amountPaise),
+			AmountPaise: amountPaise,
 		})
 		did := due.ID
 		if err := pub.Publish(ctx, domain.Event{
@@ -614,7 +631,15 @@ func getDueForUpdate(ctx context.Context, dues DueRepository, id uuid.UUID) (*do
 	return dues.GetByID(ctx, id)
 }
 
-func addTenantCredit(ctx context.Context, tenants TenantRepository, tenantID uuid.UUID, creditPaise int) error {
+func addTenantCredit(ctx context.Context, tenants TenantRepository, tenantID uuid.UUID, creditPaise int64) error {
+	if creditPaise == 0 {
+		return nil
+	}
+	if adder, ok := tenants.(interface {
+		AddCredit(ctx context.Context, id uuid.UUID, deltaPaise int64) error
+	}); ok {
+		return adder.AddCredit(ctx, tenantID, creditPaise)
+	}
 	tenant, err := tenants.GetByID(ctx, tenantID)
 	if err != nil {
 		return err
@@ -644,7 +669,7 @@ func (s *Service) findDepositDue(ctx context.Context, tenantID uuid.UUID) (*doma
 	return best, nil
 }
 
-func (s *Service) publishMatchFailed(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int, note string, matchErr error) error {
+func (s *Service) publishMatchFailed(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int64, note string, matchErr error) error {
 	payload, _ := json.Marshal(map[string]any{
 		"upi_txn_id":   txnID,
 		"amount_paise": amountPaise,

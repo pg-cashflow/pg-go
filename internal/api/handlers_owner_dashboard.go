@@ -509,7 +509,7 @@ type EligibleDueItem struct {
 	DueCode     string    `json:"due_code"`
 	TenantID    uuid.UUID `json:"tenant_id"`
 	TenantName  string    `json:"tenant_name,omitempty"`
-	AmountPaise int       `json:"amount_paise"`
+	AmountPaise int64     `json:"amount_paise"`
 	DueDate     string    `json:"due_date"`
 }
 

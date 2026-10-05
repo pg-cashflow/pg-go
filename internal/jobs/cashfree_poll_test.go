@@ -41,22 +41,22 @@ type stubCFFetch struct {
 	ok     bool
 	cfID   string
 	ref    string
-	amount int
+	amount int64
 }
 
-func (s stubCFFetch) FetchSuccessfulPayment(context.Context, string) (string, string, int, bool, error) {
+func (s stubCFFetch) FetchSuccessfulPayment(context.Context, string) (string, string, int64, bool, error) {
 	return s.cfID, s.ref, s.amount, s.ok, nil
 }
 
 type stubSettle struct {
 	n      int
 	dueID  uuid.UUID
-	amount int
+	amount int64
 	txn    string
 	err    error
 }
 
-func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string, _ ...string) (*domain.Payment, error) {
+func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int64, txnID string, _ ...string) (*domain.Payment, error) {
 	s.n++
 	s.dueID = dueID
 	s.amount = amountPaise

@@ -15,7 +15,7 @@ type stubDues struct {
 	byCode   map[string]*domain.Due
 	byID     map[uuid.UUID]*domain.Due
 	window   []domain.Due
-	windowFn func(propertyID uuid.UUID, amount int, from, to time.Time) ([]domain.Due, error)
+	windowFn func(propertyID uuid.UUID, amount int64, from, to time.Time) ([]domain.Due, error)
 }
 
 func (s *stubDues) GetByID(_ context.Context, id uuid.UUID) (*domain.Due, error) {
@@ -52,7 +52,7 @@ func (s *stubDues) ListByTenant(context.Context, uuid.UUID) ([]domain.Due, error
 	return nil, nil
 }
 
-func (s *stubDues) FindByAmountAndDateWindow(_ context.Context, propertyID uuid.UUID, amount int, from, to time.Time) ([]domain.Due, error) {
+func (s *stubDues) FindByAmountAndDateWindow(_ context.Context, propertyID uuid.UUID, amount int64, from, to time.Time) ([]domain.Due, error) {
 	if s.windowFn != nil {
 		return s.windowFn(propertyID, amount, from, to)
 	}

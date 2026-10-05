@@ -59,7 +59,7 @@ type countingOrderCreator struct {
 	count int32
 }
 
-func (c *countingOrderCreator) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int, customerPhone, note string) (string, *time.Time, error) {
+func (c *countingOrderCreator) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	atomic.AddInt32(&c.count, 1)

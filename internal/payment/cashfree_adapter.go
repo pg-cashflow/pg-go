@@ -32,7 +32,7 @@ func (a *CashfreeAdapter) Name() ProviderName {
 }
 
 func (a *CashfreeAdapter) CreateOrder(ctx context.Context, req CreateOrderRequest) (*ProviderOrder, error) {
-	sessionID, exp, err := a.client.CreateUPIOrder(ctx, req.OrderID, int(req.AmountPaise), req.CustomerPhone, req.Note)
+	sessionID, exp, err := a.client.CreateUPIOrder(ctx, req.OrderID, req.AmountPaise, req.CustomerPhone, req.Note)
 	if err != nil {
 		return nil, err
 	}
@@ -47,10 +47,10 @@ func (a *CashfreeAdapter) CreateOrder(ctx context.Context, req CreateOrderReques
 }
 
 // CreateUPIOrder satisfies the legacy collector.CashfreeOrders interface.
-func (a *CashfreeAdapter) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int, customerPhone, note string) (string, *time.Time, error) {
+func (a *CashfreeAdapter) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
 	order, err := a.CreateOrder(ctx, CreateOrderRequest{
 		OrderID:       orderID,
-		AmountPaise:   int64(amountPaise),
+		AmountPaise:   amountPaise,
 		CustomerPhone: customerPhone,
 		Note:          note,
 	})
@@ -80,7 +80,7 @@ func (a *CashfreeAdapter) FetchPayment(ctx context.Context, orderID string) (*Pr
 }
 
 // FetchSuccessfulPayment satisfies the jobs.CashfreeFetcher interface.
-func (a *CashfreeAdapter) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int, ok bool, err error) {
+func (a *CashfreeAdapter) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error) {
 	return a.client.FetchSuccessfulPayment(ctx, orderID)
 }
 

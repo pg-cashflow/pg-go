@@ -262,6 +262,19 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1`, id))
 }
 
+func (r *TenantRepo) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1 FOR UPDATE`, id))
+}
+
+func (r *TenantRepo) AddCredit(ctx context.Context, tenantID uuid.UUID, deltaPaise int64) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE tenants 
+		SET credit_balance_paise = GREATEST(0, credit_balance_paise + $2),
+		    updated_at = NOW()
+		WHERE id = $1`, tenantID, deltaPaise)
+	return err
+}
+
 func (r *TenantRepo) GetIDPhoto(ctx context.Context, id uuid.UUID) ([]byte, error) {
 	var b []byte
 	err := r.db.QueryRow(ctx, `SELECT id_photo_bytes FROM tenants WHERE id=$1`, id).Scan(&b)

@@ -625,7 +625,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		}
 
 		// 5. Test status recomputation against contractual ceiling (275000)
-		var ceiling int
+		var ceiling int64
 		err = pool.QueryRow(ctx, `SELECT contractual_ceiling_paise FROM dues WHERE id = $1`, dueID).Scan(&ceiling)
 		if err != nil {
 			t.Fatalf("query contractual ceiling: %v", err)

@@ -63,7 +63,7 @@ type PushService interface {
 
 // TenantService owns tenant lifecycle mutations.
 type TenantService interface {
-	CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error)
+	CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error)
 	UpdateTenant(ctx context.Context, t *domain.Tenant) error
 	Vacate(ctx context.Context, tenantID uuid.UUID) error
 	LogNotice(ctx context.Context, tenantID uuid.UUID, at time.Time) error
@@ -78,13 +78,15 @@ type BillingService interface {
 
 // PaymentService matches payments and cash/deposit settlement.
 type PaymentService interface {
-	MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int, date time.Time, note string) (*domain.Payment, error)
-	SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*payment.MatchResult, error)
-	ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
-	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int, recordedBy uuid.UUID, note string) (*domain.Payment, error)
+	MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int64, date time.Time, note string) (*domain.Payment, error)
+	SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int64, txnDate time.Time, note string) (*payment.MatchResult, error)
+	ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
+	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int64, recordedBy uuid.UUID, note string) (*domain.Payment, error)
 	SettleDeposit(ctx context.Context, tenantID uuid.UUID, refundedPaise int64, reason string) error
 	BuildSummary(ctx context.Context, propertyID uuid.UUID, period string) (*payment.ReconciliationSummary, error)
-	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error)
+	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error)
+	VerifyPayment(ctx context.Context, in payment.VerifyPaymentInput) (*domain.Payment, error)
+	CorrectPayment(ctx context.Context, in payment.CorrectPaymentInput) (*domain.FinancialCorrection, error)
 }
 
 // PropertyStore reads properties.

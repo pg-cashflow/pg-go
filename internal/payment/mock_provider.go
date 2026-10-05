@@ -60,10 +60,10 @@ func (m *MockPaymentProvider) CreateOrder(ctx context.Context, req CreateOrderRe
 	return order, nil
 }
 
-func (m *MockPaymentProvider) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int, customerPhone, note string) (string, *time.Time, error) {
+func (m *MockPaymentProvider) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
 	order, err := m.CreateOrder(ctx, CreateOrderRequest{
 		OrderID:       orderID,
-		AmountPaise:   int64(amountPaise),
+		AmountPaise:   amountPaise,
 		CustomerPhone: customerPhone,
 		Note:          note,
 	})

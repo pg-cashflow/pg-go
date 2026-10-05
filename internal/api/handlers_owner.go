@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
+	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 )
@@ -50,10 +52,10 @@ type createTenantBody struct {
 	Name             string  `json:"name" binding:"required"`
 	Phone            *string `json:"phone"`
 	RoomNumber       *string `json:"room_number"`
-	RentAmount       int     `json:"rent_amount" binding:"required"`
+	RentAmount       int64   `json:"rent_amount" binding:"required"`
 	DueDay           int16   `json:"due_day" binding:"required"`
 	NoticePeriodDays int16   `json:"notice_period_days"`
-	DepositAmount    *int    `json:"deposit_amount"`
+	DepositAmount    *int64  `json:"deposit_amount"`
 }
 
 // CreateTenant handles POST /owner/tenants.
@@ -116,7 +118,7 @@ func (h *Handlers) ListTenants(c *gin.Context) {
 type updateTenantBody struct {
 	Name             *string `json:"name"`
 	RoomNumber       *string `json:"room_number"`
-	RentAmount       *int    `json:"rent_amount"`
+	RentAmount       *int64  `json:"rent_amount"`
 	DueDay           *int16  `json:"due_day"`
 	NoticePeriodDays *int16  `json:"notice_period_days"`
 }
@@ -478,7 +480,7 @@ func (h *Handlers) ManualMatch(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AmountPaise int    `json:"amount" binding:"required"`
+		AmountPaise int64  `json:"amount" binding:"required"`
 		TxnID       string `json:"upi_txn_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -513,7 +515,7 @@ func (h *Handlers) MarkCashPaid(c *gin.Context) {
 		return
 	}
 	var body struct {
-		AmountPaise int    `json:"amount" binding:"required"`
+		AmountPaise int64  `json:"amount" binding:"required"`
 		Note        string `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -692,7 +694,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				pid,
 				bankAccountID,
 				row.Date,
-				int64(row.AmountPaise),
+				row.AmountPaise,
 				"debit",
 				row.TxnID,
 				row.BalancePaise,
@@ -703,7 +705,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 				PropertyID:          pid,
 				BankAccountID:       bankAccountID,
 				TxnID:               row.TxnID,
-				AmountPaise:         int64(row.AmountPaise),
+				AmountPaise:         row.AmountPaise,
 				RowType:             "debit",
 				TxnDate:             row.Date,
 				Narration:           row.Note,
@@ -744,7 +746,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			pid,
 			bankAccountID,
 			row.Date,
-			int64(row.AmountPaise),
+			row.AmountPaise,
 			"credit",
 			row.TxnID,
 			row.BalancePaise,
@@ -757,7 +759,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 			PropertyID:          pid,
 			BankAccountID:       bankAccountID,
 			TxnID:               row.TxnID,
-			AmountPaise:         int64(row.AmountPaise),
+			AmountPaise:         row.AmountPaise,
 			RowType:             "credit",
 			TxnDate:             row.Date,
 			Narration:           row.Note,
@@ -777,7 +779,7 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 		// the bank_transaction row has not committed, allowing safe retry. On retry, the journal's
 		// unique constraint (source_type, source_id, line_kind) makes the entry idempotent.
 		if h.Finance != nil && h.FinanceEnabled {
-			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, sourceID, int64(row.AmountPaise), row.Date); err != nil {
+			if err := h.Finance.MirrorBankStatementCredit(c.Request.Context(), pid, sourceID, row.AmountPaise, row.Date); err != nil {
 				slog.Error("ImportStatements ledger mirror quarantine failed", "error", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record financial entry"})
 				return
@@ -1076,7 +1078,7 @@ func (h *Handlers) ConfirmBankTransactionMatch(c *gin.Context) {
 		return
 	}
 
-	pay, err := h.Payments.ManualMatch(c.Request.Context(), due.ID, int(txn.AmountPaise), txn.TxnID, uid)
+	pay, err := h.Payments.ManualMatch(c.Request.Context(), due.ID, txn.AmountPaise, txn.TxnID, uid)
 	if err != nil {
 		respondErr(c, paymentClientErr(err))
 		return
@@ -1411,7 +1413,7 @@ func (h *Handlers) ListEvents(c *gin.Context) {
 
 type OwnerVerifyPaymentInput struct {
 	DueID       uuid.UUID `json:"due_id" binding:"required"`
-	AmountPaise int       `json:"amount_paise" binding:"required"`
+	AmountPaise int64     `json:"amount_paise" binding:"required"`
 	UPITxnID    string    `json:"upi_txn_id" binding:"required"`
 	Note        string    `json:"note"`
 }
@@ -1457,7 +1459,7 @@ func (h *Handlers) OwnerVerifyPayment(c *gin.Context) {
 }
 
 type OwnerCorrectPaymentInput struct {
-	CorrectedAmount int    `json:"corrected_amount_paise" binding:"required"`
+	CorrectedAmount int64  `json:"corrected_amount_paise" binding:"required"`
 	CorrectedUTR    string `json:"corrected_upi_txn_id"`
 	Reason          string `json:"reason" binding:"required"`
 }

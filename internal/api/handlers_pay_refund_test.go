@@ -753,7 +753,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 
 	// Check Due 2 status in Postgres
 	var due2Status string
-	var due2Amount int
+	var due2Amount int64
 	err = pool.QueryRow(ctx, `SELECT status, amount FROM dues WHERE id = $1`, dueID2).Scan(&due2Status, &due2Amount)
 	if err != nil {
 		t.Fatalf("query due 2: %v", err)
@@ -764,7 +764,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 
 	// Check Due 1 status in Postgres
 	var due1Status string
-	var due1Amount int
+	var due1Amount int64
 	err = pool.QueryRow(ctx, `SELECT status, amount FROM dues WHERE id = $1`, dueID1).Scan(&due1Status, &due1Amount)
 	if err != nil {
 		t.Fatalf("query due 1: %v", err)

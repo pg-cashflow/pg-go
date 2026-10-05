@@ -316,7 +316,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					AmountPaise: allocPaise,
 					DueKind:     targetDue.Kind,
 				})
-				credit := targetDue.ApplyPayment(int(allocPaise), at)
+				credit := targetDue.ApplyPayment(allocPaise, at)
 				if err := txDueRepo.Update(ctx, targetDue); err != nil {
 					return err
 				}

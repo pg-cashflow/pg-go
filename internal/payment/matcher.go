@@ -62,7 +62,7 @@ func NewAmountDateWindowMatcher(dues DueRepository) *AmountDateWindowMatcher {
 const amountDateWindowDays = 3
 
 // Match returns a single candidate due, ErrAmbiguous if more than one, or ErrNoMatch if none.
-func (m *AmountDateWindowMatcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time) (*domain.Due, error) {
+func (m *AmountDateWindowMatcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise int64, txnDate time.Time) (*domain.Due, error) {
 	day := dateOnly(txnDate)
 	from := day.AddDate(0, 0, -amountDateWindowDays)
 	to := day.AddDate(0, 0, amountDateWindowDays)
@@ -102,7 +102,7 @@ type MatchResult struct {
 }
 
 // Match runs matching: due_code (deterministic), then amount_date_window (heuristic).
-func (m *Matcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise int, txnDate time.Time, note string) (*MatchResult, error) {
+func (m *Matcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise int64, txnDate time.Time, note string) (*MatchResult, error) {
 	if due, err := m.dueCode.Match(ctx, note); err != nil {
 		return nil, err
 	} else if due != nil {

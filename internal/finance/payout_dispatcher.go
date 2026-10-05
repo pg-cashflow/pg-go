@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -21,17 +22,23 @@ type PayoutBatchDispatcher interface {
 
 // PayoutDispatcher handles the Cashfree Transfers V2 batch transfer lifecycle.
 type PayoutDispatcher struct {
-	repo         *postgres.PayoutRepo
-	client       *cashfree.PayoutClient
-	fundsourceID string
+	repo          *postgres.PayoutRepo
+	client        *cashfree.PayoutClient
+	fundsourceID  string
+	encryptionKey []byte
 }
 
 // NewPayoutDispatcher creates a new PayoutDispatcher.
-func NewPayoutDispatcher(repo *postgres.PayoutRepo, client *cashfree.PayoutClient, fundsourceID string) *PayoutDispatcher {
+func NewPayoutDispatcher(repo *postgres.PayoutRepo, client *cashfree.PayoutClient, fundsourceID string, encryptionKey ...[]byte) *PayoutDispatcher {
+	var key []byte
+	if len(encryptionKey) > 0 {
+		key = encryptionKey[0]
+	}
 	return &PayoutDispatcher{
-		repo:         repo,
-		client:       client,
-		fundsourceID: fundsourceID,
+		repo:          repo,
+		client:        client,
+		fundsourceID:  fundsourceID,
+		encryptionKey: key,
 	}
 }
 
@@ -179,8 +186,16 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 			VPA: strings.TrimSpace(*payee.UPIVPA),
 		}
 	} else if len(payee.AccountNumberEncrypted) > 0 && payee.IFSC != nil {
+		accountNum := string(payee.AccountNumberEncrypted)
+		if len(d.encryptionKey) == 32 {
+			decrypted, _, err := crypto.Decrypt(d.encryptionKey, payee.AccountNumberEncrypted)
+			if err != nil {
+				return fmt.Errorf("payee %s: decrypt account number failed: %w", payee.ID, err)
+			}
+			accountNum = string(decrypted)
+		}
 		req.BeneficiaryInstrument = cashfree.BeneficiaryInstrumentDetails{
-			BankAccountNumber: string(payee.AccountNumberEncrypted),
+			BankAccountNumber: accountNum,
 			BankIFSC:          strings.TrimSpace(*payee.IFSC),
 		}
 	} else {

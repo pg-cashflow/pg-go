@@ -491,7 +491,7 @@ func TestBulkMarkCashPaid_ConfirmAppliesPayments(t *testing.T) {
 	var paidCount int
 	// Override MarkCashPaid
 	payStub := &testMarkCashPaidService{
-		onMarkPaid: func(dueID uuid.UUID, amt int, uid uuid.UUID, note string) (*domain.Payment, error) {
+		onMarkPaid: func(dueID uuid.UUID, amt int64, uid uuid.UUID, note string) (*domain.Payment, error) {
 			paidCount++
 			return &domain.Payment{ID: uuid.New(), DueID: dueID, Amount: amt, MatchedBy: domain.MatchedByCash}, nil
 		},
@@ -542,10 +542,10 @@ func TestBulkMarkCashPaid_ConfirmAppliesPayments(t *testing.T) {
 
 type testMarkCashPaidService struct {
 	*sandboxPaymentService
-	onMarkPaid func(dueID uuid.UUID, amt int, uid uuid.UUID, note string) (*domain.Payment, error)
+	onMarkPaid func(dueID uuid.UUID, amt int64, uid uuid.UUID, note string) (*domain.Payment, error)
 }
 
-func (s *testMarkCashPaidService) MarkCashPaid(_ context.Context, dueID uuid.UUID, amt int, uid uuid.UUID, note string) (*domain.Payment, error) {
+func (s *testMarkCashPaidService) MarkCashPaid(_ context.Context, dueID uuid.UUID, amt int64, uid uuid.UUID, note string) (*domain.Payment, error) {
 	if s.onMarkPaid != nil {
 		return s.onMarkPaid(dueID, amt, uid, note)
 	}
@@ -752,13 +752,14 @@ func TestOwnerPropertySettings_GetAndPatch(t *testing.T) {
 func TestOwnerDashboardSummaryAndMonthlyCashFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	propID := uuid.New()
-	ownerID := uuid.New()
 	jwtSecret := "test-secret-key-32-bytes-long!!"
-	token, _ := auth.MintTestToken(ownerID, propID, auth.RoleOwner, jwtSecret)
+	ownerID := uuid.New()
+	ownerUser := &domain.User{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner}
+	token, _ := auth.IssueToken(jwtSecret, ownerUser)
 
 	propStore := &dashboardPropStore{
 		props: map[uuid.UUID]*domain.Property{
-			propID: {ID: propID, OwnerID: ownerID, Name: "Test PG"},
+			propID: {ID: propID, Name: "Test PG"},
 		},
 	}
 	tenantStore := &dashboardTenantStore{

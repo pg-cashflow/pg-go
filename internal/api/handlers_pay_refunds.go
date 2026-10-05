@@ -22,7 +22,7 @@ func isTerminalRefund(status string) bool {
 	return s == "success" || s == "succeeded" || s == "failed" || s == "cancelled"
 }
 
-func RecomputeDueStatusMath(netPaid int64, contractualCeiling int) (domain.DueStatus, int) {
+func RecomputeDueStatusMath(netPaid int64, contractualCeiling int64) (domain.DueStatus, int64) {
 	return domain.RecomputeDueStatusMath(netPaid, contractualCeiling)
 }
 
@@ -57,8 +57,8 @@ type dueAllocInfo struct {
 	dueID          uuid.UUID
 	dueDate        time.Time
 	kind           domain.DueKind
-	originalAmount int
-	amount         int
+	originalAmount int64
+	amount         int64
 	status         domain.DueStatus
 	allocatedPaise int64
 }

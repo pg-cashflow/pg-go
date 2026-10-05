@@ -20,7 +20,7 @@ type IntentStore interface {
 }
 
 type CashfreeOrders interface {
-	CreateUPIOrder(ctx context.Context, orderID string, amountPaise int, customerPhone, note string) (sessionID string, expiresAt *time.Time, err error)
+	CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (sessionID string, expiresAt *time.Time, err error)
 }
 
 type Service struct {
@@ -159,7 +159,7 @@ func (s *Service) MultiDuePayIntent(ctx context.Context, dues []*domain.Due, pro
 	}
 
 	dueIDs := make([]uuid.UUID, len(dues))
-	totalAmountPaise := 0
+	totalAmountPaise := int64(0)
 	payable := true
 	for i, d := range dues {
 		dueIDs[i] = d.ID
@@ -197,13 +197,13 @@ func (s *Service) MultiDuePayIntent(ctx context.Context, dues []*domain.Due, pro
 		return out, nil
 	}
 
-	link := qr.GenerateUPILink(prop.UPIVPA, prop.OwnerName, int64(totalAmountPaise), note, room)
+	link := qr.GenerateUPILink(prop.UPIVPA, prop.OwnerName, totalAmountPaise, note, room)
 	out.VPA = prop.UPIVPA
 	out.UPILink = link
 	return out, nil
 }
 
-func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int, customerPhone string) (string, error) {
+func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("multi:")
 	for _, d := range dues {
@@ -221,18 +221,18 @@ func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due
 	return res.(string), nil
 }
 
-func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int, customerPhone string) (string, error) {
+func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (string, error) {
 	minRemaining := 10 * time.Minute
 	dueIDs := make([]uuid.UUID, len(dues))
 	amounts := make([]int64, len(dues))
 	for i, d := range dues {
 		dueIDs[i] = d.ID
-		amounts[i] = int64(d.Amount)
+		amounts[i] = d.Amount
 	}
 	tenantID := dues[0].TenantID
 
 	if multiLocker, ok := s.intents.(interface {
-		GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int, minRemaining time.Duration) (*domain.PaymentIntent, error)
+		GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int64, minRemaining time.Duration) (*domain.PaymentIntent, error)
 		SupersedeOpenIntentsForDues(ctx context.Context, dueIDs []uuid.UUID) error
 		CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error
 	}); ok {

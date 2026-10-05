@@ -33,9 +33,9 @@ type Due struct {
 	TenantID       uuid.UUID  `json:"tenant_id"`
 	PropertyID     uuid.UUID  `json:"property_id"`
 	Kind                    DueKind    `json:"kind"`
-	Amount                  int        `json:"amount"` // paise current payable
-	OriginalAmount          int        `json:"original_amount"` // immutable
-	ContractualCeilingPaise *int       `json:"contractual_ceiling_paise,omitempty"` // persisted ceiling for prorated/vacated dues
+	Amount                  int64      `json:"amount"` // paise current payable
+	OriginalAmount          int64      `json:"original_amount"` // immutable
+	ContractualCeilingPaise *int64     `json:"contractual_ceiling_paise,omitempty"` // persisted ceiling for prorated/vacated dues
 	PeriodStart             time.Time  `json:"period_start"`
 	PeriodEnd      time.Time  `json:"period_end"`
 	DueDate        time.Time  `json:"due_date"`
@@ -74,13 +74,13 @@ func (d *Due) MarkPaid(at time.Time) {
 }
 
 // Prorate updates current amount for mid-cycle vacate. original_amount stays immutable.
-func (d *Due) Prorate(proratedPaise int) {
+func (d *Due) Prorate(proratedPaise int64) {
 	d.Amount = proratedPaise
 }
 
 // ApplyPayment reduces remaining amount. Returns overpayment paise (credit) if any.
 // UPI may leave status=partial; cash (D2) must pass amount == remaining and fully settle.
-func (d *Due) ApplyPayment(paidPaise int, at time.Time) (creditPaise int) {
+func (d *Due) ApplyPayment(paidPaise int64, at time.Time) (creditPaise int64) {
 	if paidPaise >= d.Amount {
 		creditPaise = paidPaise - d.Amount
 		d.Amount = 0
@@ -100,14 +100,14 @@ func DaysInPeriod(start, end time.Time) int {
 }
 
 // ProrateAmount computes floor(original * daysOccupied / daysInPeriod).
-func ProrateAmount(originalPaise, daysOccupied, daysInPeriod int) int {
+func ProrateAmount(originalPaise int64, daysOccupied, daysInPeriod int) int64 {
 	if daysInPeriod <= 0 || daysOccupied <= 0 {
 		return 0
 	}
 	if daysOccupied >= daysInPeriod {
 		return originalPaise
 	}
-	return originalPaise * daysOccupied / daysInPeriod
+	return originalPaise * int64(daysOccupied) / int64(daysInPeriod)
 }
 
 type PaymentOptionType string
@@ -122,7 +122,7 @@ type DueSummary struct {
 	ID          uuid.UUID `json:"id"`
 	DueCode     string    `json:"due_code"`
 	DueDate     time.Time `json:"due_date"`
-	AmountPaise int       `json:"amount_paise"`
+	AmountPaise int64     `json:"amount_paise"`
 	Kind        DueKind   `json:"kind"`
 }
 
@@ -130,7 +130,7 @@ type PaymentOption struct {
 	OptionType  PaymentOptionType `json:"option_type"`
 	Label       string            `json:"label"`
 	DueCount    int               `json:"due_count"`
-	AmountPaise int               `json:"amount_paise"`
+	AmountPaise int64             `json:"amount_paise"`
 	DueIDs      []uuid.UUID       `json:"due_ids"`
 	Dues        []DueSummary      `json:"dues"`
 }
@@ -168,10 +168,10 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 		}
 	}
 
-	toSummaries := func(list []*Due) ([]uuid.UUID, []DueSummary, int) {
+	toSummaries := func(list []*Due) ([]uuid.UUID, []DueSummary, int64) {
 		ids := make([]uuid.UUID, len(list))
 		sums := make([]DueSummary, len(list))
-		total := 0
+		var total int64
 		for i, d := range list {
 			ids[i] = d.ID
 			sums[i] = DueSummary{
@@ -257,11 +257,11 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 }
 
 // RecomputeDueStatusMath is the canonical single-source-of-truth status and remaining amount derivation.
-func RecomputeDueStatusMath(netPaid int64, contractualCeiling int) (DueStatus, int) {
-	if netPaid >= int64(contractualCeiling) {
+func RecomputeDueStatusMath(netPaid int64, contractualCeiling int64) (DueStatus, int64) {
+	if netPaid >= contractualCeiling {
 		return DueStatusPaid, 0
 	} else if netPaid > 0 {
-		return DueStatusPartial, contractualCeiling - int(netPaid)
+		return DueStatusPartial, contractualCeiling - netPaid
 	} else {
 		return DueStatusPending, contractualCeiling
 	}

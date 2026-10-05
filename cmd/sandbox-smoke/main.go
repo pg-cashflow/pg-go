@@ -69,7 +69,7 @@ func main() {
 	defer cancel()
 
 	smokeOrderID := fmt.Sprintf("smoke_%d", time.Now().Unix())
-	smokeAmountPaise := 100 // ₹1.00
+	smokeAmountPaise := int64(100) // ₹1.00
 	customerPhone := "+919999999999"
 	note := "Gate 4 Sandbox Smoke Test"
 

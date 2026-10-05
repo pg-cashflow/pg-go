@@ -44,7 +44,7 @@ func (h *Handlers) TenantDues(c *gin.Context) {
 		return
 	}
 	ptrList := make([]*domain.Due, len(list))
-	totalOutstanding := 0
+	var totalOutstanding int64
 	for i := range list {
 		ptrList[i] = &list[i]
 		if list[i].Status == domain.DueStatusPending || list[i].Status == domain.DueStatusPartial {
@@ -71,7 +71,7 @@ func (h *Handlers) TenantDuesOptions(c *gin.Context) {
 		return
 	}
 	ptrList := make([]*domain.Due, len(list))
-	totalOutstanding := 0
+	var totalOutstanding int64
 	for i := range list {
 		ptrList[i] = &list[i]
 		if list[i].Status == domain.DueStatusPending || list[i].Status == domain.DueStatusPartial {

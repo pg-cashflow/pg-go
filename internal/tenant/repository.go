@@ -21,5 +21,5 @@ type PushRepository interface {
 
 // DepositDueCreator creates the onboarding deposit due.
 type DepositDueCreator interface {
-	CreateDepositDue(ctx context.Context, tenant *domain.Tenant, amountPaise int) (*domain.Due, error)
+	CreateDepositDue(ctx context.Context, tenant *domain.Tenant, amountPaise int64) (*domain.Due, error)
 }

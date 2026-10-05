@@ -207,7 +207,7 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 		}
 		paymentObj := &domain.Payment{
 			ID:        p.PaymentID,
-			Amount:    int(p.AmountPaise),
+			Amount:    p.AmountPaise,
 			MatchedBy: p.MatchedBy,
 			MatchedAt: p.MatchedAt,
 		}

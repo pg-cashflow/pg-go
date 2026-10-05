@@ -30,13 +30,13 @@ type Room struct {
 // PropertyGamificationSettings holds property-wide gamification rules and budget caps.
 type PropertyGamificationSettings struct {
 	PropertyID             uuid.UUID `json:"property_id"`
-	PointValuePaise        int       `json:"point_value_paise"`
-	MonthlyBudgetPaise     int       `json:"monthly_budget_paise"`
+	PointValuePaise        int64     `json:"point_value_paise"`
+	MonthlyBudgetPaise     int64     `json:"monthly_budget_paise"`
 	EarnCapPerTenant       int       `json:"earn_cap_per_tenant"`
 	RSVPSubCap             int       `json:"rsvp_sub_cap"`
 	ExpiryDays             int       `json:"expiry_days"`
 	FloorBonusThreshold    int       `json:"floor_bonus_threshold"` // percentage e.g. 85
-	ElectricityTariffPaise int       `json:"electricity_tariff_paise"`
+	ElectricityTariffPaise int64     `json:"electricity_tariff_paise"`
 	GraceDays              int       `json:"grace_days"`
 	LatePenaltyPointsPerDay int      `json:"late_penalty_points_per_day"`
 	LatePenaltyMaxPoints   int       `json:"late_penalty_max_points"`
@@ -158,7 +158,7 @@ type VendorInspection struct {
 	Notes           string    `json:"notes"`
 	HasPhoto        bool      `json:"has_photo"`
 	PhotoBytes      []byte    `json:"-"`
-	PenaltyPaise    int       `json:"penalty_paise"`
+	PenaltyPaise    int64     `json:"penalty_paise"`
 	InspectedAt     time.Time `json:"inspected_at"`
 	CreatedAt       time.Time `json:"created_at"`
 }

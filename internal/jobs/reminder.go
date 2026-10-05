@@ -362,7 +362,7 @@ func (j *ReminderJob) publishReminder(ctx context.Context, due domain.Due, remTy
 	})
 }
 
-func reminderMessage(remType string, amountPaise int, payURL string) string {
+func reminderMessage(remType string, amountPaise int64, payURL string) string {
 	rupees := float64(amountPaise) / 100.0
 	switch remType {
 	case ReminderDMinus3:

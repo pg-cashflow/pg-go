@@ -85,23 +85,29 @@ type stubPay struct {
 	settleErr error
 }
 
-func (s *stubPay) MatchPayment(context.Context, uuid.UUID, string, int, time.Time, string) (*domain.Payment, error) {
+func (s *stubPay) MatchPayment(context.Context, uuid.UUID, string, int64, time.Time, string) (*domain.Payment, error) {
 	panic("unused")
 }
-func (s *stubPay) SuggestMatch(context.Context, uuid.UUID, int, time.Time, string) (*payment.MatchResult, error) {
+func (s *stubPay) SuggestMatch(context.Context, uuid.UUID, int64, time.Time, string) (*payment.MatchResult, error) {
 	panic("unused")
 }
-func (s *stubPay) ManualMatch(context.Context, uuid.UUID, int, string, uuid.UUID) (*domain.Payment, error) {
+func (s *stubPay) ManualMatch(context.Context, uuid.UUID, int64, string, uuid.UUID) (*domain.Payment, error) {
 	panic("unused")
 }
-func (s *stubPay) MarkCashPaid(context.Context, uuid.UUID, int, uuid.UUID, string) (*domain.Payment, error) {
+func (s *stubPay) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	panic("unused")
 }
 func (s *stubPay) SettleDeposit(context.Context, uuid.UUID, int64, string) error { panic("unused") }
 func (s *stubPay) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	panic("unused")
 }
-func (s *stubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int, txnID string, dedupKey ...string) (*domain.Payment, error) {
+func (s *stubPay) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	panic("unused")
+}
+func (s *stubPay) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
+	panic("unused")
+}
+func (s *stubPay) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error) {
 	s.n++
 	s.txn = txnID
 	if len(dedupKey) > 0 {
@@ -749,7 +755,7 @@ func TestTenantDuePayBatch(t *testing.T) {
 		t.Fatalf("expected 200 from options, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var optResp struct {
-		TotalOutstandingPaise int                    `json:"total_outstanding_paise"`
+		TotalOutstandingPaise int64                  `json:"total_outstanding_paise"`
 		Options               []domain.PaymentOption `json:"options"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &optResp); err != nil {

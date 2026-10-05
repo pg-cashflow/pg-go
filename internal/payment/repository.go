@@ -14,7 +14,7 @@ type DueRepository interface {
 	GetByDueCode(ctx context.Context, code string) (*domain.Due, error)
 	Update(ctx context.Context, d *domain.Due) error
 	ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.Due, error)
-	FindByAmountAndDateWindow(ctx context.Context, propertyID uuid.UUID, amount int, from, to time.Time) ([]domain.Due, error)
+	FindByAmountAndDateWindow(ctx context.Context, propertyID uuid.UUID, amount int64, from, to time.Time) ([]domain.Due, error)
 }
 
 // PaymentRepository persists matched payments.
@@ -28,6 +28,7 @@ type PaymentRepository interface {
 type TenantRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
 	Update(ctx context.Context, t *domain.Tenant) error
+	AddCredit(ctx context.Context, id uuid.UUID, deltaPaise int64) error
 }
 
 // SummaryRepository runs the reconciliation aggregate query.

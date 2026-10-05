@@ -905,7 +905,7 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 	now := time.Now().UTC()
 
 	if cycleDue != nil {
-		ceiling := int(proratedRentPaise)
+		ceiling := proratedRentPaise
 		cycleDue.ContractualCeilingPaise = &ceiling
 
 		if netPaid < proratedRentPaise {
@@ -922,7 +922,7 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 					tenant_id, due_id, amount, matched_by, provider, raw_note, is_unapplied, payer_type, matched_at, created_at
 				) VALUES ($1, $2, $3, 'deposit_netting', 'internal', 'Settled via departure deposit deduction', false, 'tenant', $4, $4)
 				RETURNING id`,
-				tenantID, cycleDue.ID, int(shortfall), now,
+				tenantID, cycleDue.ID, shortfall, now,
 			).Scan(&pid)
 			if err != nil {
 				return nil, fmt.Errorf("insert internal payment: %w", err)

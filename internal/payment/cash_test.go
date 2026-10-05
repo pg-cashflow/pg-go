@@ -88,6 +88,15 @@ func (s *stubTenants) Update(_ context.Context, t *domain.Tenant) error {
 	return nil
 }
 
+func (s *stubTenants) AddCredit(_ context.Context, id uuid.UUID, deltaPaise int64) error {
+	t, ok := s.byID[id]
+	if !ok {
+		return pgx.ErrNoRows
+	}
+	t.CreditBalancePaise += deltaPaise
+	return nil
+}
+
 type recordingPublisher struct {
 	events []domain.Event
 }

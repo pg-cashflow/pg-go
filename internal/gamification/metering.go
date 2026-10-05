@@ -34,7 +34,7 @@ type MeterReadingResult struct {
 	DeltaUnits    float64             `json:"delta_units"`
 	IncludedUnits int                 `json:"included_units"`
 	ExcessUnits   float64             `json:"excess_units"`
-	BillablePaise int                 `json:"billable_paise"`
+	BillablePaise int64               `json:"billable_paise"`
 	AnomalyNotice string              `json:"anomaly_notice,omitempty"`
 }
 
@@ -104,7 +104,7 @@ func (s *Service) RecordMeterReading(ctx context.Context, in MeterReadingInput) 
 	// Compute included units and excess for room electricity
 	includedUnits := 0
 	excessUnits := 0.0
-	billablePaise := 0
+	billablePaise := int64(0)
 
 	if in.Kind == "electricity" && in.RoomID != nil {
 		rm, err := s.store.GetRoomByID(ctx, *in.RoomID)
@@ -114,9 +114,9 @@ func (s *Service) RecordMeterReading(ctx context.Context, in MeterReadingInput) 
 				excessUnits = delta - float64(includedUnits)
 				// Pure integer arithmetic via milli-units (1 kWh = 1000 milli-units) to eliminate float precision loss and truncation artifacts
 				excessMilliUnits := int64(math.Round(excessUnits * 1000.0))
-				tariffPaise := int64(settings.ElectricityTariffPaise)
+				tariffPaise := settings.ElectricityTariffPaise
 				// Half-up integer rounding: (milliUnits * tariff + 500) / 1000
-				billablePaise = int((excessMilliUnits*tariffPaise + 500) / 1000)
+				billablePaise = (excessMilliUnits*tariffPaise + 500) / 1000
 			}
 		}
 	}
@@ -139,7 +139,7 @@ func (s *Service) RecordMeterReading(ctx context.Context, in MeterReadingInput) 
 }
 
 // GenerateElectricityDue creates an electricity due for a tenant in a room.
-func (s *Service) GenerateElectricityDue(ctx context.Context, tenantID uuid.UUID, amountPaise int, periodStart, periodEnd time.Time) (*domain.Due, error) {
+func (s *Service) GenerateElectricityDue(ctx context.Context, tenantID uuid.UUID, amountPaise int64, periodStart, periodEnd time.Time) (*domain.Due, error) {
 	tenant, err := s.tenants.GetByID(ctx, tenantID)
 	if err != nil {
 		return nil, ErrTenantNotFound

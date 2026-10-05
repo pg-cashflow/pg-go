@@ -86,7 +86,7 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 	case "cash_credit":
 		// Extract discount paise from metadata (default 50,000 paise = Rs 500)
 		type meta struct {
-			DiscountPaise int `json:"discount_paise"`
+			DiscountPaise int64 `json:"discount_paise"`
 		}
 		var m meta
 		_ = json.Unmarshal(reward.Metadata, &m)
@@ -157,7 +157,7 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 
 	if s.onRedeem != nil && reward.Category == "cash_credit" {
 		type meta struct {
-			DiscountPaise int `json:"discount_paise"`
+			DiscountPaise int64 `json:"discount_paise"`
 		}
 		var m meta
 		_ = json.Unmarshal(reward.Metadata, &m)
@@ -165,7 +165,7 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 		if discountPaise <= 0 {
 			discountPaise = 50000
 		}
-		s.onRedeem(ctx, tenant, red, int64(discountPaise))
+		s.onRedeem(ctx, tenant, red, discountPaise)
 	}
 
 	return red, nil

@@ -66,7 +66,7 @@ func NewServiceWithPool(
 	return s
 }
 
-func normalizeNewTenant(in domain.NewTenantInput, depositPaise int) (domain.NewTenantInput, int, error) {
+func normalizeNewTenant(in domain.NewTenantInput, depositPaise int64) (domain.NewTenantInput, int64, error) {
 	if in.DueDay < 1 || in.DueDay > 28 {
 		return in, 0, ErrInvalidDueDay
 	}
@@ -87,7 +87,7 @@ func normalizeNewTenant(in domain.NewTenantInput, depositPaise int) (domain.NewT
 
 // CreateTenant validates due_day, creates the tenant, deposit due, and onboarding events.
 // If depositPaise <= 0, deposit defaults to rent_amount.
-func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error) {
 	in, depositPaise, err := normalizeNewTenant(in, depositPaise)
 	if err != nil {
 		return nil, err
@@ -111,7 +111,7 @@ func (s *Service) CreateTenant(ctx context.Context, in domain.NewTenantInput, de
 
 // CreateTenantTx creates tenant + deposit + events on an already-open transaction.
 // Callers that wrap Activate (or similar) must use this instead of CreateTenant to avoid a nested Begin.
-func (s *Service) CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+func (s *Service) CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error) {
 	in, depositPaise, err := normalizeNewTenant(in, depositPaise)
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (s *Service) CreateTenantTx(ctx context.Context, tx pgx.Tx, in domain.NewTe
 	return s.createTenantOnTx(ctx, tx, in, depositPaise)
 }
 
-func (s *Service) createTenantOnTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int) (*domain.Tenant, error) {
+func (s *Service) createTenantOnTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput, depositPaise int64) (*domain.Tenant, error) {
 	tenants := s.tenantDB.WithTx(tx)
 	dues := s.dueDB.WithTx(tx)
 	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
@@ -137,7 +137,7 @@ func createTenantCore(
 	pub events.Publisher,
 	at time.Time,
 	in domain.NewTenantInput,
-	depositPaise int,
+	depositPaise int64,
 ) (*domain.Tenant, error) {
 	dueDay := in.DueDay
 	t := &domain.Tenant{
@@ -296,7 +296,7 @@ func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, 
 }
 
 // AssignTerms flips pending_allocation → active and creates the deposit due.
-func (s *Service) AssignTerms(ctx context.Context, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error) {
+func (s *Service) AssignTerms(ctx context.Context, tenantID uuid.UUID, room *string, rentAmount int64, dueDay int16, depositPaise int64, noticePeriodDays int16) (*domain.Tenant, error) {
 	if dueDay < 1 || dueDay > 28 {
 		return nil, ErrInvalidDueDay
 	}
@@ -367,7 +367,7 @@ func (s *Service) AssignTerms(ctx context.Context, tenantID uuid.UUID, room *str
 }
 
 // AssignTermsTx assigns room/rent on an open transaction.
-func (s *Service) AssignTermsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, room *string, rentAmount int, dueDay int16, depositPaise int, noticePeriodDays int16) (*domain.Tenant, error) {
+func (s *Service) AssignTermsTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, room *string, rentAmount int64, dueDay int16, depositPaise int64, noticePeriodDays int16) (*domain.Tenant, error) {
 	if dueDay < 1 || dueDay > 28 {
 		return nil, ErrInvalidDueDay
 	}
@@ -542,10 +542,28 @@ func (s *Service) AttachPhone(ctx context.Context, tenantID uuid.UUID, phone str
 	})
 }
 
-// ApplyCredit adds paise to the tenant's credit_balance_paise.
-func (s *Service) ApplyCredit(ctx context.Context, tenantID uuid.UUID, creditPaise int) error {
+// ApplyCredit adds paise to the tenant's credit_balance_paise atomically.
+func (s *Service) ApplyCredit(ctx context.Context, tenantID uuid.UUID, creditPaise int64) error {
 	if creditPaise == 0 {
 		return nil
+	}
+	if adder, ok := s.tenants.(interface {
+		AddCredit(ctx context.Context, id uuid.UUID, deltaPaise int64) error
+	}); ok {
+		return adder.AddCredit(ctx, tenantID, creditPaise)
+	}
+	if locker, ok := s.tenants.(interface {
+		GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	}); ok {
+		t, err := locker.GetByIDForUpdate(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		t.CreditBalancePaise += creditPaise
+		if t.CreditBalancePaise < 0 {
+			t.CreditBalancePaise = 0
+		}
+		return s.tenants.Update(ctx, t)
 	}
 	t, err := s.tenants.GetByID(ctx, tenantID)
 	if err != nil {

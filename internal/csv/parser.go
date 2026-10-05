@@ -27,7 +27,7 @@ const (
 // Row is one sanitized bank-statement transaction.
 type Row struct {
 	TxnID              string
-	AmountPaise        int
+	AmountPaise        int64
 	Type               RowType
 	Date               time.Time
 	Note               string
@@ -321,7 +321,7 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 	note := StripFormulaChars(rec[idx.note])
 
 	var rowType RowType
-	var amountPaise int
+	var amountPaise int64
 
 	// Split column resolution takes priority over unified amount
 	if idx.deposit >= 0 || idx.withdrawal >= 0 {
@@ -396,14 +396,14 @@ func parseRowWithDate(rec []string, idx colIndex, dt time.Time) (Row, error) {
 				if amtSigned < 0 {
 					amtSigned = -amtSigned
 				}
-				amountPaise = int(amtSigned)
+				amountPaise = amtSigned
 			} else if isCr {
 				rowType = RowTypeCredit
-				amountPaise = int(amtSigned)
+				amountPaise = amtSigned
 			} else {
 				// Default unsigned positive unified amounts to credit
 				rowType = RowTypeCredit
-				amountPaise = int(amtSigned)
+				amountPaise = amtSigned
 			}
 		}
 	}
@@ -645,7 +645,7 @@ func parseSignedAmountPaise(s string) (int64, error) {
 	return total, nil
 }
 
-func parseAmountPaise(s string) (int, error) {
+func parseAmountPaise(s string) (int64, error) {
 	paise, err := parseSignedAmountPaise(s)
 	if err != nil {
 		return 0, err
@@ -653,7 +653,7 @@ func parseAmountPaise(s string) (int, error) {
 	if paise < 0 {
 		paise = -paise
 	}
-	return int(paise), nil
+	return paise, nil
 }
 
 // Indian commercial banking date formats (Day-first and ISO only; strictly NO US month-first).

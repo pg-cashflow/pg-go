@@ -277,7 +277,7 @@ func TestMoneyMath_MirrorPaymentAccountMapping(t *testing.T) {
 		dueKind    domain.DueKind
 		expectedDr string
 		expectedCr string
-		amount     int
+		amount     int64
 	}{
 		{
 			name:       "Cash Rent Payment",
