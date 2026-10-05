@@ -44,6 +44,16 @@ func (s *stubPayments) GetByUPITxnID(_ context.Context, txnID string) (*domain.P
 	return &cp, nil
 }
 
+func (s *stubPayments) GetByID(_ context.Context, id uuid.UUID) (*domain.Payment, error) {
+	for _, p := range s.created {
+		if p.ID == id {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
 func (s *stubPayments) RecordWebhookEvent(_ context.Context, dedupKey, _, _ string) (bool, error) {
 	if s.byTxn == nil {
 		s.byTxn = make(map[string]*domain.Payment)

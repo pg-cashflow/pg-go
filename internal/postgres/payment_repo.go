@@ -444,3 +444,81 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 	}
 	return out, rows.Err()
 }
+
+func (r *PaymentRepo) RecordCorrection(ctx context.Context, c *domain.FinancialCorrection) error {
+	now := time.Now().UTC()
+	if c.OccurredAt.IsZero() {
+		c.OccurredAt = now
+	}
+	c.CreatedAt = now
+	return r.db.QueryRow(ctx, `
+		INSERT INTO financial_corrections (property_id, original_payment_id, reversal_payment_id, corrected_payment_id, reason, corrected_by, occurred_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id`,
+		c.PropertyID, c.OriginalPaymentID, c.ReversalPaymentID, c.CorrectedPaymentID, c.Reason, c.CorrectedBy, c.OccurredAt, c.CreatedAt,
+	).Scan(&c.ID)
+}
+
+func (r *PaymentRepo) ListCorrections(ctx context.Context, propertyID uuid.UUID) ([]domain.FinancialCorrection, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, property_id, original_payment_id, reversal_payment_id, corrected_payment_id, reason, corrected_by, occurred_at, created_at
+		FROM financial_corrections
+		WHERE property_id = $1
+		ORDER BY occurred_at DESC`, propertyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.FinancialCorrection
+	for rows.Next() {
+		var c domain.FinancialCorrection
+		if err := rows.Scan(&c.ID, &c.PropertyID, &c.OriginalPaymentID, &c.ReversalPaymentID, &c.CorrectedPaymentID, &c.Reason, &c.CorrectedBy, &c.OccurredAt, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time) ([]domain.Payment, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 50
+	}
+	q := `
+		SELECT DISTINCT ` + paymentCols + `
+		FROM payments p
+		WHERE (
+			p.due_id IN (SELECT id FROM dues WHERE property_id=$1)
+			OR p.id IN (SELECT pa.payment_id FROM payment_allocations pa JOIN dues d ON d.id = pa.due_id WHERE d.property_id=$1)
+			OR p.tenant_id IN (SELECT id FROM tenants WHERE property_id=$1)
+		)`
+	args := []any{propertyID}
+	argIdx := 2
+	if matchedBy != nil {
+		q += fmt.Sprintf(" AND matched_by=$%d", argIdx)
+		args = append(args, *matchedBy)
+		argIdx++
+	}
+	if before != nil && !before.IsZero() {
+		q += fmt.Sprintf(" AND matched_at < $%d", argIdx)
+		args = append(args, *before)
+		argIdx++
+	}
+	q += fmt.Sprintf(" ORDER BY matched_at DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := r.db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Payment
+	for rows.Next() {
+		p, err := scanPayment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}

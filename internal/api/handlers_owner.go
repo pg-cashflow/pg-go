@@ -380,13 +380,25 @@ func (h *Handlers) TenantIDPhoto(c *gin.Context) {
 	c.Data(http.StatusOK, ct, b)
 }
 
-// ListDues handles GET /owner/dues.
+// ListDues handles GET /owner/dues (Requirement 11 pagination).
 func (h *Handlers) ListDues(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
 		return
 	}
-	f := postgres.DueListFilter{PropertyID: pid}
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+	offset := 0
+	if off := c.Query("offset"); off != "" {
+		if n, err := strconv.Atoi(off); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	f := postgres.DueListFilter{PropertyID: pid, Limit: limit, Offset: offset}
 	if tid := c.Query("tenant_id"); tid != "" {
 		id, err := uuid.Parse(tid)
 		if err == nil {
@@ -406,7 +418,10 @@ func (h *Handlers) ListDues(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"dues": list})
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	c.JSON(http.StatusOK, gin.H{"dues": list, "limit": limit, "offset": offset})
 }
 
 // WaiveDue handles POST /owner/dues/:id/waive.
@@ -1301,7 +1316,7 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-// ListPayments handles GET /owner/payments.
+// ListPayments handles GET /owner/payments (Requirement 11 pagination, max 50).
 func (h *Handlers) ListPayments(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
@@ -1312,15 +1327,46 @@ func (h *Handlers) ListPayments(c *gin.Context) {
 		m := domain.MatchedBy(s)
 		mb = &m
 	}
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 50 {
+			limit = n
+		}
+	}
+	var before *time.Time
+	if cur := c.Query("cursor"); cur != "" {
+		if t, err := time.Parse(time.RFC3339, cur); err == nil {
+			before = &t
+		}
+	}
+	if paginated, ok := h.PaymentStore.(interface {
+		ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time) ([]domain.Payment, error)
+	}); ok {
+		list, err := paginated.ListByPropertyPaginated(c.Request.Context(), pid, mb, limit, before)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
+			return
+		}
+		var nextCursor *string
+		if len(list) == limit {
+			lastTime := list[len(list)-1].MatchedAt.Format(time.RFC3339)
+			nextCursor = &lastTime
+		}
+		c.JSON(http.StatusOK, gin.H{"payments": list, "limit": limit, "next_cursor": nextCursor})
+		return
+	}
 	list, err := h.PaymentStore.ListByProperty(c.Request.Context(), pid, mb)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"payments": list})
+	if len(list) > limit {
+		list = list[:limit]
+	}
+	c.JSON(http.StatusOK, gin.H{"payments": list, "limit": limit})
 }
 
-// ListEvents handles GET /owner/events.
+// ListEvents handles GET /owner/events (Requirement 11 pagination, max 50).
 func (h *Handlers) ListEvents(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
@@ -1347,18 +1393,108 @@ func (h *Handlers) ListEvents(c *gin.Context) {
 			f.To = &tm
 		}
 	}
+	limit := 50
 	if lim := c.Query("limit"); lim != "" {
-		if n, err := strconv.Atoi(lim); err == nil {
-			f.Limit = n
+		if n, err := strconv.Atoi(lim); err == nil && n > 0 && n <= 50 {
+			limit = n
 		}
 	}
+	f.Limit = limit
 	list, err := h.EventStore.List(c.Request.Context(), f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}
 	// Hide internal bigserial ids in JSON via domain.Event `json:"-"` on ID.
-	c.JSON(http.StatusOK, gin.H{"events": list})
+	c.JSON(http.StatusOK, gin.H{"events": list, "limit": limit})
+}
+
+type OwnerVerifyPaymentInput struct {
+	DueID       uuid.UUID `json:"due_id" binding:"required"`
+	AmountPaise int       `json:"amount_paise" binding:"required"`
+	UPITxnID    string    `json:"upi_txn_id" binding:"required"`
+	Note        string    `json:"note"`
+}
+
+// OwnerVerifyPayment handles POST /owner/payments/verify (Requirements 4, 5, 18).
+// Atomic, idempotent server-side payment verification.
+func (h *Handlers) OwnerVerifyPayment(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	var in OwnerVerifyPaymentInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "due_id, amount_paise, and upi_txn_id required"})
+		return
+	}
+	if in.AmountPaise <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_paise must be greater than zero"})
+		return
+	}
+	normUTR, err := domain.NormalizeUTR(in.UPITxnID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	p, err := h.Payments.VerifyPayment(c.Request.Context(), payment.VerifyPaymentInput{
+		PropertyID:  pid,
+		DueID:       in.DueID,
+		AmountPaise: in.AmountPaise,
+		UTR:         normUTR,
+		RecordedBy:  uid,
+		Note:        in.Note,
+	})
+	if err != nil {
+		respondErr(c, paymentClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, p)
+}
+
+type OwnerCorrectPaymentInput struct {
+	CorrectedAmount int    `json:"corrected_amount_paise" binding:"required"`
+	CorrectedUTR    string `json:"corrected_upi_txn_id"`
+	Reason          string `json:"reason" binding:"required"`
+}
+
+// OwnerCorrectPayment handles POST /owner/payments/:id/correct (Requirement 16).
+// Creates reversing entry and corrected entry while maintaining an immutable audit log.
+func (h *Handlers) OwnerCorrectPayment(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var in OwnerCorrectPaymentInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "corrected_amount_paise and reason required"})
+		return
+	}
+	corr, err := h.Payments.CorrectPayment(c.Request.Context(), payment.CorrectPaymentInput{
+		PropertyID:      pid,
+		PaymentID:       id,
+		CorrectedAmount: in.CorrectedAmount,
+		CorrectedUTR:    in.CorrectedUTR,
+		Reason:          in.Reason,
+		CorrectedBy:     uid,
+	})
+	if err != nil {
+		respondErr(c, paymentClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, corr)
 }
 
 // Reconciliation handles GET /owner/reconciliation.

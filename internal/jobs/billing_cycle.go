@@ -42,6 +42,14 @@ type RecurringExpenseScheduler interface {
 	ProcessRecurringExpenses(ctx context.Context, asOf time.Time) error
 }
 
+// RunReport captures execution statistics for scheduled rent due generation (Requirement 12).
+type RunReport struct {
+	TenantsProcessed    int `json:"tenants_processed"`
+	DuesCreated         int `json:"dues_created"`
+	ExistingDuesSkipped int `json:"existing_dues_skipped"`
+	Errors              int `json:"errors"`
+}
+
 // BillingCycle runs anniversary rent-due creation.
 type BillingCycle struct {
 	Billing           BillingService
@@ -59,6 +67,79 @@ type BillingCycle struct {
 	Log     *slog.Logger
 	// ErrOpenDueExists is matched with errors.Is to skip tenants with open dues.
 	ErrOpenDueExists error
+}
+
+// GenerateMonthlyRentDues executes idempotent monthly rent due generation for active tenants and returns a RunReport.
+func (j *BillingCycle) GenerateMonthlyRentDues(ctx context.Context, asOf time.Time) (RunReport, error) {
+	var report RunReport
+	log := j.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		loc = time.FixedZone("IST", 5*3600+1800)
+	}
+	now := asOf.In(loc)
+	day := now.Day()
+
+	dueDays := []int{day}
+	tomorrow := now.AddDate(0, 0, 1)
+	if tomorrow.Month() != now.Month() {
+		for d := day + 1; d <= 31; d++ {
+			dueDays = append(dueDays, d)
+		}
+	}
+
+	var allTenants []domain.Tenant
+	for _, d := range dueDays {
+		list, err := j.Tenants.ListActiveByDueDay(ctx, d, nil)
+		if err != nil {
+			return report, fmt.Errorf("billing-cycle: list tenants for day %d: %w", d, err)
+		}
+		allTenants = append(allTenants, list...)
+	}
+
+	var firstErr error
+	for _, t := range allTenants {
+		if t.Status != domain.TenantStatusActive {
+			continue
+		}
+		report.TenantsProcessed++
+		due, err := j.Billing.CreateRentDue(ctx, &t)
+		if err != nil {
+			if j.ErrOpenDueExists != nil && errors.Is(err, j.ErrOpenDueExists) {
+				report.ExistingDuesSkipped++
+				continue
+			}
+			report.Errors++
+			log.Error("billing-cycle: tenant failed", "tenant_id", t.ID, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if due == nil {
+			report.ExistingDuesSkipped++
+			continue
+		}
+		report.DuesCreated++
+
+		if err := j.processNotifications(ctx, t, due); err != nil {
+			log.Warn("billing-cycle: notification failed", "tenant_id", t.ID, "err", err)
+		}
+	}
+
+	if j.RecurringExpenses != nil {
+		if err := j.RecurringExpenses.ProcessRecurringExpenses(ctx, now); err != nil {
+			log.Error("billing-cycle: recurring expenses hook failed", "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	return report, firstErr
 }
 
 // Run creates rent dues for active tenants whose due_day is today in Asia/Kolkata.
@@ -131,7 +212,10 @@ func (j *BillingCycle) processTenant(ctx context.Context, t domain.Tenant) error
 	if due == nil {
 		return nil
 	}
+	return j.processNotifications(ctx, t, due)
+}
 
+func (j *BillingCycle) processNotifications(ctx context.Context, t domain.Tenant, due *domain.Due) error {
 	path, err := j.MagicLink.CreatePaymentToken(ctx, due.ID)
 	if err != nil {
 		return fmt.Errorf("magic link: %w", err)

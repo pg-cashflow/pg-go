@@ -749,3 +749,81 @@ func TestOwnerPropertySettings_GetAndPatch(t *testing.T) {
 	}
 }
 
+func TestOwnerDashboardSummaryAndMonthlyCashFlow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	ownerID := uuid.New()
+	jwtSecret := "test-secret-key-32-bytes-long!!"
+	token, _ := auth.MintTestToken(ownerID, propID, auth.RoleOwner, jwtSecret)
+
+	propStore := &dashboardPropStore{
+		props: map[uuid.UUID]*domain.Property{
+			propID: {ID: propID, OwnerID: ownerID, Name: "Test PG"},
+		},
+	}
+	tenantStore := &dashboardTenantStore{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			uuid.New(): {ID: uuid.New(), PropertyID: propID, Status: domain.TenantStatusActive},
+		},
+	}
+
+	d := Deps{
+		PropertyStore: propStore,
+		TenantStore:   tenantStore,
+		JWTSecret:     jwtSecret,
+	}
+	r := NewRouter(d)
+
+	t.Run("GET /api/owner/dashboard/summary returns single aggregated payload with integer paise", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard/summary", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var res OwnerDashboardSummaryResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("unmarshal response failed: %v", err)
+		}
+
+		if res.PropertyID != propID {
+			t.Errorf("expected property_id %v, got %v", propID, res.PropertyID)
+		}
+		if res.Period == "" {
+			t.Errorf("expected non-empty period")
+		}
+		if len(res.MonthlyCashFlow) != 6 {
+			t.Errorf("expected 6 months in monthly cash flow, got %d", len(res.MonthlyCashFlow))
+		}
+	})
+
+	t.Run("GET /api/owner/dashboard/monthly-cashflow returns periodic cash flow breakdown", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard/monthly-cashflow?months=3", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var res struct {
+			PropertyID uuid.UUID             `json:"property_id"`
+			CashFlow   []MonthlyCashFlowItem `json:"cash_flow"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+			t.Fatalf("unmarshal response failed: %v", err)
+		}
+
+		if res.PropertyID != propID {
+			t.Errorf("expected property_id %v, got %v", propID, res.PropertyID)
+		}
+		if len(res.CashFlow) != 3 {
+			t.Errorf("expected 3 months returned, got %d", len(res.CashFlow))
+		}
+	})
+}
+

@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"errors"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +21,7 @@ const (
 
 type Payment struct {
 	ID                uuid.UUID  `json:"id"`
+	PropertyID        *uuid.UUID `json:"property_id,omitempty"`
 	DueID             uuid.UUID  `json:"due_id"`
 	TenantID          uuid.UUID  `json:"tenant_id"`
 	UPITxnID          *string    `json:"upi_txn_id,omitempty"`
@@ -31,6 +35,18 @@ type Payment struct {
 	RawNote           *string    `json:"raw_note,omitempty"`
 	IsUnapplied       bool       `json:"is_unapplied"`
 	CreatedAt         time.Time  `json:"created_at"`
+}
+
+type FinancialCorrection struct {
+	ID                   uuid.UUID  `json:"id"`
+	PropertyID          uuid.UUID  `json:"property_id"`
+	OriginalPaymentID    uuid.UUID  `json:"original_payment_id"`
+	ReversalPaymentID    *uuid.UUID `json:"reversal_payment_id,omitempty"`
+	CorrectedPaymentID   *uuid.UUID `json:"corrected_payment_id,omitempty"`
+	Reason               string     `json:"reason"`
+	CorrectedBy          uuid.UUID  `json:"corrected_by"`
+	OccurredAt           time.Time  `json:"occurred_at"`
+	CreatedAt            time.Time  `json:"created_at"`
 }
 
 type PaymentAllocation struct {
@@ -80,4 +96,27 @@ type WebhookEvent struct {
 	ErrorMessage     *string    `json:"error_message,omitempty"`
 	ReceivedAt       time.Time  `json:"received_at"`
 	ProcessedAt      *time.Time `json:"processed_at,omitempty"`
+}
+
+var (
+	ErrInvalidUTRFormat = errors.New("invalid UTR format: must be 6-50 alphanumeric characters")
+	ErrEmptyUTR         = errors.New("UTR cannot be empty")
+)
+
+var utrRegex = regexp.MustCompile(`^[A-Z0-9]{6,50}$`)
+
+// NormalizeUTR normalizes a UTR string:
+// 1. Removes leading and trailing spaces
+// 2. Converts to consistent upper-case
+// 3. Validates that it matches required 6-50 alphanumeric characters format
+func NormalizeUTR(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", ErrEmptyUTR
+	}
+	normalized := strings.ToUpper(trimmed)
+	if !utrRegex.MatchString(normalized) {
+		return "", ErrInvalidUTRFormat
+	}
+	return normalized, nil
 }

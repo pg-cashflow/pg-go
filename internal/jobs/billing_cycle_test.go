@@ -176,3 +176,64 @@ func TestBillingCycle_RecurringExpensesHook(t *testing.T) {
 	}
 }
 
+type stubActiveTenantLister struct {
+	tenants []domain.Tenant
+}
+
+func (s stubActiveTenantLister) ListActiveByDueDay(_ context.Context, _ int, _ *uuid.UUID) ([]domain.Tenant, error) {
+	return s.tenants, nil
+}
+
+func TestGenerateMonthlyRentDues(t *testing.T) {
+	ctx := context.Background()
+	t1 := domain.Tenant{ID: uuid.New(), Status: domain.TenantStatusActive}
+	t2 := domain.Tenant{ID: uuid.New(), Status: domain.TenantStatusActive}
+	t3 := domain.Tenant{ID: uuid.New(), Status: domain.TenantStatusActive}
+	t4 := domain.Tenant{ID: uuid.New(), Status: domain.TenantStatusVacated}
+
+	calls := 0
+	billingStub := &customStubBilling{
+		createFunc: func(ctx context.Context, tn *domain.Tenant) (*domain.Due, error) {
+			calls++
+			if tn.ID == t1.ID {
+				return &domain.Due{ID: uuid.New(), Amount: 500000}, nil
+			}
+			if tn.ID == t2.ID {
+				return nil, errOpenDue
+			}
+			return nil, errors.New("database disk full")
+		},
+	}
+
+	job := &BillingCycle{
+		Tenants:          stubActiveTenantLister{tenants: []domain.Tenant{t1, t2, t3, t4}},
+		Billing:          billingStub,
+		ErrOpenDueExists: errOpenDue,
+	}
+
+	report, err := job.GenerateMonthlyRentDues(ctx, time.Now())
+	if err == nil {
+		t.Fatal("expected error due to t3 failure")
+	}
+	if report.TenantsProcessed != 3 { // t1, t2, t3 (t4 was skipped because vacated)
+		t.Fatalf("expected 3 tenants processed, got %d", report.TenantsProcessed)
+	}
+	if report.DuesCreated != 1 {
+		t.Fatalf("expected 1 due created, got %d", report.DuesCreated)
+	}
+	if report.ExistingDuesSkipped != 1 {
+		t.Fatalf("expected 1 due skipped, got %d", report.ExistingDuesSkipped)
+	}
+	if report.Errors != 1 {
+		t.Fatalf("expected 1 error, got %d", report.Errors)
+	}
+}
+
+type customStubBilling struct {
+	createFunc func(ctx context.Context, tenant *domain.Tenant) (*domain.Due, error)
+}
+
+func (c *customStubBilling) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*domain.Due, error) {
+	return c.createFunc(ctx, tenant)
+}
+

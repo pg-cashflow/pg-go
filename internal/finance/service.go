@@ -105,6 +105,7 @@ type CreateExpenseInput struct {
 	Description    string
 	AmountPaise    int64
 	Emergency      bool
+	IsRecurring    bool
 	RoomID         *uuid.UUID
 	IdempotencyKey string
 	OccurredAt     time.Time
@@ -156,6 +157,7 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 		AmountPaise:    in.AmountPaise,
 		Status:         status,
 		Emergency:      in.Emergency,
+		IsRecurring:    in.IsRecurring,
 		RoomID:         in.RoomID,
 		CreatedBy:      in.ActorID,
 		CreatedByRole:  in.ActorRole,

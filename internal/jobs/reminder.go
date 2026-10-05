@@ -19,6 +19,7 @@ const (
 	ReminderDMinus3 = "D-3"
 	ReminderD0      = "D-0"
 	ReminderDPlus1  = "D+1"
+	ReminderDPlus3  = "D+3"
 	ReminderDPlus7  = "D+7"
 )
 
@@ -102,6 +103,8 @@ func (j *ReminderJob) resolveReminderType(ctx context.Context, dueID uuid.UUID, 
 			return ReminderD0
 		case 1:
 			return ReminderDPlus1
+		case 3:
+			return ReminderDPlus3
 		case 7:
 			return ReminderDPlus7
 		default:

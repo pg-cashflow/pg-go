@@ -165,16 +165,24 @@ func (h *Handlers) PostExpense(c *gin.Context) {
 		Description  string     `json:"description"`
 		AmountPaise  int64      `json:"amount_paise"`
 		Emergency    bool       `json:"emergency"`
+		IsRecurring  bool       `json:"is_recurring"`
 		RoomID       *uuid.UUID `json:"room_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
+	if body.AmountPaise <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_paise must be greater than zero"})
+		return
+	}
+	if body.CategoryCode == "" {
+		body.CategoryCode = "vendor"
+	}
 	e, appr, err := h.Finance.CreateExpense(c.Request.Context(), finance.CreateExpenseInput{
 		PropertyID: pid, ActorID: uid, ActorRole: string(claims.Role),
 		CategoryCode: body.CategoryCode, VendorName: body.VendorName, Description: body.Description,
-		AmountPaise: body.AmountPaise, Emergency: body.Emergency, RoomID: body.RoomID, IdempotencyKey: idem,
+		AmountPaise: body.AmountPaise, Emergency: body.Emergency, IsRecurring: body.IsRecurring, RoomID: body.RoomID, IdempotencyKey: idem,
 	})
 	if err != nil {
 		respondErr(c, financeClientErr(err))

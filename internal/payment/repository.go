@@ -20,6 +20,7 @@ type DueRepository interface {
 // PaymentRepository persists matched payments.
 type PaymentRepository interface {
 	Create(ctx context.Context, p *domain.Payment) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Payment, error)
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 }
 

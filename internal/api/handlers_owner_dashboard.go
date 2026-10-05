@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,15 +44,54 @@ type FloorOccupancy struct {
 	Rooms            []RoomOccupancy `json:"rooms"`
 }
 
-// OwnerOccupancy handles GET /owner/occupancy.
-// Returns aggregated bed capacity, occupancy counts, vacant beds, basis points,
-// and complete floor-by-floor room vacancy breakdown.
-func (h *Handlers) OwnerOccupancy(c *gin.Context) {
-	pid, ok := propertyIDFromClaims(c)
-	if !ok {
-		return
-	}
+// OccupancyMetrics holds aggregated property-level and floor-level occupancy details.
+type OccupancyMetrics struct {
+	CapacityBeds     int              `json:"capacity_beds"`
+	OccupiedBeds     int              `json:"occupied_beds"`
+	VacantBeds       int              `json:"vacant_beds"`
+	BedsAtRisk       int              `json:"beds_at_risk"`
+	TotalRooms       int              `json:"total_rooms"`
+	OccupiedRooms    int              `json:"occupied_rooms"`
+	VacantRooms      int              `json:"vacant_rooms"`
+	OccupancyRateBps int              `json:"occupancy_rate_bps"`
+	OccupancyRatePct float64          `json:"occupancy_rate_pct"`
+	Floors           []FloorOccupancy `json:"floors"`
+}
 
+type PropertyOccupancySummary struct {
+	CapacityBeds     int     `json:"capacity_beds"`
+	OccupiedBeds     int     `json:"occupied_beds"`
+	VacantBeds       int     `json:"vacant_beds"`
+	BedsAtRisk       int     `json:"beds_at_risk"`
+	TotalRooms       int     `json:"total_rooms"`
+	OccupiedRooms    int     `json:"occupied_rooms"`
+	VacantRooms      int     `json:"vacant_rooms"`
+	OccupancyRateBps int     `json:"occupancy_rate_bps"`
+	OccupancyRatePct float64 `json:"occupancy_rate_pct"`
+}
+
+type MonthlyCashFlowItem struct {
+	Month                string `json:"month"` // "YYYY-MM"
+	IncomeCollectedPaise int64  `json:"income_collected_paise"`
+	TotalExpensesPaise   int64  `json:"total_expenses_paise"`
+	NetCashFlowPaise     int64  `json:"net_cash_flow_paise"`
+}
+
+type OwnerDashboardSummaryResponse struct {
+	PropertyID          uuid.UUID                `json:"property_id"`
+	Period              string                   `json:"period"`
+	TotalOccupancy      PropertyOccupancySummary `json:"total_occupancy"`
+	FloorOccupancy      []FloorOccupancy         `json:"floor_occupancy"`
+	TotalCollectedPaise int64                    `json:"total_collected_paise"`
+	TotalPendingPaise   int64                    `json:"total_pending_paise"`
+	TotalExpensePaise   int64                    `json:"total_expense_paise"`
+	NetCashFlowPaise    int64                    `json:"net_cash_flow_paise"`
+	CollectionPct       float64                  `json:"collection_percentage"`
+	MonthlyCashFlow     []MonthlyCashFlowItem    `json:"monthly_cash_flow"`
+	AsOf                time.Time                `json:"as_of"`
+}
+
+func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) OccupancyMetrics {
 	ctx := c.Request.Context()
 
 	var floors []domain.Floor
@@ -252,19 +292,182 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 		occRateBps = int(occRatePct * 100.0)
 	}
 
+	return OccupancyMetrics{
+		CapacityBeds:     capacityBeds,
+		OccupiedBeds:     occupiedBeds,
+		VacantBeds:       vacantBeds,
+		BedsAtRisk:       bedsAtRisk,
+		TotalRooms:       totalRooms,
+		OccupiedRooms:    occupiedRooms,
+		VacantRooms:      vacantRooms,
+		OccupancyRateBps: occRateBps,
+		OccupancyRatePct: occRatePct,
+		Floors:           resultFloors,
+	}
+}
+
+// OwnerOccupancy handles GET /owner/occupancy.
+// Returns aggregated bed capacity, occupancy counts, vacant beds, basis points,
+// and complete floor-by-floor room vacancy breakdown.
+func (h *Handlers) OwnerOccupancy(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+
+	occ := h.computeOccupancyMetrics(c, pid)
+
 	c.JSON(http.StatusOK, gin.H{
 		"property_id":        pid,
-		"capacity_beds":      capacityBeds,
-		"occupied_beds":      occupiedBeds,
-		"vacant_beds":        vacantBeds,
-		"beds_at_risk":       bedsAtRisk,
-		"total_rooms":        totalRooms,
-		"occupied_rooms":     occupiedRooms,
-		"vacant_rooms":       vacantRooms,
-		"occupancy_rate_bps": occRateBps,
-		"occupancy_rate_pct": occRatePct,
-		"floors":             resultFloors,
+		"capacity_beds":      occ.CapacityBeds,
+		"occupied_beds":      occ.OccupiedBeds,
+		"vacant_beds":        occ.VacantBeds,
+		"beds_at_risk":       occ.BedsAtRisk,
+		"total_rooms":        occ.TotalRooms,
+		"occupied_rooms":     occ.OccupiedRooms,
+		"vacant_rooms":       occ.VacantRooms,
+		"occupancy_rate_bps": occ.OccupancyRateBps,
+		"occupancy_rate_pct": occ.OccupancyRatePct,
+		"floors":             occ.Floors,
 		"as_of":              time.Now().UTC(),
+	})
+}
+
+func (h *Handlers) computeMonthlyCashFlow(ctx context.Context, pid uuid.UUID, months int) []MonthlyCashFlowItem {
+	if months <= 0 {
+		months = 6
+	}
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		loc = time.FixedZone("IST", 5*3600+1800)
+	}
+	now := time.Now().In(loc)
+
+	var items []MonthlyCashFlowItem
+	for i := months - 1; i >= 0; i-- {
+		mDate := now.AddDate(0, -i, 0)
+		period := mDate.Format("2006-01")
+
+		var collected int64
+		if h.Payments != nil {
+			recon, err := h.Payments.BuildSummary(ctx, pid, period)
+			if err == nil && recon != nil {
+				collected = recon.RentCollected
+			}
+		}
+
+		var expenses int64
+		if h.Finance != nil {
+			sum, err := h.Finance.OperatingSummary(ctx, pid, period, collected)
+			if err == nil && sum != nil {
+				expenses = sum.OpexPaise
+			}
+		}
+
+		items = append(items, MonthlyCashFlowItem{
+			Month:                period,
+			IncomeCollectedPaise: collected,
+			TotalExpensesPaise:   expenses,
+			NetCashFlowPaise:     collected - expenses,
+		})
+	}
+	return items
+}
+
+// OwnerDashboardSummary handles GET /owner/dashboard/summary (Requirements 1 & 8 & 20).
+// Returns single server-side dashboard response with:
+// - Total occupancy for each floor
+// - Total occupancy for the property
+// - Monthly cash flow
+// - Total collected amount
+// - Total pending amount
+// - Total expense amount
+// - Net cash flow
+// - Collection percentage
+// All financial amounts in integer paise, calculated server-side.
+func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		loc = time.FixedZone("IST", 5*3600+1800)
+	}
+	period := c.DefaultQuery("period", time.Now().In(loc).Format("2006-01"))
+
+	ctx := c.Request.Context()
+	occ := h.computeOccupancyMetrics(c, pid)
+
+	var rentCollected int64
+	var pendingRent int64
+	if h.Payments != nil {
+		recon, err := h.Payments.BuildSummary(ctx, pid, period)
+		if err == nil && recon != nil {
+			rentCollected = recon.RentCollected
+			pendingRent = recon.OutstandingRent
+		}
+	}
+
+	var totalExpense int64
+	if h.Finance != nil {
+		sum, err := h.Finance.OperatingSummary(ctx, pid, period, rentCollected)
+		if err == nil && sum != nil {
+			totalExpense = sum.OpexPaise
+		}
+	}
+
+	netCashFlow := rentCollected - totalExpense
+	totalBilled := rentCollected + pendingRent
+	collectionPct := 0.0
+	if totalBilled > 0 {
+		collectionPct = float64(rentCollected) / float64(totalBilled) * 100.0
+	}
+
+	monthlyCashFlow := h.computeMonthlyCashFlow(ctx, pid, 6)
+
+	c.JSON(http.StatusOK, OwnerDashboardSummaryResponse{
+		PropertyID: pid,
+		Period:     period,
+		TotalOccupancy: PropertyOccupancySummary{
+			CapacityBeds:     occ.CapacityBeds,
+			OccupiedBeds:     occ.OccupiedBeds,
+			VacantBeds:       occ.VacantBeds,
+			BedsAtRisk:       occ.BedsAtRisk,
+			TotalRooms:       occ.TotalRooms,
+			OccupiedRooms:    occ.OccupiedRooms,
+			VacantRooms:      occ.VacantRooms,
+			OccupancyRateBps: occ.OccupancyRateBps,
+			OccupancyRatePct: occ.OccupancyRatePct,
+		},
+		FloorOccupancy:      occ.Floors,
+		TotalCollectedPaise: rentCollected,
+		TotalPendingPaise:   pendingRent,
+		TotalExpensePaise:   totalExpense,
+		NetCashFlowPaise:    netCashFlow,
+		CollectionPct:       collectionPct,
+		MonthlyCashFlow:     monthlyCashFlow,
+		AsOf:                time.Now().UTC(),
+	})
+}
+
+// OwnerMonthlyCashFlow handles GET /owner/dashboard/monthly-cashflow (Requirement 19).
+func (h *Handlers) OwnerMonthlyCashFlow(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	months := 6
+	if m := c.Query("months"); m != "" {
+		if n, err := strconv.Atoi(m); err == nil && n > 0 && n <= 36 {
+			months = n
+		}
+	}
+	cf := h.computeMonthlyCashFlow(c.Request.Context(), pid, months)
+	c.JSON(http.StatusOK, gin.H{
+		"property_id": pid,
+		"cash_flow":   cf,
 	})
 }
 

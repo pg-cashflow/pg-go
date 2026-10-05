@@ -86,6 +86,8 @@ type DueListFilter struct {
 	TenantID   *uuid.UUID
 	Kind       *domain.DueKind
 	Status     *domain.DueStatus
+	Limit      int
+	Offset     int
 }
 
 func (r *DueRepo) List(ctx context.Context, f DueListFilter) ([]domain.Due, error) {
@@ -109,6 +111,16 @@ func (r *DueRepo) List(ctx context.Context, f DueListFilter) ([]domain.Due, erro
 		n++
 	}
 	b.WriteString(` ORDER BY due_date DESC`)
+	if f.Limit > 0 {
+		fmt.Fprintf(&b, ` LIMIT $%d`, n)
+		args = append(args, f.Limit)
+		n++
+	}
+	if f.Offset > 0 {
+		fmt.Fprintf(&b, ` OFFSET $%d`, n)
+		args = append(args, f.Offset)
+		n++
+	}
 	rows, err := r.db.Query(ctx, b.String(), args...)
 	if err != nil {
 		return nil, err

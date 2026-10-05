@@ -90,6 +90,7 @@ type Expense struct {
 	AmountPaise    int64         `json:"amount_paise"`
 	Status         ExpenseStatus `json:"status"`
 	Emergency      bool          `json:"emergency"`
+	IsRecurring    bool          `json:"is_recurring"`
 	RoomID         *uuid.UUID    `json:"room_id,omitempty"`
 	CreatedBy      uuid.UUID     `json:"created_by"`
 	CreatedByRole  string        `json:"created_by_role"`
@@ -97,6 +98,23 @@ type Expense struct {
 	OccurredAt     time.Time     `json:"occurred_at"`
 	CreatedAt      time.Time     `json:"created_at"`
 	PaidPaise      int64         `json:"paid_paise,omitempty"`
+}
+
+type DailyFinancialRollup struct {
+	ID               uuid.UUID `json:"id"`
+	PropertyID       uuid.UUID `json:"property_id"`
+	RollupDate       time.Time `json:"rollup_date"` // YYYY-MM-DD
+	CollectedPaise   int64     `json:"collected_paise"`
+	DuePaise         int64     `json:"due_paise"`
+	ExpensePaise     int64     `json:"expense_paise"`
+	NetCashFlowPaise int64     `json:"net_cash_flow_paise"`
+	TotalRooms       int       `json:"total_rooms"`
+	OccupiedRooms    int       `json:"occupied_rooms"`
+	CapacityBeds     int       `json:"capacity_beds"`
+	OccupiedBeds     int       `json:"occupied_beds"`
+	OccupancyRatePct float64   `json:"occupancy_rate_pct"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type ExpensePayment struct {

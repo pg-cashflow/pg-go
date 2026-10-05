@@ -137,7 +137,7 @@ func (s *Service) SuggestMatch(ctx context.Context, propertyID uuid.UUID, amount
 	return s.matcher.Match(ctx, propertyID, amountPaise, txnDate, note)
 }
 
-// ManualMatch records an owner-confirmed match.
+// ManualMatch records an owner-confirmed match with UTR normalization and idempotent replay.
 func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
 	due, err := s.dues.GetByID(ctx, dueID)
 	if err != nil {
@@ -147,7 +147,13 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 		return nil, ErrDueNotOpen
 	}
 	if txnID != "" {
+		if norm, nErr := domain.NormalizeUTR(txnID); nErr == nil {
+			txnID = norm
+		}
 		if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
+			if existing.DueID == dueID && existing.Amount == amountPaise {
+				return existing, nil
+			}
 			return nil, ErrDuplicateTxn
 		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return nil, err
@@ -158,6 +164,179 @@ func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise 
 		txnPtr = &txnID
 	}
 	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByManual, txnPtr, &recordedBy, nil)
+}
+
+// VerifyPaymentInput defines validated arguments for the atomic payment verification operation.
+type VerifyPaymentInput struct {
+	PropertyID  uuid.UUID
+	DueID       uuid.UUID
+	AmountPaise int
+	UTR         string
+	RecordedBy  uuid.UUID
+	Note        string
+}
+
+// VerifyPayment implements requirement 4: Atomic, idempotent server-side payment verification.
+// 1. Validates the payment and property scope.
+// 2. Validates the amount (> 0 integer paise).
+// 3. Normalizes and validates the UTR format.
+// 4. Enforces UTR uniqueness and idempotent replay for the property.
+// 5. Atomically creates payment, updates due, and records statistics within one transaction.
+func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*domain.Payment, error) {
+	if in.AmountPaise <= 0 {
+		return nil, errors.New("payment: amount must be greater than zero paise")
+	}
+	normUTR, err := domain.NormalizeUTR(in.UTR)
+	if err != nil {
+		return nil, err
+	}
+
+	due, err := s.dues.GetByID(ctx, in.DueID)
+	if err != nil {
+		return nil, err
+	}
+	if in.PropertyID != uuid.Nil && due.PropertyID != in.PropertyID {
+		return nil, errors.New("payment: property mismatch")
+	}
+	if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
+		return nil, ErrDueNotOpen
+	}
+
+	// Idempotency and UTR uniqueness check
+	if existing, err := s.payments.GetByUPITxnID(ctx, normUTR); err == nil && existing != nil {
+		if existing.DueID == in.DueID && existing.Amount == in.AmountPaise {
+			return existing, nil
+		}
+		return nil, ErrDuplicateTxn
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	var notePtr *string
+	if in.Note != "" {
+		notePtr = &in.Note
+	}
+	return s.settleMatched(ctx, in.DueID, in.AmountPaise, domain.MatchedByManual, &normUTR, &in.RecordedBy, notePtr)
+}
+
+// CorrectPaymentInput defines inputs to correct a previously verified payment.
+type CorrectPaymentInput struct {
+	PropertyID      uuid.UUID
+	PaymentID       uuid.UUID
+	CorrectedAmount int
+	CorrectedUTR    string
+	Reason          string
+	CorrectedBy     uuid.UUID
+}
+
+// CorrectPayment implements requirement 16: Immutable audit trail for financial corrections.
+// Reversing entry + corrected entry + reason + user + timestamp. Original record is never modified.
+func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*domain.FinancialCorrection, error) {
+	if strings.TrimSpace(in.Reason) == "" {
+		return nil, errors.New("payment: correction reason is required")
+	}
+	if in.CorrectedAmount <= 0 {
+		return nil, errors.New("payment: corrected amount must be greater than zero")
+	}
+	normUTR := ""
+	if in.CorrectedUTR != "" {
+		nu, err := domain.NormalizeUTR(in.CorrectedUTR)
+		if err != nil {
+			return nil, err
+		}
+		normUTR = nu
+	}
+
+	orig, err := s.payments.GetByID(ctx, in.PaymentID)
+	if err != nil {
+		return nil, err
+	}
+	due, err := s.dues.GetByID(ctx, orig.DueID)
+	if err != nil {
+		return nil, err
+	}
+	if in.PropertyID != uuid.Nil && due.PropertyID != in.PropertyID {
+		return nil, errors.New("payment: property mismatch")
+	}
+
+	var correction *domain.FinancialCorrection
+	err = s.runInTx(ctx, func(dues DueRepository, payments PaymentRepository, tenants TenantRepository, pub events.Publisher) error {
+		at := s.now()
+		// 1. Reversing entry
+		revNote := fmt.Sprintf("Reversal of payment %s: %s", orig.ID, in.Reason)
+		reversal := &domain.Payment{
+			PropertyID: &due.PropertyID,
+			DueID:      orig.DueID,
+			TenantID:   orig.TenantID,
+			Amount:     -orig.Amount,
+			MatchedBy:  domain.MatchedByManual,
+			RecordedBy: &in.CorrectedBy,
+			MatchedAt:  at,
+			RawNote:    &revNote,
+		}
+		if err := payments.Create(ctx, reversal); err != nil {
+			return fmt.Errorf("create reversal payment: %w", err)
+		}
+
+		// 2. Corrected payment entry
+		corrNote := fmt.Sprintf("Correction for payment %s: %s", orig.ID, in.Reason)
+		var corrUTRPtr *string
+		if normUTR != "" {
+			corrUTRPtr = &normUTR
+		} else {
+			corrUTRPtr = orig.UPITxnID
+		}
+		corrected := &domain.Payment{
+			PropertyID: &due.PropertyID,
+			DueID:      orig.DueID,
+			TenantID:   orig.TenantID,
+			UPITxnID:   corrUTRPtr,
+			Amount:     in.CorrectedAmount,
+			MatchedBy:  domain.MatchedByManual,
+			RecordedBy: &in.CorrectedBy,
+			MatchedAt:  at,
+			RawNote:    &corrNote,
+		}
+		if err := payments.Create(ctx, corrected); err != nil {
+			return fmt.Errorf("create corrected payment: %w", err)
+		}
+
+		// 3. Update due amount
+		netDiff := in.CorrectedAmount - orig.Amount
+		if netDiff != 0 {
+			due.Amount -= netDiff
+			if due.Amount <= 0 {
+				due.Amount = 0
+				due.MarkPaid(at)
+			} else {
+				due.Status = domain.DueStatusPartial
+			}
+			if err := dues.Update(ctx, due); err != nil {
+				return fmt.Errorf("update due: %w", err)
+			}
+		}
+
+		// 4. Record audit correction entry
+		corr := &domain.FinancialCorrection{
+			PropertyID:         due.PropertyID,
+			OriginalPaymentID:  orig.ID,
+			ReversalPaymentID:  &reversal.ID,
+			CorrectedPaymentID: &corrected.ID,
+			Reason:             in.Reason,
+			CorrectedBy:        in.CorrectedBy,
+			OccurredAt:         at,
+		}
+		if recorder, ok := payments.(interface {
+			RecordCorrection(ctx context.Context, c *domain.FinancialCorrection) error
+		}); ok {
+			if err := recorder.RecordCorrection(ctx, corr); err != nil {
+				return fmt.Errorf("record financial correction: %w", err)
+			}
+		}
+		correction = corr
+		return nil
+	})
+	return correction, err
 }
 
 // GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id and optional dedupKey.

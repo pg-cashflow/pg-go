@@ -266,3 +266,37 @@ func RecomputeDueStatusMath(netPaid int64, contractualCeiling int) (DueStatus, i
 		return DueStatusPending, contractualCeiling
 	}
 }
+
+type CalculatedPaymentStatus string
+
+const (
+	PaymentStatusPaid    CalculatedPaymentStatus = "paid"
+	PaymentStatusDue     CalculatedPaymentStatus = "due"
+	PaymentStatusOverdue CalculatedPaymentStatus = "overdue"
+)
+
+// CalculatePaymentStatus computes whether a payment/due is "paid", "due", or "overdue"
+// from the due date, payment date, and verified payment records, evaluated in Asia/Kolkata.
+func (d *Due) CalculatePaymentStatus(asOf time.Time) CalculatedPaymentStatus {
+	if d == nil {
+		return PaymentStatusDue
+	}
+	if d.Status == DueStatusPaid || d.PaidAt != nil || d.Amount <= 0 {
+		return PaymentStatusPaid
+	}
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		loc = time.FixedZone("IST", 5*3600+1800)
+	}
+	asOfIST := asOf.In(loc)
+	dueIST := d.DueDate.In(loc)
+
+	todayIST := time.Date(asOfIST.Year(), asOfIST.Month(), asOfIST.Day(), 0, 0, 0, 0, loc)
+	dueDayIST := time.Date(dueIST.Year(), dueIST.Month(), dueIST.Day(), 0, 0, 0, 0, loc)
+
+	if todayIST.After(dueDayIST) {
+		return PaymentStatusOverdue
+	}
+	return PaymentStatusDue
+}
+
