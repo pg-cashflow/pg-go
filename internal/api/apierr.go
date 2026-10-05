@@ -66,6 +66,8 @@ func paymentClientErr(err error) error {
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentAmbiguousMatch)
 	case errors.Is(err, payment.ErrNoMatch):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentNoMatch)
+	case errors.Is(err, payment.ErrInvalidAmount):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentInvalidAmount)
 	default:
 		return err
 	}

@@ -116,30 +116,64 @@ func maxInvestigateMonths(items []domain.TieOutItem) int {
 }
 
 func (s *Service) CloseTieOut(ctx context.Context, propertyID uuid.UUID, period string) (*domain.PeriodTieOut, error) {
-	t, err := s.Store.GetTieOut(ctx, propertyID, period)
-	if err != nil {
-		return nil, err
-	}
-	if t.DifferencePaise != 0 {
-		s.publish(ctx, propertyID, domain.EvtPeriodTieOutBlocked, t)
-		return t, ErrPeriodNotCloseable
-	}
-	// Closing is idempotent: an already-closed period is returned as-is (the DB would reject a rewrite).
-	if t.Status == "closed" {
-		return t, nil
-	}
-	// A period may only close after it has ended (UTC, matching PeriodBounds and the DB lock).
-	// Closing mid-month would reject every later webhook/bank posting for that month (control C-4).
-	_, periodEnd, err := PeriodBounds(period)
+	from, periodEnd, err := PeriodBounds(period)
 	if err != nil {
 		return nil, err
 	}
 	now := s.Now()
 	if now.Before(periodEnd) {
-		return t, fmt.Errorf("%w: period %s has not ended", ErrPeriodNotCloseable, period)
+		return nil, fmt.Errorf("%w: period %s has not ended", ErrPeriodNotCloseable, period)
 	}
-	t.Status = "closed"
-	t.ClosedAt = &now
+
+	existing, err := s.Store.GetTieOut(ctx, propertyID, period)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if existing != nil && existing.Status == "closed" {
+		return existing, nil
+	}
+
+	ledgerRent, err := s.Store.SumAccountNetCredit(ctx, propertyID, domain.AcctRentRevenue, from, periodEnd)
+	if err != nil {
+		return nil, err
+	}
+	reconCollected := int64(0)
+	if existing != nil {
+		reconCollected = existing.ReconTotalPaise
+	}
+	diff := reconCollected - ledgerRent
+	if diff != 0 {
+		t := &domain.PeriodTieOut{
+			PropertyID:       propertyID,
+			PeriodMonth:      period,
+			ReconTotalPaise:  reconCollected,
+			LedgerTotalPaise: ledgerRent,
+			DifferencePaise:  diff,
+			Status:           "open",
+		}
+		s.publish(ctx, propertyID, domain.EvtPeriodTieOutBlocked, t)
+		return t, ErrPeriodNotCloseable
+	}
+
+	t := &domain.PeriodTieOut{
+		PropertyID:       propertyID,
+		PeriodMonth:      period,
+		ReconTotalPaise:  reconCollected,
+		LedgerTotalPaise: ledgerRent,
+		DifferencePaise:  0,
+		Status:           "closed",
+		ClosedAt:         &now,
+	}
+	if existing != nil {
+		t.ID = existing.ID
+		t.Items = existing.Items
+	}
+	for _, item := range t.Items {
+		if item.Category == "investigate" && item.AmountPaise != 0 {
+			s.publish(ctx, propertyID, domain.EvtPeriodTieOutBlocked, t)
+			return t, fmt.Errorf("%w: unresolved investigation items exist", ErrPeriodNotCloseable)
+		}
+	}
 	if err := s.Store.SaveTieOut(ctx, t); err != nil {
 		return nil, err
 	}

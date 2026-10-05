@@ -46,6 +46,7 @@ const (
 	CodePaymentEmptyTxnId            Code = "payment.emptyTxnId"
 	CodePaymentAmbiguousMatch        Code = "payment.ambiguousMatch"
 	CodePaymentNoMatch               Code = "payment.noMatch"
+	CodePaymentInvalidAmount         Code = "payment.invalidAmount"
 
 	// Finance
 	CodeFinanceDuplicateRequest   Code = "finance.duplicateRequest"
@@ -114,6 +115,7 @@ var AllCodes = []Code{
 	CodePaymentEmptyTxnId,
 	CodePaymentAmbiguousMatch,
 	CodePaymentNoMatch,
+	CodePaymentInvalidAmount,
 
 	CodeFinanceDuplicateRequest,
 	CodeFinanceIdempotencyRequired,

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // ARCHITECTURAL CONVENTION: DBTX vs. Pool-Only vs. Dual-Mode Repositories
@@ -72,6 +74,13 @@ func WithinTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error)
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if propID, ok := requestscope.PropertyIDFromContext(ctx); ok && propID != uuid.Nil {
+		if _, err := tx.Exec(ctx, "SET LOCAL app.current_property_id = $1", propID.String()); err != nil {
+			return fmt.Errorf("set local app.current_property_id: %w", err)
+		}
+	}
+
 	if err := fn(tx); err != nil {
 		return err
 	}

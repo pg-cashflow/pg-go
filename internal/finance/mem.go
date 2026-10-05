@@ -150,6 +150,25 @@ func (m *MemoryStore) InsertCapital(_ context.Context, tx *domain.CapitalTransac
 	return nil
 }
 
+func (m *MemoryStore) InsertCapitalAtomic(_ context.Context, tx *domain.CapitalTransaction, lines []domain.JournalLine) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.claim(tx.PropertyID.String() + ":cap:" + tx.IdempotencyKey); err != nil {
+		return err
+	}
+	if tx.ID == uuid.Nil {
+		tx.ID = uuid.New()
+	}
+	m.capital = append(m.capital, *tx)
+	for _, l := range lines {
+		if l.ID == uuid.Nil {
+			l.ID = uuid.New()
+		}
+		m.journal = append(m.journal, l)
+	}
+	return nil
+}
+
 func (m *MemoryStore) ListCapital(_ context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -373,6 +392,25 @@ func (m *MemoryStore) InsertReimbursement(_ context.Context, r *domain.ManagerRe
 		r.ID = uuid.New()
 	}
 	m.reimburse = append(m.reimburse, *r)
+	return nil
+}
+
+func (m *MemoryStore) InsertReimbursementAtomic(_ context.Context, r *domain.ManagerReimbursement, lines []domain.JournalLine) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.claim(r.PropertyID.String() + ":reimb:" + r.IdempotencyKey); err != nil {
+		return err
+	}
+	if r.ID == uuid.Nil {
+		r.ID = uuid.New()
+	}
+	m.reimburse = append(m.reimburse, *r)
+	for _, l := range lines {
+		if l.ID == uuid.Nil {
+			l.ID = uuid.New()
+		}
+		m.journal = append(m.journal, l)
+	}
 	return nil
 }
 
@@ -628,6 +666,27 @@ func (m *MemoryStore) ListApprovals(_ context.Context, propertyID uuid.UUID, sta
 func (m *MemoryStore) UpdateApproval(_ context.Context, a *domain.ApprovalRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.approvals[a.ID] = *a
+	return nil
+}
+
+func (m *MemoryStore) DecideApprovalAtomic(_ context.Context, a *domain.ApprovalRequest, expenseStatus *domain.ExpenseStatus, lines []domain.JournalLine) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if expenseStatus != nil {
+		e, ok := m.expenses[a.SubjectID]
+		if !ok {
+			return ErrNotFound
+		}
+		e.Status = *expenseStatus
+		m.expenses[a.SubjectID] = e
+	}
+	for _, l := range lines {
+		if l.ID == uuid.Nil {
+			l.ID = uuid.New()
+		}
+		m.journal = append(m.journal, l)
+	}
 	m.approvals[a.ID] = *a
 	return nil
 }

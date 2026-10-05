@@ -24,6 +24,7 @@ var (
 	ErrNoDepositDue          = errors.New("payment: no deposit due for tenant")
 	ErrEmptyTxnID            = errors.New("payment: upi txn id is required")
 	ErrRequiresConfirmation  = errors.New("payment: heuristic match requires owner confirmation")
+	ErrInvalidAmount         = errors.New("payment: amount must be strictly positive")
 )
 
 // txFn runs work with optionally transactional repos.
@@ -140,6 +141,9 @@ func (s *Service) SuggestMatch(ctx context.Context, propertyID uuid.UUID, amount
 
 // ManualMatch records an owner-confirmed match with UTR normalization and idempotent replay.
 func (s *Service) ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error) {
+	if amountPaise <= 0 {
+		return nil, ErrInvalidAmount
+	}
 	due, err := s.dues.GetByID(ctx, dueID)
 	if err != nil {
 		return nil, err
@@ -284,6 +288,7 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 			TenantID:   orig.TenantID,
 			Amount:     -orig.Amount,
 			MatchedBy:  domain.MatchedByManual,
+			Provider:   "correction",
 			RecordedBy: &in.CorrectedBy,
 			MatchedAt:  at,
 			RawNote:    &revNote,
@@ -307,6 +312,7 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 			UPITxnID:   corrUTRPtr,
 			Amount:     in.CorrectedAmount,
 			MatchedBy:  domain.MatchedByManual,
+			Provider:   "manual",
 			RecordedBy: &in.CorrectedBy,
 			MatchedAt:  at,
 			RawNote:    &corrNote,
@@ -315,15 +321,40 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 			return fmt.Errorf("create corrected payment: %w", err)
 		}
 
-		// 3. Update due amount
+		// 3. Update due amount and credit tenant on overpayment
 		netDiff := in.CorrectedAmount - orig.Amount
 		if netDiff != 0 {
-			due.Amount -= netDiff
-			if due.Amount <= 0 {
+			if netDiff > due.Amount {
+				excess := netDiff - due.Amount
 				due.Amount = 0
 				due.MarkPaid(at)
+				if err := addTenantCredit(ctx, tenants, due.TenantID, excess); err != nil {
+					return fmt.Errorf("credit overpayment: %w", err)
+				}
+				overpayPayload, _ := json.Marshal(domain.OverpaymentCreditedPayload{
+					DueID:       due.ID.String(),
+					PaymentID:   corrected.ID.String(),
+					TenantID:    due.TenantID.String(),
+					AmountPaise: excess,
+					MatchedBy:   string(domain.MatchedByManual),
+					Reason:      "correction_overpayment",
+				})
+				did := due.ID
+				_ = pub.Publish(ctx, domain.Event{
+					TenantID:   domain.Ptr(due.TenantID),
+					PropertyID: due.PropertyID,
+					EventType:  domain.EvtOverpaymentCredited,
+					DueID:      &did,
+					OccurredAt: at,
+					Payload:    overpayPayload,
+				})
 			} else {
-				due.Status = domain.DueStatusPartial
+				due.Amount -= netDiff
+				if due.Amount == 0 {
+					due.MarkPaid(at)
+				} else {
+					due.Status = domain.DueStatusPartial
+				}
 			}
 			if err := dues.Update(ctx, due); err != nil {
 				return fmt.Errorf("update due: %w", err)

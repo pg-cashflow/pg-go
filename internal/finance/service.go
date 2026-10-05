@@ -68,9 +68,6 @@ func (s *Service) AddCapital(ctx context.Context, propertyID, ownerID uuid.UUID,
 		OccurredAt:     at,
 		CreatedAt:      at,
 	}
-	if err := s.Store.InsertCapital(ctx, tx); err != nil {
-		return nil, err
-	}
 	cashAcct := domain.AcctBank
 	var specs []LineSpec
 	if kind == domain.CapitalWithdrawal {
@@ -78,20 +75,23 @@ func (s *Service) AddCapital(ctx context.Context, propertyID, ownerID uuid.UUID,
 			{Account: domain.AcctOwnerCapital, Debit: amount, LineKind: "capital_out"},
 			{Account: cashAcct, Credit: amount, LineKind: "cash_out"},
 		}
-		s.publish(ctx, propertyID, domain.EvtCapitalWithdrawn, tx)
 	} else {
 		specs = []LineSpec{
 			{Account: cashAcct, Debit: amount, LineKind: "cash_in"},
 			{Account: domain.AcctOwnerCapital, Credit: amount, LineKind: "capital_in"},
 		}
-		s.publish(ctx, propertyID, domain.EvtCapitalAdded, tx)
 	}
 	lines, err := MakeLines(propertyID, tx.ID, "capital", at, specs)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+	if err := s.Store.InsertCapitalAtomic(ctx, tx, lines); err != nil {
 		return nil, err
+	}
+	if kind == domain.CapitalWithdrawal {
+		s.publish(ctx, propertyID, domain.EvtCapitalWithdrawn, tx)
+	} else {
+		s.publish(ctx, propertyID, domain.EvtCapitalAdded, tx)
 	}
 	return tx, nil
 }
@@ -229,6 +229,19 @@ func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.E
 		in.Method = "cash"
 	}
 	at := s.Now()
+	if in.ActorRole == domain.PayerManager {
+		pol, err := s.Store.GetPolicy(ctx, in.PropertyID)
+		if err == nil {
+			dayFrom := dayStart(at)
+			monthFrom, monthTo, _ := PeriodBounds(at.Format("2006-01"))
+			daily, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
+			monthly, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
+			chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, false)
+			if chk.Reject != nil {
+				return nil, chk.Reject
+			}
+		}
+	}
 	p := &domain.ExpensePayment{
 		ID:             uuid.New(),
 		ExpenseID:      in.ExpenseID,
@@ -308,9 +321,6 @@ func (s *Service) ReimburseManager(ctx context.Context, propertyID, ownerID, man
 		IdempotencyKey: idem,
 		OccurredAt:     at,
 	}
-	if err := s.Store.InsertReimbursement(ctx, r); err != nil {
-		return nil, err
-	}
 	lines, err := MakeLines(propertyID, r.ID, "reimbursement", at, []LineSpec{
 		{Account: domain.AcctManagerAdvancePayable, Debit: amount, LineKind: "advance_clear"},
 		{Account: domain.AcctBank, Credit: amount, LineKind: "cash_out"},
@@ -318,7 +328,7 @@ func (s *Service) ReimburseManager(ctx context.Context, propertyID, ownerID, man
 	if err != nil {
 		return nil, err
 	}
-	if err := s.Store.InsertJournal(ctx, lines); err != nil {
+	if err := s.Store.InsertReimbursementAtomic(ctx, r, lines); err != nil {
 		return nil, err
 	}
 	s.publish(ctx, propertyID, domain.EvtManagerAdvanceReimbursed, r)
@@ -337,29 +347,42 @@ func (s *Service) DecideApproval(ctx context.Context, propertyID, ownerID, appro
 	a.DecidedBy = &ownerID
 	a.DecidedAt = &now
 	a.Note = note
+
+	var expenseStatus *domain.ExpenseStatus
+	var lines []domain.JournalLine
 	if approve {
 		a.Status = "approved"
 		if a.Kind == "expense" {
-			if err := s.Store.UpdateExpenseStatus(ctx, a.SubjectID, domain.ExpenseApproved); err != nil {
-				return err
-			}
+			st := domain.ExpenseApproved
+			expenseStatus = &st
 			e, err := s.Store.GetExpense(ctx, a.SubjectID)
 			if err != nil {
 				return err
 			}
-			if err := s.postExpenseAccrual(ctx, e); err != nil {
+			lines, err = MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
+				{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
+				{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},
+			})
+			if err != nil {
 				return err
 			}
-			s.publish(ctx, propertyID, domain.EvtExpenseApproved, a)
 		}
 	} else {
 		a.Status = "rejected"
 		if a.Kind == "expense" {
-			_ = s.Store.UpdateExpenseStatus(ctx, a.SubjectID, domain.ExpenseCancelled)
+			st := domain.ExpenseCancelled
+			expenseStatus = &st
 		}
+	}
+	if err := s.Store.DecideApprovalAtomic(ctx, a, expenseStatus, lines); err != nil {
+		return err
+	}
+	if approve && a.Kind == "expense" {
+		s.publish(ctx, propertyID, domain.EvtExpenseApproved, a)
+	} else if !approve {
 		s.publish(ctx, propertyID, domain.EvtExpenseRejected, a)
 	}
-	return s.Store.UpdateApproval(ctx, a)
+	return nil
 }
 
 func (s *Service) SaveBudget(ctx context.Context, b *domain.Budget) error {

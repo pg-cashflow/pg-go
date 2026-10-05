@@ -207,6 +207,41 @@ func (r *FinanceRepo) InsertCapital(ctx context.Context, tx *domain.CapitalTrans
 	return err
 }
 
+func (r *FinanceRepo) InsertCapitalAtomic(ctx context.Context, txRecord *domain.CapitalTransaction, lines []domain.JournalLine) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		INSERT INTO capital_transactions (id, property_id, owner_user_id, kind, amount_paise, purpose, reference, idempotency_key, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING created_at`,
+		txRecord.ID, txRecord.PropertyID, txRecord.OwnerUserID, txRecord.Kind, txRecord.AmountPaise, txRecord.Purpose, txRecord.Reference, txRecord.IdempotencyKey, txRecord.OccurredAt,
+	).Scan(&txRecord.CreatedAt)
+	if isUnique(err) {
+		return domain.ErrDuplicateIdempotency
+	}
+	if err != nil {
+		return fmt.Errorf("insert capital: %w", err)
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *FinanceRepo) ListCapital(ctx context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, property_id, owner_user_id, kind, amount_paise, COALESCE(purpose,''), reference, occurred_at, created_at
@@ -266,6 +301,12 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 	}
 	defer tx.Rollback(ctx)
 
+	if e.CreatedByRole == string(domain.RoleManager) {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, e.PropertyID, e.CreatedBy); err != nil {
+			return fmt.Errorf("lock manager spend: %w", err)
+		}
+	}
+
 	if e.RoomID != nil {
 		var roomPropID uuid.UUID
 		err = tx.QueryRow(ctx, `SELECT property_id FROM rooms WHERE id=$1`, *e.RoomID).Scan(&roomPropID)
@@ -323,6 +364,12 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	if p.PayerRole == domain.PayerManager {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, p.PropertyID, p.PayerUserID); err != nil {
+			return nil, fmt.Errorf("lock manager spend: %w", err)
+		}
+	}
 
 	var e domain.Expense
 	var vendor, desc *string
@@ -519,6 +566,40 @@ func (r *FinanceRepo) InsertReimbursement(ctx context.Context, rm *domain.Manage
 		return domain.ErrDuplicateIdempotency
 	}
 	return err
+}
+
+func (r *FinanceRepo) InsertReimbursementAtomic(ctx context.Context, rm *domain.ManagerReimbursement, lines []domain.JournalLine) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO manager_reimbursements (id, property_id, manager_user_id, amount_paise, recorded_by, idempotency_key, occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		rm.ID, rm.PropertyID, rm.ManagerUserID, rm.AmountPaise, rm.RecordedBy, rm.IdempotencyKey, rm.OccurredAt)
+	if isUnique(err) {
+		return domain.ErrDuplicateIdempotency
+	}
+	if err != nil {
+		return fmt.Errorf("insert reimbursement: %w", err)
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UUID) (int64, error) {
@@ -763,19 +844,24 @@ func (r *FinanceRepo) SaveTieOut(ctx context.Context, t *domain.PeriodTieOut) er
 		t.ID = uuid.New()
 	}
 	b, _ := json.Marshal(t.Items)
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO period_tie_outs (id, property_id, period_month, recon_total_paise, ledger_total_paise, difference_paise, bridge_json, status, closed_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
-		ON CONFLICT (property_id, period_month) DO UPDATE SET
-			recon_total_paise=EXCLUDED.recon_total_paise,
-			ledger_total_paise=EXCLUDED.ledger_total_paise,
-			difference_paise=EXCLUDED.difference_paise,
-			bridge_json=EXCLUDED.bridge_json,
-			status=EXCLUDED.status,
-			closed_at=EXCLUDED.closed_at,
-			updated_at=NOW()`,
-		t.ID, t.PropertyID, t.PeriodMonth, t.ReconTotalPaise, t.LedgerTotalPaise, t.DifferencePaise, b, t.Status, t.ClosedAt)
-	return mapLedgerPgErr(err)
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('ledger-period:%s:%s', $1::text, $2::text)))`, t.PropertyID, t.PeriodMonth); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO period_tie_outs (id, property_id, period_month, recon_total_paise, ledger_total_paise, difference_paise, bridge_json, status, closed_at, updated_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+			ON CONFLICT (property_id, period_month) DO UPDATE SET
+				recon_total_paise=EXCLUDED.recon_total_paise,
+				ledger_total_paise=EXCLUDED.ledger_total_paise,
+				difference_paise=EXCLUDED.difference_paise,
+				bridge_json=EXCLUDED.bridge_json,
+				status=EXCLUDED.status,
+				closed_at=EXCLUDED.closed_at,
+				updated_at=NOW()`,
+			t.ID, t.PropertyID, t.PeriodMonth, t.ReconTotalPaise, t.LedgerTotalPaise, t.DifferencePaise, b, t.Status, t.ClosedAt)
+		return mapLedgerPgErr(err)
+	})
 }
 
 func (r *FinanceRepo) ReopenTieOut(ctx context.Context, propertyID uuid.UUID, period string, actor string) error {
@@ -783,6 +869,9 @@ func (r *FinanceRepo) ReopenTieOut(ctx context.Context, propertyID uuid.UUID, pe
 		return fmt.Errorf("ReopenTieOut requires pool access, got nil pool")
 	}
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('ledger-period:%s:%s', $1::text, $2::text)))`, propertyID, period); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, "SET LOCAL app.actor = $1", actor); err != nil {
 			return err
 		}
@@ -875,6 +964,49 @@ func (r *FinanceRepo) UpdateApproval(ctx context.Context, a *domain.ApprovalRequ
 		UPDATE approval_requests SET status=$2, decided_by=$3, decided_at=$4, note=$5 WHERE id=$1`,
 		a.ID, a.Status, a.DecidedBy, a.DecidedAt, nullIfEmpty(a.Note))
 	return err
+}
+
+func (r *FinanceRepo) DecideApprovalAtomic(ctx context.Context, a *domain.ApprovalRequest, expenseStatus *domain.ExpenseStatus, lines []domain.JournalLine) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if expenseStatus != nil {
+		res, err := tx.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, a.SubjectID, *expenseStatus)
+		if err != nil {
+			return fmt.Errorf("update expense status: %w", err)
+		}
+		if res.RowsAffected() == 0 {
+			return fmt.Errorf("expense not found: %w", domain.ErrNotFound)
+		}
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	res, err := tx.Exec(ctx, `
+		UPDATE approval_requests SET status=$2, decided_by=$3, decided_at=$4, note=$5 WHERE id=$1`,
+		a.ID, a.Status, a.DecidedBy, a.DecidedAt, nullIfEmpty(a.Note))
+	if err != nil {
+		return fmt.Errorf("update approval: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("approval not found: %w", domain.ErrNotFound)
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *FinanceRepo) InsertKPI(ctx context.Context, s *domain.KPISnapshot) error {

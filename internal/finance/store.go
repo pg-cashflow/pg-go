@@ -21,6 +21,7 @@ type Store interface {
 	GetPropertyOwnerUserID(ctx context.Context, propertyID uuid.UUID) (uuid.UUID, error)
 
 	InsertCapital(ctx context.Context, tx *domain.CapitalTransaction) error
+	InsertCapitalAtomic(ctx context.Context, tx *domain.CapitalTransaction, lines []domain.JournalLine) error
 	ListCapital(ctx context.Context, propertyID uuid.UUID) ([]domain.CapitalTransaction, error)
 	CountCapital(ctx context.Context, propertyID uuid.UUID) (int, error)
 
@@ -38,6 +39,7 @@ type Store interface {
 
 	InsertAdvance(ctx context.Context, a *domain.ManagerAdvance) error
 	InsertReimbursement(ctx context.Context, r *domain.ManagerReimbursement) error
+	InsertReimbursementAtomic(ctx context.Context, r *domain.ManagerReimbursement, lines []domain.JournalLine) error
 	AdvanceOutstanding(ctx context.Context, propertyID uuid.UUID) (int64, error)
 	ListAdvances(ctx context.Context, propertyID uuid.UUID) ([]domain.ManagerAdvance, error)
 
@@ -63,6 +65,7 @@ type Store interface {
 	GetApproval(ctx context.Context, id uuid.UUID) (*domain.ApprovalRequest, error)
 	ListApprovals(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.ApprovalRequest, error)
 	UpdateApproval(ctx context.Context, a *domain.ApprovalRequest) error
+	DecideApprovalAtomic(ctx context.Context, a *domain.ApprovalRequest, expenseStatus *domain.ExpenseStatus, lines []domain.JournalLine) error
 
 	InsertKPI(ctx context.Context, s *domain.KPISnapshot) error
 	InsertROI(ctx context.Context, s *domain.ROISnapshot) error

@@ -505,6 +505,10 @@ func (h *Handlers) ManualMatch(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount and upi_txn_id required"})
 		return
 	}
+	if body.AmountPaise <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be strictly positive"})
+		return
+	}
 	p, err := h.Payments.ManualMatch(c.Request.Context(), id, body.AmountPaise, body.TxnID, uid)
 	if err != nil {
 		respondErr(c, paymentClientErr(err))
