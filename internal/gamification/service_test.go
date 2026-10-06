@@ -166,6 +166,14 @@ func (m *memStore) RecordMilestoneAward(ctx context.Context, tenantID uuid.UUID,
 	return true, nil
 }
 
+func (m *memStore) AddTenantCreditTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, amountPaise int64) error {
+	return nil
+}
+
+func (m *memStore) InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error {
+	return nil
+}
+
 
 func (m *memStore) GetTenantMonthPoints(ctx context.Context, tenantID uuid.UUID, monthYear string, isRSVP bool) (int, error) {
 	sum := 0

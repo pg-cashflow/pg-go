@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -110,6 +111,49 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 			)
 			if err != nil {
 				return fmt.Errorf("create payment allocation for single due: %w", err)
+			}
+		}
+
+		// In-transaction universal payment ledger outbox enqueue (C-09)
+		if !p.SkipOutboxEnqueue && p.Amount > 0 && p.PropertyID != nil && *p.PropertyID != uuid.Nil {
+			var allocs []domain.PaymentAllocationItemPayload
+			var unappliedPaise int64
+			if p.IsUnapplied {
+				unappliedPaise = int64(p.Amount)
+			} else if p.DueID != uuid.Nil {
+				var dueKind string
+				_ = repo.db.QueryRow(ctx, `SELECT kind FROM dues WHERE id = $1`, p.DueID).Scan(&dueKind)
+				if dueKind == "" {
+					dueKind = string(domain.DueKindRent)
+				}
+				allocs = append(allocs, domain.PaymentAllocationItemPayload{
+					AmountPaise: int64(p.Amount),
+					DueKind:     dueKind,
+				})
+			}
+			mirrorPayload := domain.PaymentMirrorPayload{
+				PropertyID:     *p.PropertyID,
+				PaymentID:      p.ID,
+				Allocations:    allocs,
+				UnappliedPaise: unappliedPaise,
+				IsUnapplied:    p.IsUnapplied,
+				MatchedAt:      p.MatchedAt,
+				MatchedBy:      p.MatchedBy,
+				AmountPaise:    int64(p.Amount),
+			}
+			rawPayload, err := json.Marshal(mirrorPayload)
+			if err != nil {
+				return fmt.Errorf("marshal payment mirror outbox payload: %w", err)
+			}
+			outboxKey := fmt.Sprintf("payment_mirror:%s", p.ID)
+			_, err = repo.db.Exec(ctx, `
+				INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+				VALUES ($1, $2, $3, $4, $5, NOW())
+				ON CONFLICT (idempotency_key) DO NOTHING`,
+				domain.LedgerOutboxPayment, *p.PropertyID, p.ID, rawPayload, outboxKey,
+			)
+			if err != nil {
+				return fmt.Errorf("enqueue payment ledger outbox: %w", err)
 			}
 		}
 		return nil
@@ -469,12 +513,44 @@ func (r *PaymentRepo) RecordCorrection(ctx context.Context, c *domain.FinancialC
 		c.OccurredAt = now
 	}
 	c.CreatedAt = now
-	return r.db.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		INSERT INTO financial_corrections (property_id, original_payment_id, reversal_payment_id, corrected_payment_id, reason, corrected_by, occurred_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id`,
 		c.PropertyID, c.OriginalPaymentID, c.ReversalPaymentID, c.CorrectedPaymentID, c.Reason, c.CorrectedBy, c.OccurredAt, c.CreatedAt,
 	).Scan(&c.ID)
+	if err != nil {
+		return err
+	}
+
+	// In-transaction universal correction outbox enqueue (C-10)
+	var origAmt int64
+	_ = r.db.QueryRow(ctx, `SELECT amount FROM payments WHERE id = $1`, c.OriginalPaymentID).Scan(&origAmt)
+	if origAmt > 0 {
+		payload, err := json.Marshal(domain.CorrectionMirrorPayload{
+			PropertyID:         c.PropertyID,
+			CorrectionID:       c.ID,
+			OriginalPaymentID:  c.OriginalPaymentID,
+			ReversalPaymentID:  c.ReversalPaymentID,
+			CorrectedPaymentID: c.CorrectedPaymentID,
+			AmountPaise:        origAmt,
+			OccurredAt:         c.OccurredAt,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal correction mirror outbox payload: %w", err)
+		}
+		outboxKey := fmt.Sprintf("correction_mirror:%s", c.ID)
+		_, err = r.db.Exec(ctx, `
+			INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (idempotency_key) DO NOTHING`,
+			domain.LedgerOutboxCorrection, c.PropertyID, c.ID, payload, outboxKey,
+		)
+		if err != nil {
+			return fmt.Errorf("enqueue correction ledger outbox: %w", err)
+		}
+	}
+	return nil
 }
 
 func (r *PaymentRepo) ListCorrections(ctx context.Context, propertyID uuid.UUID) ([]domain.FinancialCorrection, error) {

@@ -154,6 +154,8 @@ func main() {
 	}
 	billingSvc := billing.NewService(dueRepo, tenantRepo, pub)
 	paySvc := payment.NewServiceWithPool(pool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(pool))
+	depositSettlementRepo := postgres.NewDepositSettlementRepo(pool)
+	paySvc.SetDepositSettler(depositSettlementRepo)
 	tenantSvc := tenant.NewServiceWithPool(pool, tenantRepo, dueRepo, eventRepo, pushRepo)
 	magicSvc := magiclink.NewService(tokenRepo, dueRepo, propertyRepo, tenantRepo, cfg.MagicLinkHMACSecret)
 	pushSvc := push.NewService(push.RepoAdapter{Inner: pushRepo}, push.Config{

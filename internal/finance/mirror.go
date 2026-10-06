@@ -560,3 +560,86 @@ func (s *Service) MirrorUnappliedReclassification(ctx context.Context, propertyI
 	}
 	return err
 }
+
+// MirrorDepositSettlement posts deposit settlement lines:
+// Dr deposit_liability (totalSettled)
+// Cr cash/bank (refundedPaise)
+// Cr rent_revenue (deductionsPaise)
+func (s *Service) MirrorDepositSettlement(
+	ctx context.Context,
+	propertyID, settlementID, tenantID, dueID uuid.UUID,
+	originalDepositPaise, refundedPaise, deductionsPaise int64,
+	at time.Time,
+) error {
+	if s == nil || s.Store == nil {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+
+	totalSettled := refundedPaise + deductionsPaise
+	if totalSettled <= 0 {
+		return nil
+	}
+
+	specs := make([]LineSpec, 0, 3)
+	specs = append(specs, LineSpec{
+		Account:  domain.AcctDepositLiability,
+		Debit:    totalSettled,
+		LineKind: "deposit_release",
+	})
+	if refundedPaise > 0 {
+		specs = append(specs, LineSpec{
+			Account:  domain.AcctCash,
+			Credit:   refundedPaise,
+			LineKind: "deposit_refund_cash",
+		})
+	}
+	if deductionsPaise > 0 {
+		specs = append(specs, LineSpec{
+			Account:  domain.AcctRentRevenue,
+			Credit:   deductionsPaise,
+			LineKind: "damage_deduction",
+		})
+	}
+
+	lines, err := MakeLines(propertyID, settlementID, "deposit_settlement", at, specs)
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorPaymentCorrection posts a reversing journal for the original payment.
+func (s *Service) MirrorPaymentCorrection(
+	ctx context.Context,
+	propertyID, correctionID, originalPaymentID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	// Reversal: Dr rent_revenue, Cr cash/bank (reversing original collection)
+	lines, err := MakeLines(propertyID, correctionID, "payment_correction", at, []LineSpec{
+		{Account: domain.AcctRentRevenue, Debit: amountPaise, LineKind: "correction_reversal_dr"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "correction_reversal_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+

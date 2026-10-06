@@ -106,6 +106,68 @@ func (m *mockMirrorer) MirrorUnappliedPayment(
 	return nil
 }
 
+func (m *mockMirrorer) MirrorDepositSettlement(
+	ctx context.Context,
+	propertyID, settlementID, tenantID, dueID uuid.UUID,
+	originalDepositPaise, refundedPaise, deductionsPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror deposit settlement failure")
+	}
+	return nil
+}
+
+func (m *mockMirrorer) MirrorRefund(
+	ctx context.Context,
+	propertyID, refundID uuid.UUID,
+	amountPaise int64,
+	isUnapplied bool,
+	dueKind domain.DueKind,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror refund failure")
+	}
+	return nil
+}
+
+func (m *mockMirrorer) MirrorRefundAllocations(
+	ctx context.Context,
+	propertyID, refundID uuid.UUID,
+	allocations []RefundAllocationItem,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror refund allocations failure")
+	}
+	return nil
+}
+
+func (m *mockMirrorer) MirrorRewardRedeem(
+	ctx context.Context,
+	propertyID, tenantID, redemptionID uuid.UUID,
+	points int,
+	amountPaise int64,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror reward redeem failure")
+	}
+	return nil
+}
+
+func (m *mockMirrorer) MirrorPaymentCorrection(
+	ctx context.Context,
+	propertyID, correctionID, originalPaymentID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror payment correction failure")
+	}
+	return nil
+}
+
 func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	dbURL := os.Getenv("DATABASE_URL")

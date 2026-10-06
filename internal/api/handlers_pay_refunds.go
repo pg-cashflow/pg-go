@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -424,7 +425,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				return err
 			}
 
-			// If succeeded, recompute dues
+			// If succeeded, recompute dues and enqueue outbox
 			if rfRow.Status == "succeeded" {
 				for _, item := range allocationsToCreate {
 					d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
@@ -433,6 +434,39 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 							return err
 						}
 					}
+				}
+
+				// In-transaction universal refund ledger outbox enqueue (C-05)
+				var mirrorAllocs []domain.RefundAllocationItemPayload
+				for _, item := range allocationsToCreate {
+					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+						AmountPaise: item.amountPaise,
+						DueKind:     string(item.dueKind),
+					})
+				}
+				refundPayload := domain.RefundMirrorPayload{
+					PropertyID:  pid,
+					RefundID:    rfRow.ID,
+					PaymentID:   p.ID,
+					AmountPaise: req.AmountPaise,
+					IsUnapplied: p.IsUnapplied,
+					Allocations: mirrorAllocs,
+					DueKind:     string(domain.DueKindRent),
+					OccurredAt:  time.Now().UTC(),
+				}
+				rawPayload, err := json.Marshal(refundPayload)
+				if err != nil {
+					return fmt.Errorf("marshal refund mirror outbox: %w", err)
+				}
+				outboxKey := fmt.Sprintf("refund_mirror:%s", rfRow.ID)
+				_, err = tx.Exec(ctx, `
+					INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+					VALUES ($1, $2, $3, $4, $5, NOW())
+					ON CONFLICT (idempotency_key) DO NOTHING`,
+					domain.LedgerOutboxRefund, pid, rfRow.ID, rawPayload, outboxKey,
+				)
+				if err != nil {
+					return fmt.Errorf("enqueue refund ledger outbox: %w", err)
 				}
 			} else if rfRow.Status == "failed" || rfRow.Status == "cancelled" {
 				if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {

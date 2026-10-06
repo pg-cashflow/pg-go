@@ -242,10 +242,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					UPITxnID:    &txnID,
 					CFPaymentID: &cfID,
 					Amount:      succ.AmountPaise,
-					MatchedBy:   domain.MatchedByCashfree,
-					MatchedAt:   at,
-					IsUnapplied: true,
-					RawNote:     &note,
+					MatchedBy:         domain.MatchedByCashfree,
+					MatchedAt:         at,
+					IsUnapplied:       true,
+					RawNote:           &note,
+					SkipOutboxEnqueue: true,
 				}
 				if err := txPayRepo.Create(ctx, p); err != nil {
 					return err
@@ -291,9 +292,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				UPITxnID:    &txnID,
 				CFPaymentID: &cfID,
 				Amount:      succ.AmountPaise,
-				MatchedBy:   domain.MatchedByCashfree,
-				MatchedAt:   at,
-				IsUnapplied: false,
+				MatchedBy:         domain.MatchedByCashfree,
+				MatchedAt:         at,
+				IsUnapplied:       false,
+				SkipOutboxEnqueue: true,
 			}
 			if err := txPayRepo.Create(ctx, p); err != nil {
 				return err
@@ -574,6 +576,39 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 					committedDue = d
 					committedIsUnapp = false
 					committedRefAmt = ref.RefundAmount
+				}
+
+				// Enqueue in-transaction refund outbox event (C-05)
+				var mirrorAllocs []domain.RefundAllocationItemPayload
+				if !committedIsUnapp {
+					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+						AmountPaise: committedRefAmt,
+						DueKind:     string(d.Kind),
+					})
+				}
+				refundPayload := domain.RefundMirrorPayload{
+					PropertyID:  d.PropertyID,
+					RefundID:    rfRow.ID,
+					PaymentID:   p.ID,
+					AmountPaise: committedRefAmt,
+					IsUnapplied: committedIsUnapp,
+					Allocations: mirrorAllocs,
+					DueKind:     string(d.Kind),
+					OccurredAt:  time.Now().UTC(),
+				}
+				rawPayload, err := json.Marshal(refundPayload)
+				if err != nil {
+					return fmt.Errorf("marshal refund outbox: %w", err)
+				}
+				outboxKey := fmt.Sprintf("refund_mirror:%s", rfRow.ID)
+				_, err = tx.Exec(ctx, `
+					INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+					VALUES ($1, $2, $3, $4, $5, NOW())
+					ON CONFLICT (idempotency_key) DO NOTHING`,
+					domain.LedgerOutboxRefund, d.PropertyID, rfRow.ID, rawPayload, outboxKey,
+				)
+				if err != nil {
+					return fmt.Errorf("enqueue refund outbox: %w", err)
 				}
 			}
 			return nil

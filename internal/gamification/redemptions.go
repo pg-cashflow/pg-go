@@ -95,9 +95,9 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 			discountPaise = 50000 // Rs 500
 		}
 
-		// Apply credit to tenant.credit_balance_paise
+		// Apply credit to tenant.credit_balance_paise inside transaction (C-11)
 		tenant.CreditBalancePaise += discountPaise
-		if err := s.tenants.Update(ctx, tenant); err != nil {
+		if err := s.store.AddTenantCreditTx(ctx, tx, tenantID, discountPaise); err != nil {
 			return nil, fmt.Errorf("failed to apply rent credit: %w", err)
 		}
 
@@ -139,6 +139,40 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 	streak.CachedBalance = activeBalance - reward.PointsCost
 	if err := s.store.UpsertStreakTx(ctx, tx, streak); err != nil {
 		return nil, err
+	}
+
+	// In-transaction universal reward redeem ledger outbox enqueue (C-11)
+	if reward.Category == "cash_credit" {
+		type meta struct {
+			DiscountPaise int64 `json:"discount_paise"`
+		}
+		var m meta
+		_ = json.Unmarshal(reward.Metadata, &m)
+		discountPaise := m.DiscountPaise
+		if discountPaise <= 0 {
+			discountPaise = 50000
+		}
+		outboxPayload, err := json.Marshal(domain.RewardRedeemMirrorPayload{
+			PropertyID:   tenant.PropertyID,
+			TenantID:     tenant.ID,
+			RedemptionID: red.ID,
+			PointsSpent:  red.PointsSpent,
+			AmountPaise:  discountPaise,
+			OccurredAt:   s.now().UTC(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal reward redeem outbox payload: %w", err)
+		}
+		outboxEvt := &domain.LedgerOutboxEvent{
+			EventType:      domain.LedgerOutboxRewardRedeem,
+			PropertyID:     tenant.PropertyID,
+			SourceID:       red.ID,
+			Payload:        outboxPayload,
+			IdempotencyKey: fmt.Sprintf("reward_redeem:%s", red.ID),
+		}
+		if err := s.store.InsertOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+			return nil, fmt.Errorf("enqueue reward redeem outbox: %w", err)
+		}
 	}
 
 	if tx != nil {

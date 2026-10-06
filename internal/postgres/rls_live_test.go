@@ -217,4 +217,39 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 			t.Fatalf("WithinTx failed: %v", err)
 		}
 	})
+
+	t.Run("Production Role Safety (Non-Superuser, Non-BYPASSRLS)", func(t *testing.T) {
+		var isSuper, bypassRLS bool
+		err := pool.QueryRow(ctx, `
+			SELECT rolsuper, rolbypassrls
+			FROM pg_roles
+			WHERE rolname = 'test_rls_app_user'
+		`).Scan(&isSuper, &bypassRLS)
+		if err != nil {
+			t.Fatalf("failed querying role flags: %v", err)
+		}
+		if isSuper {
+			t.Fatalf("SECURITY VIOLATION: runtime app role must NOT be a superuser")
+		}
+		if bypassRLS {
+			t.Fatalf("SECURITY VIOLATION: runtime app role must NOT have BYPASSRLS")
+		}
+	})
+
+	t.Run("Cross-Property Insert Filtered/Rejected By RLS Policy", func(t *testing.T) {
+		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+				return err
+			}
+			phoneLeaker := "+91" + strconv.FormatInt((time.Now().UnixNano()+9)%10000000000, 10)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+				VALUES ($1, $2, 'Sneaky Leaker', $3, 10000, 1, 'active')
+			`, uuid.New(), propB, phoneLeaker)
+			return err
+		})
+		if err == nil {
+			t.Fatalf("SECURITY VIOLATION: expected cross-property insert under foreign scope to fail with RLS check violation, but it succeeded")
+		}
+	})
 }

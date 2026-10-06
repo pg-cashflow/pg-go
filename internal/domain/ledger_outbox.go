@@ -7,6 +7,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// Ledger outbox event type constants.
+const (
+	LedgerOutboxDepartureSettlement = "departure_settlement_mirror"
+	LedgerOutboxPayoutBatch         = "payout_batch_transfer"
+	LedgerOutboxPayment             = "payment_mirror"
+	LedgerOutboxDepositSettlement   = "deposit_settlement_mirror"
+	LedgerOutboxRefund              = "refund_mirror"
+	LedgerOutboxRewardRedeem        = "reward_redeem_mirror"
+	LedgerOutboxCorrection          = "correction_mirror"
+)
+
 // LedgerOutboxEvent represents an atomic post-commit event for double-entry financial journals.
 // Enqueued inside the triggering domain transaction (e.g. SettleDepartureUnderLock) before commit.
 type LedgerOutboxEvent struct {
@@ -55,3 +66,43 @@ type PaymentMirrorPayload struct {
 	MatchedBy      MatchedBy                      `json:"matched_by"`
 	AmountPaise    int64                          `json:"amount_paise"`
 }
+
+// RefundAllocationItemPayload defines an individual allocation within a refund mirror payload.
+type RefundAllocationItemPayload struct {
+	AmountPaise int64  `json:"amount_paise"`
+	DueKind     string `json:"due_kind"`
+}
+
+// RefundMirrorPayload defines the serialized payload for gateway and manual refunds.
+type RefundMirrorPayload struct {
+	PropertyID  uuid.UUID                     `json:"property_id"`
+	RefundID    uuid.UUID                     `json:"refund_id"`
+	PaymentID   uuid.UUID                     `json:"payment_id"`
+	AmountPaise int64                         `json:"amount_paise"`
+	IsUnapplied bool                          `json:"is_unapplied"`
+	Allocations []RefundAllocationItemPayload `json:"allocations,omitempty"`
+	DueKind     string                        `json:"due_kind,omitempty"`
+	OccurredAt  time.Time                     `json:"occurred_at"`
+}
+
+// RewardRedeemMirrorPayload defines the serialized payload for reward point redemptions.
+type RewardRedeemMirrorPayload struct {
+	PropertyID   uuid.UUID `json:"property_id"`
+	TenantID     uuid.UUID `json:"tenant_id"`
+	RedemptionID uuid.UUID `json:"redemption_id"`
+	PointsSpent  int       `json:"points_spent"`
+	AmountPaise  int64     `json:"amount_paise"`
+	OccurredAt   time.Time `json:"occurred_at"`
+}
+
+// CorrectionMirrorPayload defines the serialized payload for payment corrections.
+type CorrectionMirrorPayload struct {
+	PropertyID         uuid.UUID  `json:"property_id"`
+	CorrectionID       uuid.UUID  `json:"correction_id"`
+	OriginalPaymentID  uuid.UUID  `json:"original_payment_id"`
+	ReversalPaymentID  *uuid.UUID `json:"reversal_payment_id,omitempty"`
+	CorrectedPaymentID *uuid.UUID `json:"corrected_payment_id,omitempty"`
+	AmountPaise        int64      `json:"amount_paise"`
+	OccurredAt         time.Time  `json:"occurred_at"`
+}
+

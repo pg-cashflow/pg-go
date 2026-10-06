@@ -30,17 +30,23 @@ var (
 // txFn runs work with optionally transactional repos.
 type txFn func(ctx context.Context, fn func(dues DueRepository, payments PaymentRepository, tenants TenantRepository, pub events.Publisher) error) error
 
+// DepositSettler defines atomic deposit settlement persistence.
+type DepositSettler interface {
+	SettleDepositAtomic(ctx context.Context, p postgres.SettleDepositParams) (*domain.DepositSettlement, error)
+}
+
 // Service matches and records payments, settles deposits, and builds summaries.
 type Service struct {
-	dues      DueRepository
-	payments  PaymentRepository
-	tenants   TenantRepository
-	summaries SummaryRepository
-	matcher   *Matcher
-	pub       events.Publisher
-	runInTx   txFn
-	now       func() time.Time
-	onSettle  func(ctx context.Context, p *domain.Payment, due *domain.Due)
+	dues           DueRepository
+	payments       PaymentRepository
+	tenants        TenantRepository
+	summaries      SummaryRepository
+	matcher        *Matcher
+	pub            events.Publisher
+	runInTx        txFn
+	now            func() time.Time
+	onSettle       func(ctx context.Context, p *domain.Payment, due *domain.Due)
+	depositSettler DepositSettler
 }
 
 func NewService(
@@ -87,6 +93,11 @@ func NewServiceWithPool(
 // SetSettlementHook runs after a successful collection. Hook must be idempotent (journal unique keys).
 func (s *Service) SetSettlementHook(fn func(ctx context.Context, p *domain.Payment, due *domain.Due)) {
 	s.onSettle = fn
+}
+
+// SetDepositSettler configures the atomic deposit settlement engine.
+func (s *Service) SetDepositSettler(ds DepositSettler) {
+	s.depositSettler = ds
 }
 
 func (s *Service) fireSettle(ctx context.Context, p *domain.Payment, dueID uuid.UUID) {
@@ -490,6 +501,28 @@ func (s *Service) SettleDeposit(ctx context.Context, tenantID uuid.UUID, refunde
 		return err
 	}
 	at := s.now()
+
+	if s.depositSettler != nil {
+		deductionsPaise := int64(deposit.OriginalAmount) - refundedPaise
+		if deductionsPaise < 0 {
+			deductionsPaise = 0
+		}
+		idempotencyKey := fmt.Sprintf("deposit-settle:%s:%s", deposit.ID, tenantID)
+		params := postgres.SettleDepositParams{
+			PropertyID:      tenant.PropertyID,
+			TenantID:        tenantID,
+			DepositDueID:    deposit.ID,
+			RefundedPaise:   refundedPaise,
+			DeductionsPaise: deductionsPaise,
+			IdempotencyKey:  idempotencyKey,
+			Reason:          reason,
+			SettledAt:       at,
+		}
+		if _, err := s.depositSettler.SettleDepositAtomic(ctx, params); err != nil {
+			return err
+		}
+	}
+
 	noticeDays, policyMet := billing.NoticeCompliance(tenant, at)
 	payload, _ := json.Marshal(domain.DepositSettledPayload{
 		DepositDueID:    deposit.ID.String(),

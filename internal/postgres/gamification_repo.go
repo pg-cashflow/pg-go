@@ -401,6 +401,24 @@ func (r *GamificationRepo) LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID
 	return tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&exists)
 }
 
+func (r *GamificationRepo) AddTenantCreditTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, amountPaise int64) error {
+	_, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, amountPaise)
+	return err
+}
+
+func (r *GamificationRepo) InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error {
+	if evt.Payload == nil {
+		evt.Payload = []byte("{}")
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (idempotency_key) DO NOTHING`,
+		evt.EventType, evt.PropertyID, evt.SourceID, evt.Payload, evt.IdempotencyKey,
+	)
+	return err
+}
+
 // P0 Fix: Acquire row lock on tenant_streaks inside transaction
 func (r *GamificationRepo) GetStreakForUpdate(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) (*domain.TenantStreak, error) {
 	var s domain.TenantStreak

@@ -33,6 +33,8 @@ var (
 type Store interface {
 	BeginTx(ctx context.Context) (pgx.Tx, error)
 	LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error
+	AddTenantCreditTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, amountPaise int64) error
+	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error
 
 	// Floors & Rooms
 	CreateFloor(ctx context.Context, f *domain.Floor) error

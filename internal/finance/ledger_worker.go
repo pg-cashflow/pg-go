@@ -35,6 +35,38 @@ type LedgerMirrorer interface {
 		amountPaise int64,
 		at time.Time,
 	) error
+	MirrorDepositSettlement(
+		ctx context.Context,
+		propertyID, settlementID, tenantID, dueID uuid.UUID,
+		originalDepositPaise, refundedPaise, deductionsPaise int64,
+		at time.Time,
+	) error
+	MirrorRefund(
+		ctx context.Context,
+		propertyID, refundID uuid.UUID,
+		amountPaise int64,
+		isUnapplied bool,
+		dueKind domain.DueKind,
+		at time.Time,
+	) error
+	MirrorRefundAllocations(
+		ctx context.Context,
+		propertyID, refundID uuid.UUID,
+		allocations []RefundAllocationItem,
+		at time.Time,
+	) error
+	MirrorRewardRedeem(
+		ctx context.Context,
+		propertyID, tenantID, redemptionID uuid.UUID,
+		points int,
+		amountPaise int64,
+	) error
+	MirrorPaymentCorrection(
+		ctx context.Context,
+		propertyID, correctionID, originalPaymentID uuid.UUID,
+		amountPaise int64,
+		at time.Time,
+	) error
 }
 
 // LedgerOutboxWorker polls and processes pending ledger outbox events to ensure zero ledger desynchronization.
@@ -212,6 +244,62 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			MatchedAt: p.MatchedAt,
 		}
 		return w.mirrorer.MirrorPaymentAllocations(ctx, p.PropertyID, paymentObj, allocs, p.UnappliedPaise)
+	case "deposit_settlement_mirror":
+		var p domain.DepositSettlementMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal deposit settlement mirror payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		return w.mirrorer.MirrorDepositSettlement(
+			ctx,
+			p.PropertyID,
+			p.SettlementID,
+			p.TenantID,
+			p.DepositDueID,
+			p.OriginalDepositPaise,
+			p.RefundedPaise,
+			p.DeductionsPaise,
+			p.OccurredAt,
+		)
+	case "refund_mirror":
+		var p domain.RefundMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal refund mirror payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		if p.IsUnapplied {
+			return w.mirrorer.MirrorRefund(ctx, p.PropertyID, p.RefundID, p.AmountPaise, true, domain.DueKind(p.DueKind), p.OccurredAt)
+		}
+		items := make([]RefundAllocationItem, 0, len(p.Allocations))
+		for _, a := range p.Allocations {
+			items = append(items, RefundAllocationItem{
+				AmountPaise: a.AmountPaise,
+				DueKind:     domain.DueKind(a.DueKind),
+			})
+		}
+		return w.mirrorer.MirrorRefundAllocations(ctx, p.PropertyID, p.RefundID, items, p.OccurredAt)
+	case "reward_redeem_mirror":
+		var p domain.RewardRedeemMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal reward redeem mirror payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		return w.mirrorer.MirrorRewardRedeem(ctx, p.PropertyID, p.TenantID, p.RedemptionID, p.PointsSpent, p.AmountPaise)
+	case "correction_mirror":
+		var p domain.CorrectionMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal correction mirror payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		return w.mirrorer.MirrorPaymentCorrection(ctx, p.PropertyID, p.CorrectionID, p.OriginalPaymentID, p.AmountPaise, p.OccurredAt)
 	default:
 		return fmt.Errorf("unrecognized ledger outbox event type '%s'", evt.EventType)
 	}

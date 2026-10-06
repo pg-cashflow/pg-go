@@ -35,6 +35,7 @@ type Payment struct {
 	RawNote           *string    `json:"raw_note,omitempty"`
 	IsUnapplied       bool       `json:"is_unapplied"`
 	CreatedAt         time.Time  `json:"created_at"`
+	SkipOutboxEnqueue bool       `json:"-"`
 }
 
 type FinancialCorrection struct {
