@@ -1,14 +1,19 @@
-package finance
+package domain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
-func DefaultPolicy(propertyID uuid.UUID) domain.ApprovalPolicy {
-	return domain.ApprovalPolicy{
+var (
+	ErrPolicyExceeded = errors.New("finance: spend policy exceeded")
+	ErrInvalidAmount  = errors.New("finance: invalid amount")
+)
+
+func DefaultPolicy(propertyID uuid.UUID) ApprovalPolicy {
+	return ApprovalPolicy{
 		PropertyID:                  propertyID,
 		ManagerDailyLimitPaise:      1_000_000,
 		SingleExpenseLimitPaise:     500_000,
@@ -19,12 +24,8 @@ func DefaultPolicy(propertyID uuid.UUID) domain.ApprovalPolicy {
 	}
 }
 
-func defaultPolicy(propertyID uuid.UUID) domain.ApprovalPolicy {
-	return DefaultPolicy(propertyID)
-}
-
-func DefaultSettings(propertyID uuid.UUID) domain.PropertyFinanceSettings {
-	return domain.PropertyFinanceSettings{
+func DefaultSettings(propertyID uuid.UUID) PropertyFinanceSettings {
+	return PropertyFinanceSettings{
 		PropertyID:            propertyID,
 		FiscalMonthStartDay:   1,
 		ManagerCanViewLeakage: true,
@@ -32,18 +33,12 @@ func DefaultSettings(propertyID uuid.UUID) domain.PropertyFinanceSettings {
 	}
 }
 
-func defaultSettings(propertyID uuid.UUID) domain.PropertyFinanceSettings {
-	return DefaultSettings(propertyID)
-}
-
 type SpendCheck struct {
 	NeedsApproval bool
 	Reject        error
 }
 
-type spendCheck = SpendCheck
-
-func EvaluateManagerSpend(p domain.ApprovalPolicy, amount, dailySoFar, monthlySoFar int64, emergency bool) SpendCheck {
+func EvaluateManagerSpend(p ApprovalPolicy, amount, dailySoFar, monthlySoFar int64, emergency bool) SpendCheck {
 	if amount <= 0 {
 		return SpendCheck{Reject: ErrInvalidAmount}
 	}
@@ -65,14 +60,28 @@ func EvaluateManagerSpend(p domain.ApprovalPolicy, amount, dailySoFar, monthlySo
 	return SpendCheck{}
 }
 
-func evaluateManagerSpend(p domain.ApprovalPolicy, amount, dailySoFar, monthlySoFar int64, emergency bool) SpendCheck {
-	return EvaluateManagerSpend(p, amount, dailySoFar, monthlySoFar, emergency)
-}
-
 func DayStart(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-func dayStart(t time.Time) time.Time {
-	return DayStart(t)
+func PeriodBounds(period string) (from, to time.Time, err error) {
+	if len(period) == 7 && period[4] == '-' {
+		t, err := time.Parse("2006-01", period)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		from = time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
+		to = from.AddDate(0, 1, 0)
+		return from, to, nil
+	}
+	if len(period) == 4 {
+		t, err := time.Parse("2006", period)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+		from = time.Date(t.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+		to = from.AddDate(1, 0, 0)
+		return from, to, nil
+	}
+	return time.Time{}, time.Time{}, errors.New("invalid period format")
 }

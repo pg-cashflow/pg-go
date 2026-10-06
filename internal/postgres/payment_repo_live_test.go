@@ -398,3 +398,139 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 		}
 	}
 }
+
+func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Skip("config load failed, skipping live Postgres test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+	}
+	defer pool.Close()
+
+	// 1. Create test property, tenant, due
+	propID := uuid.New()
+	inviteCode := fmt.Sprintf("P%s", uuid.New().String()[:7])
+	_, err = pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+		VALUES ($1, 'Intent Prop', 'Addr', '+919999988888', 'intent@upi', 'Owner', 'intent@test.com', $2)`, propID, inviteCode)
+	if err != nil {
+		t.Fatalf("insert property: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id = $1`, propID) }()
+
+	tenantID := uuid.New()
+	tenantPhone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+1)%10000000000)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, room_number, rent_amount, due_day, status)
+		VALUES ($1, $2, 'Intent Tenant', $3, '101', 15000, 1, 'active')`,
+		tenantID, propID, tenantPhone)
+	if err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenantID) }()
+
+	dueID := uuid.New()
+	dueCode := "I" + uuid.New().String()[:7]
+	_, err = pool.Exec(ctx, `
+		INSERT INTO dues (id, due_code, property_id, tenant_id, amount, original_amount, status, due_date, kind, period_start, period_end)
+		VALUES ($1, $2, $3, $4, 1500000, 1500000, 'pending', CURRENT_DATE, 'rent', CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month')`,
+		dueID, dueCode, propID, tenantID)
+	if err != nil {
+		t.Fatalf("insert due: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM payment_intents WHERE due_id = $1`, dueID)
+		_, _ = pool.Exec(ctx, `DELETE FROM dues WHERE id = $1`, dueID)
+	}()
+
+	intentRepo := NewPaymentIntentRepo(pool)
+
+	// 2. Concurrency test: 10 concurrent requests attempting ClaimInitiatingIntent
+	const goroutines = 10
+	type claimResult struct {
+		intent   *domain.PaymentIntent
+		reused   bool
+		inFlight bool
+		err      error
+	}
+	results := make([]claimResult, goroutines)
+	startCh := make(chan struct{})
+	doneCh := make(chan int, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			<-startCh
+			orderID := fmt.Sprintf("order-%s-%d", dueCode, idx)
+			intent, reused, inFlight, cErr := intentRepo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, orderID, 10*time.Minute)
+			results[idx] = claimResult{intent: intent, reused: reused, inFlight: inFlight, err: cErr}
+			doneCh <- idx
+		}(i)
+	}
+
+	close(startCh)
+	for i := 0; i < goroutines; i++ {
+		<-doneCh
+	}
+
+	// Verify concurrency invariants:
+	// Exactly one winner claimed a new initiating intent (reused=false, inFlight=false, err=nil)
+	var winnerIntent *domain.PaymentIntent
+	newClaims := 0
+	inFlightCount := 0
+	for _, res := range results {
+		if res.err != nil {
+			t.Fatalf("unexpected claim error: %v", res.err)
+		}
+		if !res.reused && !res.inFlight {
+			newClaims++
+			winnerIntent = res.intent
+		} else if res.inFlight {
+			inFlightCount++
+		}
+	}
+	if newClaims != 1 {
+		t.Fatalf("expected exactly 1 winner to claim initiating intent, got %d (inFlight=%d)", newClaims, inFlightCount)
+	}
+	if winnerIntent == nil || winnerIntent.Status != domain.IntentInitiating {
+		t.Fatalf("expected winner intent with status 'initiating', got: %+v", winnerIntent)
+	}
+
+	// In database: exactly 1 active intent with status 'initiating'
+	var activeCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM payment_intents WHERE due_id = $1 AND status = 'initiating'`, dueID).Scan(&activeCount)
+	if err != nil || activeCount != 1 {
+		t.Fatalf("expected 1 active initiating intent in DB, got count=%d, err=%v", activeCount, err)
+	}
+
+	// 3. Complete external transition: TransitionCreated
+	sessID := "session_cf_123"
+	exp := time.Now().Add(30 * time.Minute)
+	err = intentRepo.TransitionCreated(ctx, winnerIntent.ID, sessID, &exp)
+	if err != nil {
+		t.Fatalf("TransitionCreated failed: %v", err)
+	}
+
+	// Verify intent is now 'created' and has session
+	polled, err := intentRepo.GetByID(ctx, winnerIntent.ID)
+	if err != nil || polled.Status != domain.IntentCreated || polled.PaymentSessionID == nil || *polled.PaymentSessionID != sessID {
+		t.Fatalf("expected created intent with session %s, got: %+v", sessID, polled)
+	}
+
+	// 4. Subsequent ClaimInitiatingIntent MUST reuse the created intent
+	reusedIntent, isReused, isInFlight, err := intentRepo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, "new-order", 10*time.Minute)
+	if err != nil {
+		t.Fatalf("ClaimInitiatingIntent reuse failed: %v", err)
+	}
+	if !isReused || isInFlight || reusedIntent.ID != winnerIntent.ID {
+		t.Fatalf("expected reuse of intent %s, got isReused=%v, inFlight=%v, id=%s", winnerIntent.ID, isReused, isInFlight, reusedIntent.ID)
+	}
+}
+

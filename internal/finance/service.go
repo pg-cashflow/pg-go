@@ -126,28 +126,6 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 	if at.IsZero() {
 		at = s.Now()
 	}
-	status := domain.ExpenseApproved
-	var approval *domain.ApprovalRequest
-	if in.ActorRole == string(domain.RoleManager) {
-		pol, err := s.Store.GetPolicy(ctx, in.PropertyID)
-		if err != nil {
-			return nil, nil, err
-		}
-		dayFrom := dayStart(at)
-		monthFrom, monthTo, _ := PeriodBounds(at.Format("2006-01"))
-		daily, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
-		monthly, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
-		chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, in.Emergency)
-		if chk.Reject != nil {
-			return nil, nil, chk.Reject
-		}
-		if chk.NeedsApproval {
-			status = domain.ExpensePendingApproval
-		}
-		if in.Emergency && pol.EmergencyBypassEnabled {
-			status = domain.ExpenseApproved
-		}
-	}
 	e := &domain.Expense{
 		ID:             uuid.New(),
 		PropertyID:     in.PropertyID,
@@ -155,7 +133,7 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 		VendorName:     in.VendorName,
 		Description:    in.Description,
 		AmountPaise:    in.AmountPaise,
-		Status:         status,
+		Status:         domain.ExpenseApproved,
 		Emergency:      in.Emergency,
 		IsRecurring:    in.IsRecurring,
 		RoomID:         in.RoomID,
@@ -165,30 +143,31 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 		OccurredAt:     at,
 		CreatedAt:      at,
 	}
-	var lines []domain.JournalLine
-	if status == domain.ExpenseApproved {
-		l, err := MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
-			{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
-			{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-		lines = l
-	} else {
-		approval = &domain.ApprovalRequest{
-			ID:          uuid.New(),
-			PropertyID:  in.PropertyID,
-			Kind:        "expense",
-			SubjectID:   e.ID,
-			AmountPaise: e.AmountPaise,
-			RequestedBy: in.ActorID,
-			Status:      "pending",
-			CreatedAt:   at,
-		}
+
+	lines, err := MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
+		{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
+		{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},
+	})
+	if err != nil {
+		return nil, nil, err
 	}
+
+	approval := &domain.ApprovalRequest{
+		ID:          uuid.New(),
+		PropertyID:  in.PropertyID,
+		Kind:        "expense",
+		SubjectID:   e.ID,
+		AmountPaise: e.AmountPaise,
+		RequestedBy: in.ActorID,
+		Status:      "pending",
+		CreatedAt:   at,
+	}
+
 	if err := s.Store.InsertExpenseAtomic(ctx, e, lines, approval); err != nil {
 		return nil, nil, err
+	}
+	if e.Status == domain.ExpenseApproved {
+		approval = nil
 	}
 	s.publish(ctx, in.PropertyID, domain.EvtExpenseCreated, e)
 	if in.Emergency {
@@ -231,15 +210,25 @@ func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.E
 	at := s.Now()
 	if in.ActorRole == domain.PayerManager {
 		pol, err := s.Store.GetPolicy(ctx, in.PropertyID)
-		if err == nil {
-			dayFrom := dayStart(at)
-			monthFrom, monthTo, _ := PeriodBounds(at.Format("2006-01"))
-			daily, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
-			monthly, _ := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
-			chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, false)
-			if chk.Reject != nil {
-				return nil, chk.Reject
-			}
+		if err != nil {
+			return nil, err
+		}
+		dayFrom := dayStart(at)
+		monthFrom, monthTo, err := PeriodBounds(at.Format("2006-01"))
+		if err != nil {
+			return nil, err
+		}
+		daily, err := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
+		if err != nil {
+			return nil, err
+		}
+		monthly, err := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
+		if err != nil {
+			return nil, err
+		}
+		chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, false)
+		if chk.Reject != nil {
+			return nil, chk.Reject
 		}
 	}
 	p := &domain.ExpensePayment{
@@ -304,7 +293,7 @@ func (s *Service) ReimburseManager(ctx context.Context, propertyID, ownerID, man
 	if amount <= 0 {
 		return nil, ErrInvalidAmount
 	}
-	outstanding, err := s.Store.AdvanceOutstanding(ctx, propertyID)
+	outstanding, err := s.Store.ManagerAdvanceOutstanding(ctx, propertyID, managerID)
 	if err != nil {
 		return nil, err
 	}

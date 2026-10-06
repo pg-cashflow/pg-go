@@ -116,6 +116,7 @@ func TestConcurrent_ManagerSpendLimits_Enforcement(t *testing.T) {
 	policy := domain.ApprovalPolicy{
 		PropertyID:                  pid,
 		ManagerDailyLimitPaise:      50_000_00,
+		ManagerMonthlyLimitPaise:    500_000_00,
 		SingleExpenseLimitPaise:     20_000_00,
 		OwnerApprovalThresholdPaise: 20_000_00,
 		EmergencyBypassEnabled:      false,
@@ -154,6 +155,13 @@ func TestConcurrent_ManagerSpendLimits_Enforcement(t *testing.T) {
 				IdempotencyKey: idem,
 				OccurredAt:     now,
 			})
+			if idx == 0 {
+				if err != nil {
+					t.Logf("idx 0 error: %v", err)
+				} else {
+					t.Logf("idx 0 status: %v", e.Status)
+				}
+			}
 			if err == nil {
 				if e.Status == domain.ExpenseApproved {
 					atomic.AddInt64(&approvedCount, 1)
@@ -169,9 +177,7 @@ func TestConcurrent_ManagerSpendLimits_Enforcement(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	// Since current spend was ₹40,000 and limit is ₹50,000,
-	// only 1 additional ₹10,000 expense can be approved.
-	// All other concurrent requests must NOT bypass the spend limit.
+	t.Logf("approvedCount: %d, pendingOrRejectedCount: %d", approvedCount, pendingOrRejectedCount)
 	if approvedCount > 1 {
 		t.Fatalf("concurrency limit breached: %d expenses approved, maximum allowed was 1", approvedCount)
 	}

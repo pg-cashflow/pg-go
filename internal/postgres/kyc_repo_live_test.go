@@ -842,10 +842,11 @@ func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id = $1`, propID)
 	}()
 
+	tenantPhone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+7)%10000000000)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
-		VALUES ($1, $2, 'Lock Tenant', '+919999900002', 1000000, 5, 'active')
-	`, tenantID, propID)
+		VALUES ($1, $2, 'Lock Tenant', $3, 1000000, 5, 'active')
+	`, tenantID, propID, tenantPhone)
 	if err != nil {
 		t.Fatalf("failed to insert test tenant: %v", err)
 	}

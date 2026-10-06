@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -699,6 +700,64 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		}
 		if len(remaining) != 0 {
 			t.Errorf("expected 0 unbatched items, got %d", len(remaining))
+		}
+	})
+
+	t.Run("Scenario_CrossProperty_Payee_Rejected", func(t *testing.T) {
+		// Create second property and a payee belonging to property 2
+		prop2ID := uuid.New()
+		invite2 := fmt.Sprintf("DEP%s", uuid.New().String()[:8])
+		_, err = pool.Exec(ctx, `INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code) VALUES ($1, 'Property 2', '456 Other Rd', '+919999988887', 'owner2@upi', 'Owner 2', 'owner2@test.com', $2)`, prop2ID, invite2)
+		if err != nil {
+			t.Fatalf("failed to insert prop2: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, prop2ID) }()
+
+		otherPayeeID := uuid.New()
+		payeeHash2 := domain.ComputeAccountHash([]byte("test_salt"), "9876543211@upi")
+		_, err = pool.Exec(ctx, `
+			INSERT INTO payout_payees (id, property_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, created_at, updated_at)
+			VALUES ($1, $2, 'tenant_deposit', 'Other Property Tenant', '9876543211', $3, '9876543211@upi', true, NOW(), NOW())`,
+			otherPayeeID, prop2ID, payeeHash2)
+		if err != nil {
+			t.Fatalf("failed to insert other payee: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_payees WHERE id = $1`, otherPayeeID) }()
+
+		// Create tenant and departure on propID
+		tenantID := uuid.New()
+		tenantPhone := fmt.Sprintf("+91%010d", time.Now().UnixNano()%10000000000)
+		_, err = pool.Exec(ctx, `INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status, created_at, updated_at) VALUES ($1, $2, 'Departing Tenant CP', $3, 10000, 1, 'active', NOW(), NOW())`, tenantID, propID, tenantPhone)
+		if err != nil {
+			t.Fatalf("failed to insert tenant: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID) }()
+
+		dep := &domain.TenantDeparture{
+			TenantID:           tenantID,
+			PropertyID:         propID,
+			NoticeGivenAt:      time.Now().AddDate(0, 0, -30),
+			PlannedVacateDate:  time.Now(),
+			DepositAmountPaise: 50_000_00, // ₹50,000 refund due
+		}
+		err = payoutRepo.CreateDeparture(ctx, dep)
+		if err != nil {
+			t.Fatalf("create departure failed: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM tenant_departures WHERE id = $1`, dep.ID) }()
+
+		// Attempt settlement using otherPayeeID from prop2ID
+		_, err = payoutRepo.SettleDepartureUnderLock(ctx, SettleDepartureParams{
+			DepartureID:       dep.ID,
+			ActualVacateDate:  time.Now(),
+			ProratedRentPaise: 0,
+			PayeeID:           &otherPayeeID,
+		})
+		if err == nil {
+			t.Fatalf("expected cross-property payee to be rejected, but settlement succeeded")
+		}
+		if !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("expected ErrForbidden for cross-property payee, got: %v", err)
 		}
 	})
 }

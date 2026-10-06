@@ -305,6 +305,58 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, e.PropertyID, e.CreatedBy); err != nil {
 			return fmt.Errorf("lock manager spend: %w", err)
 		}
+
+		var p domain.ApprovalPolicy
+		p.PropertyID = e.PropertyID
+		err := tx.QueryRow(ctx, `
+			SELECT manager_daily_limit_paise, single_expense_limit_paise, manager_monthly_limit_paise,
+			       owner_approval_threshold_paise, reimbursement_threshold_paise, emergency_bypass_enabled
+			FROM approval_policies WHERE property_id=$1`, e.PropertyID).Scan(
+			&p.ManagerDailyLimitPaise, &p.SingleExpenseLimitPaise, &p.ManagerMonthlyLimitPaise,
+			&p.OwnerApprovalThresholdPaise, &p.ReimbursementThresholdPaise, &p.EmergencyBypassEnabled)
+		if errors.Is(err, pgx.ErrNoRows) {
+			p = domain.DefaultPolicy(e.PropertyID)
+		} else if err != nil {
+			return fmt.Errorf("read approval policy: %w", err)
+		}
+
+		dayFrom := domain.DayStart(e.OccurredAt)
+		dayTo := dayFrom.AddDate(0, 0, 1)
+		monthFrom, monthTo, err := domain.PeriodBounds(e.OccurredAt.Format("2006-01"))
+		if err != nil {
+			return fmt.Errorf("calculate period bounds: %w", err)
+		}
+
+		spendQuery := `
+			SELECT (
+				COALESCE((SELECT SUM(amount_paise) FROM expense_payments
+				          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
+				            AND occurred_at >= $3 AND occurred_at < $4), 0)
+				+
+				COALESCE((SELECT SUM(ex.amount_paise) FROM expenses ex
+				          WHERE ex.property_id=$1 AND ex.created_by=$2 AND ex.created_by_role='manager'
+				            AND ex.status IN ('approved', 'paid')
+				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4
+				            AND NOT EXISTS (SELECT 1 FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2)), 0)
+			)`
+
+		var daily, monthly int64
+		if err := tx.QueryRow(ctx, spendQuery, e.PropertyID, e.CreatedBy, dayFrom, dayTo).Scan(&daily); err != nil {
+			return fmt.Errorf("query daily spend: %w", err)
+		}
+		if err := tx.QueryRow(ctx, spendQuery, e.PropertyID, e.CreatedBy, monthFrom, monthTo).Scan(&monthly); err != nil {
+			return fmt.Errorf("query monthly spend: %w", err)
+		}
+
+		chk := domain.EvaluateManagerSpend(p, e.AmountPaise, daily, monthly, e.Emergency)
+		if chk.Reject != nil {
+			return chk.Reject
+		}
+		if chk.NeedsApproval && !(e.Emergency && p.EmergencyBypassEnabled) {
+			e.Status = domain.ExpensePendingApproval
+		} else {
+			e.Status = domain.ExpenseApproved
+		}
 	}
 
 	if e.RoomID != nil {
@@ -329,7 +381,8 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 		return fmt.Errorf("insert expense: %w", err)
 	}
 
-	if approval != nil {
+	if e.Status == domain.ExpensePendingApproval && approval != nil {
+		approval.SubjectID = e.ID
 		_, err = tx.Exec(ctx, `
 			INSERT INTO approval_requests (id, property_id, kind, subject_id, amount_paise, requested_by, status, created_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -342,16 +395,18 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 		}
 	}
 
-	for _, l := range lines {
-		_, err = tx.Exec(ctx, `
-			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
-		if isUnique(err) {
-			return domain.ErrDuplicateIdempotency
-		}
-		if err != nil {
-			return fmt.Errorf("insert journal line: %w", err)
+	if e.Status == domain.ExpenseApproved {
+		for _, l := range lines {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+				l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+			if isUnique(err) {
+				return domain.ErrDuplicateIdempotency
+			}
+			if err != nil {
+				return fmt.Errorf("insert journal line: %w", err)
+			}
 		}
 	}
 
@@ -368,6 +423,53 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 	if p.PayerRole == domain.PayerManager {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, p.PropertyID, p.PayerUserID); err != nil {
 			return nil, fmt.Errorf("lock manager spend: %w", err)
+		}
+
+		var pol domain.ApprovalPolicy
+		pol.PropertyID = p.PropertyID
+		err := tx.QueryRow(ctx, `
+			SELECT manager_daily_limit_paise, single_expense_limit_paise, manager_monthly_limit_paise,
+			       owner_approval_threshold_paise, reimbursement_threshold_paise, emergency_bypass_enabled
+			FROM approval_policies WHERE property_id=$1`, p.PropertyID).Scan(
+			&pol.ManagerDailyLimitPaise, &pol.SingleExpenseLimitPaise, &pol.ManagerMonthlyLimitPaise,
+			&pol.OwnerApprovalThresholdPaise, &pol.ReimbursementThresholdPaise, &pol.EmergencyBypassEnabled)
+		if errors.Is(err, pgx.ErrNoRows) {
+			pol = domain.DefaultPolicy(p.PropertyID)
+		} else if err != nil {
+			return nil, fmt.Errorf("read approval policy: %w", err)
+		}
+
+		dayFrom := domain.DayStart(p.OccurredAt)
+		dayTo := dayFrom.AddDate(0, 0, 1)
+		monthFrom, monthTo, err := domain.PeriodBounds(p.OccurredAt.Format("2006-01"))
+		if err != nil {
+			return nil, fmt.Errorf("calculate period bounds: %w", err)
+		}
+
+		spendQuery := `
+			SELECT (
+				COALESCE((SELECT SUM(amount_paise) FROM expense_payments
+				          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
+				            AND occurred_at >= $3 AND occurred_at < $4), 0)
+				+
+				COALESCE((SELECT SUM(ex.amount_paise) FROM expenses ex
+				          WHERE ex.property_id=$1 AND ex.created_by=$2 AND ex.created_by_role='manager'
+				            AND ex.status IN ('approved', 'paid')
+				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4
+				            AND NOT EXISTS (SELECT 1 FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2)), 0)
+			)`
+
+		var daily, monthly int64
+		if err := tx.QueryRow(ctx, spendQuery, p.PropertyID, p.PayerUserID, dayFrom, dayTo).Scan(&daily); err != nil {
+			return nil, fmt.Errorf("query daily spend: %w", err)
+		}
+		if err := tx.QueryRow(ctx, spendQuery, p.PropertyID, p.PayerUserID, monthFrom, monthTo).Scan(&monthly); err != nil {
+			return nil, fmt.Errorf("query monthly spend: %w", err)
+		}
+
+		chk := domain.EvaluateManagerSpend(pol, p.AmountPaise, daily, monthly, false)
+		if chk.Reject != nil {
+			return nil, chk.Reject
 		}
 	}
 
@@ -539,8 +641,17 @@ func (r *FinanceRepo) SumExpensePayments(ctx context.Context, expenseID uuid.UUI
 func (r *FinanceRepo) SumManagerSpend(ctx context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error) {
 	var s int64
 	err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments
-		WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager' AND occurred_at >= $3 AND occurred_at < $4`,
+		SELECT (
+			COALESCE((SELECT SUM(amount_paise) FROM expense_payments
+			          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
+			            AND occurred_at >= $3 AND occurred_at < $4), 0)
+			+
+			COALESCE((SELECT SUM(ex.amount_paise) FROM expenses ex
+			          WHERE ex.property_id=$1 AND ex.created_by=$2 AND ex.created_by_role='manager'
+			            AND ex.status IN ('approved', 'paid')
+			            AND ex.occurred_at >= $3 AND ex.occurred_at < $4
+			            AND NOT EXISTS (SELECT 1 FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2)), 0)
+		)`,
 		propertyID, managerID, from, to).Scan(&s)
 	return s, err
 }
@@ -575,6 +686,22 @@ func (r *FinanceRepo) InsertReimbursementAtomic(ctx context.Context, rm *domain.
 	}
 	defer tx.Rollback(ctx)
 
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-reimburse:%s:%s', $1::text, $2::text)))`, rm.PropertyID, rm.ManagerUserID); err != nil {
+		return fmt.Errorf("lock manager reimbursement: %w", err)
+	}
+
+	var adv, re int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1 AND manager_user_id=$2`, rm.PropertyID, rm.ManagerUserID).Scan(&adv); err != nil {
+		return fmt.Errorf("query manager advances: %w", err)
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1 AND manager_user_id=$2`, rm.PropertyID, rm.ManagerUserID).Scan(&re); err != nil {
+		return fmt.Errorf("query manager reimbursements: %w", err)
+	}
+	outstanding := adv - re
+	if rm.AmountPaise > outstanding {
+		return domain.ErrOverpay
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO manager_reimbursements (id, property_id, manager_user_id, amount_paise, recorded_by, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
@@ -608,6 +735,17 @@ func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UU
 		return 0, err
 	}
 	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1`, propertyID).Scan(&re); err != nil {
+		return 0, err
+	}
+	return adv - re, nil
+}
+
+func (r *FinanceRepo) ManagerAdvanceOutstanding(ctx context.Context, propertyID, managerID uuid.UUID) (int64, error) {
+	var adv, re int64
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&adv); err != nil {
+		return 0, err
+	}
+	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&re); err != nil {
 		return 0, err
 	}
 	return adv - re, nil
@@ -973,6 +1111,22 @@ func (r *FinanceRepo) DecideApprovalAtomic(ctx context.Context, a *domain.Approv
 	}
 	defer tx.Rollback(ctx)
 
+	var appStatus string
+	var appPropID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT status, property_id FROM approval_requests WHERE id = $1 FOR UPDATE`, a.ID).Scan(&appStatus, &appPropID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("approval not found: %w", domain.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("lock approval: %w", err)
+	}
+	if appPropID != a.PropertyID {
+		return domain.ErrForbidden
+	}
+	if appStatus != "pending" {
+		return domain.ErrForbidden
+	}
+
 	if expenseStatus != nil {
 		res, err := tx.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, a.SubjectID, *expenseStatus)
 		if err != nil {
@@ -997,13 +1151,13 @@ func (r *FinanceRepo) DecideApprovalAtomic(ctx context.Context, a *domain.Approv
 	}
 
 	res, err := tx.Exec(ctx, `
-		UPDATE approval_requests SET status=$2, decided_by=$3, decided_at=$4, note=$5 WHERE id=$1`,
+		UPDATE approval_requests SET status=$2, decided_by=$3, decided_at=$4, note=$5 WHERE id=$1 AND status='pending'`,
 		a.ID, a.Status, a.DecidedBy, a.DecidedAt, nullIfEmpty(a.Note))
 	if err != nil {
 		return fmt.Errorf("update approval: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("approval not found: %w", domain.ErrNotFound)
+		return domain.ErrForbidden
 	}
 
 	return tx.Commit(ctx)

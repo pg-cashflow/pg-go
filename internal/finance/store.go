@@ -41,6 +41,7 @@ type Store interface {
 	InsertReimbursement(ctx context.Context, r *domain.ManagerReimbursement) error
 	InsertReimbursementAtomic(ctx context.Context, r *domain.ManagerReimbursement, lines []domain.JournalLine) error
 	AdvanceOutstanding(ctx context.Context, propertyID uuid.UUID) (int64, error)
+	ManagerAdvanceOutstanding(ctx context.Context, propertyID, managerID uuid.UUID) (int64, error)
 	ListAdvances(ctx context.Context, propertyID uuid.UUID) ([]domain.ManagerAdvance, error)
 
 	InsertJournal(ctx context.Context, lines []domain.JournalLine) error

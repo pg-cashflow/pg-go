@@ -209,6 +209,31 @@ func (m *MemoryStore) InsertExpense(_ context.Context, e *domain.Expense) error 
 func (m *MemoryStore) InsertExpenseAtomic(_ context.Context, e *domain.Expense, lines []domain.JournalLine, approval *domain.ApprovalRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if e.CreatedByRole == string(domain.RoleManager) {
+		pol, ok := m.policies[e.PropertyID]
+		if !ok {
+			pol = DefaultPolicy(e.PropertyID)
+		}
+		dayFrom := DayStart(e.OccurredAt)
+		dayTo := dayFrom.AddDate(0, 0, 1)
+		monthFrom, monthTo, err := PeriodBounds(e.OccurredAt.Format("2006-01"))
+		if err != nil {
+			return err
+		}
+		daily := m.sumManagerSpendLocked(e.PropertyID, e.CreatedBy, dayFrom, dayTo)
+		monthly := m.sumManagerSpendLocked(e.PropertyID, e.CreatedBy, monthFrom, monthTo)
+		chk := EvaluateManagerSpend(pol, e.AmountPaise, daily, monthly, e.Emergency)
+		if chk.Reject != nil {
+			return chk.Reject
+		}
+		if chk.NeedsApproval && !(e.Emergency && pol.EmergencyBypassEnabled) {
+			e.Status = domain.ExpensePendingApproval
+		} else {
+			e.Status = domain.ExpenseApproved
+		}
+	}
+
 	if err := m.claim(e.PropertyID.String() + ":exp:" + e.IdempotencyKey); err != nil {
 		return err
 	}
@@ -216,18 +241,23 @@ func (m *MemoryStore) InsertExpenseAtomic(_ context.Context, e *domain.Expense, 
 		e.ID = uuid.New()
 	}
 	m.expenses[e.ID] = *e
-	if approval != nil {
+
+	if e.Status == domain.ExpensePendingApproval && approval != nil {
 		if approval.ID == uuid.Nil {
 			approval.ID = uuid.New()
 		}
+		approval.SubjectID = e.ID
 		m.approvals[approval.ID] = *approval
 	}
-	for _, l := range lines {
-		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
-		if err := m.claim(key); err != nil {
-			return err
+
+	if e.Status == domain.ExpenseApproved {
+		for _, l := range lines {
+			key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+			if err := m.claim(key); err != nil {
+				return err
+			}
+			m.journal = append(m.journal, l)
 		}
-		m.journal = append(m.journal, l)
 	}
 	return nil
 }
@@ -359,9 +389,7 @@ func (m *MemoryStore) SumExpensePayments(_ context.Context, expenseID uuid.UUID)
 	return s, nil
 }
 
-func (m *MemoryStore) SumManagerSpend(_ context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *MemoryStore) sumManagerSpendLocked(propertyID, managerID uuid.UUID, from, to time.Time) int64 {
 	var s int64
 	for _, p := range m.payments {
 		if p.PropertyID == propertyID && p.PayerUserID == managerID && p.PayerRole == domain.PayerManager &&
@@ -369,7 +397,29 @@ func (m *MemoryStore) SumManagerSpend(_ context.Context, propertyID, managerID u
 			s += p.AmountPaise
 		}
 	}
-	return s, nil
+	for _, ex := range m.expenses {
+		if ex.PropertyID == propertyID && ex.CreatedBy == managerID && ex.CreatedByRole == string(domain.RoleManager) &&
+			(ex.Status == domain.ExpenseApproved || ex.Status == domain.ExpensePaid) &&
+			!ex.OccurredAt.Before(from) && ex.OccurredAt.Before(to) {
+			hasPayment := false
+			for _, p := range m.payments {
+				if p.ExpenseID == ex.ID && p.PayerUserID == managerID {
+					hasPayment = true
+					break
+				}
+			}
+			if !hasPayment {
+				s += ex.AmountPaise
+			}
+		}
+	}
+	return s
+}
+
+func (m *MemoryStore) SumManagerSpend(_ context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sumManagerSpendLocked(propertyID, managerID, from, to), nil
 }
 
 func (m *MemoryStore) InsertAdvance(_ context.Context, a *domain.ManagerAdvance) error {
@@ -395,9 +445,34 @@ func (m *MemoryStore) InsertReimbursement(_ context.Context, r *domain.ManagerRe
 	return nil
 }
 
+func (m *MemoryStore) managerAdvanceOutstandingLocked(propertyID, managerID uuid.UUID) int64 {
+	var adv, re int64
+	for _, a := range m.advances {
+		if a.PropertyID == propertyID && a.ManagerUserID == managerID {
+			adv += a.AmountPaise
+		}
+	}
+	for _, r := range m.reimburse {
+		if r.PropertyID == propertyID && r.ManagerUserID == managerID {
+			re += r.AmountPaise
+		}
+	}
+	return adv - re
+}
+
+func (m *MemoryStore) ManagerAdvanceOutstanding(_ context.Context, propertyID, managerID uuid.UUID) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.managerAdvanceOutstandingLocked(propertyID, managerID), nil
+}
+
 func (m *MemoryStore) InsertReimbursementAtomic(_ context.Context, r *domain.ManagerReimbursement, lines []domain.JournalLine) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	outstanding := m.managerAdvanceOutstandingLocked(r.PropertyID, r.ManagerUserID)
+	if r.AmountPaise > outstanding {
+		return ErrOverpay
+	}
 	if err := m.claim(r.PropertyID.String() + ":reimb:" + r.IdempotencyKey); err != nil {
 		return err
 	}
@@ -673,6 +748,15 @@ func (m *MemoryStore) UpdateApproval(_ context.Context, a *domain.ApprovalReques
 func (m *MemoryStore) DecideApprovalAtomic(_ context.Context, a *domain.ApprovalRequest, expenseStatus *domain.ExpenseStatus, lines []domain.JournalLine) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	cur, ok := m.approvals[a.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if cur.PropertyID != a.PropertyID || cur.Status != "pending" {
+		return ErrForbidden
+	}
+
 	if expenseStatus != nil {
 		e, ok := m.expenses[a.SubjectID]
 		if !ok {
@@ -685,9 +769,17 @@ func (m *MemoryStore) DecideApprovalAtomic(_ context.Context, a *domain.Approval
 		if l.ID == uuid.Nil {
 			l.ID = uuid.New()
 		}
+		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+		if err := m.claim(key); err != nil {
+			return err
+		}
 		m.journal = append(m.journal, l)
 	}
-	m.approvals[a.ID] = *a
+	cur.Status = a.Status
+	cur.DecidedBy = a.DecidedBy
+	cur.DecidedAt = a.DecidedAt
+	cur.Note = a.Note
+	m.approvals[a.ID] = cur
 	return nil
 }
 

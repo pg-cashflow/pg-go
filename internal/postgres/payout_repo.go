@@ -1084,9 +1084,12 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 			}
 		}
 
-		// Step 13: Lock payout_payee
+		// Step 13: Lock payout_payee and verify property ownership
 		var payeeExists bool
-		err = tx.QueryRow(ctx, `SELECT true FROM payout_payees WHERE id = $1 FOR UPDATE`, targetPayeeID).Scan(&payeeExists)
+		err = tx.QueryRow(ctx, `SELECT true FROM payout_payees WHERE id = $1 AND property_id = $2 FOR UPDATE`, targetPayeeID, propertyID).Scan(&payeeExists)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("payee %s does not belong to property %s: %w", targetPayeeID, propertyID, domain.ErrForbidden)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("lock payee %s: %w", targetPayeeID, err)
 		}
