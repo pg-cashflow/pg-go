@@ -11,7 +11,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
-// ScopedDB wraps *pgxpool.Pool and sets app.current_property_id before executing queries.
+// ScopedDB wraps *pgxpool.Pool and sets pgapp_app role and app.current_property_id before executing queries.
 // It pipelines the session scope with the query in a single pgx.Batch round trip and enforces
 // transaction-local SET LOCAL configuration so it is safe under PgBouncer transaction pooling.
 type ScopedDB struct {
@@ -23,20 +23,20 @@ func NewScopedDB(pool *pgxpool.Pool) *ScopedDB {
 	return &ScopedDB{pool: pool}
 }
 
-// Exec executes a statement. If property scope is active, it runs within an atomic
-// pipelined transaction block with transaction-local scope (safe under PgBouncer).
+// Exec executes a statement. It runs within an atomic pipelined transaction block with
+// transaction-local SET LOCAL ROLE pgapp_app and app.current_property_id.
 func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.Exec(ctx, sql, arguments...)
 	}
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
-	if !hasProp || propID == uuid.Nil {
-		return s.pool.Exec(ctx, sql, arguments...)
-	}
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue("SET LOCAL ROLE pgapp_app")
+	if hasProp && propID != uuid.Nil {
+		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	}
 	batch.Queue(sql, arguments...)
 	batch.Queue("COMMIT")
 
@@ -47,7 +47,12 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 		return pgconn.CommandTag{}, fmt.Errorf("scoped exec begin: %w", err)
 	}
 	if _, err := br.Exec(); err != nil {
-		return pgconn.CommandTag{}, fmt.Errorf("scoped exec set_config: %w", err)
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec set role: %w", err)
+	}
+	if hasProp && propID != uuid.Nil {
+		if _, err := br.Exec(); err != nil {
+			return pgconn.CommandTag{}, fmt.Errorf("scoped exec set_config: %w", err)
+		}
 	}
 	tag, err := br.Exec()
 	if err != nil {
@@ -59,21 +64,21 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 	return tag, nil
 }
 
-// Query executes a query returning rows. If property scope is active, it pipelines
-// BEGIN + set_config + query + COMMIT in a single batch, releasing the connection and transaction
+// Query executes a query returning rows. It pipelines BEGIN + SET LOCAL ROLE pgapp_app +
+// set_config + query + COMMIT in a single batch, releasing the connection and transaction
 // when rows are closed.
 func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.Query(ctx, sql, args...)
 	}
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
-	if !hasProp || propID == uuid.Nil {
-		return s.pool.Query(ctx, sql, args...)
-	}
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue("SET LOCAL ROLE pgapp_app")
+	if hasProp && propID != uuid.Nil {
+		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	}
 	batch.Queue(sql, args...)
 	batch.Queue("COMMIT")
 
@@ -84,7 +89,13 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 	}
 	if _, err := br.Exec(); err != nil {
 		_ = br.Close()
-		return nil, fmt.Errorf("scoped query set_config: %w", err)
+		return nil, fmt.Errorf("scoped query set role: %w", err)
+	}
+	if hasProp && propID != uuid.Nil {
+		if _, err := br.Exec(); err != nil {
+			_ = br.Close()
+			return nil, fmt.Errorf("scoped query set_config: %w", err)
+		}
 	}
 	rows, err := br.Query()
 	if err != nil {
@@ -145,28 +156,29 @@ func (r *batchedScopedRows) Conn() *pgx.Conn {
 }
 
 // QueryRow executes a query expected to return at most one row.
-// When scoped, it pipelines BEGIN + set_config + query + COMMIT in a single round trip.
+// It pipelines BEGIN + SET LOCAL ROLE pgapp_app + set_config + query + COMMIT in a single round trip.
 func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.QueryRow(ctx, sql, args...)
 	}
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
-	if !hasProp || propID == uuid.Nil {
-		return s.pool.QueryRow(ctx, sql, args...)
-	}
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue("SET LOCAL ROLE pgapp_app")
+	if hasProp && propID != uuid.Nil {
+		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	}
 	batch.Queue(sql, args...)
 	batch.Queue("COMMIT")
 
 	br := s.pool.SendBatch(ctx, batch)
-	return &batchedScopedRow{br: br}
+	return &batchedScopedRow{br: br, hasProp: hasProp && propID != uuid.Nil}
 }
 
 type batchedScopedRow struct {
-	br pgx.BatchResults
+	br      pgx.BatchResults
+	hasProp bool
 }
 
 func (r *batchedScopedRow) Scan(dest ...any) error {
@@ -175,7 +187,12 @@ func (r *batchedScopedRow) Scan(dest ...any) error {
 		return fmt.Errorf("scoped query begin: %w", err)
 	}
 	if _, err := r.br.Exec(); err != nil {
-		return fmt.Errorf("scoped query set_config: %w", err)
+		return fmt.Errorf("scoped query set role: %w", err)
+	}
+	if r.hasProp {
+		if _, err := r.br.Exec(); err != nil {
+			return fmt.Errorf("scoped query set_config: %w", err)
+		}
 	}
 	row := r.br.QueryRow()
 	scanErr := row.Scan(dest...)

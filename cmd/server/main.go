@@ -83,20 +83,22 @@ func main() {
 
 	logger := slog.Default()
 
+	scopedDB := postgres.NewScopedDB(pool)
+
 	propertyRepo := postgres.NewPropertyRepo(pool)
-	tenantRepo := postgres.NewTenantRepo(pool)
-	dueRepo := postgres.NewDueRepo(pool)
-	paymentRepo := postgres.NewPaymentRepo(pool)
-	eventRepo := postgres.NewEventRepo(pool)
+	tenantRepo := postgres.NewTenantRepo(scopedDB)
+	dueRepo := postgres.NewDueRepo(scopedDB)
+	paymentRepo := postgres.NewPaymentRepo(scopedDB)
+	eventRepo := postgres.NewEventRepo(scopedDB)
 	userRepo := postgres.NewUserRepo(pool)
 	otpRepo := postgres.NewOTPRepo(pool)
 	tokenRepo := postgres.NewTokenRepo(pool)
 	pushRepo := postgres.NewPushRepo(pool)
-	importRepo := postgres.NewImportRepo(pool)
+	importRepo := postgres.NewImportRepo(scopedDB)
 	joinRepo := postgres.NewJoinRepo(pool)
-	reportRepo := postgres.NewPaymentReportRepo(pool)
-	intentRepo := postgres.NewPaymentIntentRepo(pool)
-	preferencesRepo := postgres.NewPreferencesRepo(pool)
+	reportRepo := postgres.NewPaymentReportRepo(scopedDB)
+	intentRepo := postgres.NewPaymentIntentRepo(scopedDB)
+	preferencesRepo := postgres.NewPreferencesRepo(scopedDB)
 
 	if cfg.AadhaarQRPublicKeyPEM != "" {
 		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {

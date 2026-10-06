@@ -5,8 +5,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 const (
@@ -22,6 +24,30 @@ func ClaimsFromContext(c *gin.Context) (*Claims, bool) {
 	}
 	claims, ok := v.(*Claims)
 	return claims, ok
+}
+
+// AttachRequestPropertyScope injects the verified property scope into the request context.
+func AttachRequestPropertyScope(c *gin.Context, claims *Claims) {
+	if claims == nil || c == nil || c.Request == nil {
+		return
+	}
+	var propID uuid.UUID
+	if claims.PropertyID != nil && *claims.PropertyID != uuid.Nil {
+		propID = *claims.PropertyID
+	} else if claims.Role == domain.RoleOwner {
+		if headerVal := c.GetHeader("X-Property-ID"); headerVal != "" {
+			if parsed, err := uuid.Parse(headerVal); err == nil && parsed != uuid.Nil {
+				propID = parsed
+			}
+		} else if qVal := c.Query("property_id"); qVal != "" {
+			if parsed, err := uuid.Parse(qVal); err == nil && parsed != uuid.Nil {
+				propID = parsed
+			}
+		}
+	}
+	if propID != uuid.Nil {
+		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), propID))
+	}
 }
 
 // RequireOwner validates the Bearer JWT and requires role=owner.
@@ -142,6 +168,7 @@ func authenticate(c *gin.Context, jwtSecret string, users UserLookup) (*Claims, 
 	if !sessionStillValid(c, users, claims) {
 		return nil, false
 	}
+	AttachRequestPropertyScope(c, claims)
 	return claims, true
 }
 

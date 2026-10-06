@@ -186,9 +186,9 @@ func (r *ReminderRepo) DeleteLog(ctx context.Context, dueID uuid.UUID, reminderT
 	return err
 }
 
-type ImportRepo struct{ pool *pgxpool.Pool }
+type ImportRepo struct{ db DBTX }
 
-func NewImportRepo(pool *pgxpool.Pool) *ImportRepo { return &ImportRepo{pool: pool} }
+func NewImportRepo(db DBTX) *ImportRepo { return &ImportRepo{db: db} }
 
 type ImportLog struct {
 	ID         uuid.UUID
@@ -201,7 +201,7 @@ type ImportLog struct {
 
 func (r *ImportRepo) Create(ctx context.Context, l *ImportLog) error {
 	l.ImportedAt = time.Now().UTC()
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO import_logs (property_id, filename, row_count, imported_at, imported_by)
 		VALUES ($1,$2,$3,$4,$5) RETURNING id`,
 		l.PropertyID, l.Filename, l.RowCount, l.ImportedAt, l.ImportedBy,
@@ -210,7 +210,7 @@ func (r *ImportRepo) Create(ctx context.Context, l *ImportLog) error {
 
 func (r *ImportRepo) LatestImportedAt(ctx context.Context, propertyID uuid.UUID) (*time.Time, error) {
 	var t *time.Time
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT imported_at FROM import_logs
 		WHERE property_id=$1 ORDER BY imported_at DESC LIMIT 1`, propertyID).Scan(&t)
 	if err != nil {

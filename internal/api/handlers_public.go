@@ -16,6 +16,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/localization"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/qr"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 const (
@@ -449,6 +450,9 @@ func propertyIDFromClaims(c *gin.Context) (uuid.UUID, bool) {
 	if !ok || claims.PropertyID == nil {
 		apierr.RespondClientErr(c, http.StatusForbidden, "no property scope", apierr.CodeAuthNoPropertyScope)
 		return uuid.Nil, false
+	}
+	if _, hasScope := requestscope.PropertyIDFromContext(c.Request.Context()); !hasScope {
+		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), *claims.PropertyID))
 	}
 	return *claims.PropertyID, true
 }
