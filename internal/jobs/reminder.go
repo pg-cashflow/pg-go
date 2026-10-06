@@ -38,6 +38,52 @@ type PropertyGetter interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error)
 }
 
+// BulkTenantGetter is an optional capability of a TenantGetter. When the configured
+// getter implements it, ReminderJob.Run loads every needed tenant in one query instead
+// of one query per due. Getters that do not implement it (e.g. test stubs) keep working
+// through the per-ID path.
+type BulkTenantGetter interface {
+	GetByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*domain.Tenant, error)
+}
+
+// memoTenants caches successful tenant lookups for the duration of one job run.
+// Errors are never cached, so retry/failure behaviour is unchanged.
+type memoTenants struct {
+	inner TenantGetter
+	cache map[uuid.UUID]*domain.Tenant
+}
+
+func (m *memoTenants) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	if t, ok := m.cache[id]; ok {
+		return t, nil
+	}
+	t, err := m.inner.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	m.cache[id] = t
+	return t, nil
+}
+
+// memoProperties caches successful property lookups for the duration of one job run.
+// processDue may look the same property up twice per due; a property serves many dues.
+type memoProperties struct {
+	inner PropertyGetter
+	cache map[uuid.UUID]*domain.Property
+}
+
+func (m *memoProperties) GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error) {
+	if p, ok := m.cache[id]; ok {
+		return p, nil
+	}
+	p, err := m.inner.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	m.cache[id] = p
+	return p, nil
+}
+
 // ReminderLogger provides idempotent reminder logging.
 type ReminderLogger interface {
 	Exists(ctx context.Context, dueID uuid.UUID, reminderType, channel string) (bool, error)
@@ -62,18 +108,18 @@ type ImagePurger interface {
 
 // ReminderJob sends D-3 / D-0 / D+1 / D+7 reminders in IST.
 type ReminderJob struct {
-	Dues       DueLister
-	Tenants    TenantGetter
-	Properties PropertyGetter
-	Reminders  ReminderLogger
-	Imports    ImportRecency
-	Intents    IntentRecency
-	Reports    ImagePurger
-	MagicLink  MagicLinkCreator
-	SMS        SMSSender
-	Push       PushSender
-	Mailer     mailer.Mailer
-	Events     events.Publisher
+	Dues        DueLister
+	Tenants     TenantGetter
+	Properties  PropertyGetter
+	Reminders   ReminderLogger
+	Imports     ImportRecency
+	Intents     IntentRecency
+	Reports     ImagePurger
+	MagicLink   MagicLinkCreator
+	SMS         SMSSender
+	Push        PushSender
+	Mailer      mailer.Mailer
+	Events      events.Publisher
 	BaseURL     string
 	Log         *slog.Logger
 	CatchUpDays int // Days after nominal trigger day to catch up on missed reminders (default: 2)
@@ -178,9 +224,34 @@ func (j *ReminderJob) Run(ctx context.Context) error {
 		return fmt.Errorf("reminder: list dues: %w", err)
 	}
 
+	// Per-run lookup caches: removes the N+1 (one tenant + up to two property queries
+	// per due). run is a shallow copy so the caller's job value is never mutated.
+	tenantCache := &memoTenants{inner: j.Tenants, cache: make(map[uuid.UUID]*domain.Tenant, len(dues))}
+	if bulk, ok := j.Tenants.(BulkTenantGetter); ok && len(dues) > 0 {
+		seen := make(map[uuid.UUID]struct{}, len(dues))
+		ids := make([]uuid.UUID, 0, len(dues))
+		for _, d := range dues {
+			if _, dup := seen[d.TenantID]; !dup {
+				seen[d.TenantID] = struct{}{}
+				ids = append(ids, d.TenantID)
+			}
+		}
+		if found, err := bulk.GetByIDs(ctx, ids); err != nil {
+			// Non-fatal: fall back to lazy per-ID loading.
+			log.Warn("reminder: bulk tenant prefetch failed; falling back to per-due lookups", "err", err)
+		} else {
+			for id, t := range found {
+				tenantCache.cache[id] = t
+			}
+		}
+	}
+	run := *j
+	run.Tenants = tenantCache
+	run.Properties = &memoProperties{inner: j.Properties, cache: make(map[uuid.UUID]*domain.Property)}
+
 	var firstErr error
 	for _, due := range dues {
-		if err := j.processDue(ctx, due, today, loc); err != nil {
+		if err := run.processDue(ctx, due, today, loc); err != nil {
 			log.Error("reminder: due failed", "due_id", due.ID, "err", err)
 			if firstErr == nil {
 				firstErr = err

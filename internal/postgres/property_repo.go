@@ -262,6 +262,33 @@ func (r *TenantRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant,
 	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1`, id))
 }
 
+// GetByIDs loads many tenants in a single round trip (WHERE id = ANY(...)).
+// IDs with no matching row are simply absent from the returned map. Intended for
+// batch jobs (e.g. reminders) that would otherwise issue one GetByID per row.
+func (r *TenantRepo) GetByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*domain.Tenant, error) {
+	out := make(map[uuid.UUID]*domain.Tenant, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	strs := make([]string, len(ids))
+	for i, id := range ids {
+		strs[i] = id.String()
+	}
+	rows, err := r.db.Query(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id = ANY($1::uuid[])`, strs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		t, err := scanTenant(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[t.ID] = t
+	}
+	return out, rows.Err()
+}
+
 func (r *TenantRepo) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
 	return scanTenant(r.db.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1 FOR UPDATE`, id))
 }

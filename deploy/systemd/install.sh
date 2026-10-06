@@ -15,6 +15,7 @@ echo "==> Installing pg-app background systemd services and timers..."
 JOBS=(
     "pg-billing-cycle"
     "pg-cashfree-poll"
+    "pg-daily-rollup"
     "pg-digilocker-reconcile"
     "pg-financial-summary"
     "pg-gamification-cycle"
@@ -43,4 +44,4 @@ done
 echo "==> Timer status summary:"
 systemctl list-timers --all | grep pg- || true
 
-echo "==> All 9 background job timers installed and activated successfully!"
+echo "==> All 10 background job timers installed and activated successfully!"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Run pg-app daily financial rollup at 23:55 IST
+
+[Timer]
+# The job rolls up the *current IST calendar day* (cmd/daily-rollup passes time.Now() in IST),
+# so it must run late in the IST day to capture a full day of activity.
+# 23:55 IST = 18:25 UTC (same IST date). Do NOT move this past 00:00 IST (18:30 UTC):
+# it would then roll up the new, nearly-empty day.
+OnCalendar=*-*-* 18:25:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

@@ -513,3 +513,97 @@ func TestReminder_CatchUp_BeyondWindowDropped(t *testing.T) {
 	}
 }
 
+type stubDueLister struct {
+	dues []domain.Due
+}
+
+func (s stubDueLister) ActivePendingRentDues(ctx context.Context) ([]domain.Due, error) {
+	return s.dues, nil
+}
+
+type countingBulkTenantGetter struct {
+	tenants     map[uuid.UUID]*domain.Tenant
+	bulkCalls   int
+	singleCalls int
+}
+
+func (s *countingBulkTenantGetter) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	s.singleCalls++
+	return s.tenants[id], nil
+}
+
+func (s *countingBulkTenantGetter) GetByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*domain.Tenant, error) {
+	s.bulkCalls++
+	res := make(map[uuid.UUID]*domain.Tenant, len(ids))
+	for _, id := range ids {
+		if t, ok := s.tenants[id]; ok {
+			res[id] = t
+		}
+	}
+	return res, nil
+}
+
+type countingPropertyGetter struct {
+	prop  *domain.Property
+	calls int
+}
+
+func (s *countingPropertyGetter) GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error) {
+	s.calls++
+	return s.prop, nil
+}
+
+func TestReminder_Run_BulkTenantGetterAndMemoization(t *testing.T) {
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	today := time.Now().In(loc)
+
+	propID := uuid.New()
+	t1ID := uuid.New()
+	t2ID := uuid.New()
+
+	phone := "9876543210"
+	tenants := map[uuid.UUID]*domain.Tenant{
+		t1ID: {ID: t1ID, PropertyID: propID, Phone: &phone, Status: domain.TenantStatusActive},
+		t2ID: {ID: t2ID, PropertyID: propID, Phone: &phone, Status: domain.TenantStatusActive},
+	}
+
+	bulkTenant := &countingBulkTenantGetter{tenants: tenants}
+	propGetter := &countingPropertyGetter{
+		prop: &domain.Property{ID: propID, OwnerEmail: "owner@example.com", PaymentMode: domain.PaymentModeCashfree},
+	}
+
+	fresh := today.Add(-10 * time.Minute)
+	sms := &failingSMS{}
+	logs := &stubReminderLogger{exists: false}
+
+	job := &ReminderJob{
+		Dues: stubDueLister{
+			dues: []domain.Due{
+				{ID: uuid.New(), TenantID: t1ID, PropertyID: propID, DueDate: today, Amount: 5000, DueCode: "DUE1"},
+				{ID: uuid.New(), TenantID: t1ID, PropertyID: propID, DueDate: today, Amount: 6000, DueCode: "DUE2"},
+				{ID: uuid.New(), TenantID: t2ID, PropertyID: propID, DueDate: today, Amount: 7000, DueCode: "DUE3"},
+			},
+		},
+		Tenants:     bulkTenant,
+		Properties:  propGetter,
+		Reminders:   logs,
+		SMS:         sms,
+		CatchUpDays: 2,
+		Intents:     stubIntentRecency{n: 1, at: &fresh},
+		BaseURL:     "https://pay.example.com",
+	}
+
+	_ = job.Run(context.Background())
+
+	if bulkTenant.bulkCalls != 1 {
+		t.Errorf("expected 1 bulk call, got %d", bulkTenant.bulkCalls)
+	}
+	if bulkTenant.singleCalls != 0 {
+		t.Errorf("expected 0 single tenant calls due to memoization, got %d", bulkTenant.singleCalls)
+	}
+	if propGetter.calls != 1 {
+		t.Errorf("expected 1 property call due to memoization, got %d", propGetter.calls)
+	}
+}
+
+

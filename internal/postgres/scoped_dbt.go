@@ -12,8 +12,8 @@ import (
 )
 
 // ScopedDB wraps *pgxpool.Pool and sets app.current_property_id before executing queries.
-// If the property cannot be reset afterwards, the underlying connection is destroyed
-// to prevent scope leakage between pooled requests.
+// It pipelines the session scope with the query in a single pgx.Batch round trip and enforces
+// transaction-local SET LOCAL configuration so it is safe under PgBouncer transaction pooling.
 type ScopedDB struct {
 	pool *pgxpool.Pool
 }
@@ -23,127 +23,153 @@ func NewScopedDB(pool *pgxpool.Pool) *ScopedDB {
 	return &ScopedDB{pool: pool}
 }
 
+// Exec executes a statement. If property scope is active, it runs within an atomic
+// pipelined transaction block with transaction-local scope (safe under PgBouncer).
 func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.Exec(ctx, sql, arguments...)
 	}
-	conn, err := s.pool.Acquire(ctx)
+	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
+	if !hasProp || propID == uuid.Nil {
+		return s.pool.Exec(ctx, sql, arguments...)
+	}
+
+	batch := &pgx.Batch{}
+	batch.Queue("BEGIN")
+	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue(sql, arguments...)
+	batch.Queue("COMMIT")
+
+	br := s.pool.SendBatch(ctx, batch)
+	defer br.Close()
+
+	if _, err := br.Exec(); err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec begin: %w", err)
+	}
+	if _, err := br.Exec(); err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec set_config: %w", err)
+	}
+	tag, err := br.Exec()
 	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	defer conn.Release()
-
-	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
-	if hasProp && propID != uuid.Nil {
-		if _, err := conn.Exec(ctx, "SELECT set_config('app.current_property_id', $1, false)", propID.String()); err != nil {
-			conn.Conn().Close(ctx)
-			return pgconn.CommandTag{}, fmt.Errorf("set app.current_property_id: %w", err)
-		}
-		defer func() {
-			if _, err := conn.Exec(ctx, "RESET app.current_property_id"); err != nil {
-				conn.Conn().Close(ctx)
-			}
-		}()
+	if _, err := br.Exec(); err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec commit: %w", err)
 	}
-
-	return conn.Exec(ctx, sql, arguments...)
+	return tag, nil
 }
 
+// Query executes a query returning rows. If property scope is active, it pipelines
+// BEGIN + set_config + query in a single batch, releasing the connection and transaction
+// when rows are closed.
 func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.Query(ctx, sql, args...)
 	}
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// For queries with rows, we use a short-lived transaction so SET LOCAL guarantees cleanup
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		conn.Release()
-		return nil, err
-	}
 	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
-	if hasProp && propID != uuid.Nil {
-		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propID.String()); err != nil {
-			_ = tx.Rollback(ctx)
-			conn.Release()
-			return nil, fmt.Errorf("set local app.current_property_id: %w", err)
-		}
+	if !hasProp || propID == uuid.Nil {
+		return s.pool.Query(ctx, sql, args...)
 	}
-	rows, err := tx.Query(ctx, sql, args...)
+
+	batch := &pgx.Batch{}
+	batch.Queue("BEGIN")
+	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue(sql, args...)
+
+	br := s.pool.SendBatch(ctx, batch)
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return nil, fmt.Errorf("scoped query begin: %w", err)
+	}
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return nil, fmt.Errorf("scoped query set_config: %w", err)
+	}
+	rows, err := br.Query()
 	if err != nil {
-		_ = tx.Rollback(ctx)
-		conn.Release()
+		_ = br.Close()
 		return nil, err
 	}
-	return &scopedRows{rows: rows, tx: tx, conn: conn}, nil
+	return &batchedScopedRows{rows: rows, br: br}, nil
 }
 
-type scopedRows struct {
+type batchedScopedRows struct {
 	rows pgx.Rows
-	tx   pgx.Tx
-	conn *pgxpool.Conn
+	br   pgx.BatchResults
 }
 
-func (r *scopedRows) Close() {
+func (r *batchedScopedRows) Close() {
 	r.rows.Close()
-	_ = r.tx.Rollback(context.Background())
-	r.conn.Release()
+	_ = r.br.Close()
 }
 
-func (r *scopedRows) Err() error {
+func (r *batchedScopedRows) Err() error {
 	return r.rows.Err()
 }
 
-func (r *scopedRows) CommandTag() pgconn.CommandTag {
+func (r *batchedScopedRows) CommandTag() pgconn.CommandTag {
 	return r.rows.CommandTag()
 }
 
-func (r *scopedRows) FieldDescriptions() []pgconn.FieldDescription {
+func (r *batchedScopedRows) FieldDescriptions() []pgconn.FieldDescription {
 	return r.rows.FieldDescriptions()
 }
 
-func (r *scopedRows) Next() bool {
+func (r *batchedScopedRows) Next() bool {
 	return r.rows.Next()
 }
 
-func (r *scopedRows) Scan(dest ...any) error {
+func (r *batchedScopedRows) Scan(dest ...any) error {
 	return r.rows.Scan(dest...)
 }
 
-func (r *scopedRows) Values() ([]any, error) {
+func (r *batchedScopedRows) Values() ([]any, error) {
 	return r.rows.Values()
 }
 
-func (r *scopedRows) RawValues() [][]byte {
+func (r *batchedScopedRows) RawValues() [][]byte {
 	return r.rows.RawValues()
 }
 
-func (r *scopedRows) Conn() *pgx.Conn {
+func (r *batchedScopedRows) Conn() *pgx.Conn {
 	return r.rows.Conn()
 }
 
+// QueryRow executes a query expected to return at most one row.
+// When scoped, it pipelines BEGIN + set_config + query + ROLLBACK in a single round trip.
 func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	rows, err := s.Query(ctx, sql, args...)
-	return &scopedRow{rows: rows, err: err}
+	if tx, ok := TxFromContext(ctx); ok {
+		return tx.QueryRow(ctx, sql, args...)
+	}
+	propID, hasProp := requestscope.PropertyIDFromContext(ctx)
+	if !hasProp || propID == uuid.Nil {
+		return s.pool.QueryRow(ctx, sql, args...)
+	}
+
+	batch := &pgx.Batch{}
+	batch.Queue("BEGIN")
+	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+	batch.Queue(sql, args...)
+	batch.Queue("ROLLBACK")
+
+	br := s.pool.SendBatch(ctx, batch)
+	return &batchedScopedRow{br: br}
 }
 
-type scopedRow struct {
-	rows pgx.Rows
-	err  error
+type batchedScopedRow struct {
+	br pgx.BatchResults
 }
 
-func (r *scopedRow) Scan(dest ...any) error {
-	if r.err != nil {
-		return r.err
+func (r *batchedScopedRow) Scan(dest ...any) error {
+	defer r.br.Close()
+	if _, err := r.br.Exec(); err != nil {
+		return fmt.Errorf("scoped query begin: %w", err)
 	}
-	defer r.rows.Close()
-	if !r.rows.Next() {
-		if err := r.rows.Err(); err != nil {
-			return err
-		}
-		return pgx.ErrNoRows
+	if _, err := r.br.Exec(); err != nil {
+		return fmt.Errorf("scoped query set_config: %w", err)
 	}
-	return r.rows.Scan(dest...)
+	row := r.br.QueryRow()
+	scanErr := row.Scan(dest...)
+	_, _ = r.br.Exec() // Consume ROLLBACK
+	return scanErr
 }

@@ -8,6 +8,7 @@ on:
 
 jobs:
   reminder:
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.SYSTEMD_SCHEDULER != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
