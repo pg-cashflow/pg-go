@@ -60,7 +60,7 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 }
 
 // Query executes a query returning rows. If property scope is active, it pipelines
-// BEGIN + set_config + query in a single batch, releasing the connection and transaction
+// BEGIN + set_config + query + COMMIT in a single batch, releasing the connection and transaction
 // when rows are closed.
 func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if tx, ok := TxFromContext(ctx); ok {
@@ -75,6 +75,7 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 	batch.Queue("BEGIN")
 	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
 	batch.Queue(sql, args...)
+	batch.Queue("COMMIT")
 
 	br := s.pool.SendBatch(ctx, batch)
 	if _, err := br.Exec(); err != nil {
@@ -94,13 +95,21 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 }
 
 type batchedScopedRows struct {
-	rows pgx.Rows
-	br   pgx.BatchResults
+	rows   pgx.Rows
+	br     pgx.BatchResults
+	closed bool
 }
 
 func (r *batchedScopedRows) Close() {
+	if r.closed {
+		return
+	}
+	r.closed = true
 	r.rows.Close()
-	_ = r.br.Close()
+	if r.br != nil {
+		_, _ = r.br.Exec() // Consume COMMIT
+		_ = r.br.Close()
+	}
 }
 
 func (r *batchedScopedRows) Err() error {
@@ -136,7 +145,7 @@ func (r *batchedScopedRows) Conn() *pgx.Conn {
 }
 
 // QueryRow executes a query expected to return at most one row.
-// When scoped, it pipelines BEGIN + set_config + query + ROLLBACK in a single round trip.
+// When scoped, it pipelines BEGIN + set_config + query + COMMIT in a single round trip.
 func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.QueryRow(ctx, sql, args...)
@@ -150,7 +159,7 @@ func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Ro
 	batch.Queue("BEGIN")
 	batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
 	batch.Queue(sql, args...)
-	batch.Queue("ROLLBACK")
+	batch.Queue("COMMIT")
 
 	br := s.pool.SendBatch(ctx, batch)
 	return &batchedScopedRow{br: br}
@@ -170,6 +179,8 @@ func (r *batchedScopedRow) Scan(dest ...any) error {
 	}
 	row := r.br.QueryRow()
 	scanErr := row.Scan(dest...)
-	_, _ = r.br.Exec() // Consume ROLLBACK
+	if _, err := r.br.Exec(); err != nil && scanErr == nil {
+		return fmt.Errorf("scoped query commit: %w", err)
+	}
 	return scanErr
 }

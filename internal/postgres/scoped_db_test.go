@@ -97,4 +97,78 @@ func TestScopedDB_BatchedPipelining(t *testing.T) {
 			t.Fatalf("GUC leaked to pool connection: %s", unscopedGuc)
 		}
 	})
+
+	t.Run("Connection reuse across repeated scoped queries", func(t *testing.T) {
+		var dummy int
+		if err := pool.QueryRow(ctx, "SELECT 1").Scan(&dummy); err != nil {
+			t.Fatalf("warmup failed: %v", err)
+		}
+
+		initialNewConns := pool.Stat().NewConnsCount()
+
+		const iterations = 200
+		for i := 0; i < iterations; i++ {
+			rows, err := scoped.Query(scopedCtx, "SELECT 1")
+			if err != nil {
+				t.Fatalf("Query failed at iteration %d: %v", i, err)
+			}
+			for rows.Next() {
+				var val int
+				if err := rows.Scan(&val); err != nil {
+					t.Fatalf("Scan failed at iteration %d: %v", i, err)
+				}
+			}
+			rows.Close()
+
+			var qrVal int
+			if err := scoped.QueryRow(scopedCtx, "SELECT 2").Scan(&qrVal); err != nil {
+				t.Fatalf("QueryRow failed at iteration %d: %v", i, err)
+			}
+		}
+
+		connsCreated := pool.Stat().NewConnsCount() - initialNewConns
+		if connsCreated > 2 {
+			t.Fatalf("pool connections leaked/destroyed: %d new connections created during %d scoped calls (expected connection reuse)", connsCreated, iterations)
+		}
+	})
+
+	t.Run("QueryRow INSERT RETURNING commits and is visible across connections", func(t *testing.T) {
+		tableName := "test_scoped_queryrow_write_visibility"
+		_, err := pool.Exec(ctx, `
+			CREATE TABLE IF NOT EXISTS `+tableName+` (
+				id UUID PRIMARY KEY,
+				val TEXT NOT NULL,
+				property_id UUID NOT NULL
+			)
+		`)
+		if err != nil {
+			t.Fatalf("failed to create test table: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+tableName)
+		})
+
+		writeID := uuid.New()
+		var returnedID uuid.UUID
+		err = scoped.QueryRow(scopedCtx,
+			"INSERT INTO "+tableName+" (id, val, property_id) VALUES ($1, $2, $3) RETURNING id",
+			writeID, "visible-data", testPropID,
+		).Scan(&returnedID)
+		if err != nil {
+			t.Fatalf("scoped QueryRow INSERT RETURNING failed: %v", err)
+		}
+		if returnedID != writeID {
+			t.Fatalf("expected returned ID %s, got %s", writeID, returnedID)
+		}
+
+		var readVal string
+		err = pool.QueryRow(ctx, "SELECT val FROM "+tableName+" WHERE id = $1", writeID).Scan(&readVal)
+		if err != nil {
+			t.Fatalf("row inserted via QueryRow was not visible to subsequent queries (silent rollback bug): %v", err)
+		}
+		if readVal != "visible-data" {
+			t.Fatalf("expected 'visible-data', got %q", readVal)
+		}
+	})
 }
+

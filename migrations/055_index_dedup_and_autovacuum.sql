@@ -1,4 +1,4 @@
--- Migration 054: remove redundant indexes; tune autovacuum on high-churn tables.
+-- Migration 055: remove redundant indexes; tune autovacuum on high-churn tables.
 --
 -- Rationale (see docs/adr/018-rls-scope-wiring-and-db-performance-hardening.md):
 --   Every index is paid for on every INSERT/UPDATE of its table. The indexes below add
