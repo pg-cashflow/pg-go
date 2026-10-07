@@ -62,11 +62,23 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	maintPool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("maint db: ", err)
 	}
-	defer pool.Close()
+	defer maintPool.Close()
+
+	var appPool *pgxpool.Pool
+	if cfg.DatabaseURL == cfg.DatabaseMaintURL {
+		appPool = maintPool
+	} else {
+		p, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+		if err != nil {
+			log.Fatal("app db: ", err)
+		}
+		defer p.Close()
+		appPool = p
+	}
 
 	if os.Getenv("AUTO_MIGRATE") == "1" || os.Getenv("AUTO_MIGRATE") == "true" {
 		dir := os.Getenv("MIGRATIONS_DIR")
@@ -76,29 +88,35 @@ func main() {
 				dir = filepath.Join("..", "..", "migrations")
 			}
 		}
-		if err := postgres.Migrate(ctx, pool, dir); err != nil {
+		if err := postgres.Migrate(ctx, maintPool, dir); err != nil {
 			log.Fatal("migrate: ", err)
 		}
 	}
 
 	logger := slog.Default()
 
-	scopedDB := postgres.NewScopedDB(pool)
+	scopedDB := postgres.NewScopedDB(appPool)
 
-	propertyRepo := postgres.NewPropertyRepo(pool)
+	propertyRepo := postgres.NewPropertyRepo(maintPool)
 	tenantRepo := postgres.NewTenantRepo(scopedDB)
 	dueRepo := postgres.NewDueRepo(scopedDB)
 	paymentRepo := postgres.NewPaymentRepo(scopedDB)
 	eventRepo := postgres.NewEventRepo(scopedDB)
-	userRepo := postgres.NewUserRepo(pool)
-	otpRepo := postgres.NewOTPRepo(pool)
-	tokenRepo := postgres.NewTokenRepo(pool)
-	pushRepo := postgres.NewPushRepo(pool)
+	userRepo := postgres.NewUserRepo(maintPool)
+	otpRepo := postgres.NewOTPRepo(maintPool)
+	tokenRepo := postgres.NewTokenRepo(maintPool)
+	pushRepo := postgres.NewPushRepo(maintPool)
 	importRepo := postgres.NewImportRepo(scopedDB)
-	joinRepo := postgres.NewJoinRepo(pool)
+	joinRepo := postgres.NewJoinRepo(maintPool)
 	reportRepo := postgres.NewPaymentReportRepo(scopedDB)
 	intentRepo := postgres.NewPaymentIntentRepo(scopedDB)
 	preferencesRepo := postgres.NewPreferencesRepo(scopedDB)
+
+	maintTenantRepo := postgres.NewTenantRepo(maintPool)
+	maintDueRepo := postgres.NewDueRepo(maintPool)
+	maintPaymentRepo := postgres.NewPaymentRepo(maintPool)
+	maintReportRepo := postgres.NewPaymentReportRepo(maintPool)
+	maintEventRepo := postgres.NewEventRepo(maintPool)
 
 	if cfg.AadhaarQRPublicKeyPEM != "" {
 		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {
@@ -154,19 +172,19 @@ func main() {
 			logger.Info("firebase phone auth enabled", "project", cfg.FirebaseProjectID)
 		}
 	}
-	billingSvc := billing.NewService(dueRepo, tenantRepo, pub)
-	paySvc := payment.NewServiceWithPool(pool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(pool))
-	depositSettlementRepo := postgres.NewDepositSettlementRepo(pool)
+	billingSvc := billing.NewServiceWithPool(maintPool, maintDueRepo, maintTenantRepo, maintEventRepo)
+	paySvc := payment.NewServiceWithPool(maintPool, maintDueRepo, maintPaymentRepo, maintTenantRepo, maintEventRepo, payment.NewSQLSummaryRepository(maintPool))
+	depositSettlementRepo := postgres.NewDepositSettlementRepo(maintPool)
 	paySvc.SetDepositSettler(depositSettlementRepo)
-	tenantSvc := tenant.NewServiceWithPool(pool, tenantRepo, dueRepo, eventRepo, pushRepo)
-	magicSvc := magiclink.NewService(tokenRepo, dueRepo, propertyRepo, tenantRepo, cfg.MagicLinkHMACSecret)
+	tenantSvc := tenant.NewServiceWithPool(maintPool, maintTenantRepo, maintDueRepo, maintEventRepo, pushRepo)
+	magicSvc := magiclink.NewService(tokenRepo, maintDueRepo, propertyRepo, maintTenantRepo, cfg.MagicLinkHMACSecret)
 	pushSvc := push.NewService(push.RepoAdapter{Inner: pushRepo}, push.Config{
 		VAPIDPublicKey:  cfg.VAPIDPublicKey,
 		VAPIDPrivateKey: cfg.VAPIDPrivateKey,
 		Subject:         cfg.VAPIDSubject,
 	}, logger)
 
-	joinSvc := joinsvc.NewServiceWithPool(pool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
+	joinSvc := joinsvc.NewServiceWithPool(maintPool, propertyRepo, joinRepo, userRepo, tenantSvc, maintEventRepo)
 
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
@@ -180,7 +198,7 @@ func main() {
 
 	var kycSvc api.KYCService
 	if cfg.KYCIdentitySecret != "" {
-		kycRepo := postgres.NewKYCRepo(pool)
+		kycRepo := postgres.NewKYCRepo(maintPool)
 		var cfKYCAdapter kycsvc.CashfreeKYCClient
 		if cfClient != nil {
 			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
@@ -202,7 +220,7 @@ func main() {
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
 	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
 
-	financeRepo := postgres.NewFinanceRepo(pool)
+	financeRepo := postgres.NewFinanceRepo(maintPool)
 	financeSvc := finance.NewService(financeRepo, pub)
 	roiSvc := roisvc.NewService(financeSvc)
 	intelSvc := intelligence.NewService(financeRepo)
@@ -228,22 +246,22 @@ func main() {
 	}
 
 	// Notification subsystem.
-	outboxRepo := postgres.NewOutboxRepo(pool)
-	notifRepo := postgres.NewNotificationRepo(pool)
+	outboxRepo := postgres.NewOutboxRepo(maintPool)
+	notifRepo := postgres.NewNotificationRepo(maintPool)
 	notifSvc := notificationsvc.NewService(notifRepo)
 	resolver := notificationsvc.NewResolver(userRepo)
 	dispatcher := notificationsvc.NewDispatcher(
-		pool,
+		maintPool,
 		&notificationsvc.CompositeRepo{OutboxRepo: outboxRepo, NotifRepo: notifRepo},
 		resolver,
 		notificationsvc.DefaultConfig(),
 		logger,
 	)
 
-	searchPool, err := postgres.NewSearchPool(ctx, cfg.DatabaseURL)
+	searchPool, err := postgres.NewSearchPool(ctx, cfg.DatabaseMaintURL)
 	if err != nil {
-		logger.Warn("failed to initialize dedicated search pool, falling back to main pool", "err", err)
-		searchPool = pool
+		logger.Warn("failed to initialize dedicated search pool, falling back to maint pool", "err", err)
+		searchPool = maintPool
 	} else {
 		defer searchPool.Close()
 	}
@@ -251,16 +269,16 @@ func main() {
 	// ADR-012: vector/hybrid search permanently disabled.
 	searchSvc := &search.Service{Repo: searchRepo, Cache: search.NewCache(5*time.Second, 2000)}
 
-	payoutRepo := postgres.NewPayoutRepo(pool, financeSvc)
-	attendanceRepo := postgres.NewAttendanceRepo(pool)
-	attendanceSvc := attendance.NewService(pool, attendanceRepo, payoutRepo)
-	bankTxnRepo := postgres.NewBankTransactionRepo(pool)
-	bankAccountRepo := postgres.NewBankAccountRepo(pool)
-	settlementRepo := postgres.NewSettlementRepo(pool)
-	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, dueRepo, paymentRepo, financeSvc)
-	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(pool)
+	payoutRepo := postgres.NewPayoutRepo(maintPool, financeSvc)
+	attendanceRepo := postgres.NewAttendanceRepo(maintPool)
+	attendanceSvc := attendance.NewService(maintPool, attendanceRepo, payoutRepo)
+	bankTxnRepo := postgres.NewBankTransactionRepo(maintPool)
+	bankAccountRepo := postgres.NewBankAccountRepo(maintPool)
+	settlementRepo := postgres.NewSettlementRepo(maintPool)
+	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, maintDueRepo, maintPaymentRepo, financeSvc)
+	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(maintPool)
 	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
-	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(pool)
+	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(maintPool)
 
 	payoutSecret := cfg.PayoutExportChecksumSecret
 	if payoutSecret == "" {
@@ -303,17 +321,17 @@ func main() {
 		Joins:                       joinSvc,
 		ReportStore:                 reportRepo,
 		IntentStore:                 intentRepo,
-		PaymentLookup:               paymentRepo,
-		GatewayPaymentRepo:          paymentRepo,
+		PaymentLookup:               maintPaymentRepo,
+		GatewayPaymentRepo:          maintPaymentRepo,
 		WebhookToleranceSec:         cfg.WebhookTimestampToleranceSec,
 		WebhookAPIVersion:           cfg.WebhookAPIVersion,
-		Pool:                        pool,
+		Pool:                        maintPool,
 		Collector:                   collectorSvc,
 		KYCSvc:                      kycSvc,
 		CashfreeSecret:              cfg.CashfreeWebhookSecret,
 		CashfreeEnv:                 cfg.CashfreeEnv,
 		CashfreeClient:              cfClient,
-		AuthTenantRepo:              tenantRepo,
+		AuthTenantRepo:              maintTenantRepo,
 		AuthUserRepo:                userRepo,
 		OutboxEvents:                outboxRepo,
 		NotificationSvc:             notifSvc,
@@ -366,7 +384,7 @@ func main() {
 	dispatchCtx, stopDispatcher := context.WithCancel(ctx)
 	go dispatcher.Run(dispatchCtx)
 
-	// Daily cleanup: prune dispatched events >30 days, dead-letter >90 days.
+	// Daily cleanup: prune dispatched events >30 days, dead-letter >90 days, report proof images >30 days.
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
@@ -386,6 +404,11 @@ func main() {
 				} else if pn > 0 {
 					logger.Info("refresh token purge complete", "deleted", pn)
 				}
+				if in, err := maintReportRepo.PurgeExpiredImages(dispatchCtx, 30*24*time.Hour); err != nil {
+					logger.Error("report image purge failed", "err", err)
+				} else if in > 0 {
+					logger.Info("report image purge complete", "deleted", in)
+				}
 			}
 		}
 	}()
@@ -396,7 +419,7 @@ func main() {
 		if cfg.AdminPhone != "" && gateway != nil {
 			deadLetterAlerter.WithSMSBackstop(gateway, cfg.AdminPhone)
 		}
-		ledgerWorker := finance.NewLedgerOutboxWorker(pool, ledgerOutboxRepo, financeSvc, deadLetterAlerter)
+		ledgerWorker := finance.NewLedgerOutboxWorker(maintPool, ledgerOutboxRepo, financeSvc, deadLetterAlerter)
 		if payoutDispatcher != nil {
 			ledgerWorker.SetPayoutDispatcher(payoutDispatcher)
 		}

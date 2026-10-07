@@ -57,7 +57,7 @@ func NewServiceWithPool(
 	push PushRepository,
 ) *Service {
 	pub := events.NewPostgresPublisher(eventsRepo)
-	bill := billing.NewService(dues, tenants, pub)
+	bill := billing.NewServiceWithPool(pool, dues, tenants, eventsRepo)
 	s := NewService(tenants, push, bill, pub)
 	s.pool = pool
 	s.tenantDB = tenants

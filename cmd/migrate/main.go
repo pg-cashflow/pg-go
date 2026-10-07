@@ -27,7 +27,7 @@ func main() {
 		dbURL = os.Getenv("DIRECT_URL")
 	}
 	if dbURL == "" {
-		dbURL = cfg.DatabaseURL
+		dbURL = cfg.DatabaseMaintURL
 	}
 
 	pool, err := postgres.NewPool(ctx, dbURL)

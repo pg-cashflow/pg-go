@@ -76,7 +76,6 @@ func WithinTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error)
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if propID, ok := requestscope.PropertyIDFromContext(ctx); ok && propID != uuid.Nil {
-		_, _ = tx.Exec(ctx, "SET LOCAL ROLE pgapp_app")
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propID.String()); err != nil {
 			return fmt.Errorf("set local app.current_property_id: %w", err)
 		}

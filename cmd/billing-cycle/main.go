@@ -29,7 +29,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func main() {
 	pushRepo := postgres.NewPushRepo(pool)
 	pub := events.NewPostgresPublisher(eventRepo)
 
-	billingSvc := billing.NewService(dueRepo, tenantRepo, pub)
+	billingSvc := billing.NewServiceWithPool(pool, dueRepo, tenantRepo, eventRepo)
 	magicSvc := magiclink.NewService(tokenRepo, dueRepo, propertyRepo, tenantRepo, cfg.MagicLinkHMACSecret)
 
 	var mail mailer.Mailer = mailer.NoopMailer{}

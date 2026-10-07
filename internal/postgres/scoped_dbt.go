@@ -11,9 +11,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
-// ScopedDB wraps *pgxpool.Pool and sets pgapp_app role and app.current_property_id before executing queries.
+// ScopedDB wraps *pgxpool.Pool and sets app.current_property_id before executing queries.
 // It pipelines the session scope with the query in a single pgx.Batch round trip and enforces
-// transaction-local SET LOCAL configuration so it is safe under PgBouncer transaction pooling.
+// transaction-local configuration so it is safe under PgBouncer transaction pooling.
 type ScopedDB struct {
 	pool *pgxpool.Pool
 }
@@ -24,7 +24,7 @@ func NewScopedDB(pool *pgxpool.Pool) *ScopedDB {
 }
 
 // Exec executes a statement. It runs within an atomic pipelined transaction block with
-// transaction-local SET LOCAL ROLE pgapp_app and app.current_property_id.
+// transaction-local app.current_property_id.
 func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.Exec(ctx, sql, arguments...)
@@ -33,7 +33,6 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SET LOCAL ROLE pgapp_app")
 	if hasProp && propID != uuid.Nil {
 		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
 	}
@@ -45,9 +44,6 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 
 	if _, err := br.Exec(); err != nil {
 		return pgconn.CommandTag{}, fmt.Errorf("scoped exec begin: %w", err)
-	}
-	if _, err := br.Exec(); err != nil {
-		return pgconn.CommandTag{}, fmt.Errorf("scoped exec set role: %w", err)
 	}
 	if hasProp && propID != uuid.Nil {
 		if _, err := br.Exec(); err != nil {
@@ -64,7 +60,7 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 	return tag, nil
 }
 
-// Query executes a query returning rows. It pipelines BEGIN + SET LOCAL ROLE pgapp_app +
+// Query executes a query returning rows. It pipelines BEGIN +
 // set_config + query + COMMIT in a single batch, releasing the connection and transaction
 // when rows are closed.
 func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
@@ -75,7 +71,6 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SET LOCAL ROLE pgapp_app")
 	if hasProp && propID != uuid.Nil {
 		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
 	}
@@ -86,10 +81,6 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 	if _, err := br.Exec(); err != nil {
 		_ = br.Close()
 		return nil, fmt.Errorf("scoped query begin: %w", err)
-	}
-	if _, err := br.Exec(); err != nil {
-		_ = br.Close()
-		return nil, fmt.Errorf("scoped query set role: %w", err)
 	}
 	if hasProp && propID != uuid.Nil {
 		if _, err := br.Exec(); err != nil {
@@ -156,7 +147,7 @@ func (r *batchedScopedRows) Conn() *pgx.Conn {
 }
 
 // QueryRow executes a query expected to return at most one row.
-// It pipelines BEGIN + SET LOCAL ROLE pgapp_app + set_config + query + COMMIT in a single round trip.
+// It pipelines BEGIN + set_config + query + COMMIT in a single round trip.
 func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if tx, ok := TxFromContext(ctx); ok {
 		return tx.QueryRow(ctx, sql, args...)
@@ -165,7 +156,6 @@ func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Ro
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
-	batch.Queue("SET LOCAL ROLE pgapp_app")
 	if hasProp && propID != uuid.Nil {
 		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
 	}
@@ -185,9 +175,6 @@ func (r *batchedScopedRow) Scan(dest ...any) error {
 	defer r.br.Close()
 	if _, err := r.br.Exec(); err != nil {
 		return fmt.Errorf("scoped query begin: %w", err)
-	}
-	if _, err := r.br.Exec(); err != nil {
-		return fmt.Errorf("scoped query set role: %w", err)
 	}
 	if r.hasProp {
 		if _, err := r.br.Exec(); err != nil {

@@ -22,7 +22,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
 	if err != nil {
 		log.Fatal(err)
 	}

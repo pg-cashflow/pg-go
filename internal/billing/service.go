@@ -8,9 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 )
 
@@ -20,25 +23,63 @@ var (
 	ErrDueNotWaivable = errors.New("billing: due cannot be waived")
 )
 
+// txFn runs work with optionally transactional repos.
+type txFn func(ctx context.Context, fn func(dues DueRepository, tenants TenantRepository, pub events.Publisher) error) error
+
 // Service creates and adjusts dues (rent, deposit, prorate, waive).
 type Service struct {
-	dues    DueRepository
-	tenants TenantRepository
-	pub     events.Publisher
-	now     func() time.Time
+	dues      DueRepository
+	tenants   TenantRepository
+	pub       events.Publisher
+	runInTx   txFn
+	now       func() time.Time
 	onProrate func(ctx context.Context, due *domain.Due, original, prorated int64)
 }
 
 func NewService(dues DueRepository, tenants TenantRepository, pub events.Publisher) *Service {
-	return &Service{
+	s := &Service{
 		dues:    dues,
 		tenants: tenants,
 		pub:     pub,
 		now:     func() time.Time { return time.Now().UTC() },
 	}
+	s.runInTx = func(ctx context.Context, fn func(DueRepository, TenantRepository, events.Publisher) error) error {
+		return fn(s.dues, s.tenants, s.pub)
+	}
+	return s
 }
 
-// CreateRentDue creates the next rent due for tenant.
+// NewServiceWithPool enables transactional CreateRentDue and CreateDepositDue via postgres repos.
+func NewServiceWithPool(
+	pool *pgxpool.Pool,
+	dues *postgres.DueRepo,
+	tenants *postgres.TenantRepo,
+	eventRepo *postgres.EventRepo,
+) *Service {
+	pub := events.NewPostgresPublisher(eventRepo)
+	s := NewService(dues, tenants, pub)
+	s.SetPool(pool, dues, tenants, eventRepo)
+	return s
+}
+
+// SetPool configures the transactional runner using pgxpool and postgres repos.
+func (s *Service) SetPool(
+	pool *pgxpool.Pool,
+	dues *postgres.DueRepo,
+	tenants *postgres.TenantRepo,
+	eventRepo *postgres.EventRepo,
+) {
+	if pool == nil || dues == nil || tenants == nil || eventRepo == nil {
+		return
+	}
+	s.runInTx = func(ctx context.Context, fn func(DueRepository, TenantRepository, events.Publisher) error) error {
+		return postgres.WithinTx(ctx, pool, func(tx pgx.Tx) error {
+			return fn(dues.WithTx(tx), tenants.WithTx(tx), events.NewPostgresPublisher(eventRepo.WithTx(tx)))
+		})
+	}
+}
+
+// CreateRentDue creates the next rent due for tenant atomically in a single transaction.
 // Returns ErrOpenDueExists if a pending|partial rent due already exists.
 // Applies credit_balance_paise toward the new due and may mark it paid.
 func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*domain.Due, error) {
@@ -61,23 +102,29 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 		Status:         domain.DueStatusPending,
 	}
 
-	if err := s.insertDueWithCodeRetry(ctx, due); err != nil {
-		return nil, err
-	}
-
-	if err := s.publishDueCreated(ctx, due); err != nil {
-		return nil, err
-	}
-
-	if tenant.CreditBalancePaise > 0 {
-		if err := s.applyCreditToDue(ctx, tenant, due); err != nil {
-			return nil, err
+	err := s.runInTx(ctx, func(txDues DueRepository, txTenants TenantRepository, txPub events.Publisher) error {
+		if err := insertDueWithCodeRetry(ctx, txDues, due); err != nil {
+			return err
 		}
+
+		if err := publishDueCreated(ctx, txPub, s.now(), due); err != nil {
+			return err
+		}
+
+		if tenant.CreditBalancePaise > 0 {
+			if err := applyCreditToDue(ctx, txDues, txTenants, txPub, s.now(), tenant, due); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return due, nil
 }
 
-// CreateDepositDue creates a one-time deposit due.
+// CreateDepositDue creates a one-time deposit due atomically.
 func (s *Service) CreateDepositDue(ctx context.Context, tenant *domain.Tenant, amountPaise int64) (*domain.Due, error) {
 	if tenant == nil {
 		return nil, fmt.Errorf("billing: tenant is required")
@@ -97,10 +144,13 @@ func (s *Service) CreateDepositDue(ctx context.Context, tenant *domain.Tenant, a
 		DueDate:        today,
 		Status:         domain.DueStatusPending,
 	}
-	if err := s.insertDueWithCodeRetry(ctx, due); err != nil {
-		return nil, err
-	}
-	if err := s.publishDueCreated(ctx, due); err != nil {
+	err := s.runInTx(ctx, func(txDues DueRepository, txTenants TenantRepository, txPub events.Publisher) error {
+		if err := insertDueWithCodeRetry(ctx, txDues, due); err != nil {
+			return err
+		}
+		return publishDueCreated(ctx, txPub, s.now(), due)
+	})
+	if err != nil {
 		return nil, err
 	}
 	return due, nil
@@ -181,7 +231,15 @@ func (s *Service) SetProrateHook(fn func(ctx context.Context, due *domain.Due, o
 	s.onProrate = fn
 }
 
-func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error {
+func applyCreditToDue(
+	ctx context.Context,
+	dues DueRepository,
+	tenants TenantRepository,
+	pub events.Publisher,
+	now time.Time,
+	tenant *domain.Tenant,
+	due *domain.Due,
+) error {
 	if tenant.CreditBalancePaise <= 0 || due.Amount <= 0 {
 		return nil
 	}
@@ -191,17 +249,17 @@ func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, d
 	}
 	due.Amount -= applied
 	tenant.CreditBalancePaise -= applied
-	at := s.now()
+	at := now
 	if due.Amount == 0 {
 		due.MarkPaid(at)
 	} else if due.Status == domain.DueStatusPending {
 		// remaining after partial credit still pending until payment
 	}
 
-	if err := s.dues.Update(ctx, due); err != nil {
+	if err := dues.Update(ctx, due); err != nil {
 		return err
 	}
-	if err := s.tenants.Update(ctx, tenant); err != nil {
+	if err := tenants.Update(ctx, tenant); err != nil {
 		return err
 	}
 
@@ -212,7 +270,7 @@ func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, d
 		RemainingPaise: int64(tenant.CreditBalancePaise),
 	})
 	did := due.ID
-	if err := s.pub.Publish(ctx, domain.Event{
+	if err := pub.Publish(ctx, domain.Event{
 		TenantID:   domain.Ptr(tenant.ID),
 		PropertyID: tenant.PropertyID,
 		EventType:  domain.EvtCreditApplied,
@@ -224,15 +282,19 @@ func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, d
 	}
 
 	if due.Status == domain.DueStatusPaid {
-		return publishDuePaid(ctx, s.pub, due, at, "credit")
+		return publishDuePaid(ctx, pub, due, at, "credit")
 	}
 	return nil
 }
 
-func (s *Service) insertDueWithCodeRetry(ctx context.Context, due *domain.Due) error {
+func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error {
+	return applyCreditToDue(ctx, s.dues, s.tenants, s.pub, s.now(), tenant, due)
+}
+
+func insertDueWithCodeRetry(ctx context.Context, dues DueRepository, due *domain.Due) error {
 	_, err := qr.GenerateDueCode(func(code string) error {
 		due.DueCode = code
-		err := s.dues.Create(ctx, due)
+		err := dues.Create(ctx, due)
 		if err == nil {
 			return nil
 		}
@@ -249,7 +311,11 @@ func (s *Service) insertDueWithCodeRetry(ctx context.Context, due *domain.Due) e
 	return err
 }
 
-func (s *Service) publishDueCreated(ctx context.Context, due *domain.Due) error {
+func (s *Service) insertDueWithCodeRetry(ctx context.Context, due *domain.Due) error {
+	return insertDueWithCodeRetry(ctx, s.dues, due)
+}
+
+func publishDueCreated(ctx context.Context, pub events.Publisher, now time.Time, due *domain.Due) error {
 	payload, _ := json.Marshal(domain.DueCreatedPayload{
 		DueID:       due.ID.String(),
 		DueCode:     due.DueCode,
@@ -257,14 +323,18 @@ func (s *Service) publishDueCreated(ctx context.Context, due *domain.Due) error 
 		AmountPaise: int64(due.OriginalAmount),
 	})
 	did := due.ID
-	return s.pub.Publish(ctx, domain.Event{
+	return pub.Publish(ctx, domain.Event{
 		TenantID:   domain.Ptr(due.TenantID),
 		PropertyID: due.PropertyID,
 		EventType:  domain.EvtDueCreated,
 		DueID:      &did,
-		OccurredAt: s.now(),
+		OccurredAt: now,
 		Payload:    payload,
 	})
+}
+
+func (s *Service) publishDueCreated(ctx context.Context, due *domain.Due) error {
+	return publishDueCreated(ctx, s.pub, s.now(), due)
 }
 
 func (s *Service) findOpenRentDue(ctx context.Context, tenantID uuid.UUID) (*domain.Due, error) {
