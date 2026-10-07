@@ -62,6 +62,7 @@ const (
 	CodeFinancePeriodClosed       Code = "finance.periodClosed"
 	CodeFinanceNotFound           Code = "finance.notFound"
 	CodeFinanceForbidden          Code = "finance.forbidden"
+	CodeFinanceConflict           Code = "finance.conflict"
 	CodeFinanceDisabled           Code = "finance.disabled"
 
 	// Request & Bind

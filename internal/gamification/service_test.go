@@ -599,6 +599,82 @@ func TestRedeem_Step3ViolationBlocksCash(t *testing.T) {
 	}
 }
 
+func TestRedemption_CashCredit_FailsClosedAndClamps(t *testing.T) {
+	tenantID := uuid.New()
+	propID := uuid.New()
+	rewardID := uuid.New()
+
+	setupSvc := func(settings *domain.PropertyGamificationSettings, discountPaise int64) (*Service, *memStore, *memTenantRepo) {
+		store := newMemStore()
+		store.settings = settings
+		tRepo := &memTenantRepo{
+			tenants: map[uuid.UUID]*domain.Tenant{
+				tenantID: {
+					ID:                 tenantID,
+					PropertyID:         propID,
+					CreditBalancePaise: 0,
+				},
+			},
+		}
+		store.catalog[rewardID] = domain.RewardsCatalogItem{
+			ID:              rewardID,
+			Code:            "RENT_CREDIT_500",
+			Title:           "Rent Credit",
+			Category:        "cash_credit",
+			PointsCost:      500,
+			MinTenureMonths: 0,
+			IsActive:        true,
+			Metadata:        json.RawMessage(fmt.Sprintf(`{"discount_paise": %d}`, discountPaise)),
+		}
+		store.streak[tenantID] = &domain.TenantStreak{
+			TenantID:      tenantID,
+			OnTimeMonths:  5,
+			CachedBalance: 1000,
+		}
+		expiresAt := time.Now().UTC().AddDate(0, 0, 180)
+		_ = store.InsertLedgerEntry(context.Background(), &domain.PointsLedgerEntry{
+			TenantID:   tenantID,
+			PropertyID: propID,
+			RuleCode:   "RENT_ON_TIME",
+			Delta:      1000,
+			ExpiresAt:  &expiresAt,
+		})
+		svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+		return svc, store, tRepo
+	}
+
+	t.Run("fails closed when settings is nil", func(t *testing.T) {
+		svc, _, _ := setupSvc(nil, 50000)
+		_, err := svc.RedeemReward(context.Background(), tenantID, rewardID)
+		if err == nil {
+			t.Fatalf("expected error when settings is nil, got nil")
+		}
+	})
+
+	t.Run("fails closed when PointValuePaise <= 0", func(t *testing.T) {
+		svc, _, _ := setupSvc(&domain.PropertyGamificationSettings{PropertyID: propID, PointValuePaise: 0}, 50000)
+		_, err := svc.RedeemReward(context.Background(), tenantID, rewardID)
+		if err == nil {
+			t.Fatalf("expected error when PointValuePaise is 0, got nil")
+		}
+	})
+
+	t.Run("clamps excessive discount paise to points * point_value", func(t *testing.T) {
+		// Point value is Rs 1 (100 paise), 500 points = Rs 500 (50000 paise)
+		// Metadata asks for Rs 5,000 (500000 paise) -> MUST CLAMP to 50000 paise
+		svc, _, tRepo := setupSvc(&domain.PropertyGamificationSettings{PropertyID: propID, PointValuePaise: 100}, 500000)
+		_, err := svc.RedeemReward(context.Background(), tenantID, rewardID)
+		if err != nil {
+			t.Fatalf("expected successful redemption, got %v", err)
+		}
+		tenant := tRepo.tenants[tenantID]
+		if tenant.CreditBalancePaise != 50000 {
+			t.Fatalf("expected clamped credit balance 50000 paise, got %d", tenant.CreditBalancePaise)
+		}
+	})
+}
+
+
 func TestConsumer_MinorGamificationSuppressed(t *testing.T) {
 	store := newMemStore()
 	tenantID := uuid.New()

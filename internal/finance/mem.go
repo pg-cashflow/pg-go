@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -262,24 +263,65 @@ func (m *MemoryStore) InsertExpenseAtomic(_ context.Context, e *domain.Expense, 
 	return nil
 }
 
-func (m *MemoryStore) VoidExpenseAtomic(_ context.Context, expenseID uuid.UUID, status domain.ExpenseStatus, lines []domain.JournalLine) error {
+func (m *MemoryStore) VoidExpenseAtomic(_ context.Context, p domain.VoidExpenseParams) (*domain.Expense, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	e, ok := m.expenses[expenseID]
+	e, ok := m.expenses[p.ExpenseID]
 	if !ok {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	e.Status = status
-	m.expenses[expenseID] = e
-
-	for _, l := range lines {
-		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
-		if err := m.claim(key); err != nil {
-			return err
+	if e.PropertyID != p.PropertyID {
+		return nil, ErrForbidden
+	}
+	if p.ExpectedStatus != "" && e.Status != p.ExpectedStatus {
+		return nil, domain.ErrConflict
+	}
+	if e.Status == domain.ExpenseCancelled {
+		return nil, errors.New("finance: expense is already cancelled")
+	}
+	if e.Status == domain.ExpensePaid {
+		return nil, errors.New("finance: cannot void paid expense")
+	}
+	for _, pay := range m.payments {
+		if pay.ExpenseID == e.ID {
+			return nil, domain.ErrConflict
 		}
-		m.journal = append(m.journal, l)
 	}
-	return nil
+
+	if e.Status == domain.ExpenseApproved {
+		specs := []LineSpec{
+			{Account: domain.AcctAccountsPayable, Debit: e.AmountPaise, LineKind: "void_payable_dr"},
+			{Account: domain.AcctOperatingExpense, Credit: e.AmountPaise, LineKind: "void_expense_cr"},
+		}
+		lines, err := MakeLines(e.PropertyID, e.ID, "expense_void", p.VoidedAt, specs)
+		if err != nil {
+			return nil, err
+		}
+		for _, l := range lines {
+			key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+			if err := m.claim(key); err != nil {
+				return nil, err
+			}
+			m.journal = append(m.journal, l)
+		}
+	}
+
+	// Cancel any pending approval requests
+	for k, a := range m.approvals {
+		if a.Kind == "expense" && a.SubjectID == e.ID && a.Status == "pending" {
+			a.Status = "cancelled"
+			a.Note = "voided"
+			m.approvals[k] = a
+		}
+	}
+
+	e.Status = domain.ExpenseCancelled
+	e.VoidReason = &p.VoidReason
+	e.VoidedBy = &p.VoidedBy
+	e.VoidedAt = &p.VoidedAt
+	m.expenses[p.ExpenseID] = e
+	cp := e
+	return &cp, nil
 }
 
 func (m *MemoryStore) GetExpense(_ context.Context, id uuid.UUID) (*domain.Expense, error) {
@@ -781,6 +823,9 @@ func (m *MemoryStore) DecideApprovalAtomic(_ context.Context, a *domain.Approval
 		e, ok := m.expenses[a.SubjectID]
 		if !ok {
 			return ErrNotFound
+		}
+		if e.Status != domain.ExpensePendingApproval {
+			return ErrForbidden
 		}
 		e.Status = *expenseStatus
 		m.expenses[a.SubjectID] = e

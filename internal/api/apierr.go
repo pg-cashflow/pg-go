@@ -101,6 +101,8 @@ func financeClientErr(err error) error {
 		return clientErrWithCode(http.StatusNotFound, "not found", apierr.CodeFinanceNotFound)
 	case errors.Is(err, finance.ErrForbidden):
 		return clientErrWithCode(http.StatusForbidden, "forbidden", apierr.CodeFinanceForbidden)
+	case errors.Is(err, finance.ErrConflict):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeFinanceConflict)
 	case errors.Is(err, finance.ErrDisabled):
 		return clientErrWithCode(http.StatusServiceUnavailable, "finance disabled", apierr.CodeFinanceDisabled)
 	default:

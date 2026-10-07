@@ -54,6 +54,12 @@ All implementations follow **first-principles verification** on live PostgreSQL.
 | **REQ-DB-P1-010** | P1 | Financial Integrity | Tie gamification cash redemption to point value (`discountPaise <= points_cost * point_value_paise`). | `internal/gamification/redemptions.go` | Redemptions monetary check | `PASS` |
 | **REQ-DB-P1-011** | P1 | Financial Controls | Implement `VoidExpense` action and endpoint with reversing double-entry journal lines. | `internal/finance/service.go`, `internal/api/handlers_finance.go`, `internal/api/router.go` | Reversing journal verification | `PASS` |
 | **REQ-DB-P1-012** | P1 | Test Automation | Fix missing `property_id` in `scripts/sql/ledger_controls_test.sql` payments fixture. | `scripts/sql/ledger_controls_test.sql` | SQL control test execution | `PASS` |
+| **REQ-DB-P0-013** | P0 | Concurrency / Integrity | Block resurrection of voided expenses by cancelling pending approvals and guarding `DecideApprovalAtomic`. | `internal/postgres/finance_repo.go`, `internal/finance/mem.go` | TestVoidExpense_PendingApproval_LeavesNoJournalAndCancelsApproval | `PASS` |
+| **REQ-DB-P0-014** | P0 | Concurrency / Integrity | Lock expense row with `FOR UPDATE` inside transaction before making void and journal reversal decisions. | `internal/postgres/finance_repo.go`, `internal/finance/service.go` | In-transaction row lock inspection | `PASS` |
+| **REQ-DB-P1-015** | P1 | Audit / Integrity | Add audit columns (`void_reason`, `voided_by`, `voided_at`) and check constraint to `expenses`. | `migrations/059_...sql`, `internal/domain/finance.go` | Migration 059 schema inspection | `PASS` |
+| **REQ-DB-P1-016** | P1 | Financial Integrity | Fail closed on settings errors during cash credit reward redemptions. | `internal/gamification/redemptions.go` | Redemptions error handling check | `PASS` |
+| **REQ-DB-P1-017** | P1 | Performance / Indexing | Replace `TO_CHAR` with IST range queries and add composite index on `points_ledger (tenant_id, created_at)`. | `migrations/059_...sql`, `internal/postgres/gamification_repo.go` | Query plan and index scan verification | `PASS` |
+| **REQ-DB-P1-018** | P1 | Test Automation | Add comprehensive unit tests covering journal netting, resurrection blocking, and maker-checker. | `internal/finance/expense_void_test.go` | `go test -run TestVoidExpense_` | `PASS` |
 
 ---
 

@@ -83,22 +83,27 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 
 	var cashDiscountPaise int64
 	if reward.Category == "cash_credit" {
+		settings, err := s.store.GetSettings(ctx, tenant.PropertyID)
+		if err != nil || settings == nil {
+			return nil, fmt.Errorf("failed to load gamification settings for cash credit: %w", err)
+		}
+		if settings.PointValuePaise <= 0 {
+			return nil, errors.New("gamification point value is not configured")
+		}
+
 		type meta struct {
 			DiscountPaise int64 `json:"discount_paise"`
 		}
 		var m meta
-		_ = json.Unmarshal(reward.Metadata, &m)
-		cashDiscountPaise = m.DiscountPaise
-		if cashDiscountPaise <= 0 {
-			cashDiscountPaise = 50000 // default Rs 500
-		}
-		// Tie cash redemption value directly to points to prevent money leak
-		settings, err := s.store.GetSettings(ctx, tenant.PropertyID)
-		if err == nil && settings != nil && settings.PointValuePaise > 0 {
-			maxAllowedPaise := int64(reward.PointsCost) * settings.PointValuePaise
-			if cashDiscountPaise > maxAllowedPaise {
-				cashDiscountPaise = maxAllowedPaise
+		if len(reward.Metadata) > 0 {
+			if err := json.Unmarshal(reward.Metadata, &m); err != nil {
+				return nil, fmt.Errorf("invalid cash credit metadata: %w", err)
 			}
+		}
+		cashDiscountPaise = m.DiscountPaise
+		maxAllowedPaise := int64(reward.PointsCost) * settings.PointValuePaise
+		if cashDiscountPaise <= 0 || cashDiscountPaise > maxAllowedPaise {
+			cashDiscountPaise = maxAllowedPaise
 		}
 	}
 
