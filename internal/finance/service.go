@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -196,66 +198,96 @@ type VoidExpenseInput struct {
 	Reason     string
 }
 
-func (s *Service) VoidExpense(ctx context.Context, in VoidExpenseInput) (*domain.Expense, error) {
-	if in.Reason == "" {
-		return nil, errors.New("finance: void reason is required")
-	}
+const (
+	voidMaxAttempts      = 3
+	minVoidReasonRunes   = 3
+	maxVoidReasonRunes   = 500
+	maxExpenseBackdate   = 90 * 24 * time.Hour
+	maxExpenseFutureSkew = 5 * time.Minute
+)
 
-	exp, err := s.Store.GetExpense(ctx, in.ExpenseID)
+// ValidateExpenseDate rejects an expense date that is in the future or older than 90 days.
+// Closed accounting periods stay protected separately by the ledger period-lock trigger.
+func ValidateExpenseDate(now, at time.Time) error {
+	if at.After(now.Add(maxExpenseFutureSkew)) || at.Before(now.Add(-maxExpenseBackdate)) {
+		return ErrDateOutOfRange
+	}
+	return nil
+}
+
+// VoidExpense cancels an expense that is pending approval or approved and not yet paid.
+// Rules:
+//   - A reason of 3 to 500 characters is required and stored for audit.
+//   - A non-owner can void only an expense the same user created.
+//   - A non-owner cannot void an approved expense above the owner-approval threshold.
+//   - The store checks the expense status under a row lock. If the status changed since
+//     the read, the service re-reads and tries again (at most voidMaxAttempts).
+func (s *Service) VoidExpense(ctx context.Context, in VoidExpenseInput) (*domain.Expense, error) {
+	reason := strings.TrimSpace(in.Reason)
+	if n := utf8.RuneCountInString(reason); n < minVoidReasonRunes || n > maxVoidReasonRunes {
+		return nil, ErrReasonRequired
+	}
+	for attempt := 0; attempt < voidMaxAttempts; attempt++ {
+		e, err := s.voidExpenseOnce(ctx, in, reason)
+		if errors.Is(err, ErrExpenseStateChanged) {
+			continue
+		}
+		return e, err
+	}
+	return nil, ErrExpenseStateChanged
+}
+
+func (s *Service) voidExpenseOnce(ctx context.Context, in VoidExpenseInput, reason string) (*domain.Expense, error) {
+	e, err := s.Store.GetExpense(ctx, in.ExpenseID)
 	if err != nil {
 		return nil, err
 	}
-	if exp.PropertyID != in.PropertyID {
+	if e.PropertyID != in.PropertyID {
 		return nil, ErrForbidden
 	}
-
-	if exp.Status == domain.ExpenseCancelled {
-		return nil, errors.New("finance: expense is already cancelled")
-	}
-	if exp.Status == domain.ExpensePaid {
-		return nil, errors.New("finance: cannot void paid expense")
+	if e.Status != domain.ExpensePendingApproval && e.Status != domain.ExpenseApproved {
+		return nil, fmt.Errorf("%w: status is %s", ErrExpenseNotVoidable, e.Status)
 	}
 
-	// Role-based authorization:
-	// - Voiding an approved expense is owner-only.
-	// - Managers may void only their own draft or pending expenses.
-	switch in.ActorRole {
-	case domain.PayerOwner:
-		// Owner is authorized to void approved, pending, or draft expenses.
-	case domain.PayerManager:
-		if exp.Status == domain.ExpenseApproved {
-			return nil, fmt.Errorf("finance: voiding approved expense is owner-only: %w", ErrForbidden)
+	if in.ActorRole != domain.PayerOwner {
+		if e.CreatedBy != in.ActorID {
+			return nil, ErrForbidden
 		}
-		if exp.CreatedBy != in.ActorID {
-			return nil, fmt.Errorf("finance: managers may only void their own expenses: %w", ErrForbidden)
+		if e.Status == domain.ExpenseApproved {
+			pol, err := s.Store.GetPolicy(ctx, e.PropertyID)
+			if err != nil {
+				return nil, err
+			}
+			if e.AmountPaise > pol.OwnerApprovalThresholdPaise {
+				return nil, ErrApprovalRequired
+			}
 		}
-		if exp.Status != domain.ExpenseDraft && exp.Status != domain.ExpensePendingApproval {
-			return nil, fmt.Errorf("finance: managers may only void draft or pending expenses: %w", ErrForbidden)
-		}
-	default:
-		return nil, ErrForbidden
 	}
 
 	at := s.Now()
-	voidedExp, err := s.Store.VoidExpenseAtomic(ctx, domain.VoidExpenseParams{
-		PropertyID:     in.PropertyID,
-		ExpenseID:      in.ExpenseID,
-		ExpectedStatus: exp.Status,
-		VoidedBy:       in.ActorID,
-		VoidReason:     in.Reason,
-		VoidedAt:       at,
-	})
-	if err != nil {
+	var lines []domain.JournalLine
+	if e.Status == domain.ExpenseApproved {
+		lines, err = MakeLines(e.PropertyID, e.ID, "expense_void", at, []LineSpec{
+			{Account: domain.AcctAccountsPayable, Debit: e.AmountPaise, LineKind: "void_payable_dr"},
+			{Account: domain.AcctOperatingExpense, Credit: e.AmountPaise, LineKind: "void_expense_cr"},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	v := domain.ExpenseVoid{Reason: reason, VoidedBy: in.ActorID, VoidedAt: at}
+	if err := s.Store.VoidExpenseAtomic(ctx, e.ID, e.Status, lines, v); err != nil {
 		return nil, err
 	}
 
+	e.Status = domain.ExpenseCancelled
 	s.publish(ctx, in.PropertyID, domain.EvtExpenseVoided, map[string]any{
-		"expense_id": voidedExp.ID,
+		"expense_id": e.ID,
 		"voided_by":  in.ActorID,
-		"reason":     in.Reason,
-		"voided_at":  at,
+		"reason":     reason,
 	})
-	return voidedExp, nil
+	return e, nil
 }
 
 type PayExpenseInput struct {

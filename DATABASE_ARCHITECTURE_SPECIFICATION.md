@@ -54,12 +54,12 @@ All implementations follow **first-principles verification** on live PostgreSQL.
 | **REQ-DB-P1-010** | P1 | Financial Integrity | Tie gamification cash redemption to point value (`discountPaise <= points_cost * point_value_paise`). | `internal/gamification/redemptions.go` | Redemptions monetary check | `PASS` |
 | **REQ-DB-P1-011** | P1 | Financial Controls | Implement `VoidExpense` action and endpoint with reversing double-entry journal lines. | `internal/finance/service.go`, `internal/api/handlers_finance.go`, `internal/api/router.go` | Reversing journal verification | `PASS` |
 | **REQ-DB-P1-012** | P1 | Test Automation | Fix missing `property_id` in `scripts/sql/ledger_controls_test.sql` payments fixture. | `scripts/sql/ledger_controls_test.sql` | SQL control test execution | `PASS` |
-| **REQ-DB-P0-013** | P0 | Concurrency / Integrity | Block resurrection of voided expenses by cancelling pending approvals and guarding `DecideApprovalAtomic`. | `internal/postgres/finance_repo.go`, `internal/finance/mem.go` | TestVoidExpense_PendingApproval_LeavesNoJournalAndCancelsApproval | `PASS` |
+| **REQ-DB-P0-013** | P0 | Concurrency / Integrity | Block resurrection of voided expenses by cancelling pending approvals and guarding `DecideApprovalAtomic`. | `internal/postgres/finance_repo.go`, `internal/finance/mem.go` | `TestVoidPendingExpenseCannotBeApprovedLater` | `PASS` |
 | **REQ-DB-P0-014** | P0 | Concurrency / Integrity | Lock expense row with `FOR UPDATE` inside transaction before making void and journal reversal decisions. | `internal/postgres/finance_repo.go`, `internal/finance/service.go` | In-transaction row lock inspection | `PASS` |
-| **REQ-DB-P1-015** | P1 | Audit / Integrity | Add audit columns (`void_reason`, `voided_by`, `voided_at`) and check constraint to `expenses`. | `migrations/059_...sql`, `internal/domain/finance.go` | Migration 059 schema inspection | `PASS` |
+| **REQ-DB-P1-015** | P1 | Audit / Integrity | Add audit columns (`void_reason`, `voided_by`, `voided_at`) and check constraint to `expenses`. | `migrations/059_expense_void_audit.sql`, `internal/domain/finance.go` | Migration 059 schema inspection | `PASS` |
 | **REQ-DB-P1-016** | P1 | Financial Integrity | Fail closed on settings errors during cash credit reward redemptions. | `internal/gamification/redemptions.go` | Redemptions error handling check | `PASS` |
-| **REQ-DB-P1-017** | P1 | Performance / Indexing | Replace `TO_CHAR` with IST range queries and add composite index on `points_ledger (tenant_id, created_at)`. | `migrations/059_...sql`, `internal/postgres/gamification_repo.go` | Query plan and index scan verification | `PASS` |
-| **REQ-DB-P1-018** | P1 | Test Automation | Add comprehensive unit tests covering journal netting, resurrection blocking, and maker-checker. | `internal/finance/expense_void_test.go` | `go test -run TestVoidExpense_` | `PASS` |
+| **REQ-DB-P1-017** | P1 | Performance / Indexing | Replace `TO_CHAR` with IST range queries and add covering indexes on `points_ledger`. | `migrations/060_points_ledger_month_indexes.sql`, `internal/postgres/gamification_repo.go` | Query plan and index scan verification | `PASS` |
+| **REQ-DB-P1-018** | P1 | Test Automation | Add comprehensive unit tests covering journal netting, resurrection blocking, and maker-checker. | `internal/finance/void_test.go` | `go test -run TestVoid` | `PASS` |
 
 ---
 
@@ -81,23 +81,28 @@ All implementations follow **first-principles verification** on live PostgreSQL.
   3. Concurrent additions from payment webhooks or reward redemptions shall not be overwritten.
 
 ### REQ-DB-P0-009: Startup Environment Validation
-- **Statement:** The application server shall refuse startup if the maintenance database role cannot bypass RLS.
+- **Statement:** The application server shall refuse startup in production if connection roles violate security boundaries or if pools share the same connection string.
 - **Acceptance Criteria:**
-  1. `cmd/server/main.go` shall execute `SELECT current_user` on `maintPool`.
-  2. If `APP_ENV` is `production` and the user is `pgapp_app`, the process shall terminate with `log.Fatal`.
+  1. `cmd/server/main.go` and `internal/postgres/guard.go` shall validate role metadata (`rolname`, `rolsuper`, `rolbypassrls`, table ownership) on both pools.
+  2. If `APP_ENV` is `production`:
+     - `DATABASE_URL` and `DATABASE_MAINT_URL` must differ.
+     - `maintPool` role must be `pgapp_maint`, NOSUPERUSER, NOBYPASSRLS, and not a public table owner.
+     - `appPool` role must be `pgapp_app`, NOSUPERUSER, NOBYPASSRLS, and not a public table owner.
+  3. If misconfigured, startup terminates immediately with `log.Fatal`.
 
-### REQ-DB-P1-010: Cash Redemption Monetary Limits
-- **Statement:** The gamification engine shall limit cash credit discounts to the total value of spent points.
+### REQ-DB-P1-010: Cash Redemption Monetary Limits and Fail-Closed Control
+- **Statement:** The gamification engine shall limit cash credit discounts to the total value of spent points and fail closed on missing settings.
 - **Acceptance Criteria:**
-  1. `RedeemReward` shall read the property point value (`PointValuePaise`).
-  2. If metadata specifies a discount higher than `PointsCost * PointValuePaise`, the discount shall be clamped to the maximum allowed value.
+  1. `RedeemReward` shall load property settings and refuse redemptions if settings cannot be loaded or if `PointValuePaise <= 0`.
+  2. If metadata specifies a discount higher than `PointsCost * PointValuePaise`, the discount shall be clamped to `PointsCost * PointValuePaise`.
 
-### REQ-DB-P1-011: Expense Cancellation and Reversal
-- **Statement:** The finance service shall permit cancellation of unpaid expenses with automatic journal reversal.
+### REQ-DB-P1-011: Expense Cancellation, Role Authorization, and Concurrency Protection
+- **Statement:** The finance service shall permit cancellation of unpaid expenses with atomic journal reversal, role checks, and race-free conditional updates.
 - **Acceptance Criteria:**
-  1. `VoidExpense` shall transition the expense status to `cancelled`.
-  2. If the expense was approved, a reversing journal entry shall be recorded: Debit `accounts_payable`, Credit `operating_expense`.
-  3. Paid expenses shall be rejected from cancellation.
+  1. `VoidExpense` shall require a non-empty `void_reason` and persist `void_reason`, `voided_by`, and `voided_at` on the `expenses` record.
+  2. Managers may void only their own draft or pending expenses. Voiding approved expenses is restricted to the owner role.
+  3. The update query shall enforce `AND status = $5` matching the status read before the call. If zero rows match or a concurrent payment lands, the call shall return `ErrConflict`.
+  4. If the expense was approved, a balanced reversing journal entry shall be recorded: Debit `accounts_payable`, Credit `operating_expense`.
 
 ---
 
@@ -106,8 +111,8 @@ All implementations follow **first-principles verification** on live PostgreSQL.
 | Dimension | Initial Review Finding | Current Post-Remediation State | Verdict |
 | :--- | :--- | :--- | :--- |
 | **Tenant Isolation** | Scoped queries failed under superuser tests; unscoped routes broke. | Dual pools deployed: `pgapp_app` for scoped client queries, `pgapp_maint` for background operations. | **VERIFIED SECURE** |
-| **Billing Atomicity** | Aborted transaction on collision; lost update on credit balance. | `ON CONFLICT DO NOTHING` + tenant-first lock hierarchy + atomic `DeductCredit`. | **CORRECT & ATOMIC** |
-| **Startup Safety** | `pgapp_app` in production maintenance pool returned zero rows silently. | Startup guard checks `SELECT current_user` on `maintPool` and halts if misconfigured. | **HARDENED** |
-| **Gamification Leak** | Unvalidated metadata discount paise allowed money leak. | Discount clamped to `PointsCost * PointValuePaise`. | **PROTECTED** |
-| **Financial Controls** | No expense cancellation mechanism; required manual database edit. | `VoidExpense` API and service added with balanced reversing journal entries. | **CONTROLLED** |
-| **Test Fixtures** | Missing NOT NULL `property_id` in ledger controls test payments fixture. | Repaired fixture in `scripts/sql/ledger_controls_test.sql`. | **PASS** |
+| **Billing Atomicity** | Aborted transaction on collision; lost update on credit balance. | `ON CONFLICT DO NOTHING` + tenant-first lock hierarchy + atomic `DeductCredit`. Tested under concurrent webhooks and collision loops. | **CORRECT & ATOMIC** |
+| **Startup Safety** | Startup guard allowed table-owner, superuser, and identical URLs. | Strict guard validates `pgapp_maint` and `pgapp_app` roles, non-superuser, non-bypassrls, non-tableowner, and distinct URLs. | **HARDENED** |
+| **Gamification Leak** | Redemption failed open on settings errors or `PointValuePaise <= 0`. | Fails closed with error on unconfigured settings; clamps excessive metadata discounts to `PointsCost * PointValuePaise`. | **PROTECTED** |
+| **Financial Controls** | Void raced with payments; managers could void approved expenses. | `AND status = $5` concurrency lock with `ErrConflict`; manager void limited to own draft/pending; approved void is owner-only. | **CONTROLLED** |
+| **Test Fixtures & Suite** | Missing billing and void race Go tests. | Comprehensive unit tests added in `billing/service_test.go`, `finance/void_test.go`, and `postgres/guard_test.go`. | **PASS** |

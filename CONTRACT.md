@@ -79,6 +79,10 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `finance.notFound` | 404 | Finance | Financial entity not found |
 | `finance.forbidden` | 403 | Finance | Forbidden financial action |
 | `finance.disabled` | 503 | Finance | Financial subsystem is disabled |
+| `finance.expenseNotVoidable` | 409 | Finance | Expense is already cancelled or paid and cannot be voided |
+| `finance.expenseStateChanged` | 409 | Finance | Expense status changed during the request; retry |
+| `finance.reasonRequired` | 400 | Finance | Void reason must be 3 to 500 characters |
+| `finance.dateOutOfRange` | 400 | Finance | Expense date is in the future or older than 90 days |
 | `request.invalidBody` | 400 | Request | Request payload is malformed or missing required fields |
 | `request.invalidId` | 400 | Request | UUID URL parameter is malformed |
 | `request.dueDayInvalid` | 400 | Request | Due day must be an integer between 1 and 28 |
@@ -878,6 +882,10 @@ Validation & error responses:
 | **Finance** | `finance.notFound` | 404 | Financial transaction, budget, or expense record not found |
 | **Finance** | `finance.forbidden` | 403 | User does not have authorization for this financial mutation |
 | **Finance** | `finance.disabled` | 503 | Financial intelligence engine is disabled in property settings |
+| **Finance** | `finance.expenseNotVoidable` | 409 | Expense is already cancelled or paid; only pending or approved expenses can be voided |
+| **Finance** | `finance.expenseStateChanged` | 409 | Expense status changed between read and write; the client can retry |
+| **Finance** | `finance.reasonRequired` | 400 | Void reason must be 3 to 500 characters |
+| **Finance** | `finance.dateOutOfRange` | 400 | Expense `occurred_at` is in the future or older than 90 days |
 | **Request** | `request.invalidBody` | 400 | Request JSON payload malformed or missing required fields |
 | **Request** | `request.invalidId` | 400 | UUID URL parameter is malformed |
 | **Request** | `request.dueDayInvalid` | 400 | Due day must be an integer between 1 and 28 |

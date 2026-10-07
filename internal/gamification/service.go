@@ -27,7 +27,14 @@ var (
 	ErrDisputeWindowExpired   = errors.New("inspection dispute window (48 hours) has expired")
 	ErrRSVPCutoffPassed       = errors.New("meal RSVP cutoff has passed for this slot (must confirm before 8:00 PM the previous day)")
 	ErrPhotoRequiredOnFail    = errors.New("photo evidence is mandatory for any failed inspection item")
+	ErrInvalidRewardValue     = errors.New("cash reward value is invalid or cannot be verified")
 )
+
+// istZone is the fixed Indian Standard Time zone. Monthly caps and budgets use IST calendar months.
+var istZone = time.FixedZone("IST", 5*3600+1800)
+
+// monthKey returns the IST calendar month ("2006-01") that contains t.
+func monthKey(t time.Time) string { return t.In(istZone).Format("2006-01") }
 
 // Store defines repository requirements for the gamification engine.
 type Store interface {
@@ -177,7 +184,7 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 		return 0, ErrRuleNotFound
 	}
 
-	monthYear := s.now().UTC().Format("2006-01")
+	monthYear := monthKey(s.now())
 
 	// 1. Check rule monthly cap if configured
 	if rule.MonthlyCap > 0 {

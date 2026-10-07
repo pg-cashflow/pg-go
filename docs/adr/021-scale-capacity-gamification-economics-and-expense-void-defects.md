@@ -23,14 +23,14 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 
 ## 2. Decisions
 
-### D1. Migration 059 (Void Audit Trail & Ledger Index)
-- Add columns to `expenses`:
-  - `void_reason TEXT`
-  - `voided_by UUID REFERENCES users(id)`
-  - `voided_at TIMESTAMPTZ`
-- Add check constraint `chk_expenses_void_audit`:
-  - Require all three fields when `status = 'cancelled'`.
-- Add range index `idx_points_ledger_tenant_created` on `points_ledger (tenant_id, created_at)`.
+### D1. Migrations 059 & 060 (Void Audit Trail & Covering Ledger Indexes)
+- Migration 059 (`059_expense_void_audit.sql`):
+  - Add columns to `expenses`: `void_reason TEXT`, `voided_by UUID REFERENCES users(id)`, `voided_at TIMESTAMPTZ`.
+  - Add check constraint `chk_expense_void_audit` enforcing all three fields populated together and reason length between 3 and 500 characters.
+- Migration 060 (`060_points_ledger_month_indexes.sql`):
+  - Add covering index `idx_points_ledger_tenant_month` on `points_ledger (tenant_id, created_at) INCLUDE (delta, rule_code)`.
+  - Add covering index `idx_points_ledger_property_month_cov` on `points_ledger (property_id, created_at) INCLUDE (delta)`.
+  - Drop redundant plain index `idx_points_ledger_property_month`.
 
 ### D2. Approval Resurrection Prevention (F1)
 - In `VoidExpenseAtomic`, cancel all pending approvals for the expense:
@@ -61,12 +61,14 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 - Parse month bounds in Indian Standard Time (IST) and query `created_at >= $from AND created_at < $to` using b-tree indexes.
 
 ### D7. Comprehensive Test Suite (F4)
-- Add unit and invariant test suite in `internal/finance/expense_void_test.go` covering:
+- Add unit and invariant test suite in `internal/finance/void_test.go` covering:
   - Approved expense void nets ledger to zero.
   - Pending approval void leaves zero journal entries and cancels approval.
   - Approval of voided expense is blocked.
   - Double-void and voiding paid expenses are rejected.
   - Maker-checker threshold enforcement.
+  - Concurrent void races with exactly one winner.
+  - Expense date range validation (past 90 days / future skew).
 
 ---
 
@@ -77,7 +79,7 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 - Cancelled expenses cannot be resurrected via stale approval requests.
 - Full auditability (`void_reason`, `voided_by`, `voided_at`) enforced by database check constraints.
 - Gamification redemption fails closed against configuration errors.
-- Ledger queries leverage b-tree index scans instead of table scans.
+- Ledger queries leverage b-tree covering index scans instead of table scans.
 
 ---
 
@@ -85,10 +87,11 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 
 | Target | Description | Status |
 | :--- | :--- | :--- |
-| `migrations/059_expense_void_audit_and_ledger_index.sql` | Added audit columns, check constraint, and points_ledger index | VERIFIED |
+| `migrations/059_expense_void_audit.sql` | Added audit columns and length-bounded check constraint | VERIFIED |
+| `migrations/060_points_ledger_month_indexes.sql` | Added covering month range indexes on points_ledger | VERIFIED |
 | `internal/postgres/finance_repo.go` | Added row-locking `VoidExpenseAtomic` and guarded `DecideApprovalAtomic` | VERIFIED |
 | `internal/finance/mem.go` | Implemented in-memory store void logic with approval cancellation | VERIFIED |
 | `internal/finance/service.go` | Enforced maker-checker threshold and reason validation in `VoidExpense` | VERIFIED |
 | `internal/gamification/redemptions.go` | Implemented fail-closed cash credit validation | VERIFIED |
 | `internal/postgres/gamification_repo.go` | Switched to IST range bounds and b-tree index queries | VERIFIED |
-| `internal/finance/expense_void_test.go` | 4 comprehensive test suites covering all F4 edge cases | VERIFIED |
+| `internal/finance/void_test.go` | Comprehensive test suite covering all void invariants and concurrency | VERIFIED |

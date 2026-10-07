@@ -62,8 +62,11 @@ const (
 	CodeFinancePeriodClosed       Code = "finance.periodClosed"
 	CodeFinanceNotFound           Code = "finance.notFound"
 	CodeFinanceForbidden          Code = "finance.forbidden"
-	CodeFinanceConflict           Code = "finance.conflict"
 	CodeFinanceDisabled           Code = "finance.disabled"
+	CodeFinanceExpenseNotVoidable Code = "finance.expenseNotVoidable"
+	CodeFinanceExpenseStateChanged Code = "finance.expenseStateChanged"
+	CodeFinanceReasonRequired     Code = "finance.reasonRequired"
+	CodeFinanceDateOutOfRange     Code = "finance.dateOutOfRange"
 
 	// Request & Bind
 	CodeRequestInvalidBody       Code = "request.invalidBody"
@@ -132,6 +135,10 @@ var AllCodes = []Code{
 	CodeFinanceNotFound,
 	CodeFinanceForbidden,
 	CodeFinanceDisabled,
+	CodeFinanceExpenseNotVoidable,
+	CodeFinanceExpenseStateChanged,
+	CodeFinanceReasonRequired,
+	CodeFinanceDateOutOfRange,
 
 	CodeRequestInvalidBody,
 	CodeRequestInvalidId,

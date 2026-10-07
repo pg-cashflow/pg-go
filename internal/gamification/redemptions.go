@@ -83,27 +83,17 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 
 	var cashDiscountPaise int64
 	if reward.Category == "cash_credit" {
+		// Fail closed: if the point value cannot be read, no cash credit is issued.
 		settings, err := s.store.GetSettings(ctx, tenant.PropertyID)
-		if err != nil || settings == nil {
-			return nil, fmt.Errorf("failed to load gamification settings for cash credit: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("load gamification settings for cash redemption: %w", err)
 		}
-		if settings.PointValuePaise <= 0 {
-			return nil, errors.New("gamification point value is not configured")
+		if settings == nil {
+			return nil, ErrInvalidRewardValue
 		}
-
-		type meta struct {
-			DiscountPaise int64 `json:"discount_paise"`
-		}
-		var m meta
-		if len(reward.Metadata) > 0 {
-			if err := json.Unmarshal(reward.Metadata, &m); err != nil {
-				return nil, fmt.Errorf("invalid cash credit metadata: %w", err)
-			}
-		}
-		cashDiscountPaise = m.DiscountPaise
-		maxAllowedPaise := int64(reward.PointsCost) * settings.PointValuePaise
-		if cashDiscountPaise <= 0 || cashDiscountPaise > maxAllowedPaise {
-			cashDiscountPaise = maxAllowedPaise
+		cashDiscountPaise, err = cashCreditValuePaise(reward.Metadata, reward.PointsCost, settings.PointValuePaise)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -214,4 +204,32 @@ func randomCouponCode() (string, error) {
 		out[i] = chars[idx.Int64()]
 	}
 	return "FOOD-" + strings.ToUpper(string(out)), nil
+}
+
+// cashCreditValuePaise returns the rent credit for a cash reward.
+// The credit never exceeds pointsCost x pointValuePaise (the value of the points spent).
+// With no discount in the metadata, the credit equals that maximum.
+// Bad metadata, a negative discount, or a non-positive cost or point value is an error.
+func cashCreditValuePaise(metadata json.RawMessage, pointsCost int, pointValuePaise int64) (int64, error) {
+	maxPaise := int64(pointsCost) * pointValuePaise
+	if pointsCost <= 0 || pointValuePaise <= 0 || maxPaise <= 0 {
+		return 0, ErrInvalidRewardValue
+	}
+	if len(metadata) == 0 {
+		return maxPaise, nil
+	}
+	var m struct {
+		DiscountPaise int64 `json:"discount_paise"`
+	}
+	if err := json.Unmarshal(metadata, &m); err != nil {
+		return 0, fmt.Errorf("%w: unreadable metadata: %v", ErrInvalidRewardValue, err)
+	}
+	switch {
+	case m.DiscountPaise < 0:
+		return 0, fmt.Errorf("%w: negative discount", ErrInvalidRewardValue)
+	case m.DiscountPaise == 0, m.DiscountPaise > maxPaise:
+		return maxPaise, nil
+	default:
+		return m.DiscountPaise, nil
+	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -288,28 +287,28 @@ func (r *GamificationRepo) GetExpiringSoon(ctx context.Context, tenantID uuid.UU
 	return expiring, earliest, err
 }
 
-func parseISTMonthBounds(monthYear string) (time.Time, time.Time, error) {
-	loc := time.FixedZone("Asia/Kolkata", 5*3600+1800)
-	t, err := time.ParseInLocation("2006-01", monthYear, loc)
+// istMonthBounds returns [start, end) of an IST calendar month given as "2006-01".
+// Range filters let Postgres use the (tenant_id, created_at) and (property_id, created_at) indexes.
+func istMonthBounds(monthYear string) (time.Time, time.Time, error) {
+	ist := time.FixedZone("IST", 5*3600+1800)
+	start, err := time.ParseInLocation("2006-01", monthYear, ist)
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
-	from := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc).UTC()
-	to := time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, loc).UTC()
-	return from, to, nil
+	return start, start.AddDate(0, 1, 0), nil
 }
 
 func (r *GamificationRepo) GetTenantMonthPoints(ctx context.Context, tenantID uuid.UUID, monthYear string, isRSVP bool) (int, error) {
-	from, to, err := parseISTMonthBounds(monthYear)
+	from, to, err := istMonthBounds(monthYear)
 	if err != nil {
-		return 0, fmt.Errorf("invalid monthYear %q: %w", monthYear, err)
+		return 0, err
 	}
 	var sum int
 	err = r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(l.delta), 0)
 		FROM points_ledger l
 		JOIN point_rules r ON r.property_id = l.property_id AND r.code = l.rule_code
-		WHERE l.tenant_id = $1 AND l.delta > 0
+		WHERE l.tenant_id=$1 AND l.delta > 0
 		  AND r.is_rsvp = $2
 		  AND l.created_at >= $3 AND l.created_at < $4`,
 		tenantID, isRSVP, from, to,
@@ -318,32 +317,30 @@ func (r *GamificationRepo) GetTenantMonthPoints(ctx context.Context, tenantID uu
 }
 
 func (r *GamificationRepo) GetPropertyMonthPoints(ctx context.Context, propertyID uuid.UUID, monthYear string) (int, error) {
-	from, to, err := parseISTMonthBounds(monthYear)
+	from, to, err := istMonthBounds(monthYear)
 	if err != nil {
-		return 0, fmt.Errorf("invalid monthYear %q: %w", monthYear, err)
+		return 0, err
 	}
 	var sum int
 	err = r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(delta), 0)
 		FROM points_ledger
-		WHERE property_id = $1 AND delta > 0
-		  AND created_at >= $2 AND created_at < $3`,
+		WHERE property_id=$1 AND delta > 0 AND created_at >= $2 AND created_at < $3`,
 		propertyID, from, to,
 	).Scan(&sum)
 	return sum, err
 }
 
 func (r *GamificationRepo) GetRuleMonthPoints(ctx context.Context, tenantID uuid.UUID, ruleCode string, monthYear string) (int, error) {
-	from, to, err := parseISTMonthBounds(monthYear)
+	from, to, err := istMonthBounds(monthYear)
 	if err != nil {
-		return 0, fmt.Errorf("invalid monthYear %q: %w", monthYear, err)
+		return 0, err
 	}
 	var sum int
 	err = r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(delta), 0)
 		FROM points_ledger
-		WHERE tenant_id = $1 AND rule_code = $2 AND delta > 0
-		  AND created_at >= $3 AND created_at < $4`,
+		WHERE tenant_id=$1 AND rule_code=$2 AND delta > 0 AND created_at >= $3 AND created_at < $4`,
 		tenantID, ruleCode, from, to,
 	).Scan(&sum)
 	return sum, err

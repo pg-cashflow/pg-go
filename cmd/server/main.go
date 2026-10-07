@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
@@ -68,16 +69,6 @@ func main() {
 	}
 	defer maintPool.Close()
 
-	// Refuse startup if maintenance pool connects as restricted role pgapp_app in production.
-	// Webhooks, public payment pages, and background crons require maint pool without RLS tenant restrictions.
-	var maintRole string
-	if err := maintPool.QueryRow(ctx, "SELECT current_user").Scan(&maintRole); err != nil {
-		log.Fatal("check maint db role: ", err)
-	}
-	if cfg.AppEnv == "production" && maintRole == "pgapp_app" {
-		log.Fatal("startup refused: maintPool connected as restricted role 'pgapp_app'; production maintenance pool requires 'pgapp_maint'")
-	}
-
 	var appPool *pgxpool.Pool
 	if cfg.DatabaseURL == cfg.DatabaseMaintURL {
 		appPool = maintPool
@@ -88,6 +79,12 @@ func main() {
 		}
 		defer p.Close()
 		appPool = p
+	}
+
+	// Hardened startup guard: enforces role boundaries, superuser/bypassrls restrictions,
+	// and URL separation for production and non-production environments.
+	if err := postgres.ValidateStartupRoles(ctx, maintPool, appPool, cfg.DatabaseMaintURL, cfg.DatabaseURL, cfg.AppEnv); err != nil {
+		log.Fatal("startup refused: ", err)
 	}
 
 	if os.Getenv("AUTO_MIGRATE") == "1" || os.Getenv("AUTO_MIGRATE") == "true" {
@@ -134,7 +131,7 @@ func main() {
 		}
 	}
 
-	gamificationRepo := postgres.NewGamificationRepo(pool)
+	gamificationRepo := postgres.NewGamificationRepo(maintPool)
 
 	innerPub := events.NewPostgresPublisher(eventRepo)
 	dispatchPub := events.NewDispatchPublisher(innerPub)
@@ -162,7 +159,7 @@ func main() {
 		}
 	}
 
-	refreshRepo := postgres.NewRefreshTokenRepo(pool)
+	refreshRepo := postgres.NewRefreshTokenRepo(maintPool)
 	authSvc := auth.NewService(otpRepo, userRepo, tenantRepo, propertyRepo, gateway, cfg.OTPHMACSecret, cfg.JWTSecret)
 	authSvc.SetRefreshTokenRepo(refreshRepo)
 	if cfg.FirebaseProjectID != "" {

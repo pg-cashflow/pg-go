@@ -18,9 +18,10 @@ var (
 	// ErrPeriodNotReopenable is returned when attempting to reopen an already-open period.
 	ErrPeriodNotReopenable = errors.New("accounting period is not closed")
 	ErrForbidden           = errors.New("forbidden")
-	ErrConflict            = errors.New("conflict: state changed concurrently")
 	ErrExpenseNotPayable   = errors.New("expense cannot accept payment")
 	ErrOverpay             = errors.New("payment exceeds remaining expense")
+	// ErrExpenseStateChanged: the expense status changed between read and write (optimistic lock failed).
+	ErrExpenseStateChanged = errors.New("expense state changed during update; retry")
 )
 
 // Chart of accounts (operating + capital). Amounts always paise.
@@ -102,18 +103,13 @@ type Expense struct {
 	OccurredAt     time.Time     `json:"occurred_at"`
 	CreatedAt      time.Time     `json:"created_at"`
 	PaidPaise      int64         `json:"paid_paise,omitempty"`
-	VoidReason     *string       `json:"void_reason,omitempty"`
-	VoidedBy       *uuid.UUID    `json:"voided_by,omitempty"`
-	VoidedAt       *time.Time    `json:"voided_at,omitempty"`
 }
 
-type VoidExpenseParams struct {
-	PropertyID     uuid.UUID     `json:"property_id"`
-	ExpenseID      uuid.UUID     `json:"expense_id"`
-	ExpectedStatus ExpenseStatus `json:"expected_status"`
-	VoidedBy       uuid.UUID     `json:"voided_by"`
-	VoidReason     string        `json:"void_reason"`
-	VoidedAt       time.Time     `json:"voided_at"`
+// ExpenseVoid carries the audit data written when an expense is voided.
+type ExpenseVoid struct {
+	Reason   string
+	VoidedBy uuid.UUID
+	VoidedAt time.Time
 }
 
 type DailyFinancialRollup struct {

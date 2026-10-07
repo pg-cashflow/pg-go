@@ -10,7 +10,6 @@ import (
 var (
 	ErrDuplicateIdempotency = domain.ErrDuplicateIdempotency
 	ErrNotFound             = domain.ErrNotFound
-	ErrConflict             = domain.ErrConflict
 	ErrPeriodClosed         = domain.ErrPeriodClosed
 	ErrForbidden            = domain.ErrForbidden
 	ErrPolicyExceeded       = errors.New("finance: spend policy exceeded")
@@ -24,6 +23,10 @@ var (
 	ErrInvalidAmount        = errors.New("finance: amount must be positive")
 	ErrInvalidKind          = errors.New("finance: invalid kind")
 	ErrDisabled             = errors.New("finance: finance layer disabled")
+	ErrExpenseNotVoidable   = errors.New("finance: expense cannot be voided in its current status")
+	ErrExpenseStateChanged  = domain.ErrExpenseStateChanged
+	ErrReasonRequired       = errors.New("finance: reason required (3 to 500 characters)")
+	ErrDateOutOfRange       = errors.New("finance: expense date out of allowed range")
 )
 
 type Occupancy struct {

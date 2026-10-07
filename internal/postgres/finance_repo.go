@@ -413,115 +413,63 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 	return tx.Commit(ctx)
 }
 
-func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, p domain.VoidExpenseParams) (*domain.Expense, error) {
+func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID, expected domain.ExpenseStatus, lines []domain.JournalLine, v domain.ExpenseVoid) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// F2: Lock the expense row inside transaction to prevent race conditions with payments or approvals
-	var e domain.Expense
-	var vendor, desc *string
-	err = tx.QueryRow(ctx, `
-		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
-		FROM expenses
-		WHERE id = $1
-		FOR UPDATE`, p.ExpenseID).Scan(
-		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt)
+	// Lock order: pending approval rows first, then the expense row.
+	// DecideApprovalAtomic uses the same order, so the two paths cannot deadlock.
+	if _, err := tx.Exec(ctx, `
+		SELECT id FROM approval_requests
+		WHERE kind = 'expense' AND subject_id = $1 AND status = 'pending'
+		ORDER BY id FOR UPDATE`, expenseID); err != nil {
+		return fmt.Errorf("lock approvals: %w", err)
+	}
+
+	var cur string
+	err = tx.QueryRow(ctx, `SELECT status FROM expenses WHERE id = $1 FOR UPDATE`, expenseID).Scan(&cur)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, domain.ErrNotFound
+		return domain.ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lock expense: %w", err)
+		return fmt.Errorf("lock expense: %w", err)
 	}
-	if vendor != nil {
-		e.VendorName = *vendor
-	}
-	if desc != nil {
-		e.Description = *desc
+	if domain.ExpenseStatus(cur) != expected {
+		return domain.ErrExpenseStateChanged
 	}
 
-	if e.PropertyID != p.PropertyID {
-		return nil, domain.ErrForbidden
-	}
-	if p.ExpectedStatus != "" && e.Status != p.ExpectedStatus {
-		return nil, domain.ErrConflict
-	}
-	if e.Status == domain.ExpenseCancelled {
-		return nil, errors.New("finance: expense is already cancelled")
-	}
-	if e.Status == domain.ExpensePaid {
-		return nil, errors.New("finance: cannot void paid expense")
-	}
-
-	// Double check payments under row lock
-	var hasPayments bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM expense_payments WHERE expense_id = $1)`, e.ID).Scan(&hasPayments); err != nil {
-		return nil, fmt.Errorf("check expense payments: %w", err)
-	}
-	if hasPayments {
-		return nil, domain.ErrConflict
-	}
-
-	// If approved, post reversing journal entry inside the tx
-	if e.Status == domain.ExpenseApproved {
-		specs := []struct {
-			account string
-			dr      int64
-			cr      int64
-			kind    string
-			idx     int
-		}{
-			{account: domain.AcctAccountsPayable, dr: e.AmountPaise, cr: 0, kind: "void_payable_dr", idx: 0},
-			{account: domain.AcctOperatingExpense, dr: 0, cr: e.AmountPaise, kind: "void_expense_cr", idx: 1},
-		}
-		for _, s := range specs {
-			lineID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("journal:expense_void:%s:%d:%s", e.ID.String(), s.idx, s.kind)))
-			_, err = tx.Exec(ctx, `
-				INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-				lineID, e.PropertyID, s.account, s.dr, s.cr, "expense_void", e.ID, s.kind, p.VoidedAt)
-			if isUnique(err) {
-				return nil, domain.ErrDuplicateIdempotency
-			}
-			if err != nil {
-				return nil, fmt.Errorf("insert reversing journal line: %w", err)
-			}
-		}
-	}
-
-	// F1: Cancel any pending approval requests for this expense
-	_, err = tx.Exec(ctx, `
-		UPDATE approval_requests 
-		SET status = 'cancelled', note = COALESCE(note || ' [voided]', 'voided')
-		WHERE kind = 'expense' AND subject_id = $1 AND status = 'pending'`, e.ID)
-	if err != nil {
-		return nil, fmt.Errorf("cancel pending approval requests: %w", err)
-	}
-
-	// Update expense to cancelled with audit fields, requiring expected status
-	tag, err := tx.Exec(ctx, `
-		UPDATE expenses 
+	if _, err := tx.Exec(ctx, `
+		UPDATE expenses
 		SET status = 'cancelled', void_reason = $2, voided_by = $3, voided_at = $4
-		WHERE id = $1 AND status = $5`,
-		e.ID, p.VoidReason, p.VoidedBy, p.VoidedAt, p.ExpectedStatus)
-	if err != nil {
-		return nil, fmt.Errorf("update expense void status: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil, domain.ErrConflict
+		WHERE id = $1`, expenseID, v.Reason, v.VoidedBy, v.VoidedAt); err != nil {
+		return fmt.Errorf("update expense status: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit tx: %w", err)
+	if _, err := tx.Exec(ctx, `
+		UPDATE approval_requests
+		SET status = 'cancelled', decided_by = $2, decided_at = $3, note = $4
+		WHERE kind = 'expense' AND subject_id = $1 AND status = 'pending'`,
+		expenseID, v.VoidedBy, v.VoidedAt, v.Reason); err != nil {
+		return fmt.Errorf("cancel pending approval: %w", err)
 	}
 
-	e.Status = domain.ExpenseCancelled
-	e.VoidReason = &p.VoidReason
-	e.VoidedBy = &p.VoidedBy
-	e.VoidedAt = &p.VoidedAt
-	return &e, nil
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", mapLedgerPgErr(err))
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.ExpensePayment, lines []domain.JournalLine, adv *domain.ManagerAdvance) (*domain.Expense, error) {
@@ -672,13 +620,11 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 
 func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error) {
 	e := &domain.Expense{}
-	var vendor, desc, voidReason *string
-	var voidedBy *uuid.UUID
-	var voidedAt *time.Time
+	var vendor, desc *string
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at, void_reason, voided_by, voided_at
+		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
 		FROM expenses WHERE id=$1`, id).Scan(
-		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt, &voidReason, &voidedBy, &voidedAt)
+		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -688,15 +634,12 @@ func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Exp
 	if desc != nil {
 		e.Description = *desc
 	}
-	e.VoidReason = voidReason
-	e.VoidedBy = voidedBy
-	e.VoidedAt = voidedAt
 	return e, err
 }
 
 func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, property_id, category_code, COALESCE(vendor_name,''), COALESCE(description,''), amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at, void_reason, voided_by, voided_at
+		SELECT id, property_id, category_code, COALESCE(vendor_name,''), COALESCE(description,''), amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
 		FROM expenses WHERE property_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 50`, propertyID)
 	if err != nil {
 		return nil, err
@@ -705,15 +648,9 @@ func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([
 	var out []domain.Expense
 	for rows.Next() {
 		var e domain.Expense
-		var voidReason *string
-		var voidedBy *uuid.UUID
-		var voidedAt *time.Time
-		if err := rows.Scan(&e.ID, &e.PropertyID, &e.CategoryCode, &e.VendorName, &e.Description, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt, &voidReason, &voidedBy, &voidedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.PropertyID, &e.CategoryCode, &e.VendorName, &e.Description, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		e.VoidReason = voidReason
-		e.VoidedBy = voidedBy
-		e.VoidedAt = voidedAt
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -1255,7 +1192,14 @@ func (r *FinanceRepo) DecideApprovalAtomic(ctx context.Context, a *domain.Approv
 			return fmt.Errorf("update expense status: %w", err)
 		}
 		if res.RowsAffected() == 0 {
-			return fmt.Errorf("expense cannot be approved (not pending_approval): %w", domain.ErrForbidden)
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM expenses WHERE id=$1)`, a.SubjectID).Scan(&exists); err != nil {
+				return fmt.Errorf("check expense exists: %w", err)
+			}
+			if !exists {
+				return fmt.Errorf("expense not found: %w", domain.ErrNotFound)
+			}
+			return domain.ErrExpenseStateChanged
 		}
 	}
 
