@@ -103,6 +103,12 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 	}
 
 	err := s.runInTx(ctx, func(txDues DueRepository, txTenants TenantRepository, txPub events.Publisher) error {
+		// Universal Lock Hierarchy: Lock tenant row first inside transaction to avoid lost credit updates
+		lockedTenant, err := txTenants.GetByIDForUpdate(ctx, tenant.ID)
+		if err != nil {
+			return err
+		}
+
 		if err := insertDueWithCodeRetry(ctx, txDues, due); err != nil {
 			return err
 		}
@@ -111,10 +117,11 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 			return err
 		}
 
-		if tenant.CreditBalancePaise > 0 {
-			if err := applyCreditToDue(ctx, txDues, txTenants, txPub, s.now(), tenant, due); err != nil {
+		if lockedTenant.CreditBalancePaise > 0 {
+			if err := applyCreditToDue(ctx, txDues, txTenants, txPub, s.now(), lockedTenant, due); err != nil {
 				return err
 			}
+			tenant.CreditBalancePaise = lockedTenant.CreditBalancePaise
 		}
 		return nil
 	})
@@ -248,7 +255,6 @@ func applyCreditToDue(
 		applied = due.Amount
 	}
 	due.Amount -= applied
-	tenant.CreditBalancePaise -= applied
 	at := now
 	if due.Amount == 0 {
 		due.MarkPaid(at)
@@ -259,15 +265,17 @@ func applyCreditToDue(
 	if err := dues.Update(ctx, due); err != nil {
 		return err
 	}
-	if err := tenants.Update(ctx, tenant); err != nil {
+	remaining, err := tenants.DeductCredit(ctx, tenant.ID, applied)
+	if err != nil {
 		return err
 	}
+	tenant.CreditBalancePaise = remaining
 
 	payload, _ := json.Marshal(domain.CreditAppliedPayload{
 		TenantID:       tenant.ID.String(),
 		DueID:          due.ID.String(),
 		CreditPaise:    int64(applied),
-		RemainingPaise: int64(tenant.CreditBalancePaise),
+		RemainingPaise: int64(remaining),
 	})
 	did := due.ID
 	if err := pub.Publish(ctx, domain.Event{
@@ -297,6 +305,9 @@ func insertDueWithCodeRetry(ctx context.Context, dues DueRepository, due *domain
 		err := dues.Create(ctx, due)
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, qr.ErrConflict) {
+			return qr.ErrConflict
 		}
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {

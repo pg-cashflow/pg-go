@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/qr"
 )
 
 type DueRepo struct{ db DBTX }
@@ -24,15 +26,20 @@ func (r *DueRepo) Create(ctx context.Context, d *domain.Due) error {
 	if d.Status == "" {
 		d.Status = domain.DueStatusPending
 	}
-	return r.db.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		INSERT INTO dues (
 			due_code, tenant_id, property_id, kind, amount, original_amount,
 			period_start, period_end, due_date, status, paid_at, created_at, updated_at
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (due_code) DO NOTHING
 		RETURNING id`,
 		d.DueCode, d.TenantID, d.PropertyID, d.Kind, d.Amount, d.OriginalAmount,
 		d.PeriodStart, d.PeriodEnd, d.DueDate, d.Status, d.PaidAt, d.CreatedAt, d.UpdatedAt,
 	).Scan(&d.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return qr.ErrConflict
+	}
+	return err
 }
 
 func (r *DueRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Due, error) {

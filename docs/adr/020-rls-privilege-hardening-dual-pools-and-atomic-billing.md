@@ -1,4 +1,4 @@
-# ADR-020: RLS Privilege Hardening, Dual Connection Pools, Redundant Index Cleanup, and Atomic Billing
+# ADR-020: RLS Privilege Hardening, Dual Connection Pools, Atomic Billing, and Financial Controls
 
 **Status:** Accepted  
 **Date:** 2026-10-07  
@@ -11,61 +11,69 @@
 
 ## 1. Context
 
-Code and database review identified four operational risks in the previous update:
-1. `SET LOCAL ROLE pgapp_app` failed with permission denied for non-superuser login roles because role membership was not granted.
-2. Unscoped queries returned zero rows, breaking the tenant magic-link public payment page, webhooks, and finance background workers.
-3. The application role possessed `TRUNCATE` privileges on core financial tables, permitting cascade truncation of journal entries.
-4. `CreateRentDue` inserted the due, published events, and deducted tenant credit across separate uncoordinated steps without a wrapping transaction.
-5. Payment proof images were never purged because `PurgeExpiredImages` lacked a background scheduler in `cmd/server/main.go`.
-6. Three redundant indexes added unnecessary write overhead.
-7. Seven check constraints were added `NOT VALID` and never validated.
+Code analysis and database execution identified operational risks and money-correctness bugs:
+1. `SET LOCAL ROLE pgapp_app` failed with permission denied for non-superuser login roles because role membership was missing.
+2. Direct connection role usage separated application traffic (`pgapp_app`) from maintenance tasks (`pgapp_maint`).
+3. If production configured `DATABASE_MAINT_URL` with `pgapp_app`, webhooks and public payment pages returned zero rows.
+4. `CreateRentDue` had two transaction bugs:
+   - A `due_code` collision aborted the transaction in PostgreSQL. Later statements failed immediately.
+   - `TenantRepo.Update` wrote an absolute `credit_balance_paise` value read before transaction start. Concurrent webhooks or reward redemptions lost credit updates.
+5. Reward redemptions did not enforce a link between cash discount paise and point value. Catalog data errors could cause monetary loss.
+6. The finance service lacked an expense void operation. Approved expenses with errors required manual database intervention.
+7. RLS policies apply only to `pgapp_app`. Services using `pgapp_maint` use policy `USING (true)`.
 
 ---
 
 ## 2. Decisions
 
 ### D1. Migration 058 (Privilege Hardening and Role-Targeted Policies)
-- Convert `pgapp_app` and `pgapp_maint` to real login roles (`LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`).
-- Revoke `ALL` privileges and grant only `SELECT, INSERT, UPDATE, DELETE` on application tables.
-- Revoke `UPDATE, DELETE` on `financial_journal_entries` for runtime roles to guarantee append-only immutability.
-- Restrict property-isolation policies explicitly `TO pgapp_app`, preventing multi-policy disjunctions on `pgapp_maint`.
-- Drop redundant indexes:
-  - `idx_dues_prop_due_date` (superseded by keyset index `idx_dues_prop_due_date_id`).
-  - `idx_daily_settlement_balances_prop_date` (duplicate of unique constraint).
-  - `idx_daily_financial_rollups_prop_date` (duplicate of unique constraint).
-- Validate all unvalidated check constraints across catalog tables.
+- Convert `pgapp_app` and `pgapp_maint` to login roles (`NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB`).
+- Revoke `TRUNCATE` across all application tables. Revoke `UPDATE, DELETE` on `financial_journal_entries`.
+- Restrict property-isolation policies explicitly `TO pgapp_app`.
+- Drop redundant indexes: `idx_dues_prop_due_date`, `idx_daily_settlement_balances_prop_date`, `idx_daily_financial_rollups_prop_date`.
+- Validate all check constraints added with `NOT VALID`.
 
-### D2. Dual-Connection Architecture (`DATABASE_URL` and `DATABASE_MAINT_URL`)
-- Configure `DATABASE_URL` for authenticated client API requests connecting as `pgapp_app`.
-- Configure `DATABASE_MAINT_URL` for maintenance processes connecting as `pgapp_maint`.
-- Route public payment routes (`/p/:token`), payment webhooks, authentication/OTP services, finance mirror workers, and `cmd/*` cron jobs through `DATABASE_MAINT_URL`.
-- Route authenticated, property-scoped repository operations through `DATABASE_URL` wrapped by `ScopedDB`.
-- Remove `SET LOCAL ROLE pgapp_app` from `scoped_dbt.go` and `dbtx.go`. Direct role connection eliminates session role switching.
+### D2. Dual-Connection Architecture and Production Startup Guard
+- Configure `DATABASE_URL` for authenticated endpoints using `pgapp_app`.
+- Configure `DATABASE_MAINT_URL` for maintenance tasks, webhooks, and public routes using `pgapp_maint`.
+- Clarify isolation boundary: RLS protects scoped repositories. Maintenance services run with `USING (true)` and enforce property boundaries in application logic.
+- Enforce startup verification in `cmd/server/main.go`. In production, the server stops immediately if `maintPool` connects as `pgapp_app`.
 
-### D3. Atomic Rent Due Creation
-- Add `NewServiceWithPool` and `SetPool` to `internal/billing/service.go`.
-- Execute due code generation, due insertion, due event creation, and tenant credit deduction in a single transaction block via `WithinTx`.
-- Guarantee that any mid-flight error or system crash rolls back both due record and credit deduction.
+### D3. Safe Due-Code Generation and Atomic Rent Billing
+- In `DueRepo.Create`, execute `INSERT ... ON CONFLICT (due_code) DO NOTHING RETURNING id`.
+- If zero rows return, return `qr.ErrConflict`. The transaction does not abort.
+- In `CreateRentDue`, lock the tenant row first with `txTenants.GetByIDForUpdate(ctx, tenant.ID)`.
+- Apply credit balance using atomic decrement: `UPDATE tenants SET credit_balance_paise = GREATEST(0, credit_balance_paise - $2) RETURNING credit_balance_paise`.
 
-### D4. Automated Payment-Proof Image Purge
-- Schedule `PurgeExpiredImages` inside the daily maintenance loop in `cmd/server/main.go`.
-- Purge payment report images older than 30 days using `DATABASE_MAINT_URL`.
+### D4. Gamification Cash Redemption Monetary Protection
+- In `RedeemReward`, validate `cash_credit` discounts against the property point value.
+- Enforce `discountPaise <= points_cost * point_value_paise`.
+
+### D5. Expense Void and Journal Reversal
+- Add `VoidExpense` in the finance service and expose `POST /finance/expenses/:id/void`.
+- Set expense status to `cancelled`.
+- For approved expenses, insert a reversing journal entry atomically:
+  - Debit: `accounts_payable`
+  - Credit: `operating_expense`
+
+### D6. Automated Image Purge
+- Schedule `PurgeExpiredImages` daily in `cmd/server/main.go`.
+- Purge images older than 30 days using `DATABASE_MAINT_URL`.
 
 ---
 
 ## 3. Consequences
 
 ### Positive
-- Production deployment will not fail with permission denied on `SET LOCAL ROLE`.
-- Public payment pages resolve due records successfully without requiring property-scoped session tokens.
-- Truncate attacks and accidental cascades against the financial journal are blocked at the database privilege layer.
-- Rent due creation and credit deduction are strictly atomic.
-- Unused indexes are eliminated, reducing table write amplification.
-- Image storage does not grow indefinitely in the primary database.
+- `ON CONFLICT DO NOTHING` prevents transaction abort on due-code collisions.
+- Tenant row lock and atomic credit deduction prevent lost credit balances.
+- Production startup stops if maintenance pool credentials are misconfigured.
+- Cash reward redemptions cannot exceed point values.
+- Operators can cancel mistaken expenses safely with double-entry journal reversal.
+- Financial journal entries remain immutable.
 
-### Negative / Operational
-- Operators must provision two sets of credentials (`pgapp_app` and `pgapp_maint`) in production environments.
-- Fallback logic defaults `DATABASE_MAINT_URL` to `DATABASE_URL` when unset to preserve single-database developer setups.
+### Operational Notice
+- Multi-property tenant isolation in maintenance workers depends on application checks, not database RLS.
 
 ---
 
@@ -73,10 +81,12 @@ Code and database review identified four operational risks in the previous updat
 
 | Target | Description | Status |
 | :--- | :--- | :--- |
-| `migrations/058_rls_hardening_and_index_cleanup.sql` | Applied privilege restriction, policy targeting, index drops, constraint validation | VERIFIED |
-| `internal/config/config.go` | Added `DatabaseMaintURL` with fallback to `DatabaseURL` | VERIFIED |
-| `internal/postgres/scoped_dbt.go` | Removed `SET LOCAL ROLE` from `Exec`, `Query`, `QueryRow` | VERIFIED |
-| `internal/postgres/dbtx.go` | Removed `SET LOCAL ROLE` from `WithinTx` | VERIFIED |
-| `internal/billing/service.go` | Added transactional execution wrapping due creation and credit application | VERIFIED |
-| `cmd/server/main.go` | Wired dual connection pools, maintenance repos, and image purge scheduler | VERIFIED |
-| `cmd/*` cron jobs | Configured `DatabaseMaintURL` across all background tasks | VERIFIED |
+| `migrations/058_rls_hardening_and_index_cleanup.sql` | Applied privilege hardening, policy targeting, index drops, constraint validation | VERIFIED |
+| `internal/postgres/due_repo.go` | Added `ON CONFLICT (due_code) DO NOTHING` to prevent aborted transactions | VERIFIED |
+| `internal/postgres/property_repo.go` | Added atomic `DeductCredit` with `GREATEST(0, credit - $2)` | VERIFIED |
+| `internal/billing/service.go` | Added tenant lock hierarchy and atomic credit deduction in `CreateRentDue` | VERIFIED |
+| `internal/gamification/redemptions.go` | Capped cash redemption discount to `points_cost * point_value_paise` | VERIFIED |
+| `internal/finance/service.go` | Implemented `VoidExpense` with reversing journal lines | VERIFIED |
+| `internal/api/handlers_finance.go` | Added `VoidExpense` handler for owner and manager routes | VERIFIED |
+| `cmd/server/main.go` | Added production startup role check on `maintPool` | VERIFIED |
+| `scripts/sql/ledger_controls_test.sql` | Added `property_id` NOT NULL column to `payments` fixture | VERIFIED |

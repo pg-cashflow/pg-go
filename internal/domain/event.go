@@ -59,6 +59,7 @@ const (
 	EvtExpenseApproved          EventType = "ExpenseApproved"
 	EvtExpenseRejected          EventType = "ExpenseRejected"
 	EvtExpensePaid              EventType = "ExpensePaid"
+	EvtExpenseVoided            EventType = "ExpenseVoided"
 	EvtManagerAdvanceCreated    EventType = "ManagerAdvanceCreated"
 	EvtManagerAdvanceReimbursed EventType = "ManagerAdvanceReimbursed"
 	EvtBudgetChanged            EventType = "BudgetChanged"

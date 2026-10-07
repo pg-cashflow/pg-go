@@ -19,5 +19,7 @@ type DueRepository interface {
 // TenantRepository loads and updates tenants (credit balance, etc.).
 type TenantRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	GetByIDForUpdate(ctx context.Context, id uuid.UUID) (*domain.Tenant, error)
+	DeductCredit(ctx context.Context, tenantID uuid.UUID, amountPaise int64) (int64, error)
 	Update(ctx context.Context, t *domain.Tenant) error
 }

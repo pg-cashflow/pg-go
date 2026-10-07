@@ -302,6 +302,17 @@ func (r *TenantRepo) AddCredit(ctx context.Context, tenantID uuid.UUID, deltaPai
 	return err
 }
 
+func (r *TenantRepo) DeductCredit(ctx context.Context, tenantID uuid.UUID, amountPaise int64) (int64, error) {
+	var remaining int64
+	err := r.db.QueryRow(ctx, `
+		UPDATE tenants
+		SET credit_balance_paise = GREATEST(0, credit_balance_paise - $2),
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING credit_balance_paise`, tenantID, amountPaise).Scan(&remaining)
+	return remaining, err
+}
+
 func (r *TenantRepo) GetIDPhoto(ctx context.Context, id uuid.UUID) ([]byte, error) {
 	var b []byte
 	err := r.db.QueryRow(ctx, `SELECT id_photo_bytes FROM tenants WHERE id=$1`, id).Scan(&b)

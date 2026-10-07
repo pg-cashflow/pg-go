@@ -262,6 +262,26 @@ func (m *MemoryStore) InsertExpenseAtomic(_ context.Context, e *domain.Expense, 
 	return nil
 }
 
+func (m *MemoryStore) VoidExpenseAtomic(_ context.Context, expenseID uuid.UUID, status domain.ExpenseStatus, lines []domain.JournalLine) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.expenses[expenseID]
+	if !ok {
+		return ErrNotFound
+	}
+	e.Status = status
+	m.expenses[expenseID] = e
+
+	for _, l := range lines {
+		key := l.SourceType + ":" + l.SourceID.String() + ":" + l.LineKind
+		if err := m.claim(key); err != nil {
+			return err
+		}
+		m.journal = append(m.journal, l)
+	}
+	return nil
+}
+
 func (m *MemoryStore) GetExpense(_ context.Context, id uuid.UUID) (*domain.Expense, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

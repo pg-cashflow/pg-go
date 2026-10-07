@@ -27,6 +27,7 @@ type Store interface {
 
 	InsertExpense(ctx context.Context, e *domain.Expense) error
 	InsertExpenseAtomic(ctx context.Context, e *domain.Expense, lines []domain.JournalLine, approval *domain.ApprovalRequest) error
+	VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID, status domain.ExpenseStatus, lines []domain.JournalLine) error
 	GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error)
 	ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error)
 	UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error

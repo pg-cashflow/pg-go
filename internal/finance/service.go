@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -185,6 +186,56 @@ func (s *Service) postExpenseAccrual(ctx context.Context, e *domain.Expense) err
 		return err
 	}
 	return s.Store.InsertJournal(ctx, lines)
+}
+
+type VoidExpenseInput struct {
+	PropertyID uuid.UUID
+	ExpenseID  uuid.UUID
+	ActorID    uuid.UUID
+	ActorRole  domain.PayerRole
+	Reason     string
+}
+
+func (s *Service) VoidExpense(ctx context.Context, in VoidExpenseInput) (*domain.Expense, error) {
+	e, err := s.Store.GetExpense(ctx, in.ExpenseID)
+	if err != nil {
+		return nil, err
+	}
+	if e.PropertyID != in.PropertyID {
+		return nil, ErrForbidden
+	}
+	if e.Status == domain.ExpenseCancelled {
+		return nil, errors.New("finance: expense is already cancelled")
+	}
+	if e.Status == domain.ExpensePaid {
+		return nil, errors.New("finance: cannot void paid expense")
+	}
+
+	at := s.Now()
+	var lines []domain.JournalLine
+	if e.Status == domain.ExpenseApproved {
+		specs := []LineSpec{
+			{Account: domain.AcctAccountsPayable, Debit: e.AmountPaise, LineKind: "void_payable_dr"},
+			{Account: domain.AcctOperatingExpense, Credit: e.AmountPaise, LineKind: "void_expense_cr"},
+		}
+		var err error
+		lines, err = MakeLines(e.PropertyID, e.ID, "expense_void", at, specs)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.Store.VoidExpenseAtomic(ctx, e.ID, domain.ExpenseCancelled, lines); err != nil {
+		return nil, err
+	}
+
+	e.Status = domain.ExpenseCancelled
+	s.publish(ctx, in.PropertyID, domain.EvtExpenseVoided, map[string]any{
+		"expense_id": e.ID,
+		"voided_by":  in.ActorID,
+		"reason":     in.Reason,
+	})
+	return e, nil
 }
 
 type PayExpenseInput struct {

@@ -213,6 +213,43 @@ func (h *Handlers) ListExpenses(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"expenses": list})
 }
 
+func (h *Handlers) VoidExpense(c *gin.Context) {
+	if !h.financeReady(c) {
+		return
+	}
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	claims, _ := auth.ClaimsFromContext(c)
+	expID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid expense id"})
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	e, err := h.Finance.VoidExpense(c.Request.Context(), finance.VoidExpenseInput{
+		PropertyID: pid,
+		ExpenseID:  expID,
+		ActorID:    uid,
+		ActorRole:  domain.PayerRole(claims.Role),
+		Reason:     body.Reason,
+	})
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"expense": e})
+}
+
 func (h *Handlers) PostExpensePayment(c *gin.Context) {
 	if !h.financeReady(c) {
 		return

@@ -81,23 +81,33 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 		Status:      "completed",
 	}
 
-	// Handle reward actions based on category
-	switch reward.Category {
-	case "cash_credit":
-		// Extract discount paise from metadata (default 50,000 paise = Rs 500)
+	var cashDiscountPaise int64
+	if reward.Category == "cash_credit" {
 		type meta struct {
 			DiscountPaise int64 `json:"discount_paise"`
 		}
 		var m meta
 		_ = json.Unmarshal(reward.Metadata, &m)
-		discountPaise := m.DiscountPaise
-		if discountPaise <= 0 {
-			discountPaise = 50000 // Rs 500
+		cashDiscountPaise = m.DiscountPaise
+		if cashDiscountPaise <= 0 {
+			cashDiscountPaise = 50000 // default Rs 500
 		}
+		// Tie cash redemption value directly to points to prevent money leak
+		settings, err := s.store.GetSettings(ctx, tenant.PropertyID)
+		if err == nil && settings != nil && settings.PointValuePaise > 0 {
+			maxAllowedPaise := int64(reward.PointsCost) * settings.PointValuePaise
+			if cashDiscountPaise > maxAllowedPaise {
+				cashDiscountPaise = maxAllowedPaise
+			}
+		}
+	}
 
+	// Handle reward actions based on category
+	switch reward.Category {
+	case "cash_credit":
 		// Apply credit to tenant.credit_balance_paise inside transaction (C-11)
-		tenant.CreditBalancePaise += discountPaise
-		if err := s.store.AddTenantCreditTx(ctx, tx, tenantID, discountPaise); err != nil {
+		tenant.CreditBalancePaise += cashDiscountPaise
+		if err := s.store.AddTenantCreditTx(ctx, tx, tenantID, cashDiscountPaise); err != nil {
 			return nil, fmt.Errorf("failed to apply rent credit: %w", err)
 		}
 
@@ -143,21 +153,12 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 
 	// In-transaction universal reward redeem ledger outbox enqueue (C-11)
 	if reward.Category == "cash_credit" {
-		type meta struct {
-			DiscountPaise int64 `json:"discount_paise"`
-		}
-		var m meta
-		_ = json.Unmarshal(reward.Metadata, &m)
-		discountPaise := m.DiscountPaise
-		if discountPaise <= 0 {
-			discountPaise = 50000
-		}
 		outboxPayload, err := json.Marshal(domain.RewardRedeemMirrorPayload{
 			PropertyID:   tenant.PropertyID,
 			TenantID:     tenant.ID,
 			RedemptionID: red.ID,
 			PointsSpent:  red.PointsSpent,
-			AmountPaise:  discountPaise,
+			AmountPaise:  cashDiscountPaise,
 			OccurredAt:   s.now().UTC(),
 		})
 		if err != nil {
@@ -190,16 +191,7 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 	})
 
 	if s.onRedeem != nil && reward.Category == "cash_credit" {
-		type meta struct {
-			DiscountPaise int64 `json:"discount_paise"`
-		}
-		var m meta
-		_ = json.Unmarshal(reward.Metadata, &m)
-		discountPaise := m.DiscountPaise
-		if discountPaise <= 0 {
-			discountPaise = 50000
-		}
-		s.onRedeem(ctx, tenant, red, discountPaise)
+		s.onRedeem(ctx, tenant, red, cashDiscountPaise)
 	}
 
 	return red, nil

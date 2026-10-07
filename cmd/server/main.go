@@ -68,6 +68,16 @@ func main() {
 	}
 	defer maintPool.Close()
 
+	// Refuse startup if maintenance pool connects as restricted role pgapp_app in production.
+	// Webhooks, public payment pages, and background crons require maint pool without RLS tenant restrictions.
+	var maintRole string
+	if err := maintPool.QueryRow(ctx, "SELECT current_user").Scan(&maintRole); err != nil {
+		log.Fatal("check maint db role: ", err)
+	}
+	if cfg.AppEnv == "production" && maintRole == "pgapp_app" {
+		log.Fatal("startup refused: maintPool connected as restricted role 'pgapp_app'; production maintenance pool requires 'pgapp_maint'")
+	}
+
 	var appPool *pgxpool.Pool
 	if cfg.DatabaseURL == cfg.DatabaseMaintURL {
 		appPool = maintPool

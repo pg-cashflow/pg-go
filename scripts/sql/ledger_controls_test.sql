@@ -256,12 +256,12 @@ INSERT INTO tenants (id, property_id, name, rent_amount, status)
 VALUES ('d0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000b','LC Tenant',0,'pending_allocation');
 INSERT INTO dues (id, due_code, tenant_id, property_id, amount, original_amount, period_start, period_end, due_date)
 VALUES ('d1000000-0000-0000-0000-000000000001','LC-DUE-1','d0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000b',1000,1000,'2026-09-01','2026-09-30','2026-09-05');
-INSERT INTO payments (id, due_id, tenant_id, amount, matched_by, is_unapplied, provider, cf_payment_id, provider_payment_id, created_at) VALUES
- ('e0000000-0000-0000-0000-000000000001','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',1000,'cashfree',false,'cashfree','CF-1','CF-1', now() - interval '2 days'), -- posted
- ('e0000000-0000-0000-0000-000000000002','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',2000,'cashfree',false,'cashfree','CF-2','CF-2', now() - interval '2 days'), -- UNPOSTED gateway
- ('e0000000-0000-0000-0000-000000000003','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',3000,'cash',    false,'manual',  NULL,   NULL,   now() - interval '2 days'), -- unposted cash (reported, not escalated)
- ('e0000000-0000-0000-0000-000000000004','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',4000,'cashfree',false,'cashfree','CF-4','CF-4', now()),                     -- in flight (inside grace)
- ('e0000000-0000-0000-0000-000000000005',NULL,'d0000000-0000-0000-0000-000000000001',5000,'cashfree',true, 'cashfree','CF-5','CF-5', now() - interval '2 days'); -- unapplied, posted
+INSERT INTO payments (id, property_id, due_id, tenant_id, amount, matched_by, is_unapplied, provider, cf_payment_id, provider_payment_id, created_at) VALUES
+ ('e0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-00000000000b','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',1000,'cashfree',false,'cashfree','CF-1','CF-1', now() - interval '2 days'), -- posted
+ ('e0000000-0000-0000-0000-000000000002','b0000000-0000-0000-0000-00000000000b','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',2000,'cashfree',false,'cashfree','CF-2','CF-2', now() - interval '2 days'), -- UNPOSTED gateway
+ ('e0000000-0000-0000-0000-000000000003','b0000000-0000-0000-0000-00000000000b','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',3000,'cash',    false,'manual',  NULL,   NULL,   now() - interval '2 days'), -- unposted cash (reported, not escalated)
+ ('e0000000-0000-0000-0000-000000000004','b0000000-0000-0000-0000-00000000000b','d1000000-0000-0000-0000-000000000001','d0000000-0000-0000-0000-000000000001',4000,'cashfree',false,'cashfree','CF-4','CF-4', now()),                     -- in flight (inside grace)
+ ('e0000000-0000-0000-0000-000000000005','b0000000-0000-0000-0000-00000000000b',NULL,'d0000000-0000-0000-0000-000000000001',5000,'cashfree',true, 'cashfree','CF-5','CF-5', now() - interval '2 days'); -- unapplied, posted
 SELECT pg_temp.post('b0000000-0000-0000-0000-00000000000b','payment',           'e0000000-0000-0000-0000-000000000001','2026-09-14+00','gateway_clearing','rent_revenue',1000);
 SELECT pg_temp.post('b0000000-0000-0000-0000-00000000000b','unapplied_payment', 'e0000000-0000-0000-0000-000000000005','2026-09-14+00','gateway_clearing','unapplied_receipts',5000);
 -- orphan posting: journal exists, payment row does not (payment tx rolled back after the ledger committed)

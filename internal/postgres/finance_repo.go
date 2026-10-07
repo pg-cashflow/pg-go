@@ -413,6 +413,37 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 	return tx.Commit(ctx)
 }
 
+func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID, status domain.ExpenseStatus, lines []domain.JournalLine) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1 AND status != 'cancelled'`, expenseID, status)
+	if err != nil {
+		return fmt.Errorf("update expense status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+
+	for _, l := range lines {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.PropertyID, l.AccountCode, l.DebitPaise, l.CreditPaise, l.SourceType, l.SourceID, l.LineKind, l.OccurredAt)
+		if isUnique(err) {
+			return domain.ErrDuplicateIdempotency
+		}
+		if err != nil {
+			return fmt.Errorf("insert journal line: %w", err)
+		}
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.ExpensePayment, lines []domain.JournalLine, adv *domain.ManagerAdvance) (*domain.Expense, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
