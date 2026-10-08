@@ -107,30 +107,34 @@ func (r *GamificationRepo) GetSettings(ctx context.Context, propertyID uuid.UUID
 		SELECT property_id, point_value_paise, monthly_budget_paise, earn_cap_per_tenant,
 		       rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise,
 		       grace_days, late_penalty_points_per_day, late_penalty_max_points,
+		       reward_budget_basis_points, reward_budget_ceiling_basis_points,
 		       created_at, updated_at
 		FROM property_gamification_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.PointValuePaise, &s.MonthlyBudgetPaise, &s.EarnCapPerTenant,
 		&s.RSVPSubCap, &s.ExpiryDays, &s.FloorBonusThreshold, &s.ElectricityTariffPaise,
 		&s.GraceDays, &s.LatePenaltyPointsPerDay, &s.LatePenaltyMaxPoints,
+		&s.RewardBudgetBasisPoints, &s.RewardBudgetCeilingBasisPoints,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// return default
 		return &domain.PropertyGamificationSettings{
-			PropertyID:              propertyID,
-			PointValuePaise:         100,
-			MonthlyBudgetPaise:      1000000,
-			EarnCapPerTenant:        200,
-			RSVPSubCap:              60,
-			ExpiryDays:              180,
-			FloorBonusThreshold:     85,
-			ElectricityTariffPaise:  1000,
-			GraceDays:               2,
-			LatePenaltyPointsPerDay: 2,
-			LatePenaltyMaxPoints:    50,
-			CreatedAt:               time.Now().UTC(),
-			UpdatedAt:               time.Now().UTC(),
+			PropertyID:                     propertyID,
+			PointValuePaise:                100,
+			MonthlyBudgetPaise:             1000000,
+			RewardBudgetBasisPoints:        150,
+			RewardBudgetCeilingBasisPoints: 200,
+			EarnCapPerTenant:               100,
+			RSVPSubCap:                     60,
+			ExpiryDays:                     180,
+			FloorBonusThreshold:            85,
+			ElectricityTariffPaise:         1000,
+			GraceDays:                      2,
+			LatePenaltyPointsPerDay:        2,
+			LatePenaltyMaxPoints:           50,
+			CreatedAt:                      time.Now().UTC(),
+			UpdatedAt:                      time.Now().UTC(),
 		}, nil
 	}
 	return &s, err
@@ -147,13 +151,26 @@ func (r *GamificationRepo) UpdateSettings(ctx context.Context, s *domain.Propert
 	if s.LatePenaltyMaxPoints <= 0 {
 		s.LatePenaltyMaxPoints = 50
 	}
+	if s.RewardBudgetBasisPoints <= 0 {
+		s.RewardBudgetBasisPoints = domain.DefaultRewardBudgetBasisPoints
+	}
+	if s.RewardBudgetCeilingBasisPoints <= 0 {
+		s.RewardBudgetCeilingBasisPoints = domain.DefaultRewardBudgetCeilingBasisPoints
+	}
+	if s.RewardBudgetBasisPoints > s.RewardBudgetCeilingBasisPoints {
+		s.RewardBudgetBasisPoints = s.RewardBudgetCeilingBasisPoints
+	}
+	if s.EarnCapPerTenant <= 0 {
+		s.EarnCapPerTenant = domain.DefaultEarnCapPerTenant
+	}
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO property_gamification_settings (
 			property_id, point_value_paise, monthly_budget_paise, earn_cap_per_tenant,
 			rsvp_sub_cap, expiry_days, floor_bonus_threshold, electricity_tariff_paise,
 			grace_days, late_penalty_points_per_day, late_penalty_max_points,
+			reward_budget_basis_points, reward_budget_ceiling_basis_points,
 			updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (property_id) DO UPDATE SET
 			point_value_paise = EXCLUDED.point_value_paise,
 			monthly_budget_paise = EXCLUDED.monthly_budget_paise,
@@ -165,13 +182,27 @@ func (r *GamificationRepo) UpdateSettings(ctx context.Context, s *domain.Propert
 			grace_days = EXCLUDED.grace_days,
 			late_penalty_points_per_day = EXCLUDED.late_penalty_points_per_day,
 			late_penalty_max_points = EXCLUDED.late_penalty_max_points,
+			reward_budget_basis_points = EXCLUDED.reward_budget_basis_points,
+			reward_budget_ceiling_basis_points = EXCLUDED.reward_budget_ceiling_basis_points,
 			updated_at = EXCLUDED.updated_at`,
 		s.PropertyID, s.PointValuePaise, s.MonthlyBudgetPaise, s.EarnCapPerTenant,
 		s.RSVPSubCap, s.ExpiryDays, s.FloorBonusThreshold, s.ElectricityTariffPaise,
 		s.GraceDays, s.LatePenaltyPointsPerDay, s.LatePenaltyMaxPoints,
+		s.RewardBudgetBasisPoints, s.RewardBudgetCeilingBasisPoints,
 		s.UpdatedAt,
 	)
 	return err
+}
+
+func (r *GamificationRepo) GetPropertyRentRoll(ctx context.Context, propertyID uuid.UUID) (int64, error) {
+	var totalPaise int64
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(rent_amount), 0)
+		FROM tenants
+		WHERE property_id = $1 AND status = 'active'`,
+		propertyID,
+	).Scan(&totalPaise)
+	return totalPaise, err
 }
 
 func (r *GamificationRepo) RecordStreakDueEvent(ctx context.Context, tenantID, dueID uuid.UUID) (bool, error) {

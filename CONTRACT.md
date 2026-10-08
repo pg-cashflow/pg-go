@@ -309,6 +309,32 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | POST | `/api/owner/rooms` | `{ "property_id": uuid, "floor_id": uuid, "room_number": string, "capacity": int, "included_units"?: int }` | `{ "room": Room }` |
 | POST | `/api/owner/managers` | `{ "phone": string, "property_id"?: uuid }` | Provisions `users.role=manager`. Defaults to claims `property_id`. Returns `{ "manager": User }`. |
 
+#### PropertyGamificationSettings Shape
+```json
+{
+  "property_id": "31b6ea55-ec44-42b7-a3f1-f896b5fc24ee",
+  "point_value_paise": 100,
+  "monthly_budget_paise": 1000000,
+  "reward_budget_basis_points": 150,
+  "reward_budget_ceiling_basis_points": 200,
+  "earn_cap_per_tenant": 100,
+  "rsvp_sub_cap": 60,
+  "expiry_days": 180,
+  "floor_bonus_threshold": 85,
+  "electricity_tariff_paise": 1000,
+  "grace_days": 2,
+  "late_penalty_points_per_day": 2,
+  "late_penalty_max_points": 50,
+  "created_at": "2026-09-01T00:00:00Z",
+  "updated_at": "2026-10-08T00:00:00Z"
+}
+```
+*Note on F7 Economics:*
+- `reward_budget_basis_points` defaults to `150` (1.50% of monthly rent roll pool).
+- `reward_budget_ceiling_basis_points` defaults to `200` (2.00% hard ceiling of monthly rent roll).
+- `earn_cap_per_tenant` defaults to `100` points per tenant per calendar month.
+- Effective monthly point budget = `min(rent_roll * basis_points / 10000, rent_roll * ceiling_basis_points / 10000) / point_value_paise`. If rent roll is 0, falls back to `monthly_budget_paise / point_value_paise`.
+
 ### ReconciliationSummary Shape
 
 ```json

@@ -70,6 +70,17 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
   - Concurrent void races with exactly one winner.
   - Expense date range validation (past 90 days / future skew).
 
+### D8. Dynamic Rent-Roll Reward Budget & Lowered Earn Cap (F7)
+- Configure monthly points budget as 1.50% (`reward_budget_basis_points = 150`) of active monthly rent roll.
+- Enforce hard ceiling of 2.00% (`reward_budget_ceiling_basis_points = 200`) of active rent roll.
+- Lower default `earn_cap_per_tenant` from 200 to 100 points per month.
+- Enforce database constraint `chk_gamification_budget_basis_points` in migration 061:
+  `reward_budget_basis_points > 0 AND reward_budget_ceiling_basis_points >= reward_budget_basis_points AND reward_budget_ceiling_basis_points <= 1000`.
+- Calculate monthly budget dynamically in `AwardPoints`:
+  `EffectiveMonthlyBudgetPaise(rentRollPaise, settings) / settings.PointValuePaise`.
+- Fail closed with `ErrInvalidRewardValue` if `PointValuePaise <= 0`.
+- Fall back to static `MonthlyBudgetPaise` only when active rent roll is zero.
+
 ---
 
 ## 3. Consequences
@@ -80,6 +91,8 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 - Full auditability (`void_reason`, `voided_by`, `voided_at`) enforced by database check constraints.
 - Gamification redemption fails closed against configuration errors.
 - Ledger queries leverage b-tree covering index scans instead of table scans.
+- Gamification liability automatically scales with occupancy and revenue (1.5% target, 2.0% hard ceiling).
+- 100-point earn cap limits maximum tenant reward cost to ~1.8% of individual rent roll even under 100% cap utilization.
 
 ---
 
@@ -89,9 +102,12 @@ Architecture analysis against operational scale (+100 tenants/year, 500 tenants 
 | :--- | :--- | :--- |
 | `migrations/059_expense_void_audit.sql` | Added audit columns and length-bounded check constraint | VERIFIED |
 | `migrations/060_points_ledger_month_indexes.sql` | Added covering month range indexes on points_ledger | VERIFIED |
+| `migrations/061_gamification_reward_budget_rent_roll.sql` | Added basis points, ceiling columns, check constraint, and lowered default earn cap to 100 | VERIFIED |
 | `internal/postgres/finance_repo.go` | Added row-locking `VoidExpenseAtomic` and guarded `DecideApprovalAtomic` | VERIFIED |
 | `internal/finance/mem.go` | Implemented in-memory store void logic with approval cancellation | VERIFIED |
 | `internal/finance/service.go` | Enforced maker-checker threshold and reason validation in `VoidExpense` | VERIFIED |
 | `internal/gamification/redemptions.go` | Implemented fail-closed cash credit validation | VERIFIED |
-| `internal/postgres/gamification_repo.go` | Switched to IST range bounds and b-tree index queries | VERIFIED |
+| `internal/postgres/gamification_repo.go` | Switched to IST range bounds, covering indexes, basis points storage, and `GetPropertyRentRoll` | VERIFIED |
+| `internal/gamification/service.go` | Dynamic rent-roll budget calculation with hard ceiling and fail-closed point value | VERIFIED |
 | `internal/finance/void_test.go` | Comprehensive test suite covering all void invariants and concurrency | VERIFIED |
+| `internal/gamification/reward_budget_test.go` | Comprehensive test suite covering F7 rent-roll budget, hard ceiling, 100-pt cap, and fallbacks | VERIFIED |

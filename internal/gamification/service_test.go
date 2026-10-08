@@ -30,6 +30,7 @@ type memStore struct {
 	step3InQuarter  int
 	streakDues      map[string]bool
 	milestoneAwards map[string]bool
+	rentRoll        int64
 }
 
 type mockTx struct {
@@ -62,13 +63,15 @@ func (tx *mockTx) Rollback(ctx context.Context) error {
 func newMemStore() *memStore {
 	return &memStore{
 		settings: &domain.PropertyGamificationSettings{
-			PointValuePaise:        100,
-			MonthlyBudgetPaise:     1000000,
-			EarnCapPerTenant:       200,
-			RSVPSubCap:             60,
-			ExpiryDays:             180,
-			FloorBonusThreshold:    85,
-			ElectricityTariffPaise: 1000,
+			PointValuePaise:                100,
+			MonthlyBudgetPaise:             1000000,
+			RewardBudgetBasisPoints:        150,
+			RewardBudgetCeilingBasisPoints: 200,
+			EarnCapPerTenant:               100,
+			RSVPSubCap:                     60,
+			ExpiryDays:                     180,
+			FloorBonusThreshold:            85,
+			ElectricityTariffPaise:         1000,
 		},
 		rules: map[string]domain.PointRule{
 			"RENT_ON_TIME":       {Code: "RENT_ON_TIME", Points: 50, Active: true},
@@ -91,6 +94,12 @@ func (m *memStore) BeginTx(ctx context.Context) (pgx.Tx, error) {
 
 func (m *memStore) GetSettings(ctx context.Context, propertyID uuid.UUID) (*domain.PropertyGamificationSettings, error) {
 	return m.settings, nil
+}
+
+func (m *memStore) GetPropertyRentRoll(ctx context.Context, propertyID uuid.UUID) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rentRoll, nil
 }
 
 func (m *memStore) GetPointRuleByCode(ctx context.Context, propertyID uuid.UUID, code string) (*domain.PointRule, error) {

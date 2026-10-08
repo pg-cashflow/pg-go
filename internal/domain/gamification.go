@@ -29,19 +29,60 @@ type Room struct {
 
 // PropertyGamificationSettings holds property-wide gamification rules and budget caps.
 type PropertyGamificationSettings struct {
-	PropertyID             uuid.UUID `json:"property_id"`
-	PointValuePaise        int64     `json:"point_value_paise"`
-	MonthlyBudgetPaise     int64     `json:"monthly_budget_paise"`
-	EarnCapPerTenant       int       `json:"earn_cap_per_tenant"`
-	RSVPSubCap             int       `json:"rsvp_sub_cap"`
-	ExpiryDays             int       `json:"expiry_days"`
-	FloorBonusThreshold    int       `json:"floor_bonus_threshold"` // percentage e.g. 85
-	ElectricityTariffPaise int64     `json:"electricity_tariff_paise"`
-	GraceDays              int       `json:"grace_days"`
-	LatePenaltyPointsPerDay int      `json:"late_penalty_points_per_day"`
-	LatePenaltyMaxPoints   int       `json:"late_penalty_max_points"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	PropertyID                     uuid.UUID `json:"property_id"`
+	PointValuePaise                int64     `json:"point_value_paise"`
+	MonthlyBudgetPaise             int64     `json:"monthly_budget_paise"`
+	RewardBudgetBasisPoints        int       `json:"reward_budget_basis_points"`         // e.g. 150 = 1.50% of monthly rent roll
+	RewardBudgetCeilingBasisPoints int       `json:"reward_budget_ceiling_basis_points"` // e.g. 200 = 2.00% hard ceiling of rent roll
+	EarnCapPerTenant               int       `json:"earn_cap_per_tenant"`
+	RSVPSubCap                     int       `json:"rsvp_sub_cap"`
+	ExpiryDays                     int       `json:"expiry_days"`
+	FloorBonusThreshold            int       `json:"floor_bonus_threshold"` // percentage e.g. 85
+	ElectricityTariffPaise         int64     `json:"electricity_tariff_paise"`
+	GraceDays                      int       `json:"grace_days"`
+	LatePenaltyPointsPerDay        int       `json:"late_penalty_points_per_day"`
+	LatePenaltyMaxPoints           int       `json:"late_penalty_max_points"`
+	CreatedAt                      time.Time `json:"created_at"`
+	UpdatedAt                      time.Time `json:"updated_at"`
+}
+
+const (
+	DefaultRewardBudgetBasisPoints        = 150 // 1.50%
+	DefaultRewardBudgetCeilingBasisPoints = 200 // 2.00%
+	DefaultEarnCapPerTenant               = 100 // 100 points
+)
+
+// CalculateMonthlyRewardBudgetPaise computes the property monthly reward budget in paise.
+// First-principles logic:
+// 1. If active rent roll > 0, target budget = rentRoll * basis_points / 10000.
+// 2. Budget is strictly clamped to hard ceiling = rentRoll * ceiling_basis_points / 10000.
+// 3. If rent roll == 0, falls back to static MonthlyBudgetPaise.
+func CalculateMonthlyRewardBudgetPaise(rentRollPaise int64, s *PropertyGamificationSettings) int64 {
+	if s == nil {
+		return 0
+	}
+	bp := s.RewardBudgetBasisPoints
+	if bp <= 0 {
+		bp = DefaultRewardBudgetBasisPoints
+	}
+	ceilingBp := s.RewardBudgetCeilingBasisPoints
+	if ceilingBp <= 0 {
+		ceilingBp = DefaultRewardBudgetCeilingBasisPoints
+	}
+	if bp > ceilingBp {
+		bp = ceilingBp
+	}
+
+	if rentRollPaise > 0 {
+		poolPaise := (rentRollPaise * int64(bp)) / 10000
+		maxCeilingPaise := (rentRollPaise * int64(ceilingBp)) / 10000
+		if poolPaise > maxCeilingPaise {
+			return maxCeilingPaise
+		}
+		return poolPaise
+	}
+
+	return s.MonthlyBudgetPaise
 }
 
 // PointRule defines a rule under which points can be awarded.

@@ -53,6 +53,7 @@ type Store interface {
 	// Settings & Rules
 	GetSettings(ctx context.Context, propertyID uuid.UUID) (*domain.PropertyGamificationSettings, error)
 	UpdateSettings(ctx context.Context, s *domain.PropertyGamificationSettings) error
+	GetPropertyRentRoll(ctx context.Context, propertyID uuid.UUID) (int64, error)
 	ListPointRules(ctx context.Context, propertyID uuid.UUID) ([]domain.PointRule, error)
 	GetPointRuleByCode(ctx context.Context, propertyID uuid.UUID, code string) (*domain.PointRule, error)
 
@@ -217,15 +218,20 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 		}
 	}
 
-	// 3. Check property monthly budget cap
+	// 3. Check property monthly budget cap (F7 dynamic rent-roll budget with hard ceiling)
+	if settings.PointValuePaise <= 0 {
+		return 0, ErrInvalidRewardValue
+	}
 	propEarned, err := s.store.GetPropertyMonthPoints(ctx, tenant.PropertyID, monthYear)
 	if err != nil {
 		return 0, err
 	}
-	var budgetPoints int64
-	if settings.PointValuePaise > 0 {
-		budgetPoints = settings.MonthlyBudgetPaise / settings.PointValuePaise
+	rentRollPaise, err := s.store.GetPropertyRentRoll(ctx, tenant.PropertyID)
+	if err != nil {
+		return 0, err
 	}
+	effectiveBudgetPaise := domain.CalculateMonthlyRewardBudgetPaise(rentRollPaise, settings)
+	budgetPoints := effectiveBudgetPaise / settings.PointValuePaise
 	if int64(propEarned+rule.Points) > budgetPoints {
 		return 0, fmt.Errorf("%w: property monthly cap %d points reached", ErrPropertyBudgetExceeded, budgetPoints)
 	}
