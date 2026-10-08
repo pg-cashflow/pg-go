@@ -111,6 +111,17 @@ func (s *dashboardPropStore) GetByInviteCode(context.Context, string) (*domain.P
 	return nil, nil
 }
 
+func (s *dashboardPropStore) Create(_ context.Context, p *domain.Property) error {
+	if s.props == nil {
+		s.props = make(map[uuid.UUID]*domain.Property)
+	}
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
+	s.props[p.ID] = p
+	return nil
+}
+
 func (s *dashboardPropStore) GetSettings(_ context.Context, pid uuid.UUID) (*domain.PropertySettings, error) {
 	if s.settings != nil && s.settings[pid] != nil {
 		return s.settings[pid], nil

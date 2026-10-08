@@ -39,6 +39,7 @@ func monthKey(t time.Time) string { return t.In(istZone).Format("2006-01") }
 // Store defines repository requirements for the gamification engine.
 type Store interface {
 	BeginTx(ctx context.Context) (pgx.Tx, error)
+	LockPropertyPointsBudgetTx(ctx context.Context, tx pgx.Tx, propertyID uuid.UUID, monthYear string) error
 	LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error
 	AddTenantCreditTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, amountPaise int64) error
 	InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error
@@ -80,6 +81,9 @@ type Store interface {
 	CountStep3ViolationsInQuarter(ctx context.Context, tenantID uuid.UUID) (int, error)
 	CreateRedemptionTx(ctx context.Context, tx pgx.Tx, red *domain.Redemption) error
 	ListRedemptionsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.Redemption, error)
+	ListRedemptionsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.Redemption, error)
+	GetRedemptionByID(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) (*domain.Redemption, error)
+	FulfilRedemption(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) error
 
 	// Inspections
 	CreateInspection(ctx context.Context, insp *domain.Inspection) error
@@ -187,6 +191,18 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 
 	monthYear := monthKey(s.now())
 
+	tx, err := s.store.BeginTx(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if tx != nil {
+		defer func() { _ = tx.Rollback(ctx) }()
+	}
+
+	if err := s.store.LockPropertyPointsBudgetTx(ctx, tx, tenant.PropertyID, monthYear); err != nil {
+		return 0, fmt.Errorf("lock points budget: %w", err)
+	}
+
 	// 1. Check rule monthly cap if configured
 	if rule.MonthlyCap > 0 {
 		ruleEarned, err := s.store.GetRuleMonthPoints(ctx, tenantID, ruleCode, monthYear)
@@ -208,6 +224,9 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 		if rsvpEarned+rule.Points > settings.RSVPSubCap {
 			return 0, fmt.Errorf("%w: RSVP sub-cap %d points reached for month", ErrMonthlyCapExceeded, settings.RSVPSubCap)
 		}
+	} else if refType != nil && *refType == "milestone" {
+		// One-time streak milestone awards are protected by tenant_milestone_awards anti-farming deduplication
+		// and do not count against routine monthly tenant earn caps.
 	} else {
 		generalEarned, err := s.store.GetTenantMonthPoints(ctx, tenantID, monthYear, false)
 		if err != nil {
@@ -250,19 +269,25 @@ func (s *Service) AwardPoints(ctx context.Context, tenantID uuid.UUID, ruleCode 
 		CreatedBy:  createdBy,
 	}
 
-	if err := s.store.InsertLedgerEntry(ctx, entry); err != nil {
+	if err := s.store.InsertLedgerEntryTx(ctx, tx, entry); err != nil {
 		return 0, err
+	}
+
+	// Update cached balance in tenant_streaks
+	streak, _ := s.store.GetStreakForUpdate(ctx, tx, tenantID)
+	if streak != nil {
+		streak.CachedBalance += rule.Points
+		_ = s.store.UpsertStreakTx(ctx, tx, streak)
+	}
+
+	if tx != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("commit points award tx: %w", err)
+		}
 	}
 
 	if s.onPoints != nil && entry.Delta > 0 {
 		s.onPoints(ctx, tenant, entry, settings.PointValuePaise)
-	}
-
-	// Update cached balance in tenant_streaks
-	streak, _ := s.store.GetStreak(ctx, tenantID)
-	if streak != nil {
-		streak.CachedBalance += rule.Points
-		_ = s.store.UpsertStreak(ctx, streak)
 	}
 
 	// Publish audit event

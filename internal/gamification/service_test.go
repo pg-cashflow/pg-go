@@ -31,6 +31,7 @@ type memStore struct {
 	streakDues      map[string]bool
 	milestoneAwards map[string]bool
 	rentRoll        int64
+	delayQuery      time.Duration
 }
 
 type mockTx struct {
@@ -198,6 +199,9 @@ func (m *memStore) GetTenantMonthPoints(ctx context.Context, tenantID uuid.UUID,
 }
 
 func (m *memStore) GetPropertyMonthPoints(ctx context.Context, propertyID uuid.UUID, monthYear string) (int, error) {
+	if m.delayQuery > 0 {
+		time.Sleep(m.delayQuery)
+	}
 	sum := 0
 	for _, e := range m.ledger {
 		if e.Delta > 0 {
@@ -239,6 +243,10 @@ func (m *memStore) GetStreak(ctx context.Context, tenantID uuid.UUID) (*domain.T
 		return &domain.TenantStreak{TenantID: tenantID, FreezesAvailable: 1}, nil
 	}
 	return s, nil
+}
+
+func (m *memStore) LockPropertyPointsBudgetTx(ctx context.Context, tx pgx.Tx, propertyID uuid.UUID, monthYear string) error {
+	return nil
 }
 
 func (m *memStore) LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
@@ -287,6 +295,44 @@ func (m *memStore) CreateRedemptionTx(ctx context.Context, tx pgx.Tx, red *domai
 	defer m.mu.Unlock()
 	m.redemptions = append(m.redemptions, *red)
 	return nil
+}
+
+func (m *memStore) ListRedemptionsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.Redemption, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []domain.Redemption
+	for _, r := range m.redemptions {
+		if r.PropertyID == propertyID && (status == "" || r.Status == status) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) GetRedemptionByID(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) (*domain.Redemption, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.redemptions {
+		if r.PropertyID == propertyID && r.ID == id {
+			return &r, nil
+		}
+	}
+	return nil, errors.New("redemption not found")
+}
+
+func (m *memStore) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, r := range m.redemptions {
+		if r.PropertyID == propertyID && r.ID == id {
+			if r.Status != "pending" {
+				return errors.New("redemption not in pending status")
+			}
+			m.redemptions[i].Status = "fulfilled"
+			return nil
+		}
+	}
+	return errors.New("redemption not found")
 }
 
 func (m *memStore) GetLatestMeterReading(ctx context.Context, propertyID uuid.UUID, roomID *uuid.UUID, floorID *uuid.UUID, kind string) (*domain.MeterReading, error) {
@@ -823,6 +869,7 @@ func TestConsumer_StreakSoftLanding(t *testing.T) {
 
 func TestConsumer_MilestoneAwardsAntiFarming(t *testing.T) {
 	store := newMemStore()
+	store.settings.EarnCapPerTenant = 200 // allow 50 rent + 100 milestone + 50 second rent within test execution month
 	tenantID := uuid.New()
 	propID := uuid.New()
 	dueID := uuid.New()
@@ -901,4 +948,90 @@ func TestConsumer_MilestoneAwardsAntiFarming(t *testing.T) {
 		t.Fatalf("expected 200 points (anti-farming prevented duplicate 100 milestone), got %d", bal2)
 	}
 }
+
+// TestRedeem_FoodAndPerkFulfilment verifies that food coupons and perks start as pending,
+// can be listed by the property owner, and fulfilled atomically.
+func TestRedeem_FoodAndPerkFulfilment(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	otherPropID := uuid.New()
+
+	tRepo := &memTenantRepo{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			tenantID: {ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive},
+		},
+	}
+
+	rewardID := uuid.New()
+	store.catalog[rewardID] = domain.RewardsCatalogItem{
+		ID:         rewardID,
+		PropertyID: propID,
+		Code:       "FREE_DINNER",
+		PointsCost: 100,
+		Category:   "food_coupon",
+		IsActive:   true,
+	}
+
+	store.streak[tenantID] = &domain.TenantStreak{
+		TenantID:      tenantID,
+		PropertyID:    propID,
+		CachedBalance: 100,
+	}
+
+	expiresAt := time.Now().UTC().AddDate(0, 0, 180)
+	_ = store.InsertLedgerEntry(ctx, &domain.PointsLedgerEntry{
+		TenantID:   tenantID,
+		PropertyID: propID,
+		RuleCode:   "RENT_ON_TIME",
+		Delta:      100,
+		ExpiresAt:  &expiresAt,
+	})
+
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+	red, err := svc.RedeemReward(ctx, tenantID, rewardID)
+	if err != nil {
+		t.Fatalf("redeem reward failed: %v", err)
+	}
+
+	if red.Status != "pending" {
+		t.Fatalf("expected redemption status 'pending', got '%s'", red.Status)
+	}
+	if red.CouponCode == nil || *red.CouponCode == "" {
+		t.Fatalf("expected non-empty coupon code for food coupon redemption")
+	}
+
+	// Owner lists redemptions for property
+	list, err := svc.ListRedemptionsByProperty(ctx, propID, "pending")
+	if err != nil {
+		t.Fatalf("list redemptions failed: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != red.ID {
+		t.Fatalf("expected 1 pending redemption in property list, got %d", len(list))
+	}
+
+	// Cross-property check: other property owner cannot fulfil
+	_, err = svc.FulfilRedemption(ctx, otherPropID, red.ID)
+	if err == nil {
+		t.Fatalf("expected cross-property fulfilment to fail")
+	}
+
+	// Owner fulfils the redemption
+	fulfilled, err := svc.FulfilRedemption(ctx, propID, red.ID)
+	if err != nil {
+		t.Fatalf("fulfil redemption failed: %v", err)
+	}
+	if fulfilled.Status != "fulfilled" {
+		t.Fatalf("expected status 'fulfilled', got '%s'", fulfilled.Status)
+	}
+
+	// Cannot fulfil already fulfilled redemption
+	_, err = svc.FulfilRedemption(ctx, propID, red.ID)
+	if err == nil {
+		t.Fatalf("expected error when fulfilling already fulfilled redemption")
+	}
+}
+
 

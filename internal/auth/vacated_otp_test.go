@@ -25,6 +25,12 @@ func (s *stubOTP) LatestUnused(context.Context, string) (*postgres.OTPRequest, e
 	}
 	return s.req, nil
 }
+func (s *stubOTP) LatestUnusedByPurpose(context.Context, string, string, *uuid.UUID) (*postgres.OTPRequest, error) {
+	if s.req == nil {
+		return nil, pgx.ErrNoRows
+	}
+	return s.req, nil
+}
 func (s *stubOTP) IncrementAttempts(context.Context, uuid.UUID) error { return nil }
 func (s *stubOTP) MarkUsed(context.Context, uuid.UUID) error          { return nil }
 func (s *stubOTP) CountRecent(context.Context, string, time.Time) (int, error) {

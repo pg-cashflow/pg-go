@@ -16,9 +16,11 @@ import (
 
 // StepUpAuthInput provides common fields for cryptographic re-authentication.
 type StepUpAuthInput struct {
-	OTP                string `json:"otp,omitempty"`
-	ReauthConfirmation string `json:"reauth_confirmation,omitempty"`
-	FirebaseIDToken    string `json:"firebase_id_token,omitempty"`
+	OTP                string     `json:"otp,omitempty"`
+	ReauthConfirmation string     `json:"reauth_confirmation,omitempty"`
+	FirebaseIDToken    string     `json:"firebase_id_token,omitempty"`
+	Purpose            string     `json:"purpose,omitempty"`
+	BatchID            *uuid.UUID `json:"batch_id,omitempty"`
 }
 
 // verifyDualControlOrStepUp enforces dual-control maker-checker when a property
@@ -93,7 +95,11 @@ func (h *Handlers) verifyDualControlOrStepUp(
 			respondErr(c, clientErr(http.StatusUnauthorized, "step-up authentication failed: owner has no registered phone"))
 			return "", false
 		}
-		if err := h.Auth.VerifyStepUpOTP(c.Request.Context(), phone, candidateOTP); err != nil {
+		purpose := authInput.Purpose
+		if purpose == "" {
+			purpose = "payout_approval"
+		}
+		if err := h.Auth.VerifyStepUpOTPSpecific(c.Request.Context(), phone, candidateOTP, purpose, authInput.BatchID); err != nil {
 			if errors.Is(err, auth.ErrInvalidOTP) {
 				respondErr(c, clientErr(http.StatusUnauthorized, "invalid payout approval code"))
 				return "", false

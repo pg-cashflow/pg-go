@@ -3,6 +3,8 @@ package gamification
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -270,3 +272,99 @@ func TestAwardPoints_CustomPropertyBudget(t *testing.T) {
 		t.Fatalf("expected ErrPropertyBudgetExceeded for custom 1.0%% budget, got: %v", err)
 	}
 }
+
+// TestAwardPoints_ConcurrentBudgetNoOvershoot verifies that concurrent point awards
+// do not overshoot the property budget under concurrent contention.
+func TestAwardPoints_ConcurrentBudgetNoOvershoot(t *testing.T) {
+	ctx := context.Background()
+	propID := uuid.New()
+
+	mem := newMemStore()
+	mem.rentRoll = 55000000 // 100 tenants * Rs 5,500 = Rs 5,50,000 rent roll
+	// 1.5% pool = Rs 8,250 = 8,250 points at PointValuePaise = 100
+	mem.settings.PropertyID = propID
+	mem.settings.RewardBudgetBasisPoints = 150
+	mem.settings.RewardBudgetCeilingBasisPoints = 200
+	mem.settings.PointValuePaise = 100
+	mem.settings.EarnCapPerTenant = 100
+	mem.delayQuery = 5 * time.Millisecond
+
+	tenantsMap := make(map[uuid.UUID]*domain.Tenant)
+	concurrency := 20
+	tenantIDs := make([]uuid.UUID, concurrency)
+	for i := 0; i < concurrency; i++ {
+		tid := uuid.New()
+		tenantIDs[i] = tid
+		tenantsMap[tid] = &domain.Tenant{
+			ID:         tid,
+			PropertyID: propID,
+			Status:     domain.TenantStatusActive,
+			RentAmount: 550000,
+		}
+	}
+	tenants := &mockTenantReader{tenants: tenantsMap}
+	svc := NewService(mem, tenants, nil, &mockPublisher{}, nil)
+	fixedTime := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return fixedTime }
+
+	// Seed property points to 8,240 (leaving exactly 10 points before 8,250 cap)
+	for i := 0; i < 824; i++ {
+		mem.ledger = append(mem.ledger, domain.PointsLedgerEntry{
+			PropertyID: propID,
+			TenantID:   uuid.New(),
+			RuleCode:   "ROOM_CLEAN",
+			Delta:      10,
+			CreatedAt:  fixedTime,
+		})
+	}
+
+	mem.rules["TEST_10"] = domain.PointRule{Code: "TEST_10", Points: 10, Active: true}
+
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	successCount := int64(0)
+	budgetExceededCount := int64(0)
+	errCh := make(chan error, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(tid uuid.UUID) {
+			defer wg.Done()
+			<-startCh // Synchronize start
+			_, err := svc.AwardPoints(ctx, tid, "TEST_10", nil, nil, nil)
+			if err == nil {
+				atomic.AddInt64(&successCount, 1)
+			} else if errors.Is(err, ErrPropertyBudgetExceeded) {
+				atomic.AddInt64(&budgetExceededCount, 1)
+			} else {
+				errCh <- err
+			}
+		}(tenantIDs[i])
+	}
+
+	close(startCh)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("unexpected error during award: %v", err)
+	}
+
+	monthKeyStr := monthKey(fixedTime)
+	totalEarned, err := mem.GetPropertyMonthPoints(ctx, propID, monthKeyStr)
+	if err != nil {
+		t.Fatalf("failed to get property month points: %v", err)
+	}
+
+	if totalEarned > 8250 {
+		t.Fatalf("BUDGET OVERSHOOT DETECTED: expected <= 8250 points, got %d points (successes=%d)", totalEarned, successCount)
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 success for the remaining 10 points, got %d (overshoot/undershoot)", successCount)
+	}
+	if budgetExceededCount != int64(concurrency-1) {
+		t.Fatalf("expected %d rejections with ErrPropertyBudgetExceeded, got %d", concurrency-1, budgetExceededCount)
+	}
+}
+

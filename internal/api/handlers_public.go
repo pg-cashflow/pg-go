@@ -270,7 +270,7 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 		apierr.RespondBindErr(c, "phone and otp required", apierr.CodeRequestInvalidBody)
 		return
 	}
-	token, user, err := h.Auth.VerifyOTPAndIssueToken(c.Request.Context(), body.Phone, body.OTP)
+	_, user, err := h.Auth.VerifyOTPAndIssueToken(c.Request.Context(), body.Phone, body.OTP)
 	if err != nil {
 		status := http.StatusUnauthorized
 		code := apierr.CodeAuthInvalidOtp
@@ -298,11 +298,15 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 		return
 	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
-	if accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user); err == nil && refToken != "" {
-		token = accToken
-		h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user)
+	if err != nil || refToken == "" {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{
+			Error: "session creation failed",
+		})
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+	h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	c.JSON(http.StatusOK, gin.H{"token": accToken, "user": user})
 }
 
 // RevokeSessions handles POST /auth/revoke-sessions — bumps users.token_version
@@ -338,7 +342,7 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		apierr.RespondBindErr(c, "id_token required", apierr.CodeRequestInvalidBody)
 		return
 	}
-	token, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken, body.InviteCode)
+	_, user, err := h.Auth.VerifyFirebaseAndIssueToken(c.Request.Context(), body.IDToken, body.InviteCode)
 	if err != nil {
 		status := http.StatusUnauthorized
 		msg := "authentication failed"
@@ -375,11 +379,15 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		}
 	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
-	if accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user); err == nil && refToken != "" {
-		token = accToken
-		h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user)
+	if err != nil || refToken == "" {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{
+			Error: "session creation failed",
+		})
+		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+	h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	c.JSON(http.StatusOK, gin.H{"token": accToken, "user": user})
 }
 
 // AuthRefresh handles POST /auth/refresh.
@@ -446,14 +454,15 @@ func (h *Handlers) attachUserLocale(ctx context.Context, r *http.Request, user *
 }
 
 func propertyIDFromClaims(c *gin.Context) (uuid.UUID, bool) {
+	if pid, hasScope := requestscope.PropertyIDFromContext(c.Request.Context()); hasScope && pid != uuid.Nil {
+		return pid, true
+	}
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok || claims.PropertyID == nil {
 		apierr.RespondClientErr(c, http.StatusForbidden, "no property scope", apierr.CodeAuthNoPropertyScope)
 		return uuid.Nil, false
 	}
-	if _, hasScope := requestscope.PropertyIDFromContext(c.Request.Context()); !hasScope {
-		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), *claims.PropertyID))
-	}
+	c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), *claims.PropertyID))
 	return *claims.PropertyID, true
 }
 

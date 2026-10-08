@@ -22,9 +22,21 @@ func (m *mockOTPRepo) Create(_ context.Context, req *postgres.OTPRequest) error 
 }
 
 func (m *mockOTPRepo) LatestUnused(_ context.Context, phone string) (*postgres.OTPRequest, error) {
+	return m.LatestUnusedByPurpose(context.Background(), phone, "", nil)
+}
+
+func (m *mockOTPRepo) LatestUnusedByPurpose(_ context.Context, phone string, purpose string, batchID *uuid.UUID) (*postgres.OTPRequest, error) {
 	for i := len(m.requests) - 1; i >= 0; i-- {
 		r := m.requests[i]
 		if r.Phone == phone && !r.Used {
+			if purpose != "" && r.Purpose != "" && r.Purpose != purpose {
+				continue
+			}
+			if batchID != nil {
+				if r.BatchID == nil || *r.BatchID != *batchID {
+					continue
+				}
+			}
 			return r, nil
 		}
 	}
@@ -227,3 +239,45 @@ func TestVerifyFirebaseStepUp_Freshness(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyStepUpOTP_PurposeAndBatchBinding(t *testing.T) {
+	ctx := context.Background()
+	otpRepo := &mockOTPRepo{}
+	smsGateway := &mockSMSGateway{}
+	secret := "test-secret-at-least-32-bytes-long"
+
+	svc := NewService(otpRepo, nil, nil, nil, smsGateway, secret, "jwt-secret")
+	phone := "+919876543210"
+	batchA := uuid.New()
+	batchB := uuid.New()
+
+	// 1. Request login OTP
+	if err := svc.RequestOTPWithPurpose(ctx, phone, "login"); err != nil {
+		t.Fatalf("request login OTP: %v", err)
+	}
+	loginMsg := smsGateway.sentMessages[len(smsGateway.sentMessages)-1]
+	loginCode := strings.TrimSuffix(strings.Split(loginMsg, " ")[4], ".")
+
+	// Login OTP must NOT be valid for payout approval step-up
+	if err := svc.VerifyStepUpOTPSpecific(ctx, phone, loginCode, "payout_approval", &batchA); err != ErrInvalidOTP {
+		t.Fatalf("expected ErrInvalidOTP when using login OTP for payout approval, got: %v", err)
+	}
+
+	// 2. Request payout approval OTP for batch A
+	if err := svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchA); err != nil {
+		t.Fatalf("request payout approval OTP for batch A: %v", err)
+	}
+	batchAMsg := smsGateway.sentMessages[len(smsGateway.sentMessages)-1]
+	batchACode := strings.TrimSuffix(strings.Split(batchAMsg, " ")[5], ".")
+
+	// OTP for batch A must NOT be valid for batch B
+	if err := svc.VerifyStepUpOTPSpecific(ctx, phone, batchACode, "payout_approval", &batchB); err != ErrInvalidOTP {
+		t.Fatalf("expected ErrInvalidOTP when using batch A OTP for batch B, got: %v", err)
+	}
+
+	// OTP for batch A MUST succeed for batch A
+	if err := svc.VerifyStepUpOTPSpecific(ctx, phone, batchACode, "payout_approval", &batchA); err != nil {
+		t.Fatalf("expected success when verifying batch A OTP for batch A, got: %v", err)
+	}
+}
+

@@ -37,12 +37,14 @@ type UserRepository interface {
 	LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error
 	TouchLogin(ctx context.Context, id uuid.UUID) error
 	IncrementTokenVersion(ctx context.Context, id uuid.UUID) error
+	SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error
 }
 
 // OTPRepository is the subset of postgres.OTPRepo used by auth.
 type OTPRepository interface {
 	Create(ctx context.Context, req *postgres.OTPRequest) error
 	LatestUnused(ctx context.Context, phone string) (*postgres.OTPRequest, error)
+	LatestUnusedByPurpose(ctx context.Context, phone string, purpose string, batchID *uuid.UUID) (*postgres.OTPRequest, error)
 	IncrementAttempts(ctx context.Context, id uuid.UUID) error
 	MarkUsed(ctx context.Context, id uuid.UUID) error
 	CountRecent(ctx context.Context, phone string, since time.Time) (int, error)

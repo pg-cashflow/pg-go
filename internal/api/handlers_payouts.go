@@ -319,7 +319,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 		} else {
 			last4 = &raw
 		}
-		enc, err := crypto.Encrypt(h.getPayoutEncryptionKey(), []byte(raw))
+		enc, err := crypto.EncryptWithKeyRing(h.getPayoutKeyRing(), []byte(raw))
 		if err != nil {
 			slog.Error("OwnerCreatePayee: failed to encrypt bank account", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to secure bank account"})
@@ -506,7 +506,7 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 		return
 	}
 
-	if err := h.Auth.RequestOTPWithPurpose(c.Request.Context(), phone, "payout_approval"); err != nil {
+	if err := h.Auth.RequestStepUpOTP(c.Request.Context(), phone, "payout_approval", &batchID); err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
 			respondErr(c, clientErr(http.StatusTooManyRequests, "otp rate limit exceeded; please wait before requesting another code"))
 			return
@@ -570,6 +570,8 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		OTP:                body.OTP,
 		ReauthConfirmation: body.ReauthConfirmation,
 		FirebaseIDToken:    body.FirebaseIDToken,
+		Purpose:            "payout_approval",
+		BatchID:            &batchID,
 	})
 	if !ok {
 		return
@@ -756,6 +758,15 @@ func (h *Handlers) getChecksumSecret() string {
 		return h.JWTSecret
 	}
 	return "payout_checksum_secret"
+}
+
+func (h *Handlers) getPayoutKeyRing() *crypto.KeyRing {
+	if h.PayoutKeyRing != nil {
+		return h.PayoutKeyRing
+	}
+	key := h.getPayoutEncryptionKey()
+	kr, _ := crypto.NewKeyRing(crypto.CurrentKeyVersion, key)
+	return kr
 }
 
 func (h *Handlers) getPayoutEncryptionKey() []byte {

@@ -31,9 +31,10 @@ type Service struct {
 	dues      DueRepository
 	tenants   TenantRepository
 	pub       events.Publisher
-	runInTx   txFn
-	now       func() time.Time
-	onProrate func(ctx context.Context, due *domain.Due, original, prorated int64)
+	runInTx       txFn
+	now           func() time.Time
+	onProrate     func(ctx context.Context, due *domain.Due, original, prorated int64)
+	onApplyCredit func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)
 }
 
 func NewService(dues DueRepository, tenants TenantRepository, pub events.Publisher) *Service {
@@ -118,7 +119,7 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 		}
 
 		if lockedTenant.CreditBalancePaise > 0 {
-			if err := applyCreditToDue(ctx, txDues, txTenants, txPub, s.now(), lockedTenant, due); err != nil {
+			if err := applyCreditToDue(ctx, txDues, txTenants, txPub, s.now(), lockedTenant, due, s.onApplyCredit); err != nil {
 				return err
 			}
 			tenant.CreditBalancePaise = lockedTenant.CreditBalancePaise
@@ -238,6 +239,10 @@ func (s *Service) SetProrateHook(fn func(ctx context.Context, due *domain.Due, o
 	s.onProrate = fn
 }
 
+func (s *Service) SetApplyCreditHook(fn func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)) {
+	s.onApplyCredit = fn
+}
+
 func applyCreditToDue(
 	ctx context.Context,
 	dues DueRepository,
@@ -246,6 +251,7 @@ func applyCreditToDue(
 	now time.Time,
 	tenant *domain.Tenant,
 	due *domain.Due,
+	onApplyCredit ...func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time),
 ) error {
 	if tenant.CreditBalancePaise <= 0 || due.Amount <= 0 {
 		return nil
@@ -289,6 +295,10 @@ func applyCreditToDue(
 		return err
 	}
 
+	if len(onApplyCredit) > 0 && onApplyCredit[0] != nil && applied > 0 {
+		onApplyCredit[0](ctx, tenant.PropertyID, due.ID, int64(applied), due.Kind, at)
+	}
+
 	if due.Status == domain.DueStatusPaid {
 		return publishDuePaid(ctx, pub, due, at, "credit")
 	}
@@ -296,7 +306,7 @@ func applyCreditToDue(
 }
 
 func (s *Service) applyCreditToDue(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error {
-	return applyCreditToDue(ctx, s.dues, s.tenants, s.pub, s.now(), tenant, due)
+	return applyCreditToDue(ctx, s.dues, s.tenants, s.pub, s.now(), tenant, due, s.onApplyCredit)
 }
 
 func insertDueWithCodeRetry(ctx context.Context, dues DueRepository, due *domain.Due) error {

@@ -449,6 +449,12 @@ func (r *GamificationRepo) GetStreak(ctx context.Context, tenantID uuid.UUID) (*
 	return &s, err
 }
 
+// LockPropertyPointsBudgetTx acquires a transaction-scoped advisory lock for the property and month.
+func (r *GamificationRepo) LockPropertyPointsBudgetTx(ctx context.Context, tx pgx.Tx, propertyID uuid.UUID, monthYear string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('points-budget:%s:%s', $1::text, $2::text)))`, propertyID, monthYear)
+	return err
+}
+
 // LockTenantTx acquires row lock on tenants inside transaction (Universal Lock Hierarchy step 1)
 func (r *GamificationRepo) LockTenantTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
 	var exists int
@@ -604,6 +610,57 @@ func (r *GamificationRepo) ListRedemptionsByTenant(ctx context.Context, tenantID
 		out = append(out, red)
 	}
 	return out, rows.Err()
+}
+
+func (r *GamificationRepo) ListRedemptionsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.Redemption, error) {
+	query := `
+		SELECT id, tenant_id, property_id, reward_id, points_spent, status, applied_due_id, coupon_code, metadata, created_at, updated_at
+		FROM redemptions
+		WHERE property_id = $1 AND ($2 = '' OR status = $2)
+		ORDER BY created_at DESC`
+	rows, err := r.pool.Query(ctx, query, propertyID, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Redemption
+	for rows.Next() {
+		var red domain.Redemption
+		if err := rows.Scan(&red.ID, &red.TenantID, &red.PropertyID, &red.RewardID, &red.PointsSpent, &red.Status, &red.AppliedDueID, &red.CouponCode, &red.Metadata, &red.CreatedAt, &red.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, red)
+	}
+	return out, rows.Err()
+}
+
+func (r *GamificationRepo) GetRedemptionByID(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) (*domain.Redemption, error) {
+	var red domain.Redemption
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, tenant_id, property_id, reward_id, points_spent, status, applied_due_id, coupon_code, metadata, created_at, updated_at
+		FROM redemptions
+		WHERE property_id = $1 AND id = $2`, propertyID, id,
+	).Scan(&red.ID, &red.TenantID, &red.PropertyID, &red.RewardID, &red.PointsSpent, &red.Status, &red.AppliedDueID, &red.CouponCode, &red.Metadata, &red.CreatedAt, &red.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &red, nil
+}
+
+func (r *GamificationRepo) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) error {
+	cmd, err := r.pool.Exec(ctx, `
+		UPDATE redemptions
+		SET status = 'fulfilled', updated_at = NOW()
+		WHERE property_id = $1 AND id = $2 AND status = 'pending'`,
+		propertyID, id,
+	)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return errors.New("redemption not found or not in pending status")
+	}
+	return nil
 }
 
 // 5. Inspections

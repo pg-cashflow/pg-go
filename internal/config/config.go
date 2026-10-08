@@ -64,6 +64,11 @@ type Config struct {
 	// If unset, falls back to JWTSecret (see handlers_payouts.go:getChecksumSecret).
 	// Set CF_PAYOUT_EXPORT_SECRET to an independent high-entropy value.
 	PayoutExportChecksumSecret string
+	// PayoutEncryptionSecret is dedicated to encrypting sensitive beneficiary bank details.
+	// In production, must be independently set and must not fall back to JWTSecret.
+	PayoutEncryptionSecret string
+	// PayoutEncryptionKeys holds versioned keys for rotation (version -> secret).
+	PayoutEncryptionKeys map[byte]string
 }
 
 func Load() (*Config, error) {
@@ -118,6 +123,10 @@ func Load() (*Config, error) {
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
+		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
+	}
+	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
+		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
@@ -143,8 +152,13 @@ func Load() (*Config, error) {
 	if cfg.MagicLinkHMACSecret == "" {
 		return nil, fmt.Errorf("MAGIC_LINK_HMAC_SECRET is required")
 	}
-	if cfg.AppEnv == "production" && cfg.FirebaseProjectID == "" {
-		return nil, fmt.Errorf("FIREBASE_PROJECT_ID is required in production")
+	if cfg.AppEnv == "production" {
+		if cfg.FirebaseProjectID == "" {
+			return nil, fmt.Errorf("FIREBASE_PROJECT_ID is required in production")
+		}
+		if strings.TrimSpace(cfg.PayoutEncryptionSecret) == "" {
+			return nil, fmt.Errorf("PAYOUT_ENCRYPTION_SECRET is required in production (must not reuse JWT_SECRET)")
+		}
 	}
 	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)
 	if cfAppID == "" {
@@ -158,6 +172,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
 	}
 	return cfg, nil
+}
+
+func parseVersionedKeys(s string) map[byte]string {
+	out := make(map[byte]string)
+	pairs := strings.Split(s, ",")
+	for _, p := range pairs {
+		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
+		if len(parts) == 2 {
+			ver, err := strconv.Atoi(parts[0])
+			if err == nil && ver >= 0 && ver <= 255 {
+				out[byte(ver)] = parts[1]
+			}
+		}
+	}
+	return out
 }
 
 func envBoolDefaultTrue(k string) bool {

@@ -90,9 +90,8 @@ func (s *Service) RequestOTP(ctx context.Context, phone string) error {
 	return s.RequestOTPWithPurpose(ctx, phone, "login")
 }
 
-// RequestOTPWithPurpose generates, stores (hashed), and SMS-sends an OTP tailored to a specific purpose.
-// Max 3 requests per phone per 10 minutes.
-func (s *Service) RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error {
+// RequestStepUpOTP generates, stores, and sends an OTP bound to purpose and optional batchID.
+func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
 	since := time.Now().UTC().Add(-OTPRateWindow)
 	n, err := s.otp.CountRecent(ctx, phone, since)
 	if err != nil {
@@ -113,6 +112,8 @@ func (s *Service) RequestOTPWithPurpose(ctx context.Context, phone, purpose stri
 		Attempts:  0,
 		ExpiresAt: time.Now().UTC().Add(OTPTTL),
 		Used:      false,
+		Purpose:   purpose,
+		BatchID:   batchID,
 	}
 	if err := s.otp.Create(ctx, req); err != nil {
 		return fmt.Errorf("store otp: %w", err)
@@ -132,10 +133,21 @@ func (s *Service) RequestOTPWithPurpose(ctx context.Context, phone, purpose stri
 	return nil
 }
 
+// RequestOTPWithPurpose generates, stores (hashed), and SMS-sends an OTP tailored to a specific purpose.
+// Max 3 requests per phone per 10 minutes.
+func (s *Service) RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error {
+	return s.RequestStepUpOTP(ctx, phone, purpose, nil)
+}
+
 // VerifyStepUpOTP validates an OTP for step-up reauthentication without issuing a new JWT.
 // Marks the OTP as used to prevent replay attacks.
 func (s *Service) VerifyStepUpOTP(ctx context.Context, phone, otp string) error {
-	req, err := s.otp.LatestUnused(ctx, phone)
+	return s.VerifyStepUpOTPSpecific(ctx, phone, otp, "payout_approval", nil)
+}
+
+// VerifyStepUpOTPSpecific validates an OTP bound to purpose and optional batchID.
+func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error {
+	req, err := s.otp.LatestUnusedByPurpose(ctx, phone, purpose, batchID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInvalidOTP
@@ -165,7 +177,7 @@ func (s *Service) VerifyStepUpOTP(ctx context.Context, phone, otp string) error 
 // VerifyOTPAndIssueToken validates the OTP and returns a JWT.
 // On first successful verify, creates a users row if a tenant or property owner exists for the phone.
 func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error) {
-	req, err := s.otp.LatestUnused(ctx, phone)
+	req, err := s.otp.LatestUnusedByPurpose(ctx, phone, "login", nil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", nil, ErrInvalidOTP

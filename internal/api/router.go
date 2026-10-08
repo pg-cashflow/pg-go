@@ -12,6 +12,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/attendance"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
@@ -86,6 +87,7 @@ type Deps struct {
 	PayoutRepo                  *postgres.PayoutRepo
 	PayoutChecksumSecret        string
 	PayoutEncryptionKey         []byte
+	PayoutKeyRing               *crypto.KeyRing
 	CashfreePayoutWebhookSecret string
 	PayoutDispatcher            *finance.PayoutDispatcher
 	LedgerOutboxRepo            *postgres.LedgerOutboxRepo
@@ -145,7 +147,7 @@ func NewRouter(d Deps) *gin.Engine {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language", "X-Request-ID", "X-Correlation-ID"},
+			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language", "X-Request-ID", "X-Correlation-ID", "X-Property-ID"},
 			AllowCredentials: false,
 			MaxAge:           12 * time.Hour,
 		}))
@@ -177,11 +179,11 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/join/invite/:code", h.LookupInvite)
 		api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
 
-		// Per-IP rate limits (ADR-2, M2): 3/min OTP, 10/min Firebase (burst headroom for login retries)
+		// Per-IP rate limits (ADR-2, M2): 3/min OTP request, 10/min OTP verify, 10/min Firebase, 30/min Refresh
 		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
-		api.POST("/auth/otp/verify", h.OTPVerify)
+		api.POST("/auth/otp/verify", ipRateLimit(10.0/60, 20), h.OTPVerify)
 		api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
-		api.POST("/auth/refresh", h.AuthRefresh)
+		api.POST("/auth/refresh", ipRateLimit(30.0/60, 60), h.AuthRefresh)
 		api.POST("/auth/logout", h.AuthLogout)
 		api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
 
@@ -191,9 +193,11 @@ func NewRouter(d Deps) *gin.Engine {
 			pending.POST("", h.JoinProfile)
 		}
 
-		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo))
+		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
 		{
 			owner.GET("/properties", h.ListProperties)
+			owner.POST("/properties", h.CreateProperty)
+			owner.POST("/properties/:id/switch", h.OwnerSwitchProperty)
 			owner.GET("/invite", h.OwnerInvite)
 			owner.POST("/invite/rotate", h.OwnerRotateInvite)
 			owner.GET("/join-requests", h.ListJoinRequests)
@@ -300,6 +304,8 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/rooms", h.OwnerListRooms)
 			owner.POST("/rooms", h.OwnerCreateRoom)
 			owner.POST("/managers", h.OwnerCreateManager)
+			owner.GET("/gamification/redemptions", h.OwnerListRedemptions)
+			owner.POST("/gamification/redemptions/:id/fulfil", h.OwnerFulfilRedemption)
 
 			// KYC owner review endpoints (ADR-004)
 			owner.GET("/tenants/:id/kyc", h.OwnerGetTenantKYC)

@@ -201,6 +201,11 @@ func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) 
 	return err
 }
 
+func (r *UserRepo) SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `UPDATE users SET property_id=$2 WHERE id=$1`, userID, propertyID)
+	return err
+}
+
 // GetByPropertyAndRole returns all users with a given role scoped to a property.
 // Used by the notification resolver to find owner(s) or manager(s) for a property.
 // An empty result (len == 0) is not an error — a property may have no manager yet.

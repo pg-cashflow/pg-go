@@ -238,16 +238,27 @@ func main() {
 			}
 		})
 		billingSvc.SetProrateHook(func(ctx context.Context, due *domain.Due, original, prorated int64) {
-			_ = financeSvc.MirrorProration(ctx, due, original, prorated)
+			if err := financeSvc.MirrorProration(ctx, due, original, prorated); err != nil {
+				logger.Error("LEDGER GAP: MirrorProration failed", "due_id", due.ID, "err", err)
+			}
+		})
+		billingSvc.SetApplyCreditHook(func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time) {
+			if err := financeSvc.MirrorApplyCredit(ctx, propertyID, dueID, amountPaise, dueKind, at); err != nil {
+				logger.Error("LEDGER GAP: MirrorApplyCredit failed", "due_id", dueID, "err", err)
+			}
 		})
 		gamificationSvc.SetFinanceHooks(
 			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64) {
 				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("pts:%d", entry.ID)))
 				amt := int64(entry.Delta) * pointValuePaise
-				_ = financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt)
+				if err := financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt); err != nil {
+					logger.Error("LEDGER GAP: MirrorPointsIssued failed", "tenant_id", tenant.ID, "err", err)
+				}
 			},
 			func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64) {
-				_ = financeSvc.MirrorRewardRedeem(ctx, tenant.PropertyID, tenant.ID, red.ID, red.PointsSpent, amountPaise)
+				if err := financeSvc.MirrorRewardRedeem(ctx, tenant.PropertyID, tenant.ID, red.ID, red.PointsSpent, amountPaise); err != nil {
+					logger.Error("LEDGER GAP: MirrorRewardRedeem failed", "redemption_id", red.ID, "err", err)
+				}
 			},
 		)
 	}
@@ -287,11 +298,18 @@ func main() {
 	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
 	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(maintPool)
 
-	payoutSecret := cfg.PayoutExportChecksumSecret
+	payoutSecret := cfg.PayoutEncryptionSecret
 	if payoutSecret == "" {
-		payoutSecret = cfg.JWTSecret
+		payoutSecret = cfg.PayoutExportChecksumSecret
+		if payoutSecret == "" {
+			payoutSecret = cfg.JWTSecret
+		}
 	}
 	payoutEncryptionKey := crypto.DeriveKey(payoutSecret)
+	payoutKeyRing, _ := crypto.NewKeyRing(crypto.CurrentKeyVersion, payoutEncryptionKey)
+	for ver, sec := range cfg.PayoutEncryptionKeys {
+		_ = payoutKeyRing.AddKey(ver, crypto.DeriveKey(sec))
+	}
 
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
@@ -302,6 +320,7 @@ func main() {
 			Env:          cfg.CashfreePayoutEnv,
 		})
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
+		payoutDispatcher.SetKeyRing(payoutKeyRing)
 		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
 	} else if cfg.CashfreePayoutAutoDispatchEnabled {
 		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
@@ -359,6 +378,7 @@ func main() {
 		PayoutDispatcher:            payoutDispatcher,
 		PayoutChecksumSecret:        cfg.PayoutExportChecksumSecret,
 		PayoutEncryptionKey:         payoutEncryptionKey,
+		PayoutKeyRing:               payoutKeyRing,
 		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
 		AttendanceRepo:              attendanceRepo,
 		AttendanceSvc:               attendanceSvc,

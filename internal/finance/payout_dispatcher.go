@@ -26,6 +26,7 @@ type PayoutDispatcher struct {
 	client        *cashfree.PayoutClient
 	fundsourceID  string
 	encryptionKey []byte
+	keyRing       *crypto.KeyRing
 }
 
 // NewPayoutDispatcher creates a new PayoutDispatcher.
@@ -40,6 +41,11 @@ func NewPayoutDispatcher(repo *postgres.PayoutRepo, client *cashfree.PayoutClien
 		fundsourceID:  fundsourceID,
 		encryptionKey: key,
 	}
+}
+
+// SetKeyRing sets the versioned key ring for decrypting payee account numbers.
+func (d *PayoutDispatcher) SetKeyRing(kr *crypto.KeyRing) {
+	d.keyRing = kr
 }
 
 // DispatchBatch processes an outbox-triggered batch transfer against Cashfree Transfers V2.
@@ -187,7 +193,13 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 		}
 	} else if len(payee.AccountNumberEncrypted) > 0 && payee.IFSC != nil {
 		accountNum := string(payee.AccountNumberEncrypted)
-		if len(d.encryptionKey) == 32 {
+		if d.keyRing != nil {
+			decrypted, _, err := crypto.DecryptWithKeyRing(d.keyRing, payee.AccountNumberEncrypted)
+			if err != nil {
+				return fmt.Errorf("payee %s: decrypt account number failed: %w", payee.ID, err)
+			}
+			accountNum = string(decrypted)
+		} else if len(d.encryptionKey) == 32 {
 			decrypted, _, err := crypto.Decrypt(d.encryptionKey, payee.AccountNumberEncrypted)
 			if err != nil {
 				return fmt.Errorf("payee %s: decrypt account number failed: %w", payee.ID, err)

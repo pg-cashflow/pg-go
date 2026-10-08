@@ -1002,3 +1002,43 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"manager": u})
 }
 
+// OwnerListRedemptions lists coupon and perk redemptions for a property.
+func (h *Handlers) OwnerListRedemptions(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if q := c.Query("property_id"); q != "" {
+		if reqPID, err := uuid.Parse(q); err != nil || reqPID != pid {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+			return
+		}
+	}
+	status := c.Query("status")
+	redemptions, err := h.Gamification.ListRedemptionsByProperty(c.Request.Context(), pid, status)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"redemptions": redemptions})
+}
+
+// OwnerFulfilRedemption marks a pending coupon or perk redemption as fulfilled.
+func (h *Handlers) OwnerFulfilRedemption(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	redemptionID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	red, err := h.Gamification.FulfilRedemption(c.Request.Context(), pid, redemptionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"redemption": red})
+}
+
+

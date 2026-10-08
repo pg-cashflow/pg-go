@@ -543,6 +543,9 @@ func (s *payTestPropertyStore) GetByOwnerPhone(_ context.Context, phone string) 
 func (s *payTestPropertyStore) GetByInviteCode(_ context.Context, code string) (*domain.Property, error) {
 	return nil, nil
 }
+func (s *payTestPropertyStore) Create(_ context.Context, _ *domain.Property) error {
+	return nil
+}
 
 
 func TestTenantSubmitReport_DuplicateImageFlagged(t *testing.T) {

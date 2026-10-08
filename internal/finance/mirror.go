@@ -276,6 +276,36 @@ func (s *Service) MirrorProration(ctx context.Context, due *domain.Due, original
 	return err
 }
 
+func (s *Service) MirrorApplyCredit(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	var revAccount string
+	switch dueKind {
+	case domain.DueKindDeposit:
+		revAccount = domain.AcctDepositLiability
+	case domain.DueKindElectricity, domain.DueKindWater:
+		revAccount = domain.AcctUtilityRecoveryRevenue
+	default:
+		revAccount = domain.AcctRentRevenue
+	}
+	lines, err := MakeLines(propertyID, dueID, "apply_credit", at, []LineSpec{
+		{Account: domain.AcctTenantReceivable, Debit: amountPaise, LineKind: "credit_dr"},
+		{Account: revAccount, Credit: amountPaise, LineKind: "revenue_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 func (s *Service) MirrorRewardRedeem(ctx context.Context, propertyID, tenantID, redemptionID uuid.UUID, points int, amountPaise int64) error {
 	if s == nil || amountPaise <= 0 {
 		return nil

@@ -80,6 +80,9 @@ func (s *Service) RedeemReward(ctx context.Context, tenantID uuid.UUID, rewardID
 		PointsSpent: reward.PointsCost,
 		Status:      "completed",
 	}
+	if reward.Category == "food_coupon" || reward.Category == "perk" {
+		red.Status = "pending"
+	}
 
 	var cashDiscountPaise int64
 	if reward.Category == "cash_credit" {
@@ -233,3 +236,26 @@ func cashCreditValuePaise(metadata json.RawMessage, pointsCost int, pointValuePa
 		return m.DiscountPaise, nil
 	}
 }
+
+// ListRedemptionsByProperty returns redemptions for a property filtered optionally by status.
+func (s *Service) ListRedemptionsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.Redemption, error) {
+	return s.store.ListRedemptionsByProperty(ctx, propertyID, status)
+}
+
+// FulfilRedemption transitions a pending coupon or perk redemption to fulfilled.
+func (s *Service) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, redemptionID uuid.UUID) (*domain.Redemption, error) {
+	red, err := s.store.GetRedemptionByID(ctx, propertyID, redemptionID)
+	if err != nil {
+		return nil, fmt.Errorf("redemption not found: %w", err)
+	}
+	if red.Status != "pending" {
+		return nil, fmt.Errorf("cannot fulfil redemption with status: %s", red.Status)
+	}
+	if err := s.store.FulfilRedemption(ctx, propertyID, redemptionID); err != nil {
+		return nil, err
+	}
+	red.Status = "fulfilled"
+	red.UpdatedAt = s.now().UTC()
+	return red, nil
+}
+

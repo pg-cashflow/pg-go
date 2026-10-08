@@ -20,30 +20,45 @@ type OTPRequest struct {
 	Attempts  int16
 	ExpiresAt time.Time
 	Used      bool
+	Purpose   string
+	BatchID   *uuid.UUID
 	CreatedAt time.Time
 }
 
 func (r *OTPRepo) Create(ctx context.Context, req *OTPRequest) error {
 	req.CreatedAt = time.Now().UTC()
+	if req.Purpose == "" {
+		req.Purpose = "login"
+	}
 	return r.pool.QueryRow(ctx, `
-		INSERT INTO otp_requests (phone, otp_hash, attempts, expires_at, used, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.CreatedAt,
+		INSERT INTO otp_requests (phone, otp_hash, attempts, expires_at, used, purpose, batch_id, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.Purpose, req.BatchID, req.CreatedAt,
 	).Scan(&req.ID)
 }
 
 func (r *OTPRepo) LatestUnused(ctx context.Context, phone string) (*OTPRequest, error) {
+	return r.LatestUnusedByPurpose(ctx, phone, "", nil)
+}
+
+func (r *OTPRepo) LatestUnusedByPurpose(ctx context.Context, phone string, purpose string, batchID *uuid.UUID) (*OTPRequest, error) {
 	var req OTPRequest
+	var batchIDVal *uuid.UUID
+	var purposeVal string
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, phone, otp_hash, attempts, expires_at, used, created_at
+		SELECT id, phone, otp_hash, attempts, expires_at, used, COALESCE(purpose, 'login'), batch_id, created_at
 		FROM otp_requests
 		WHERE phone=$1 AND used=FALSE
-		ORDER BY created_at DESC LIMIT 1`, phone).Scan(
-		&req.ID, &req.Phone, &req.OTPHash, &req.Attempts, &req.ExpiresAt, &req.Used, &req.CreatedAt,
+		  AND ($2 = '' OR purpose=$2)
+		  AND ($3::uuid IS NULL OR batch_id=$3)
+		ORDER BY created_at DESC LIMIT 1`, phone, purpose, batchID).Scan(
+		&req.ID, &req.Phone, &req.OTPHash, &req.Attempts, &req.ExpiresAt, &req.Used, &purposeVal, &batchIDVal, &req.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	req.Purpose = purposeVal
+	req.BatchID = batchIDVal
 	return &req, nil
 }
 

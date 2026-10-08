@@ -28,6 +28,9 @@ func (c *Config) ValidateForRealDeployment() error {
 	if strings.TrimSpace(c.KYCIdentitySecret) != "" {
 		secrets = append(secrets, secretCheck{"KYC_IDENTITY_SECRET", c.KYCIdentitySecret})
 	}
+	if strings.TrimSpace(c.PayoutEncryptionSecret) != "" {
+		secrets = append(secrets, secretCheck{"PAYOUT_ENCRYPTION_SECRET", c.PayoutEncryptionSecret})
+	}
 	for _, s := range secrets {
 		if strings.HasPrefix(s.val, "change-me") {
 			errs = append(errs, fmt.Sprintf("%s must not be a placeholder value (starts with 'change-me')", s.name))

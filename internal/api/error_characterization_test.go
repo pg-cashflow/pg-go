@@ -233,7 +233,15 @@ func (s *stubAuthService) VerifyOTPAndIssueToken(ctx context.Context, phone, otp
 	return s.verifyOTPTkn, s.verifyOTPUsr, s.verifyOTPErr
 }
 
+func (s *stubAuthService) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
+	return s.reqOTPErr
+}
+
 func (s *stubAuthService) VerifyStepUpOTP(ctx context.Context, phone, otp string) error {
+	return s.verifyOTPErr
+}
+
+func (s *stubAuthService) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error {
 	return s.verifyOTPErr
 }
 

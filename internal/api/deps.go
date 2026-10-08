@@ -40,8 +40,10 @@ type KYCService interface {
 type AuthService interface {
 	RequestOTP(ctx context.Context, phone string) error
 	RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error
+	RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error
 	VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error)
 	VerifyStepUpOTP(ctx context.Context, phone, otp string) error
+	VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error
 	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)
 	VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (auth.FirebaseIdentity, error)
 	IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error)
@@ -95,6 +97,7 @@ type PropertyStore interface {
 	List(ctx context.Context) ([]domain.Property, error)
 	GetByOwnerPhone(ctx context.Context, phone string) (*domain.Property, error)
 	GetByInviteCode(ctx context.Context, code string) (*domain.Property, error)
+	Create(ctx context.Context, p *domain.Property) error
 }
 
 // TenantStore reads tenants.
@@ -140,6 +143,7 @@ type UserStore interface {
 	GetByPhone(ctx context.Context, phone string) (*domain.User, error)
 	GetByPropertyAndRole(ctx context.Context, propertyID uuid.UUID, role domain.Role) ([]domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+	SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error
 }
 
 // PreferencesStore manages user preferences.

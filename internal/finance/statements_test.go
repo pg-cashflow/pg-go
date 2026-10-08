@@ -172,3 +172,99 @@ func TestScanAndAlertReconcilingItems(t *testing.T) {
 		t.Fatalf("expected event %s to be published", domain.EvtReconcilingAlert)
 	}
 }
+
+// TestLedger_RedeemApplyCreditPayRest_TrialBalanceZero tests the complete lifecycle:
+// 1. Issue loyalty points to tenant
+// 2. Tenant redeems points for rent credit (credits tenant_receivable, debits reward_liability)
+// 3. Apply credit to rent due (debits tenant_receivable, credits rent_revenue)
+// 4. Tenant pays remaining rent due via bank/cash (debits bank, credits rent_revenue)
+// 5. Assert trial balance is balanced, tenant_receivable is zero, and full revenue is recognized.
+func TestLedger_RedeemApplyCreditPayRest_TrialBalanceZero(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+	svc := NewService(st, nil)
+
+	pid := uuid.New()
+	tid := uuid.New()
+	did := uuid.New()
+	redID := uuid.New()
+	payID := uuid.New()
+	ledgerID := uuid.New()
+	now := time.Now().UTC()
+
+	// 1. Points issued: 50 points worth 5000 paise
+	const creditPaise int64 = 5000
+	const remainingRentPaise int64 = 15000
+	const totalRentPaise int64 = creditPaise + remainingRentPaise // 20000
+
+	if err := svc.MirrorPointsIssued(ctx, pid, tid, ledgerID, 50, creditPaise); err != nil {
+		t.Fatalf("MirrorPointsIssued failed: %v", err)
+	}
+
+	// 2. Redeem reward for rent credit: 50 points spent, 5000 paise credit
+	if err := svc.MirrorRewardRedeem(ctx, pid, tid, redID, 50, creditPaise); err != nil {
+		t.Fatalf("MirrorRewardRedeem failed: %v", err)
+	}
+
+	// 3. Apply credit against rent due
+	if err := svc.MirrorApplyCredit(ctx, pid, did, creditPaise, domain.DueKindRent, now); err != nil {
+		t.Fatalf("MirrorApplyCredit failed: %v", err)
+	}
+
+	// 4. Pay the remaining due amount (15000 paise) via bank (manual match routes to AcctBank)
+	payment := &domain.Payment{
+		ID:        payID,
+		Amount:    remainingRentPaise,
+		MatchedBy: domain.MatchedByManual,
+		MatchedAt: now,
+	}
+	due := &domain.Due{
+		ID:         did,
+		PropertyID: pid,
+		Kind:       domain.DueKindRent,
+	}
+	if err := svc.MirrorPayment(ctx, payment, due); err != nil {
+		t.Fatalf("MirrorPayment failed: %v", err)
+	}
+
+	// 5. Query Trial Balance
+	tb, err := svc.TrialBalance(ctx, pid, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("TrialBalance failed: %v", err)
+	}
+
+	var totalDebit, totalCredit int64
+	tbMap := make(map[string]domain.TrialBalanceLine)
+	for _, row := range tb {
+		totalDebit += row.DebitPaise
+		totalCredit += row.CreditPaise
+		tbMap[row.AccountCode] = row
+	}
+
+	if totalDebit != totalCredit {
+		t.Fatalf("trial balance not balanced: totalDebit=%d totalCredit=%d diff=%d",
+			totalDebit, totalCredit, totalDebit-totalCredit)
+	}
+
+	// Invariant: tenant_receivable balance must be exactly zero
+	receivableRow, ok := tbMap[domain.AcctTenantReceivable]
+	if ok && receivableRow.BalancePaise != 0 {
+		t.Fatalf("expected tenant_receivable balance to be 0, got %d (debit=%d credit=%d)",
+			receivableRow.BalancePaise, receivableRow.DebitPaise, receivableRow.CreditPaise)
+	}
+	if !ok {
+		// If not present in map, then debit == credit == 0 which is also zero balance.
+	} else if receivableRow.DebitPaise != creditPaise || receivableRow.CreditPaise != creditPaise {
+		t.Fatalf("expected tenant_receivable debit=%d and credit=%d, got debit=%d credit=%d",
+			creditPaise, creditPaise, receivableRow.DebitPaise, receivableRow.CreditPaise)
+	}
+
+	// Invariant: full rent revenue must be recognized (20000 paise = credit 5000 + bank 15000)
+	revRow, ok := tbMap[domain.AcctRentRevenue]
+	if !ok {
+		t.Fatalf("expected rent_revenue in trial balance, but not found")
+	}
+	if revRow.CreditPaise != totalRentPaise {
+		t.Fatalf("expected rent_revenue credit to be %d, got %d", totalRentPaise, revRow.CreditPaise)
+	}
+}

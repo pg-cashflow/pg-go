@@ -60,6 +60,33 @@ func (r *PropertyRepo) GetByOwnerEmail(ctx context.Context, email string) (*doma
 		ORDER BY created_at ASC LIMIT 1`, clean))
 }
 
+func (r *PropertyRepo) ListByOwner(ctx context.Context, phone, email string) ([]domain.Property, error) {
+	cleanPhone := strings.TrimSpace(phone)
+	cleanEmail := strings.ToLower(strings.TrimSpace(email))
+	if cleanPhone == "" && cleanEmail == "" {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
+		FROM properties
+		WHERE archived_at IS NULL
+		  AND (($1 != '' AND owner_phone = $1) OR ($2 != '' AND LOWER(owner_email) = $2))
+		ORDER BY created_at`, cleanPhone, cleanEmail)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Property
+	for rows.Next() {
+		p, err := scanProperty(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	return out, rows.Err()
+}
+
 func (r *PropertyRepo) GetByInviteCode(ctx context.Context, code string) (*domain.Property, error) {
 	return scanProperty(r.db.QueryRow(ctx, `
 		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at

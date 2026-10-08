@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -27,6 +28,7 @@ type mockGamificationStore struct {
 	activePoll  *domain.MenuPoll
 	balance     int
 	streak      *domain.TenantStreak
+	redemptions []domain.Redemption
 }
 
 func (m *mockGamificationStore) GetSettings(ctx context.Context, propertyID uuid.UUID) (*domain.PropertyGamificationSettings, error) {
@@ -145,6 +147,38 @@ func (m *mockGamificationStore) ListPointRules(ctx context.Context, propertyID u
 	return []domain.PointRule{
 		{Code: "RENT_ON_TIME", Points: 50, Active: true},
 	}, nil
+}
+
+func (m *mockGamificationStore) ListRedemptionsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.Redemption, error) {
+	var out []domain.Redemption
+	for _, r := range m.redemptions {
+		if r.PropertyID == propertyID && (status == "" || r.Status == status) {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (m *mockGamificationStore) GetRedemptionByID(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) (*domain.Redemption, error) {
+	for _, r := range m.redemptions {
+		if r.PropertyID == propertyID && r.ID == id {
+			return &r, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockGamificationStore) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) error {
+	for i, r := range m.redemptions {
+		if r.PropertyID == propertyID && r.ID == id {
+			if r.Status != "pending" {
+				return errors.New("cannot fulfil non-pending redemption")
+			}
+			m.redemptions[i].Status = "fulfilled"
+			return nil
+		}
+	}
+	return domain.ErrNotFound
 }
 
 // TestAuthorizationMatrix verifies role boundaries:
@@ -459,6 +493,11 @@ func (s *multiTenantRepoStub) GetByPhone(ctx context.Context, phone string) (*do
 	return nil, domain.ErrNotFound
 }
 
+func (s *multiTenantRepoStub) Update(ctx context.Context, t *domain.Tenant) error {
+	s.tenants[t.ID] = t
+	return nil
+}
+
 type multiTenantStoreStub struct {
 	tenants map[uuid.UUID]*domain.Tenant
 }
@@ -495,4 +534,90 @@ func (s *multiTenantStoreStub) GetIDPhoto(ctx context.Context, tenantID uuid.UUI
 func (s *multiTenantStoreStub) CountActiveByRoom(ctx context.Context, roomNumber string) (int, error) {
 	return 0, nil
 }
+
+func TestOwnerRedemptions_ListAndFulfil(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test-secret-key-with-sufficient-length-32"
+
+	propA := uuid.New()
+	propB := uuid.New()
+	tenantA := &domain.Tenant{ID: uuid.New(), PropertyID: propA, Status: domain.TenantStatusActive}
+
+	ownerTokenA, _ := auth.IssueToken(jwtSecret, &domain.User{ID: uuid.New(), Role: domain.RoleOwner, PropertyID: &propA})
+	ownerTokenB, _ := auth.IssueToken(jwtSecret, &domain.User{ID: uuid.New(), Role: domain.RoleOwner, PropertyID: &propB})
+
+	couponCode := "FOOD-TEST1234"
+	redPending := domain.Redemption{
+		ID:          uuid.New(),
+		TenantID:    tenantA.ID,
+		PropertyID:  propA,
+		RewardID:    uuid.New(),
+		PointsSpent: 100,
+		Status:      "pending",
+		CouponCode:  &couponCode,
+		CreatedAt:   time.Now().UTC(),
+	}
+
+	store := &mockGamificationStore{
+		redemptions: []domain.Redemption{redPending},
+	}
+	gamSvc := gamification.NewService(store, &multiTenantRepoStub{tenants: map[uuid.UUID]*domain.Tenant{tenantA.ID: tenantA}}, nil, nil, nil)
+
+	deps := Deps{
+		JWTSecret:         jwtSecret,
+		Gamification:      gamSvc,
+		GamificationStore: store,
+		TenantStore:       &stubTenantStore{t: tenantA},
+		AuthTenantRepo:    &stubTenantRepo{t: tenantA},
+	}
+	router := NewRouter(deps)
+
+	// 1. Owner A lists redemptions -> 200 with 1 pending item
+	req := httptest.NewRequest(http.MethodGet, "/api/owner/gamification/redemptions", nil)
+	req.Header.Set("Authorization", "Bearer "+ownerTokenA)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	var listResp struct {
+		Redemptions []domain.Redemption `json:"redemptions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(listResp.Redemptions) != 1 || listResp.Redemptions[0].ID != redPending.ID {
+		t.Fatalf("expected 1 redemption, got %d", len(listResp.Redemptions))
+	}
+
+	// 2. Owner B tries to fulfil Owner A's redemption -> 400 (not found for propB)
+	reqB := httptest.NewRequest(http.MethodPost, "/api/owner/gamification/redemptions/"+redPending.ID.String()+"/fulfil", nil)
+	reqB.Header.Set("Authorization", "Bearer "+ownerTokenB)
+	wB := httptest.NewRecorder()
+	router.ServeHTTP(wB, reqB)
+	if wB.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for cross-property fulfilment, got %d", wB.Code)
+	}
+
+	// 3. Owner A fulfils pending redemption -> 200 with fulfilled status
+	reqA := httptest.NewRequest(http.MethodPost, "/api/owner/gamification/redemptions/"+redPending.ID.String()+"/fulfil", nil)
+	reqA.Header.Set("Authorization", "Bearer "+ownerTokenA)
+	wA := httptest.NewRecorder()
+	router.ServeHTTP(wA, reqA)
+	if wA.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", wA.Code, wA.Body.String())
+	}
+
+	var fulfilResp struct {
+		Redemption domain.Redemption `json:"redemption"`
+	}
+	if err := json.Unmarshal(wA.Body.Bytes(), &fulfilResp); err != nil {
+		t.Fatalf("failed to decode fulfil response: %v", err)
+	}
+	if fulfilResp.Redemption.Status != "fulfilled" {
+		t.Fatalf("expected status 'fulfilled', got '%s'", fulfilResp.Redemption.Status)
+	}
+}
+
 
