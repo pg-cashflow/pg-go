@@ -33,9 +33,11 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
+	propGuc := ""
 	if hasProp && propID != uuid.Nil {
-		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+		propGuc = propID.String()
 	}
+	batch.Queue("SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", propGuc)
 	batch.Queue(sql, arguments...)
 	batch.Queue("COMMIT")
 
@@ -45,10 +47,8 @@ func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgco
 	if _, err := br.Exec(); err != nil {
 		return pgconn.CommandTag{}, fmt.Errorf("scoped exec begin: %w", err)
 	}
-	if hasProp && propID != uuid.Nil {
-		if _, err := br.Exec(); err != nil {
-			return pgconn.CommandTag{}, fmt.Errorf("scoped exec set_config: %w", err)
-		}
+	if _, err := br.Exec(); err != nil {
+		return pgconn.CommandTag{}, fmt.Errorf("scoped exec set_config: %w", err)
 	}
 	tag, err := br.Exec()
 	if err != nil {
@@ -71,9 +71,11 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
+	propGuc := ""
 	if hasProp && propID != uuid.Nil {
-		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+		propGuc = propID.String()
 	}
+	batch.Queue("SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", propGuc)
 	batch.Queue(sql, args...)
 	batch.Queue("COMMIT")
 
@@ -82,11 +84,9 @@ func (s *ScopedDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 		_ = br.Close()
 		return nil, fmt.Errorf("scoped query begin: %w", err)
 	}
-	if hasProp && propID != uuid.Nil {
-		if _, err := br.Exec(); err != nil {
-			_ = br.Close()
-			return nil, fmt.Errorf("scoped query set_config: %w", err)
-		}
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return nil, fmt.Errorf("scoped query set_config: %w", err)
 	}
 	rows, err := br.Query()
 	if err != nil {
@@ -156,19 +156,20 @@ func (s *ScopedDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Ro
 
 	batch := &pgx.Batch{}
 	batch.Queue("BEGIN")
+	propGuc := ""
 	if hasProp && propID != uuid.Nil {
-		batch.Queue("SELECT set_config('app.current_property_id', $1, true)", propID.String())
+		propGuc = propID.String()
 	}
+	batch.Queue("SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", propGuc)
 	batch.Queue(sql, args...)
 	batch.Queue("COMMIT")
 
 	br := s.pool.SendBatch(ctx, batch)
-	return &batchedScopedRow{br: br, hasProp: hasProp && propID != uuid.Nil}
+	return &batchedScopedRow{br: br}
 }
 
 type batchedScopedRow struct {
-	br      pgx.BatchResults
-	hasProp bool
+	br pgx.BatchResults
 }
 
 func (r *batchedScopedRow) Scan(dest ...any) error {
@@ -176,10 +177,8 @@ func (r *batchedScopedRow) Scan(dest ...any) error {
 	if _, err := r.br.Exec(); err != nil {
 		return fmt.Errorf("scoped query begin: %w", err)
 	}
-	if r.hasProp {
-		if _, err := r.br.Exec(); err != nil {
-			return fmt.Errorf("scoped query set_config: %w", err)
-		}
+	if _, err := r.br.Exec(); err != nil {
+		return fmt.Errorf("scoped query set_config: %w", err)
 	}
 	row := r.br.QueryRow()
 	scanErr := row.Scan(dest...)

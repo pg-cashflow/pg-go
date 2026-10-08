@@ -254,6 +254,13 @@ func (u *memoryUserRepo) TouchLogin(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (u *memoryUserRepo) SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error {
+	if usr, ok := u.users[userID]; ok {
+		usr.PropertyID = &propertyID
+	}
+	return nil
+}
+
 func TestRefreshTokenFamilyRotation(t *testing.T) {
 	ctx := context.Background()
 	refreshRepo := newMemoryRefreshTokenRepo()

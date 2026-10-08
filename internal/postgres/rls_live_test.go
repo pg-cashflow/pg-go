@@ -62,16 +62,16 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		DO $$
 		BEGIN
-			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'test_rls_app_user') THEN
-				CREATE ROLE test_rls_app_user;
-				GRANT USAGE ON SCHEMA public TO test_rls_app_user;
-				GRANT ALL ON ALL TABLES IN SCHEMA public TO test_rls_app_user;
+			IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgapp_app') THEN
+				CREATE ROLE pgapp_app;
+				GRANT USAGE ON SCHEMA public TO pgapp_app;
+				GRANT ALL ON ALL TABLES IN SCHEMA public TO pgapp_app;
 			END IF;
 		END
 		$$;
 	`)
 	if err != nil {
-		t.Fatalf("failed creating test_rls_app_user: %v", err)
+		t.Fatalf("failed creating pgapp_app: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -93,7 +93,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	// Insert tenants under Property A and Property B using ScopedDB
 	err = WithinTx(ctxA, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propA.String()); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -107,7 +110,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 	}
 
 	err = WithinTx(ctxB, pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+		if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propB.String()); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `
@@ -122,7 +128,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	t.Run("Scoped Query Only Sees Scoped Property Rows", func(t *testing.T) {
 		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propA.String()); err != nil {
 				return err
 			}
 			rows, err := tx.Query(ctx, `SELECT id, property_id FROM tenants WHERE property_id IN ($1, $2)`, propA, propB)
@@ -160,7 +169,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	t.Run("Cross-Property Attempt Filtered By RLS Policy", func(t *testing.T) {
 		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propA.String()); err != nil {
 				return err
 			}
 			var count int
@@ -180,7 +192,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	t.Run("Unscoped Connection Fails Closed (Zero Rows)", func(t *testing.T) {
 		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', '', true)"); err != nil {
 				return err
 			}
 			// In an un-scoped tx, current_setting('app.current_property_id', true) is empty.
@@ -201,7 +216,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	t.Run("WithinTx Sets Scope And Cleans Up", func(t *testing.T) {
 		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propA.String()); err != nil {
 				return err
 			}
 			var count int
@@ -223,7 +241,7 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 		err := pool.QueryRow(ctx, `
 			SELECT rolsuper, rolbypassrls
 			FROM pg_roles
-			WHERE rolname = 'test_rls_app_user'
+			WHERE rolname = 'pgapp_app'
 		`).Scan(&isSuper, &bypassRLS)
 		if err != nil {
 			t.Fatalf("failed querying role flags: %v", err)
@@ -238,7 +256,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 
 	t.Run("Cross-Property Insert Filtered/Rejected By RLS Policy", func(t *testing.T) {
 		err := WithinTx(ctxA, pool, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, "SET LOCAL ROLE test_rls_app_user"); err != nil {
+			if _, err := tx.Exec(ctx, "SET LOCAL ROLE pgapp_app"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propA.String()); err != nil {
 				return err
 			}
 			phoneLeaker := "+91" + strconv.FormatInt((time.Now().UnixNano()+9)%10000000000, 10)

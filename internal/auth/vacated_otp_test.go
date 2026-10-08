@@ -144,6 +144,16 @@ func (s *stubUsers) IncrementTokenVersion(_ context.Context, id uuid.UUID) error
 	return pgx.ErrNoRows
 }
 
+func (s *stubUsers) SetPropertyID(_ context.Context, userID, propertyID uuid.UUID) error {
+	for _, u := range s.byPhone {
+		if u.ID == userID {
+			u.PropertyID = &propertyID
+			return nil
+		}
+	}
+	return nil
+}
+
 type stubTenantsAuth struct {
 	byID map[uuid.UUID]*domain.Tenant
 }
