@@ -48,7 +48,7 @@ export default function () {
 
   const params = {
     headers: headers,
-    responseCallback: http.expectedStatuses(200, 401),
+    responseCallback: http.expectedStatuses(200),
   };
 
   // 1. Check API Liveness & Middleware Stack
@@ -62,7 +62,7 @@ export default function () {
   const dashRes = http.get(`${BASE_URL}/api/owner/dashboard/summary`, params);
   dashboardDuration.add(new Date() - dashStart);
   const dashOk = check(dashRes, {
-    'dashboard status 200 or 401': (r) => r.status === 200 || r.status === 401,
+    'dashboard status 200': (r) => r.status === 200,
   });
   if (!dashOk) errorRate.add(1);
 
@@ -71,7 +71,7 @@ export default function () {
   const duesRes = http.get(`${BASE_URL}/api/owner/dues?status=pending`, params);
   duesDuration.add(new Date() - duesStart);
   const duesOk = check(duesRes, {
-    'dues status 200 or 401': (r) => r.status === 200 || r.status === 401,
+    'dues status 200': (r) => r.status === 200,
   });
   if (!duesOk) errorRate.add(1);
 
@@ -81,7 +81,7 @@ export default function () {
   const searchRes = http.get(`${BASE_URL}/api/search?q=${encodeURIComponent(query)}`, params);
   searchDuration.add(new Date() - searchStart);
   const searchOk = check(searchRes, {
-    'search status 200 or 401': (r) => r.status === 200 || r.status === 401,
+    'search status 200': (r) => r.status === 200,
   });
   if (!searchOk) errorRate.add(1);
 

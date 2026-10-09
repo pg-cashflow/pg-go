@@ -213,7 +213,8 @@ func (h *Handlers) ResolveOwnerPropertyScope() gin.HandlerFunc {
 		}
 
 		if h.PropertyStore == nil {
-			c.Next()
+			apierr.RespondClientErr(c, http.StatusForbidden, "property not found or not owned", apierr.CodeAuthForbidden)
+			c.Abort()
 			return
 		}
 		prop, err := h.PropertyStore.GetByID(c.Request.Context(), targetID)

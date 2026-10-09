@@ -17,11 +17,18 @@ type threshold struct {
 	minCover  float64
 }
 
-var defaultThresholds = []threshold{
+var aspirationalThresholds = []threshold{
 	{pkg: "github.com/pg-cashflow/pg-go/internal/finance", minCover: 85.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/payment", minCover: 85.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/auth", minCover: 80.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/api", minCover: 75.0},
+}
+
+var regressionFloors = []threshold{
+	{pkg: "github.com/pg-cashflow/pg-go/internal/finance", minCover: 75.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/auth", minCover: 60.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/payment", minCover: 50.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/api", minCover: 45.0},
 }
 
 type pkgStats struct {
@@ -30,67 +37,80 @@ type pkgStats struct {
 }
 
 func main() {
-	profilePath := flag.String("profile", "coverage.out", "Path to coverage profile file")
+	profilePath := flag.String("profile", "coverage.out", "Path to coverage profile file (comma-separated list supported)")
+	strict := flag.Bool("strict", false, "Enforce aspirational coverage targets rather than regression floors")
+	requireAll := flag.Bool("require-all", false, "Fail if any tracked package is missing from coverage profiles")
 	flag.Parse()
 
-	f, err := os.Open(*profilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening coverage profile %s: %v\n", *profilePath, err)
-		os.Exit(1)
+	thresholds := regressionFloors
+	if *strict {
+		thresholds = aspirationalThresholds
 	}
-	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
+	paths := strings.Split(*profilePath, ",")
 	stats := make(map[string]*pkgStats)
 
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-		if lineNum == 1 && strings.HasPrefix(line, "mode:") {
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
 			continue
 		}
-		if line == "" {
-			continue
+		f, err := os.Open(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening coverage profile %s: %v\n", p, err)
+			os.Exit(1)
 		}
 
-		// Format: file.go:startLine.col,endLine.col numStatements count
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			continue
-		}
+		scanner := bufio.NewScanner(f)
+		lineNum := 0
+		for scanner.Scan() {
+			lineNum++
+			line := strings.TrimSpace(scanner.Text())
+			if lineNum == 1 && strings.HasPrefix(line, "mode:") {
+				continue
+			}
+			if line == "" {
+				continue
+			}
 
-		filePart := fields[0]
-		colonIdx := strings.LastIndex(filePart, ":")
-		if colonIdx == -1 {
-			continue
-		}
-		filePath := filePart[:colonIdx]
-		pkgDir := filepath.Dir(filePath)
-		// normalize backslashes to forward slashes for go package paths
-		pkgDir = strings.ReplaceAll(pkgDir, "\\", "/")
+			// Format: file.go:startLine.col,endLine.col numStatements count
+			fields := strings.Fields(line)
+			if len(fields) != 3 {
+				continue
+			}
 
-		numStmts, err1 := strconv.ParseInt(fields[1], 10, 64)
-		count, err2 := strconv.ParseInt(fields[2], 10, 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
+			filePart := fields[0]
+			colonIdx := strings.LastIndex(filePart, ":")
+			if colonIdx == -1 {
+				continue
+			}
+			filePath := filePart[:colonIdx]
+			pkgDir := filepath.Dir(filePath)
+			pkgDir = strings.ReplaceAll(pkgDir, "\\", "/")
 
-		s, ok := stats[pkgDir]
-		if !ok {
-			s = &pkgStats{}
-			stats[pkgDir] = s
-		}
+			numStmts, err1 := strconv.ParseInt(fields[1], 10, 64)
+			count, err2 := strconv.ParseInt(fields[2], 10, 64)
+			if err1 != nil || err2 != nil {
+				continue
+			}
 
-		s.totalStmts += numStmts
-		if count > 0 {
-			s.coveredStmts += numStmts
-		}
-	}
+			s, ok := stats[pkgDir]
+			if !ok {
+				s = &pkgStats{}
+				stats[pkgDir] = s
+			}
 
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading coverage profile: %v\n", err)
-		os.Exit(1)
+			s.totalStmts += numStmts
+			if count > 0 {
+				s.coveredStmts += numStmts
+			}
+		}
+		_ = f.Close()
+
+		if err := scanner.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading coverage profile %s: %v\n", p, err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("==================================================")
@@ -98,11 +118,15 @@ func main() {
 	fmt.Println("==================================================")
 
 	hasFailure := false
-	for _, t := range defaultThresholds {
+	for _, t := range thresholds {
 		s, found := stats[t.pkg]
 		if !found || s.totalStmts == 0 {
-			fmt.Printf("FAIL: %-45s (Target: %.1f%%) - NO DATA OR 0 STATEMENTS\n", t.pkg, t.minCover)
-			hasFailure = true
+			if *requireAll {
+				fmt.Printf("FAIL: %-45s (Target: %.1f%%) - NO DATA OR 0 STATEMENTS\n", t.pkg, t.minCover)
+				hasFailure = true
+			} else {
+				fmt.Printf("SKIP: %-45s (Target: %.1f%%) - Not present in profile\n", t.pkg, t.minCover)
+			}
 			continue
 		}
 

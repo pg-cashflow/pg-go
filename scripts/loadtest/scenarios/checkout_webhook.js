@@ -38,36 +38,62 @@ export const options = {
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const FAKE_GATEWAY_URL = __ENV.FAKE_GATEWAY_URL || 'http://localhost:8081';
 const TENANT_TOKEN = __ENV.TENANT_TOKEN || '';
+const DUE_ID = __ENV.DUE_ID || '';
 
 export default function () {
   const iterNum = Math.floor(Math.random() * 1000000);
-  const orderId = `order_stress_${Date.now()}_${iterNum}`;
+  let orderId = `order_stress_${Date.now()}_${iterNum}`;
   const paymentAmount = 1500.00; // ₹1,500.00 = 150000 paise
   const cfPaymentId = 30000000 + Math.floor(Math.random() * 89999999);
   const utr = `UTR${Math.floor(10000000 + Math.random() * 90000000)}`;
 
-  // 1. Create Checkout Order via Fake Gateway (or Tenant Checkout Route)
-  const orderPayload = JSON.stringify({
-    order_id: orderId,
-    order_amount: paymentAmount,
-    order_currency: 'INR',
-    customer_details: {
-      customer_id: `cust_${iterNum}`,
-      customer_phone: '9876543210',
-      customer_email: 'test@example.com',
-    },
-    order_note: 'Load test checkout',
-  });
-
+  // 1. Create Checkout Order: either via backend tenant checkout or direct gateway order
   const orderStart = new Date();
-  const orderRes = http.post(`${FAKE_GATEWAY_URL}/pg/orders`, orderPayload, {
-    headers: { 'Content-Type': 'application/json' },
-  });
-  checkoutDuration.add(new Date() - orderStart);
+  if (TENANT_TOKEN && DUE_ID) {
+    const payRes = http.get(`${BASE_URL}/api/tenant/dues/${DUE_ID}/pay`, {
+      headers: {
+        'Authorization': `Bearer ${TENANT_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    checkoutDuration.add(new Date() - orderStart);
+    check(payRes, {
+      'tenant due checkout intent generated': (r) => r.status === 200,
+    });
+    if (payRes.status === 200) {
+      try {
+        const body = JSON.parse(payRes.body);
+        if (body && body.payment_session_id) {
+          // If session id format is session_<order_id>_<cf_id>
+          const parts = body.payment_session_id.split('_');
+          if (parts.length >= 3) {
+            orderId = parts.slice(1, parts.length - 1).join('_');
+          }
+        }
+      } catch (e) {}
+    }
+  } else {
+    const orderPayload = JSON.stringify({
+      order_id: orderId,
+      order_amount: paymentAmount,
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: `cust_${iterNum}`,
+        customer_phone: '9876543210',
+        customer_email: 'test@example.com',
+      },
+      order_note: 'Load test checkout',
+    });
 
-  check(orderRes, {
-    'order created on gateway': (r) => r.status === 200,
-  });
+    const orderRes = http.post(`${FAKE_GATEWAY_URL}/pg/orders`, orderPayload, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    checkoutDuration.add(new Date() - orderStart);
+
+    check(orderRes, {
+      'order created on gateway': (r) => r.status === 200,
+    });
+  }
 
   // 2. Dispatch Payment Success Webhook to Backend via Fake Gateway
   // 30% of requests trigger intentional concurrent duplicate webhooks (stampede testing)

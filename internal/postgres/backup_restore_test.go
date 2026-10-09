@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,8 +65,23 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 
 	// Step 2: Prepare Isolated Restore Database
 	restoreDBName := "pg_go_restore_verify"
-	adminURL := "postgres://postgres:port%401@localhost:5432/postgres?sslmode=disable"
-	restoreDBURL := "postgres://postgres:port%401@localhost:5432/" + restoreDBName + "?sslmode=disable"
+	adminURL := os.Getenv("DATABASE_ADMIN_URL")
+	restoreDBURL := ""
+	if parsed, err := url.Parse(dbURL); err == nil {
+		if adminURL == "" {
+			adminParsed := *parsed
+			adminParsed.Path = "/postgres"
+			adminURL = adminParsed.String()
+		}
+		restoreParsed := *parsed
+		restoreParsed.Path = "/" + restoreDBName
+		restoreDBURL = restoreParsed.String()
+	} else {
+		if adminURL == "" {
+			adminURL = "postgres://postgres@localhost:5432/postgres?sslmode=disable"
+		}
+		restoreDBURL = "postgres://postgres@localhost:5432/" + restoreDBName + "?sslmode=disable"
+	}
 
 	// Recreate restore DB
 	_ = exec.Command(psqlPath, adminURL, "-c", fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';", restoreDBName)).Run()

@@ -38,7 +38,7 @@ export default function () {
 
   const params = {
     headers: headers,
-    responseCallback: http.expectedStatuses(200, 401),
+    responseCallback: http.expectedStatuses(200),
   };
 
   const rand = Math.random();
@@ -65,7 +65,7 @@ export default function () {
   totalOps.add(1);
 
   const isOk = check(res, {
-    'request success (200 or 401)': (r) => r.status === 200 || r.status === 401,
+    'request success (200)': (r) => r.status === 200,
   });
 
   if (!isOk) {

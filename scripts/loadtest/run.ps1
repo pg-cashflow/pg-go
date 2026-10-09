@@ -73,14 +73,29 @@ try {
 Write-Step "2" "Check state at initialization (Ensure baseline ledger is balanced)"
 
 if ($DatabaseUrl) {
-    Write-Host "Running pre-flight SQL invariant check via Go invariant harness..."
+    Write-Host "Recording baseline state and running pre-flight SQL invariant check..."
     try {
-        go run scripts/loadtest/check_invariants.go "$DatabaseUrl"
+        go run scripts/loadtest/check_invariants.go -snapshot="scripts/loadtest/baseline.json" "$DatabaseUrl"
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Pre-flight SQL invariant verification reported failures."
+            Write-Error "Pre-flight SQL invariant verification reported failures! Ledger must be clean before stress test."
+            exit 1
         }
     } catch {
-        Write-Warning "Could not connect to database at ${DatabaseUrl}: $_"
+        Write-Error "Could not connect to database at ${DatabaseUrl}: $_"
+        exit 1
+    }
+
+    Write-Host "Minting load test authentication tokens..."
+    try {
+        $tokenOutput = go run scripts/loadtest/mint_token.go "$DatabaseUrl"
+        $tokens = $tokenOutput | ConvertFrom-Json
+        $OwnerToken = $tokens.owner_token
+        $TenantToken = $tokens.tenant_token
+        $PropertyId = $tokens.property_id
+        $DueId = $tokens.due_id
+        Write-Host "Authentication tokens successfully minted for Property $PropertyId." -ForegroundColor Green
+    } catch {
+        Write-Warning "Could not mint tokens via mint_token.go: $_"
     }
 } else {
     Write-Host "DATABASE_URL not set. Skipping pre-flight direct SQL check." -ForegroundColor Yellow
@@ -92,12 +107,8 @@ if ($DatabaseUrl) {
 Write-Step "3" "Overfit one example (Run minimal single-VU smoke test)"
 
 Write-Host "Executing smoke check with 1 VU for 5s to confirm pipeline passes cleanly..."
-$smokeEnv = @{
-    "BASE_URL" = $BaseUrl
-    "FAKE_GATEWAY_URL" = $FakeGatewayUrl
-}
 
-k6 run --vus 1 --duration 5s scripts/loadtest/scenarios/read_dashboard.js
+k6 run --vus 1 --duration 5s -e BASE_URL="$BaseUrl" -e OWNER_TOKEN="$OwnerToken" -e PROPERTY_ID="$PropertyId" scripts/loadtest/scenarios/read_dashboard.js
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Smoke check failed! Cannot proceed to stress testing."
     exit 1
@@ -132,14 +143,14 @@ Write-Host "Using fixed seed order and deterministic order generators." -Foregro
 Write-Step "6" "Change one thing at a time (Sequential load scenario execution)"
 
 Write-Host "`n--> Stage 6A: Read Dashboard & Search Load (Target: 100 VUs)" -ForegroundColor Magenta
-k6 run -e BASE_URL="$BaseUrl" scripts/loadtest/scenarios/read_dashboard.js
+k6 run -e BASE_URL="$BaseUrl" -e OWNER_TOKEN="$OwnerToken" -e PROPERTY_ID="$PropertyId" scripts/loadtest/scenarios/read_dashboard.js
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Read dashboard load test threshold violated!"
     exit 1
 }
 
 Write-Host "`n--> Stage 6B: Checkout & Webhook Concurrency (Target: 60 RPS Open-Model)" -ForegroundColor Magenta
-k6 run -e BASE_URL="$BaseUrl" -e FAKE_GATEWAY_URL="$FakeGatewayUrl" scripts/loadtest/scenarios/checkout_webhook.js
+k6 run -e BASE_URL="$BaseUrl" -e FAKE_GATEWAY_URL="$FakeGatewayUrl" -e TENANT_TOKEN="$TenantToken" -e DUE_ID="$DueId" scripts/loadtest/scenarios/checkout_webhook.js
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Checkout/Webhook concurrency test threshold violated!"
     exit 1
@@ -147,7 +158,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($IncludeSoak) {
     Write-Host "`n--> Stage 6C: Extended Soak Test (Duration: $SoakDuration)" -ForegroundColor Magenta
-    k6 run -e BASE_URL="$BaseUrl" -e SOAK_DURATION="$SoakDuration" scripts/loadtest/soak_test.js
+    k6 run -e BASE_URL="$BaseUrl" -e SOAK_DURATION="$SoakDuration" -e OWNER_TOKEN="$OwnerToken" -e PROPERTY_ID="$PropertyId" scripts/loadtest/soak_test.js
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Soak test threshold violated!"
         exit 1
@@ -160,13 +171,13 @@ if ($IncludeSoak) {
 Write-Step "Post-Run" "Enforce SQL Invariant Verification Gate"
 
 if ($DatabaseUrl) {
-    Write-Host "Executing post-run invariant assertions in database..."
-    go run scripts/loadtest/check_invariants.go "$DatabaseUrl"
+    Write-Host "Executing post-run invariant assertions and verifying delta ledger growth..."
+    go run scripts/loadtest/check_invariants.go -assert-delta="scripts/loadtest/baseline.json" "$DatabaseUrl"
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "CRITICAL: Post-run SQL invariant test failed! Corrupted ledger or duplicate payments detected."
+        Write-Error "CRITICAL: Post-run SQL invariant test failed! Corrupted ledger, deadlocks, or duplicate payments detected."
         exit 1
     }
-    Write-Host "`n[SUCCESS] Post-run SQL invariants strictly verified: ZERO ledger drift, ZERO duplicates." -ForegroundColor Green
+    Write-Host "`n[SUCCESS] Post-run SQL invariants strictly verified: ZERO ledger drift, ZERO duplicates, ZERO deadlocks." -ForegroundColor Green
 } else {
     Write-Host "DATABASE_URL not set. Invariants file generated at scripts/loadtest/post_run_invariants.sql" -ForegroundColor Yellow
 }

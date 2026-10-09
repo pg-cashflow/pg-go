@@ -62,11 +62,17 @@ log_step "2" "Check state at initialization (Ensure baseline ledger is balanced)
 if [ -n "${DATABASE_URL}" ]; then
   echo "Executing pre-flight SQL invariant assertions..."
   if command -v go >/dev/null 2>&1; then
-    go run scripts/loadtest/check_invariants.go "${DATABASE_URL}"
+    go run scripts/loadtest/check_invariants.go -snapshot="scripts/loadtest/baseline.json" "${DATABASE_URL}"
+    echo "Minting load test authentication tokens..."
+    TOKEN_JSON=$(go run scripts/loadtest/mint_token.go "${DATABASE_URL}" 2>/dev/null || echo "{}")
+    OWNER_TOKEN=$(echo "${TOKEN_JSON}" | grep -o '"owner_token": "[^"]*' | cut -d'"' -f4 || echo "")
+    TENANT_TOKEN=$(echo "${TOKEN_JSON}" | grep -o '"tenant_token": "[^"]*' | cut -d'"' -f4 || echo "")
+    PROPERTY_ID=$(echo "${TOKEN_JSON}" | grep -o '"property_id": "[^"]*' | cut -d'"' -f4 || echo "")
+    DUE_ID=$(echo "${TOKEN_JSON}" | grep -o '"due_id": "[^"]*' | cut -d'"' -f4 || echo "")
   else
     psql "${DATABASE_URL}" -f scripts/loadtest/post_run_invariants.sql
   fi
-  echo "Pre-flight database invariants VERIFIED: Zero drift at baseline."
+  echo "Pre-flight database invariants VERIFIED: Zero drift at baseline recorded."
 else
   echo "DATABASE_URL not set. Skipping direct SQL check."
 fi
@@ -80,6 +86,8 @@ echo "Executing smoke check with 1 VU for 5s..."
 k6 run --vus 1 --duration 5s \
   -e BASE_URL="${BASE_URL}" \
   -e FAKE_GATEWAY_URL="${FAKE_GATEWAY_URL}" \
+  -e OWNER_TOKEN="${OWNER_TOKEN}" \
+  -e PROPERTY_ID="${PROPERTY_ID}" \
   scripts/loadtest/scenarios/read_dashboard.js
 
 echo "Single example overfit PASSED: Minimal path is 100% green."
@@ -105,14 +113,14 @@ echo "Using deterministic order and webhook generators."
 log_step "6" "Change one thing at a time (Sequential load scenario execution)"
 
 echo "--> Stage 6A: Read Dashboard & Search Load (Target: 100 VUs)"
-k6 run -e BASE_URL="${BASE_URL}" scripts/loadtest/scenarios/read_dashboard.js
+k6 run -e BASE_URL="${BASE_URL}" -e OWNER_TOKEN="${OWNER_TOKEN}" -e PROPERTY_ID="${PROPERTY_ID}" scripts/loadtest/scenarios/read_dashboard.js
 
 echo "--> Stage 6B: Checkout & Webhook Concurrency (Target: 60 RPS Open-Model)"
-k6 run -e BASE_URL="${BASE_URL}" -e FAKE_GATEWAY_URL="${FAKE_GATEWAY_URL}" scripts/loadtest/scenarios/checkout_webhook.js
+k6 run -e BASE_URL="${BASE_URL}" -e FAKE_GATEWAY_URL="${FAKE_GATEWAY_URL}" -e TENANT_TOKEN="${TENANT_TOKEN}" -e DUE_ID="${DUE_ID}" scripts/loadtest/scenarios/checkout_webhook.js
 
 if [ "${INCLUDE_SOAK}" = "true" ]; then
   echo "--> Stage 6C: Extended Soak Test (Duration: ${SOAK_DURATION})"
-  k6 run -e BASE_URL="${BASE_URL}" -e SOAK_DURATION="${SOAK_DURATION}" scripts/loadtest/soak_test.js
+  k6 run -e BASE_URL="${BASE_URL}" -e SOAK_DURATION="${SOAK_DURATION}" -e OWNER_TOKEN="${OWNER_TOKEN}" -e PROPERTY_ID="${PROPERTY_ID}" scripts/loadtest/soak_test.js
 fi
 
 # -----------------------------------------------------------------------------
@@ -123,7 +131,7 @@ log_step "Post-Run" "Enforce SQL Invariant Verification Gate"
 if [ -n "${DATABASE_URL}" ]; then
   echo "Executing post-run invariant assertions in database..."
   if command -v go >/dev/null 2>&1; then
-    go run scripts/loadtest/check_invariants.go "${DATABASE_URL}"
+    go run scripts/loadtest/check_invariants.go -assert-delta="scripts/loadtest/baseline.json" "${DATABASE_URL}"
   else
     psql "${DATABASE_URL}" -f scripts/loadtest/post_run_invariants.sql
   fi

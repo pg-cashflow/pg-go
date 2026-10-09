@@ -2,14 +2,14 @@ name: CI Gates
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop, div_dev]
   pull_request:
-    branches: [main]
+    branches: [main, develop, div_dev]
   workflow_dispatch:
 
 jobs:
   test:
-    name: Unit & Integration Tests (Race Detector)
+    name: Unit & Integration Tests (Race Detector & Coverage)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -33,7 +33,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23.2'
+          go-version-file: 'go.mod'
           cache: true
 
       - name: Verify Go Dependencies
@@ -47,7 +47,7 @@ jobs:
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
         run: go run ./cmd/migrate
 
-      - name: Run Tests with Race Detector & Skip Audit
+      - name: Run Tests with Race Detector, Skip Audit & Coverage Gate
         env:
           REQUIRE_DB: "1"
           DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
@@ -58,8 +58,9 @@ jobs:
           PAYOUT_CHECKSUM_SECRET: ci_test_payout_checksum_secret_32_chars!
         run: |
           set -o pipefail
-          go test -race -v ./... -timeout 10m | tee test_output.log
+          go test -race -v -coverprofile=coverage.out ./... -timeout 10m | tee test_output.log
           go run ./scripts/audit_skips.go test_output.log
+          go run ./scripts/check-coverage.go -profile=coverage.out
 
       - name: Run Go Vet
         run: go vet ./...
@@ -76,7 +77,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23.2'
+          go-version-file: 'go.mod'
+
+      - name: No raw err.Error() in HTTP responses (ADR-2 H2)
+        run: |
+          if grep -rn 'gin\.H{"error": err\.Error()}' internal/api; then
+            echo "FAIL: raw err.Error() in HTTP response found — use respondErr() instead"
+            exit 1
+          fi
+          echo "PASS: No raw err.Error() responses in internal/api"
 
       - name: Gitleaks Secret Scanner
         uses: gitleaks/gitleaks-action@v2
@@ -90,5 +99,5 @@ jobs:
 
       - name: Govulncheck
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           govulncheck ./...
