@@ -2,34 +2,17 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 func TestScopedDB_BatchedPipelining(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed")
-	}
-
+	pool, _ := setupLiveTestPool(t, 15*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres: %v", err)
-	}
-	defer pool.Close()
 
 	scoped := NewScopedDB(pool)
 	testPropID := uuid.New()

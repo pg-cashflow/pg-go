@@ -106,14 +106,25 @@ func (r *LedgerOutboxRepo) GetOutboxQueueStats(ctx context.Context) (OutboxQueue
 }
 
 // FetchPendingCandidateIDs returns IDs of pending ledger outbox events eligible for dispatch.
-func (r *LedgerOutboxRepo) FetchPendingCandidateIDs(ctx context.Context, limit int) ([]int64, error) {
-	rows, err := r.db.Query(ctx, `
+// If includePayoutBatches is false, payout_batch_transfer events are excluded so unconfigured workers do not stall.
+func (r *LedgerOutboxRepo) FetchPendingCandidateIDs(ctx context.Context, limit int, includePayoutBatches ...bool) ([]int64, error) {
+	includePayout := true
+	if len(includePayoutBatches) > 0 {
+		includePayout = includePayoutBatches[0]
+	}
+	query := `
 		SELECT id FROM ledger_outbox_events
 		WHERE processed_at IS NULL
 		  AND failed_at IS NULL
-		  AND (next_retry_at IS NULL OR next_retry_at <= now())
+		  AND (next_retry_at IS NULL OR next_retry_at <= now())`
+	if !includePayout {
+		query += ` AND event_type != 'payout_batch_transfer'`
+	}
+	query += `
 		ORDER BY id ASC
-		LIMIT $1`, limit)
+		LIMIT $1`
+
+	rows, err := r.db.Query(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}

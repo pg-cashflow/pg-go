@@ -3,14 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
@@ -20,29 +17,15 @@ import (
 // 3. Verifies that the double-entry financial ledger invariants hold: sum(debit_paise) == sum(credit_paise).
 // 4. Verifies that due payment allocation state is not corrupted by replays.
 func TestLabC_UnknownPaymentOutcomeAndIdempotency(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping Lab C")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping Lab C")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping Lab C", err)
-	}
-	defer pool.Close()
 
 	propID := uuid.New()
 	invite := "LC" + uuid.New().String()[:6]
 
 	// Seed property
-	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+	err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 			VALUES ($1, 'Lab C Property', '900 Financial Plaza', '+919555500010', 'fin@upi', 'Owner Fin', 'fin@test.com', $2)

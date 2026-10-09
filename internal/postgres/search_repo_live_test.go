@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
@@ -24,25 +22,9 @@ import (
 // to ensure RBAC scoping cannot regress if the table is ever queried in future.
 // The production search path (SearchLexical) does NOT use search_documents.
 func TestSearchDocuments_RBACIsolation(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres search RBAC test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres search RBAC test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Ensure 011_search_semantic.sql migration is applied
 	mBytes, err := os.ReadFile(filepath.Join("..", "..", "migrations", "011_search_semantic.sql"))

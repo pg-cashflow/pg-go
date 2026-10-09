@@ -1,3 +1,5 @@
+//go:build perf
+
 package postgres
 
 import (
@@ -14,6 +16,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestWriteBenchmark_FairAB measures the write performance difference between the
@@ -21,17 +24,14 @@ import (
 // under fair A/B conditions: identical 100k data, fresh tables, alternating order, 3 trials.
 func TestWriteBenchmark_FairAB(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping write benchmark in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "skipping write benchmark in short mode")
 	}
 
 	_ = godotenv.Load("../../.env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load(".env")
 
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set")
-	}
+	dbURL := testutil.RequireDB(t)
 	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()
@@ -223,17 +223,14 @@ func TestWriteBenchmark_FairAB(t *testing.T) {
 // before and after Migration 042.
 func TestWriteBenchmark_RealBankCSVImport(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping bank CSV import benchmark in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "skipping bank CSV import benchmark in short mode")
 	}
 
 	_ = godotenv.Load("../../.env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load(".env")
 
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set")
-	}
+	dbURL := testutil.RequireDB(t)
 	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()

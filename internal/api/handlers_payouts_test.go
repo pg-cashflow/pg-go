@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +21,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 type mockTenantStoreForPayouts struct {
@@ -55,17 +55,14 @@ func (m *mockSMSForPayouts) Send(_ context.Context, phone, message string) error
 
 func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping live postgres test in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres test in short mode")
 	}
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
+	testutil.RequireDB(t)
 
 	cfg, err := config.Load()
 	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
+		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -73,7 +70,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
 	defer pool.Close()
 
@@ -744,17 +741,14 @@ func TestCSVExportSanitizationAndFormatting(t *testing.T) {
 
 func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping live postgres test in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres test in short mode")
 	}
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
+	testutil.RequireDB(t)
 
 	cfg, err := config.Load()
 	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
+		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -762,7 +756,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
 	defer pool.Close()
 

@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -11,8 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
@@ -21,29 +18,15 @@ import (
 // 2. Asserts execution time is strictly under the 20ms p95 acceptance target.
 // 3. Verifies connection pool stability and reuse under high concurrency without exhaustion.
 func TestLabB_PoolSaturationAndQueryLatency(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping Lab B")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping Lab B")
-	}
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping Lab B", err)
-	}
-	defer pool.Close()
 
 	propID := uuid.New()
 	invite := "LB" + uuid.New().String()[:6]
 
 	// Seed property
-	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+	err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 			VALUES ($1, 'Lab B Property', '500 Benchmark Ave', '+919666600010', 'bmark@upi', 'Owner Bmark', 'bm@test.com', $2)
@@ -82,11 +65,12 @@ func TestLabB_PoolSaturationAndQueryLatency(t *testing.T) {
 			tenantIDs = append(tenantIDs, tid)
 		}
 
+		runPrefix := uuid.New().String()[:4]
 		baseDate := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 		for tIdx, tid := range tenantIDs {
 			for dIdx := 0; dIdx < duesPerTenant; dIdx++ {
 				dueID := uuid.New()
-				dueCode := fmt.Sprintf("B%03d%s", tIdx*duesPerTenant+dIdx, uuid.New().String()[:3])
+				dueCode := fmt.Sprintf("B%s%03d", runPrefix, tIdx*duesPerTenant+dIdx)
 				dueDate := baseDate.AddDate(0, dIdx, 5)
 				periodStart := dueDate
 				periodEnd := dueDate.AddDate(0, 1, 0)

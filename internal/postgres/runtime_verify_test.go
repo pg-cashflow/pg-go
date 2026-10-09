@@ -3,20 +3,17 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 func TestLivePostgreSQL_SessionTimeouts(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live PostgreSQL timeout test")
-	}
+	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

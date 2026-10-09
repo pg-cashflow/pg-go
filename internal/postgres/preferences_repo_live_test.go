@@ -10,31 +10,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLivePostgresPreferencesAndCheckConstraint(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Read and apply migration 014 directly from migrations/014_user_preferences.sql
 	migrationPath := filepath.Join("..", "..", "migrations", "014_user_preferences.sql")

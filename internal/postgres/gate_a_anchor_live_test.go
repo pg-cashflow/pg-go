@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"testing"
 	"time"
@@ -15,17 +14,16 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestLivePostgresGateA_AnchorBatches verifies C-08, C-09, C-10, C-05, and C-11 on live PostgreSQL.
 func TestLivePostgresGateA_AnchorBatches(t *testing.T) {
 	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
+	testutil.RequireDB(t)
 	cfg, err := config.Load()
 	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
+		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -33,7 +31,7 @@ func TestLivePostgresGateA_AnchorBatches(t *testing.T) {
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
 	defer pool.Close()
 

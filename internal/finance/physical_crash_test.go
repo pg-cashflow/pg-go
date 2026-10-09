@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestPhysicalCrashSafety_LivePostgresExecution proves B-7 and B-15 against a physical PostgreSQL instance:
@@ -21,10 +21,7 @@ import (
 // 4. Worker crashes after journal write and retries: deterministic UUIDs ensure zero duplicate journal entries.
 // 5. Invariant check: sum(debit) == sum(credit) holds.
 func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping physical crash test")
-	}
+	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -223,10 +220,7 @@ func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
 // 4. Worker retry creates zero duplicate lines in PostgreSQL.
 // 5. Net double-entry balance is strictly 0 paise.
 func TestPhysicalCrashSafety_DepartureSettlement_LivePostgres(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping physical crash test")
-	}
+	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

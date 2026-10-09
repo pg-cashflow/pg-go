@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
 )
@@ -19,26 +17,9 @@ import (
 // TestLivePostgresSearchV2_GoldenRelevanceSuite executes the complete ~30-case golden relevance suite
 // against a live PostgreSQL database instance with pg_trgm and bare-column indexes.
 func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-
-	cfg, err := config.Load()
-	if err != nil || cfg.DatabaseURL == "" {
-		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL is unset")
-		}
-		t.Skip("skipping search v2 live test: DATABASE_URL not set")
-	}
-
-	requireDisposableDB(t, cfg.DatabaseURL)
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx := context.Background()
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Fatalf("failed to connect to postgres: %v", err)
-	}
-	defer pool.Close()
+	var err error
 
 	// Ensure extensions
 	if _, err := pool.Exec(ctx, `CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pg_trgm;`); err != nil {
@@ -85,16 +66,13 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		exec(`DELETE FROM gateway_refunds WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM gateway_settlements WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM bank_transactions WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM gateway_refunds WHERE payment_id IN (SELECT id FROM payments WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2)))`, propID, crossPropID)
-		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2)))`, propID, crossPropID)
+		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE property_id IN ($1, $2)) OR due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
 		exec(`DELETE FROM payment_tokens WHERE due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
 		exec(`DELETE FROM payment_intents WHERE due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
 		exec(`DELETE FROM push_subscriptions WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE upi_txn_id LIKE 'UTR%') OR due_id IN (SELECT id FROM dues WHERE due_code LIKE 'DUE-%')`)
-		exec(`DELETE FROM payment_tokens WHERE due_id IN (SELECT id FROM dues WHERE due_code LIKE 'DUE-%')`)
-		exec(`DELETE FROM payment_reports WHERE property_id IN ($1, $2) OR due_id IN (SELECT id FROM dues WHERE due_code LIKE 'DUE-%') OR upi_txn_id LIKE 'UTR%'`, propID, crossPropID)
-		exec(`DELETE FROM payments WHERE upi_txn_id LIKE 'UTR%' OR tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM dues WHERE due_code LIKE 'DUE-%' OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM payment_reports WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM payments WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM dues WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM join_requests WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM inspections WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM hazards WHERE property_id IN ($1, $2)`, propID, crossPropID)
@@ -208,11 +186,11 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	payRahulID := uuid.New()
 	paySureshID := uuid.New()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
+		INSERT INTO payments (id, tenant_id, property_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
 		VALUES
-			($1, $3, 'bank', 500000, 'manual', 'UTR99887766', 'Rent paid for Rahul', NOW()),
-			($2, $4, 'bank', 500000, 'manual', 'UTR11223344', 'Suresh rent payment', NOW())`,
-		payRahulID, paySureshID, rahul201ID, sureshID,
+			($1, $3, $5, 'bank', 500000, 'manual', 'UTR99887766', 'Rent paid for Rahul', NOW()),
+			($2, $4, $5, 'bank', 500000, 'manual', 'UTR11223344', 'Suresh rent payment', NOW())`,
+		payRahulID, paySureshID, rahul201ID, sureshID, propID,
 	)
 	if err != nil {
 		t.Fatalf("seed payments failed: %v", err)
@@ -220,9 +198,9 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	payDigitRefID := uuid.New()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
-		VALUES ($1, $2, 'bank', 500000, 'manual', '412345678901', 'Digit only UPI RRN payment', NOW())`,
-		payDigitRefID, rahul201ID,
+		INSERT INTO payments (id, tenant_id, property_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
+		VALUES ($1, $2, $3, 'bank', 500000, 'manual', '412345678901', 'Digit only UPI RRN payment', NOW())`,
+		payDigitRefID, rahul201ID, propID,
 	)
 	if err != nil {
 		t.Fatalf("seed digit only payment failed: %v", err)

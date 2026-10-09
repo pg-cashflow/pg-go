@@ -47,7 +47,7 @@ jobs:
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
         run: go run ./cmd/migrate
 
-      - name: Run Tests with Race Detector
+      - name: Run Tests with Race Detector & Skip Audit
         env:
           REQUIRE_DB: "1"
           DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
@@ -56,7 +56,10 @@ jobs:
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
           KYC_IDENTITY_SECRET: ci_test_kyc_identity_secret_32_chars!
           PAYOUT_CHECKSUM_SECRET: ci_test_payout_checksum_secret_32_chars!
-        run: go test -race -v ./... -timeout 10m
+        run: |
+          set -o pipefail
+          go test -race -v ./... -timeout 10m | tee test_output.log
+          go run ./scripts/audit_skips.go test_output.log
 
       - name: Run Go Vet
         run: go vet ./...

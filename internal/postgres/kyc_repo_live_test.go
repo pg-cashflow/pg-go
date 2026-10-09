@@ -4,38 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres KYC test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres KYC test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Apply all project migrations using the canonical migration runner (schema_migrations)
 	migrationsDir := filepath.Join("..", "..", "migrations")
@@ -48,7 +29,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	tenantID := uuid.New()
 
 	inviteCode := fmt.Sprintf("K%s", uuid.New().String()[:7])
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
 		VALUES ($1, 'KYC Test Property', 'Test Address', '+919999900000', 'test@upi', 'Test Owner', 'owner@test.com', $2, 'manual_proof')
 		ON CONFLICT (id) DO NOTHING
@@ -313,25 +294,9 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 }
 
 func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres KYC test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres KYC test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 20*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	repo := NewKYCRepo(pool)
 
@@ -342,7 +307,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 			tenantID := uuid.New()
 			inviteCode := fmt.Sprintf("C%s", uuid.New().String()[:7])
 
-			_, err = pool.Exec(ctx, `
+			_, err := pool.Exec(ctx, `
 				INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
 				VALUES ($1, 'Concurrent Property', 'Test Address', '+919999900000', 'test@upi', 'Test Owner', 'owner@test.com', $2, 'manual_proof')
 				ON CONFLICT (id) DO NOTHING
@@ -475,25 +440,9 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 }
 
 func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres KYC test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres KYC test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 20*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	repo := NewKYCRepo(pool)
 
@@ -503,7 +452,7 @@ func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
 			tenantID := uuid.New()
 			inviteCode := fmt.Sprintf("D%s", uuid.New().String()[:7])
 
-			_, err = pool.Exec(ctx, `
+			_, err := pool.Exec(ctx, `
 				INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
 				VALUES ($1, 'Double Complete Property', 'Test Address', '+919999900000', 'test@upi', 'Test Owner', 'owner@test.com', $2, 'manual_proof')
 				ON CONFLICT (id) DO NOTHING
@@ -612,25 +561,9 @@ func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
 }
 
 func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres KYC test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres KYC test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 20*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	repo := NewKYCRepo(pool)
 
@@ -640,7 +573,7 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 			tenantID := uuid.New()
 			inviteCode := fmt.Sprintf("R%s", uuid.New().String()[:7])
 
-			_, err = pool.Exec(ctx, `
+			_, err := pool.Exec(ctx, `
 				INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
 				VALUES ($1, 'Revoke Complete Property', 'Test Address', '+919999900000', 'test@upi', 'Test Owner', 'owner@test.com', $2, 'manual_proof')
 				ON CONFLICT (id) DO NOTHING
@@ -749,25 +682,9 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 }
 
 func TestLivePostgres_ConcurrentMigrate(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 20*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	migrationsDir := filepath.Join("..", "..", "migrations")
 
@@ -799,25 +716,9 @@ func TestLivePostgres_ConcurrentMigrate(t *testing.T) {
 }
 
 func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres KYC in-flight lock test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres KYC in-flight lock test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	migrationsDir := filepath.Join("..", "..", "migrations")
 	if err := Migrate(ctx, pool, migrationsDir); err != nil {
@@ -830,7 +731,7 @@ func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
 	tenantID := uuid.New()
 	inviteCode := fmt.Sprintf("L%s", uuid.New().String()[:7])
 
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
 		VALUES ($1, 'Lock Test Property', 'Test Address', '+919999900001', 'locktest@upi', 'Lock Owner', 'lockowner@test.com', $2, 'manual_proof')
 		ON CONFLICT (id) DO NOTHING

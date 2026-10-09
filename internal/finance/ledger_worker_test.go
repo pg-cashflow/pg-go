@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 type mockMirrorer struct {
@@ -170,14 +170,11 @@ func (m *mockMirrorer) MirrorPaymentCorrection(
 
 func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
+	testutil.RequireDB(t)
 
 	cfg, err := config.Load()
 	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
+		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -185,7 +182,7 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
 	defer pool.Close()
 
@@ -403,3 +400,98 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 		t.Errorf("expected reconciliation to catch unreconciled departure %s", unreconciledDepID)
 	}
 }
+
+func TestLedgerOutboxWorker_PayoutDispatcherUnconfiguredDoesNotDeadLetter(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	testutil.RequireDB(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		testutil.FailOnSkipIfDBRequired(t, "config load failed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres: %v", err)
+	}
+	defer pool.Close()
+
+	propID := uuid.New()
+	inviteCode := fmt.Sprintf("E%s", uuid.New().String()[:7])
+	_, err = pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+		VALUES ($1, 'Payout Unconfigured Test PG', '123 Safe St', '+919999977777', 'payout@upi', 'Safe Owner', 'safe@test.com', $2)`,
+		propID, inviteCode,
+	)
+	if err != nil {
+		t.Fatalf("insert property: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID)
+	}()
+
+	repo := postgres.NewLedgerOutboxRepo(pool)
+	alerter := &mockAlerter{}
+	// Worker initialized WITHOUT PayoutDispatcher
+	worker := NewLedgerOutboxWorker(pool, repo, nil, alerter)
+
+	batchID := uuid.New()
+	payloadBytes, _ := json.Marshal(map[string]any{"batch_id": batchID})
+	evt := &domain.LedgerOutboxEvent{
+		EventType:      "payout_batch_transfer",
+		PropertyID:     propID,
+		SourceID:       batchID,
+		Payload:        payloadBytes,
+		IdempotencyKey: fmt.Sprintf("payout_batch_transfer:%s", batchID),
+		MaxAttempts:    5,
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := repo.InsertLedgerOutboxEventTx(ctx, tx, evt); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("insert event: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	// 1. FetchCandidateIDs without payout dispatcher should NOT fetch payout_batch_transfer
+	ids, err := repo.FetchPendingCandidateIDs(ctx, 100, false)
+	if err != nil {
+		t.Fatalf("fetch candidates: %v", err)
+	}
+	for _, id := range ids {
+		if id == evt.ID {
+			t.Errorf("expected event %d to be excluded when includePayoutBatches is false", evt.ID)
+		}
+	}
+
+	// 2. Direct ProcessSingleEvent on payout_batch_transfer when dispatcher is nil must return nil without burning attempts
+	err = worker.ProcessSingleEvent(ctx, evt.ID)
+	if err != nil {
+		t.Fatalf("expected nil error on unconfigured dispatcher, got: %v", err)
+	}
+
+	var attempts int
+	var failedAt *time.Time
+	err = pool.QueryRow(ctx, `SELECT attempt_count, failed_at FROM ledger_outbox_events WHERE id = $1`, evt.ID).Scan(&attempts, &failedAt)
+	if err != nil {
+		t.Fatalf("query event: %v", err)
+	}
+	if attempts != 0 {
+		t.Errorf("expected 0 attempts burned, got %d", attempts)
+	}
+	if failedAt != nil {
+		t.Errorf("expected failed_at to remain nil, got %v", failedAt)
+	}
+	if len(alerter.calledWith) != 0 {
+		t.Errorf("expected 0 dead letter alerts, got %d", len(alerter.calledWith))
+	}
+}
+

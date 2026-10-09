@@ -9,29 +9,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 )
 
 // TestLivePostgresMigrateDetectsEditedAppliedMigration proves that editing an already-applied
 // migration file makes Migrate fail loudly instead of silently skipping it.
 func TestLivePostgresMigrateDetectsEditedAppliedMigration(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Use a unique version name and a throwaway table so the shared dev database is not polluted.
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
@@ -60,7 +45,7 @@ func TestLivePostgresMigrateDetectsEditedAppliedMigration(t *testing.T) {
 	if err := os.WriteFile(file, []byte("CREATE TABLE "+table+" (id INT, extra INT);"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = Migrate(ctx, pool, dir)
+	err := Migrate(ctx, pool, dir)
 	if err == nil || !strings.Contains(err.Error(), "modified after it was applied") {
 		t.Fatalf("expected checksum drift error, got %v", err)
 	}
@@ -69,21 +54,9 @@ func TestLivePostgresMigrateDetectsEditedAppliedMigration(t *testing.T) {
 // TestLivePostgresRefreshTokenRebackfill036 checks that the 036 statement only moves
 // family_started_at earlier, and is idempotent.
 func TestLivePostgresRefreshTokenRebackfill036(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	body, err := os.ReadFile(filepath.Join("..", "..", "migrations", "036_refresh_tokens_family_started_at_rebackfill.sql"))
 	if err != nil {
@@ -140,21 +113,9 @@ func TestLivePostgresRefreshTokenRebackfill036(t *testing.T) {
 
 // TestLivePostgresPropertyArchive covers the supported alternative to hard-deleting a property.
 func TestLivePostgresPropertyArchive(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	repo := NewPropertyRepo(pool)
 	inviteCode := "ARCH" + strings.ReplaceAll(uuid.NewString(), "-", "")[:6]
@@ -206,22 +167,9 @@ func TestLivePostgresPropertyArchive(t *testing.T) {
 // 2. LF version is accepted without modification error.
 // 3. Semantic content edits are strictly rejected with an invariant violation error.
 func TestLivePostgresMigrate_LineEndingNormalizationAndSemanticTamperRejection(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	table := "mig_probe_norm_" + suffix
@@ -265,7 +213,7 @@ func TestLivePostgresMigrate_LineEndingNormalizationAndSemanticTamperRejection(t
 	if err := os.WriteFile(file, tamperedContent, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = Migrate(ctx, pool, dir)
+	err := Migrate(ctx, pool, dir)
 	if err == nil {
 		t.Fatalf("expected semantic edit to be rejected, but Migrate succeeded")
 	}

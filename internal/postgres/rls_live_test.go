@@ -2,38 +2,21 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // TestLivePostgresFailClosedRLS verifies that Row-Level Security on financial and tenant tables
 // strictly isolates properties, fails closed when un-scoped, and cleans up pool connection state.
 func TestLivePostgresFailClosedRLS(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres RLS test")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres RLS test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	propA := uuid.New()
 	propB := uuid.New()
@@ -42,11 +25,11 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 	invB := "IB" + uuid.New().String()[:6]
 
 	// Seed properties directly under maintenance mode or superuser
-	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+	err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL app.ledger_maintenance = 'on'"); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `
+		_, err := tx.Exec(ctx, `
 			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 			VALUES ($1, 'Property Alpha RLS', '100 Alpha St', '+919999900010', 'alpha@upi', 'Owner Alpha', 'alpha@example.com', $3),
 			       ($2, 'Property Beta RLS', '200 Beta Ave', '+919999900020', 'beta@upi', 'Owner Beta', 'beta@example.com', $4)

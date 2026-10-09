@@ -73,7 +73,7 @@ jobs:
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
         run: go run ./cmd/migrate
 
-      - name: Test pg-go
+      - name: Test pg-go & Skip Audit
         working-directory: pg-go
         env:
           REQUIRE_DB: "1"
@@ -82,7 +82,10 @@ jobs:
           OTP_HMAC_SECRET: ci_test_otp_hmac_secret_32_chars_long!!
           MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
           KYC_IDENTITY_SECRET: ci_test_kyc_identity_secret_32_chars!
-        run: go test -race -v ./... -timeout 5m
+        run: |
+          set -o pipefail
+          go test -race -v ./... -timeout 5m | tee test_output.log
+          go run ./scripts/audit_skips.go test_output.log
 
       - name: Vet pg-go
         working-directory: pg-go

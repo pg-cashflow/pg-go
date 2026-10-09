@@ -9,31 +9,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLivePostgresBalanceRunsImmutabilityAndCascadeBlock(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Ensure migrations 031, 032, and 035 are applied
 	for _, m := range []string{
@@ -53,7 +35,7 @@ func TestLivePostgresBalanceRunsImmutabilityAndCascadeBlock(t *testing.T) {
 
 	propID := uuid.New()
 	inviteCode := "AUD" + propID.String()[:6]
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 		VALUES ($1, $2, '123 Test St', '+919876543210', 'audit@upi', 'Audit Owner', 'audit@test.com', $3)
 		ON CONFLICT (id) DO NOTHING`,

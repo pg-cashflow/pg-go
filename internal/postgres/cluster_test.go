@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 func TestRedactURL(t *testing.T) {
@@ -205,10 +205,7 @@ func TestNewClusterFromEnv_MissingURL(t *testing.T) {
 
 func TestNewClusterFromEnv_LiveDB(t *testing.T) {
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL unset, skipping live cluster test")
-	}
+	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

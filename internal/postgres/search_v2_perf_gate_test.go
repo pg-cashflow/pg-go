@@ -1,3 +1,5 @@
+//go:build perf
+
 package postgres
 
 import (
@@ -18,6 +20,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 func requireDisposableDB(t *testing.T, url string) {
@@ -27,7 +30,7 @@ func requireDisposableDB(t *testing.T, url string) {
 		t.Fatalf("bad DATABASE_URL: %v", err)
 	}
 	if !strings.HasSuffix(cfg.Database, "_perf") && os.Getenv("PERF_GATE_ALLOW_ANY_DB") != "1" {
-		t.Skipf("refusing to seed/delete in database %q; use a *_perf database or set PERF_GATE_ALLOW_ANY_DB=1", cfg.Database)
+		testutil.FailOnSkipfIfDBRequired(t, "refusing to seed/delete in database %q; use a *_perf database or set PERF_GATE_ALLOW_ANY_DB=1", cfg.Database)
 	}
 }
 
@@ -63,16 +66,13 @@ func (h tallyHandler) WithGroup(string) slog.Handler      { return h }
 // 4. Budget test ensuring end-to-end latency stays within the 800ms budget under simulated load.
 func TestPerformanceStressReport(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping realistic performance gate test in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "Skipping realistic performance gate test in short mode")
 	}
 
 	_ = godotenv.Load("../../.env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load(".env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set")
-	}
+	dbURL := testutil.RequireDB(t)
 	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()
@@ -239,11 +239,12 @@ func TestPerformanceStressReport(t *testing.T) {
 	t.Log("Seeding realistic mix: 300,000 payments...")
 	t0 = time.Now()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, due_id, tenant_id, upi_txn_id, amount, provider, matched_by, created_at)
+		INSERT INTO payments (id, due_id, tenant_id, property_id, upi_txn_id, amount, provider, matched_by, created_at)
 		SELECT
 			gen_random_uuid(),
 			d.id,
 			d.tenant_id,
+			d.property_id,
 			'UPI-' || $2 || '-' || d.due_code,
 			500000,
 			'manual',
@@ -553,16 +554,13 @@ func TestPerformanceStressReport(t *testing.T) {
 // This test represents the decisive ship/no-ship production gate.
 func TestPerformanceGateStrictTarget(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping strict production performance gate test in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "Skipping strict production performance gate test in short mode")
 	}
 
 	_ = godotenv.Load("../../.env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load(".env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set")
-	}
+	dbURL := testutil.RequireDB(t)
 	requireDisposableDB(t, dbURL)
 
 	cfg, err := config.Load()
@@ -682,9 +680,10 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 	// Seed noise payments (~100k rows across noise properties to exercise global GINs)
 	t.Log("Seeding 100 payments per noise property (~100k rows) to exercise global GINs...")
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, tenant_id, upi_txn_id, amount, provider, matched_by, raw_note, created_at)
+		INSERT INTO payments (id, tenant_id, property_id, upi_txn_id, amount, provider, matched_by, raw_note, created_at)
 		SELECT gen_random_uuid(),
 		       t.id,
+		       p.id,
 		       'UPI-N-' || p.rn || '-' || i,
 		       500000,
 		       'manual',
@@ -763,11 +762,12 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 	t.Log("Seeding target property with 5,000 payments...")
 	t0 = time.Now()
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payments (id, due_id, tenant_id, upi_txn_id, amount, provider, matched_by, created_at)
+		INSERT INTO payments (id, due_id, tenant_id, property_id, upi_txn_id, amount, provider, matched_by, created_at)
 		SELECT
 			gen_random_uuid(),
 			d.id,
 			d.tenant_id,
+			d.property_id,
 			'UPI-' || $2 || '-' || d.due_code,
 			500000,
 			'manual',
@@ -826,10 +826,10 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 	digitOnlyUPIRef := "987654321099"
 	_, err = pool.Exec(ctx, `
 		WITH any_due AS (
-			SELECT id, tenant_id FROM dues WHERE property_id = $1::uuid LIMIT 1
+			SELECT id, tenant_id, property_id FROM dues WHERE property_id = $1::uuid LIMIT 1
 		)
-		INSERT INTO payments (id, due_id, tenant_id, upi_txn_id, amount, provider, matched_by, created_at)
-		SELECT gen_random_uuid(), id, tenant_id, $2, 500000, 'manual', 'manual', NOW() FROM any_due`,
+		INSERT INTO payments (id, due_id, tenant_id, property_id, upi_txn_id, amount, provider, matched_by, created_at)
+		SELECT gen_random_uuid(), id, tenant_id, property_id, $2, 500000, 'manual', 'manual', NOW() FROM any_due`,
 		targetPropID, digitOnlyUPIRef,
 	)
 	if err != nil {

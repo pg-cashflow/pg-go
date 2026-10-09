@@ -106,7 +106,8 @@ func (w *LedgerOutboxWorker) ProcessBatch(ctx context.Context, limit int) (int, 
 	if limit <= 0 {
 		limit = 50
 	}
-	ids, err := w.repo.FetchPendingCandidateIDs(ctx, limit)
+	includePayout := w.payoutDispatcher != nil
+	ids, err := w.repo.FetchPendingCandidateIDs(ctx, limit, includePayout)
 	if err != nil {
 		return 0, fmt.Errorf("fetch pending candidate ids: %w", err)
 	}
@@ -139,6 +140,12 @@ func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) e
 	}
 	if evt == nil {
 		return nil // Already processed or locked by another worker
+	}
+
+	if evt.EventType == "payout_batch_transfer" && w.payoutDispatcher == nil {
+		// Worker is not configured with a payout dispatcher (e.g. dev/staging or worker separation).
+		// Safely rollback without burning retry attempts or triggering dead-letter alert emails.
+		return nil
 	}
 
 	dispatchErr := w.dispatch(ctx, evt)

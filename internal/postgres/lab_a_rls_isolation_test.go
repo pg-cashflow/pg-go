@@ -2,14 +2,11 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
@@ -18,29 +15,15 @@ import (
 // un-scoped queries fail closed, cross-property reads and writes are blocked,
 // and the ordinary application role cannot bypass RLS by manipulating session settings.
 func TestLabA_RLSIsolationFailure(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	if os.Getenv("DATABASE_URL") == "" {
-		t.Skip("DATABASE_URL not set, skipping Lab A")
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping Lab A")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping Lab A", err)
-	}
-	defer pool.Close()
 
 	propA := uuid.New()
 	propB := uuid.New()
 
 	// Seed properties as superuser/maintenance
-	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+	err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
 			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 			VALUES ($1, 'Lab A Prop Alpha', '1 Alpha Way', '+919888800010', 'alpha@upi', 'Owner A', 'a@test.com', $3),

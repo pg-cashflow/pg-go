@@ -11,31 +11,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLivePostgresRefreshTokenSessionCeiling(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Apply migrations 030, 033, 034
 	for _, m := range []string{
@@ -57,7 +39,7 @@ func TestLivePostgresRefreshTokenSessionCeiling(t *testing.T) {
 	userID := uuid.New()
 	familyID := uuid.New()
 
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO users (id, phone, role)
 		VALUES ($1, $2, 'tenant')
 		ON CONFLICT (id) DO NOTHING`,
@@ -151,31 +133,15 @@ func TestLivePostgresRefreshTokenSessionCeiling(t *testing.T) {
 }
 
 func TestLivePostgresConcurrentRotation(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	repo := NewRefreshTokenRepo(pool)
 	userID := uuid.New()
 	familyID := uuid.New()
 
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO users (id, phone, role)
 		VALUES ($1, $2, 'tenant')
 		ON CONFLICT (id) DO NOTHING`,

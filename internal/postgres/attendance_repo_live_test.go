@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,18 +11,16 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 func TestLiveAttendanceRepo(t *testing.T) {
 	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
+	testutil.RequireDB(t)
 
 	cfg, err := config.Load()
 	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
+		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -31,7 +28,7 @@ func TestLiveAttendanceRepo(t *testing.T) {
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
+		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
 	defer pool.Close()
 

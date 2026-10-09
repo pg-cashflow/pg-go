@@ -11,31 +11,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLivePostgresMigration020AndRepository(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// 1. Verify / Apply migrations 020, 021, and 022
 	for _, mFile := range []string{
@@ -400,25 +382,14 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 }
 
 func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// 1. Create test property, tenant, due
 	propID := uuid.New()
 	inviteCode := fmt.Sprintf("P%s", uuid.New().String()[:7])
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 		VALUES ($1, 'Intent Prop', 'Addr', '+919999988888', 'intent@upi', 'Owner', 'intent@test.com', $2)`, propID, inviteCode)
 	if err != nil {

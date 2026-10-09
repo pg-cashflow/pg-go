@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestPhysicalBackupAndRestoreVerification executes:
@@ -17,19 +18,25 @@ import (
 // Records: backup duration, size, restore duration, RPO, RTO.
 func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skipping physical backup/restore test in short mode")
+		testutil.FailOnSkipIfDBRequired(t, "skipping physical backup/restore test in short mode")
 	}
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping physical backup/restore test")
+	dbURL := testutil.RequireDB(t)
+
+	findTool := func(name, winPath string) string {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+		if _, err := os.Stat(winPath); err == nil {
+			return winPath
+		}
+		return ""
 	}
+	pgDumpPath := findTool("pg_dump", `C:\Program Files\PostgreSQL\17\bin\pg_dump.exe`)
+	pgRestorePath := findTool("pg_restore", `C:\Program Files\PostgreSQL\17\bin\pg_restore.exe`)
+	psqlPath := findTool("psql", `C:\Program Files\PostgreSQL\17\bin\psql.exe`)
 
-	pgDumpPath := `C:\Program Files\PostgreSQL\17\bin\pg_dump.exe`
-	pgRestorePath := `C:\Program Files\PostgreSQL\17\bin\pg_restore.exe`
-	psqlPath := `C:\Program Files\PostgreSQL\17\bin\psql.exe`
-
-	if _, err := os.Stat(pgDumpPath); err != nil {
-		t.Skipf("pg_dump not found at %s, skipping", pgDumpPath)
+	if pgDumpPath == "" || pgRestorePath == "" || psqlPath == "" {
+		testutil.FailOnSkipfIfDBRequired(t, "postgres backup/restore CLI tools (pg_dump, pg_restore, psql) not found, skipping")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)

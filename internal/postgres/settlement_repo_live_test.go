@@ -10,37 +10,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL not set")
-		}
-		t.Skip("DATABASE_URL not set, skipping live Postgres test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but config load failed: %v", err)
-		}
-		t.Skip("config load failed, skipping live Postgres test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping live test", err)
-	}
-	defer pool.Close()
 
 	// Ensure migration 026 is applied
 	m26Path := filepath.Join("..", "..", "migrations", "026_gateway_settlements_and_recon.sql")

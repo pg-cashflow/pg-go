@@ -2,37 +2,18 @@ package postgres
 
 import (
 	"context"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestPropertySettings_GetAndUpsert(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("DATABASE_URL not set, skipping live property settings test")
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Skip("config load failed, skipping test")
-	}
-
+	pool, _ := setupLiveTestPool(t, 10*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
-	if err != nil {
-		t.Skipf("cannot connect to Postgres (%v), skipping test", err)
-	}
-	defer pool.Close()
 
 	repo := NewPropertyRepo(pool)
 
@@ -40,7 +21,7 @@ func TestPropertySettings_GetAndUpsert(t *testing.T) {
 	propID := uuid.New()
 	ownerPhone := "9998887766"
 	inviteCode := "SETT" + propID.String()[:4]
-	_, err = pool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO properties (id, name, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
 		VALUES ($1, 'Settings Test PG', $2, 'settings@upi', 'Settings Owner', 'settings@example.com', $3)
 		ON CONFLICT (id) DO NOTHING`, propID, ownerPhone, inviteCode)

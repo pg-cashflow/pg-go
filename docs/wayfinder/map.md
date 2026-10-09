@@ -41,7 +41,57 @@
 
 ## Frontier (Open Tickets)
 
-*(All 16 Wayfinder tracks resolved and verified)*
+> **Active Specification**: [Test Readiness Specification & Verification Gates](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/TEST_READINESS_SPECIFICATION.md)  
+> **Methodology**: ASD-STE100 (Simplified Technical English) & Karpathy Test Discipline
+
+### Tier 1: Pull Request Frontier (Blocking Gates)
+1. [Track R.1 (Ticket 17): Gate 01 — Test Skip Audit & Zero Silent Skip Enforcement](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r01_gate01_skip_audit.md) `[Closed]`
+   - *Dependencies*: None.
+   - *Target*: Eliminate silent `t.Skip` when `REQUIRE_DB=1`.
+2. [Track R.2 (Ticket 18): Gate 02 — Package Coverage Floors & Coverprofile Gating](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r02_gate02_coverage_gate.md) `[Open]`
+   - *Dependencies*: Gate 01.
+   - *Target*: Enforce statement coverage floors (`finance` 85%, `payment` 85%, `auth` 80%, `api` 75%).
+3. [Track R.3 (Ticket 19): Gate 03 — API Contract & Router Response Schema Validation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r03_gate03_api_contract_tests.md) `[Open]`
+   - *Dependencies*: Gate 01.
+   - *Target*: Verify every route in `NewRouter` against `CONTRACT.md` Rev 13 and `error-codes.json`.
+4. [Track R.4 (Ticket 20): Gate 04 — End-to-End Money Lifecycle & Double-Entry Conservation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r04_gate04_e2e_money_flow.md) `[Open]`
+   - *Dependencies*: Gate 01, Gate 03.
+   - *Target*: Full HTTP + Postgres join-due-checkout-webhook-ledger-refund flow with 0-paise drift.
+5. [Track R.5 (Ticket 21): Gate 05 — Gateway Webhook Replay, Out-of-Order & Concurrency](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r05_gate05_webhook_replay_ordering.md) `[Open]`
+   - *Dependencies*: Gate 04.
+   - *Target*: Concurrent duplicate webhook stampede under `go test -race` with 0 double-credits.
+6. [Track R.6 (Ticket 22): Gate 06 — Multi-Role Authorization & Cross-Property IDOR Matrix](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r06_gate06_authz_matrix.md) `[Open]`
+   - *Dependencies*: Gate 03.
+   - *Target*: Exhaustive Route × Role × Property IDOR matrix (401, 403, 404 assertions).
+7. [Track R.7 (Ticket 23): Gate 07 — Schema Migration Freshness, Upgrades & Lock Safety](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r07_gate07_migration_tests.md) `[Open]`
+   - *Dependencies*: None.
+   - *Target*: Fresh 001–044 apply, re-run idempotency, and lock safety linting.
+
+### Tier 2: Nightly & Extended Frontier
+8. [Track R.8 (Ticket 24): Gate 08 — Process Crash, Network Fault & Poison Recovery](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r08_gate08_crash_recovery.md) `[Open]`
+   - *Dependencies*: Gate 04.
+   - *Target*: Sudden client abort, Toxiproxy network partitions, and outbox worker restart.
+9. [Track R.9 (Ticket 25): Gate 09 — k6 Open-Model Load, Soak & Post-Run SQL Invariant Gate](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r09_gate09_k6_load_and_soak.md) `[Resolved]`
+   - *Dependencies*: Gate 04, Gate 05.
+   - *Resolved By*: Fake gateway server, k6 read/checkout/soak scenarios, post-run SQL invariants.
+   - *Target*: k6 50–100 RPS open model, fake gateway stub, 60m soak, post-run SQL 0-drift audit.
+10. [Track R.10 (Ticket 26): Gate 10 — Native Go Fuzzing for Parser Boundaries](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r10_gate10_native_fuzzing.md) `[Open]`
+    - *Dependencies*: None.
+    - *Target*: `testing.F` for Cashfree webhooks, bank statement CSV, Aadhaar QR, and phone normalizer.
+11. [Track R.12 (Ticket 28): Gate 12 — Background Job CLI Flags, Signal Handling & Exit Codes](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r12_gate12_job_binaries_tests.md) `[Open]`
+    - *Dependencies*: None.
+    - *Target*: POSIX exit codes, `--help`, and graceful SIGTERM handling across all 11 `cmd/` entrypoints.
+12. [Track R.13 (Ticket 29): Gate 13 — Calendar Month-End Clamping, Leap Year & Timezone Invariants](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r13_gate13_time_calendar_tests.md) `[Open]`
+    - *Dependencies*: None.
+    - *Target*: Feb 28/29 day clamping, leap year rollover, and IST midnight boundary partition.
+13. [Track R.14 (Ticket 30): Gate 14 — Privacy, DPDP PII Masking & Log Leak Guards](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r14_gate14_privacy_pii_tests.md) `[Open]`
+    - *Dependencies*: None.
+    - *Target*: In-memory log buffer regex scan for 12-digit Aadhaar and unmasked PII.
+
+### Tier 3: Weekly & Pre-Release Frontier
+14. [Track R.11 (Ticket 27): Gate 11 — Scheduled Cashfree Gateway Sandbox Smoke Harness](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r11_gate11_sandbox_gateway_smoke.md) `[Open]`
+    - *Dependencies*: None.
+    - *Target*: Automated weekly scheduled run of `cmd/sandbox-smoke` isolated from PR gates.
 
 
 ## Out of scope
