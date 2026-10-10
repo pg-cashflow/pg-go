@@ -14,7 +14,7 @@ import (
 
 var (
 	ErrInvalidToken   = errors.New("auth: invalid or not found refresh token")
-	ErrReplayDetected = errors.New("auth: refresh token replay attack detected - session family revoked")
+	ErrReplayDetected = domain.ErrReplayDetected
 )
 
 // RefreshTokenRepository manages persistence for refresh token family rotation.

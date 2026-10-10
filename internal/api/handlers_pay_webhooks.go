@@ -326,6 +326,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				if err := txDueRepo.Update(ctx, targetDue); err != nil {
 					return err
 				}
+				if targetDue.Status == domain.DueStatusPaid {
+					if _, err := tx.Exec(ctx, `UPDATE payment_tokens SET used=TRUE WHERE due_id=$1 AND used=FALSE`, targetDue.ID); err != nil {
+						return err
+					}
+				}
 				if credit > 0 {
 					if _, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, credit); err != nil {
 						return err

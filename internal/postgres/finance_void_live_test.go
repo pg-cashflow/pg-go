@@ -14,14 +14,16 @@ import (
 )
 
 func TestLivePostgres_VoidExpenseAtomic_ConcurrentRace(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 60*time.Second)
-	if pool == nil {
+	pool, cfg := setupLiveTestPool(t, 60*time.Second)
+	if pool == nil || cfg == nil {
 		return
 	}
 	ctx := context.Background()
 
 	// Ensure migrations applied
-	_ = Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("migrate failed: %v", err)
+	}
 
 	propID := uuid.New()
 	ownerID := uuid.New()
@@ -46,10 +48,13 @@ func TestLivePostgres_VoidExpenseAtomic_ConcurrentRace(t *testing.T) {
 	}
 
 	defer func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM financial_journal_entries WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM expenses WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID)
+		// Stop deleting ledger rows: financial_journal_entries is append-only by migrations 043/044/057.
+		if _, err := pool.Exec(ctx, `DELETE FROM expenses WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup expenses failed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM users WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup users failed: %v", err)
+		}
 	}()
 
 	repo := NewFinanceRepo(pool)
@@ -210,13 +215,15 @@ func TestLivePostgres_VoidExpenseAtomic_ConcurrentRace(t *testing.T) {
 }
 
 func TestLivePostgres_VoidVsDecideApproval_ConcurrentRace(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 60*time.Second)
-	if pool == nil {
+	pool, cfg := setupLiveTestPool(t, 60*time.Second)
+	if pool == nil || cfg == nil {
 		return
 	}
 	ctx := context.Background()
 
-	_ = Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("migrate failed: %v", err)
+	}
 
 	propID := uuid.New()
 	ownerID := uuid.New()
@@ -242,10 +249,21 @@ func TestLivePostgres_VoidVsDecideApproval_ConcurrentRace(t *testing.T) {
 	}
 
 	defer func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM approval_requests WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM expenses WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE property_id = $1`, propID)
-		_, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID)
+		if _, err := pool.Exec(ctx, `DELETE FROM approval_requests WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup approval_requests failed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM expenses WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup expenses failed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM approval_policies WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup approval_policies failed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM users WHERE property_id = $1`, propID); err != nil {
+			t.Errorf("cleanup users failed: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID); err != nil {
+			t.Errorf("cleanup properties failed: %v", err)
+		}
 	}()
 
 	repo := NewFinanceRepo(pool)

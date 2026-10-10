@@ -35,11 +35,11 @@ type PaymentToken struct {
 
 // RefreshToken represents a persisted refresh token with family tracking.
 type RefreshToken struct {
-	ID        uuid.UUID `json:"id"`
-	UserID    uuid.UUID `json:"user_id"`
-	FamilyID  uuid.UUID `json:"family_id"`
-	TokenHash string    `json:"-"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID              uuid.UUID  `json:"id"`
+	UserID          uuid.UUID  `json:"user_id"`
+	FamilyID        uuid.UUID  `json:"family_id"`
+	TokenHash       string     `json:"-"`
+	ExpiresAt       time.Time  `json:"expires_at"`
 	Revoked         bool       `json:"revoked"`
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 	FamilyStartedAt time.Time  `json:"family_started_at"`

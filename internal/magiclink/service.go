@@ -98,6 +98,9 @@ func (s *Service) ResolveToken(ctx context.Context, raw string) (*DueView, error
 	if err != nil {
 		return nil, fmt.Errorf("magiclink: due: %w", err)
 	}
+	if due.Status == domain.DueStatusPaid {
+		return nil, ErrTokenUsed
+	}
 	prop, err := s.properties.GetByID(ctx, due.PropertyID)
 	if err != nil {
 		return nil, fmt.Errorf("magiclink: property: %w", err)
