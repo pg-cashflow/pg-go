@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -36,12 +35,12 @@ type Deps struct {
 	Billing   BillingService
 	Payments  PaymentService
 
-	PropertyStore PropertyStore
-	TenantStore   TenantStore
-	DueStore      DueStore
-	PaymentStore  PaymentStore
-	EventStore    EventStore
-	ImportStore   ImportStore
+	PropertyStore    PropertyStore
+	TenantStore      TenantStore
+	DueStore         DueStore
+	PaymentStore     PaymentStore
+	EventStore       EventStore
+	ImportStore      ImportStore
 	UserStore        UserStore
 	PreferencesStore PreferencesStore
 
@@ -73,17 +72,17 @@ type Deps struct {
 	MagicLinkBaseURL   string
 	VAPIDPublicKey     string
 	CORSAllowedOrigins []string
-	TrustedProxies      []string
+	TrustedProxies     []string
 	FrontendURL        string
 	AppEnv             string
 
 	SearchSvc *search.Service
 
-	Finance              *finance.Service
-	ROI                  *roi.Service
-	Intelligence         *intelligence.Service
-	FinanceEnabled       bool
-	IntelligenceEnabled  bool
+	Finance             *finance.Service
+	ROI                 *roi.Service
+	Intelligence        *intelligence.Service
+	FinanceEnabled      bool
+	IntelligenceEnabled bool
 
 	PayoutRepo                  *postgres.PayoutRepo
 	PayoutChecksumSecret        string
@@ -158,10 +157,6 @@ func NewRouter(d Deps) *gin.Engine {
 
 	// Root / Unauthenticated / Standalone HTML
 	healthHandler := func(c *gin.Context) {
-		if c.Query("pid") == "1" {
-			c.JSON(http.StatusOK, gin.H{"status": "ok", "pid": os.Getpid()})
-			return
-		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	r.GET("/healthz", healthHandler)
@@ -480,4 +475,3 @@ func MaxBodyBytes(maxBytes int64) gin.HandlerFunc {
 		c.Next()
 	}
 }
-

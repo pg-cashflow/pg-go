@@ -114,7 +114,13 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 		t.Fatalf("insert test property: %v", err)
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id = $1`, propID)
+		ctxClean := context.Background()
+		_, _ = pool.Exec(ctxClean, `DELETE FROM ledger_outbox_events WHERE property_id = $1`, propID)
+		_, _ = pool.Exec(ctxClean, `DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE property_id = $1)`, propID)
+		_, _ = pool.Exec(ctxClean, `DELETE FROM payments WHERE property_id = $1`, propID)
+		_, _ = pool.Exec(ctxClean, `DELETE FROM dues WHERE property_id = $1`, propID)
+		_, _ = pool.Exec(ctxClean, `DELETE FROM tenants WHERE property_id = $1`, propID)
+		_, _ = pool.Exec(ctxClean, `DELETE FROM properties WHERE id = $1`, propID)
 	}()
 
 	tenantPhone := fmt.Sprintf("+9199%08d", time.Now().UnixNano()%100000000)
@@ -323,6 +329,7 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 	multiPayment := &domain.Payment{
 		ID:                uuid.New(),
 		DueID:             uuid.Nil, // multi-due payment has NULL due_id
+		SkipOutboxEnqueue: true,     // allocations are created below; this test is about lookup, not the ledger mirror
 		TenantID:          tenantID,
 		Amount:            1100000,
 		MatchedBy:         domain.MatchedByCashfree,
@@ -504,4 +511,3 @@ func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
 		t.Fatalf("expected reuse of intent %s, got isReused=%v, inFlight=%v, id=%s", winnerIntent.ID, isReused, isInFlight, reusedIntent.ID)
 	}
 }
-

@@ -82,6 +82,13 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 				return fmt.Errorf("cannot create payment: missing or unresolvable property_id")
 			}
 		}
+		// A payment with no due and not marked unapplied has no allocation yet, so its
+		// eager ledger mirror would carry a debit with no credit and can never post
+		// (outbox "journal lines do not balance"). Such callers must set
+		// SkipOutboxEnqueue and enqueue the mirror after allocating.
+		if p.DueID == uuid.Nil && !p.IsUnapplied && !p.SkipOutboxEnqueue && p.Amount > 0 {
+			return fmt.Errorf("payment %s has no due_id and is not unapplied: set SkipOutboxEnqueue and enqueue the mirror after allocating", p.ID)
+		}
 		err := repo.db.QueryRow(ctx, `
 			INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
