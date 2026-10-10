@@ -37,9 +37,11 @@ func (h *Handlers) verifyDualControlOrStepUp(
 	createdBy *uuid.UUID,
 	authInput StepUpAuthInput,
 ) (string, bool) {
-	// Allow lightweight unit test harnesses where auth services are not wired
+	// Fail-closed: if auth services are unconfigured, reject request unconditionally.
 	if h.UserStore == nil && h.Auth == nil {
-		return "test_bypass", true
+		slog.Error("step up verification failed: auth services unconfigured", "property_id", pid)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "step up verification unconfigured"})
+		return "", false
 	}
 
 	var activeOwners []domain.User

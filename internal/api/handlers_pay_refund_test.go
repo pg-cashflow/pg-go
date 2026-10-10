@@ -292,6 +292,14 @@ func (s *mockRefundTenantStore) Update(context.Context, *domain.Tenant) error { 
 func (s *mockRefundTenantStore) GetIDPhoto(context.Context, uuid.UUID) ([]byte, error) { return nil, nil }
 
 func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
+	if h.UserStore == nil {
+		h.UserStore = &mockDualControlUserStore{
+			owners: []domain.User{
+				{ID: userID, PropertyID: &propID, Role: domain.RoleOwner},
+				{ID: uuid.New(), PropertyID: &propID, Role: domain.RoleOwner},
+			},
+		}
+	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/api/owner/payments/:id/refund", func(c *gin.Context) {

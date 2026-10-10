@@ -5,9 +5,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+)
+
+var (
+	ErrOTPAlreadyUsed       = errors.New("otp: already used")
+	ErrTokenAlreadyUsed     = errors.New("token: already used")
+	ErrRefreshTokenNotFound = errors.New("refresh token not found")
+	ErrReplayDetected       = errors.New("refresh token replay detected")
+	ErrRefreshTokenExpired  = errors.New("refresh token expired")
 )
 
 const (

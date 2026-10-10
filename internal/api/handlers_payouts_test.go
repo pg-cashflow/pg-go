@@ -44,6 +44,15 @@ func (m *mockTenantStoreForPayouts) GetIDPhoto(_ context.Context, _ uuid.UUID) (
 	return nil, nil
 }
 
+type mockDualControlUserStore struct {
+	UserStore
+	owners []domain.User
+}
+
+func (m *mockDualControlUserStore) GetByPropertyAndRole(_ context.Context, _ uuid.UUID, _ domain.Role) ([]domain.User, error) {
+	return m.owners, nil
+}
+
 type mockSMSForPayouts struct {
 	sent []string
 }
@@ -839,19 +848,32 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID) }()
 
 	// Create Batch via HTTP
+	checkerOwnerID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (id, phone, role, property_id)
+		VALUES ($1, '+919999988882', 'owner', $2)`, checkerOwnerID, propID)
+	if err != nil {
+		t.Fatalf("insert checker owner: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, checkerOwnerID) }()
+
+	currentUserID := ownerID
 	h := &Handlers{
 		Deps: Deps{
 			Pool:                 pool,
 			PayoutRepo:           payoutRepo,
 			PayoutDispatcher:     dispatcher,
 			PayoutChecksumSecret: "test_secret",
+			UserStore: &mockDualControlUserStore{
+				owners: []domain.User{{ID: ownerID}, {ID: checkerOwnerID}},
+			},
 		},
 	}
 
 	router := gin.New()
 	ownerGroup := router.Group("/owner", func(c *gin.Context) {
 		c.Set(auth.ContextClaimsKey, &auth.Claims{
-			UserID:     ownerID,
+			UserID:     currentUserID,
 			PropertyID: &propID,
 			Role:       domain.RoleOwner,
 		})
@@ -882,6 +904,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, batchID) }()
 
 	// Approve batch with affirmative match
+	currentUserID = checkerOwnerID
 	approveBody := map[string]interface{}{
 		"expected_item_count":  1,
 		"expected_total_paise": 500000,
@@ -937,6 +960,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	}
 	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID2) }()
 
+	currentUserID = ownerID
 	w = httptest.NewRecorder()
 	createReq2, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes":"Auto test 2"}`))
 	createReq2.Header.Set("Content-Type", "application/json")
@@ -951,6 +975,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	batchID2 := createResp2.Batch.ID
 	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, batchID2) }()
 
+	currentUserID = checkerOwnerID
 	approveBody2 := map[string]interface{}{
 		"expected_item_count":  1,
 		"expected_total_paise": 300000,

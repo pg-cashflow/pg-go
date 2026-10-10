@@ -168,6 +168,9 @@ func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpo
 	}
 
 	if err := s.otp.MarkUsed(ctx, req.ID); err != nil {
+		if errors.Is(err, domain.ErrOTPAlreadyUsed) {
+			return ErrInvalidOTP
+		}
 		return fmt.Errorf("mark otp used: %w", err)
 	}
 
@@ -198,6 +201,9 @@ func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string)
 	}
 
 	if err := s.otp.MarkUsed(ctx, req.ID); err != nil {
+		if errors.Is(err, domain.ErrOTPAlreadyUsed) {
+			return "", nil, ErrInvalidOTP
+		}
 		return "", nil, fmt.Errorf("mark otp used: %w", err)
 	}
 
@@ -522,13 +528,13 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 
 	rotatedRT, err := s.refreshRepo.RotateTokenTx(ctx, oldHash, newRT)
 	if err != nil {
-		if errors.Is(err, postgres.ErrRefreshTokenNotFound) {
+		if errors.Is(err, domain.ErrRefreshTokenNotFound) {
 			return "", "", nil, ErrInvalidToken
 		}
-		if errors.Is(err, postgres.ErrReplayDetected) {
+		if errors.Is(err, domain.ErrReplayDetected) {
 			return "", "", nil, ErrReplayDetected
 		}
-		if errors.Is(err, postgres.ErrRefreshTokenExpired) {
+		if errors.Is(err, domain.ErrRefreshTokenExpired) {
 			return "", "", nil, ErrRefreshTokenExpired
 		}
 		return "", "", nil, fmt.Errorf("rotate refresh token: %w", err)

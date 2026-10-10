@@ -76,6 +76,12 @@ func TestOwnerFinancialStatementsAndReopenEndpoints(t *testing.T) {
 		Finance:        finSvc,
 		FinanceEnabled: true,
 		Payments:       &dummyPaymentSummaryBuilder{},
+		UserStore: &mockDualControlUserStore{
+			owners: []domain.User{
+				{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner},
+				{ID: uuid.New(), PropertyID: &propID, Role: domain.RoleOwner},
+			},
+		},
 	}
 	router := NewRouter(deps)
 

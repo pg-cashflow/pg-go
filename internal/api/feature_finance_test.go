@@ -396,3 +396,135 @@ func TestFeatureTieOut_CloseAndReopenAreOwnerOnly(t *testing.T) {
 		t.Fatalf("owner closing zero-difference tie-out: status %d, want 200 closed with difference 0 (body %s)", code, resp)
 	}
 }
+
+func TestFeatureExpense_ManagerVoidSelfAndForbiddenOther(t *testing.T) {
+	f := newFinanceFixture(t)
+
+	// Manager A creates an expense under threshold
+	code, resp := f.call(http.MethodPost, "/api/manager/finance/expenses", f.managerA, map[string]any{
+		"category_code": "maintenance",
+		"amount_paise":  10000,
+		"vendor_name":   "Hardware Store",
+	}, idemHeader("mgr-exp-1"))
+	if code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("manager create expense failed: status %d (body %s)", code, resp)
+	}
+
+	var created struct {
+		Expense domain.Expense `json:"expense"`
+	}
+	mustJSON(t, resp, &created)
+	expID := created.Expense.ID
+
+	// Manager A voids their own expense via /api/manager/finance/expenses/:id/void
+	mgrVoidPath := "/api/manager/finance/expenses/" + expID.String() + "/void"
+	code, resp = f.call(http.MethodPost, mgrVoidPath, f.managerA, map[string]any{
+		"reason": "cancelled work order",
+	}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("manager void own expense: status %d code %q (body %s)", code, errCode(resp), resp)
+	}
+
+	// Manager A attempts to void Owner's expense -> 403 Forbidden
+	ownerExpID := f.seedExpense(f.propA, 25000)
+	ownerVoidPath := "/api/manager/finance/expenses/" + ownerExpID.String() + "/void"
+	code, resp = f.call(http.MethodPost, ownerVoidPath, f.managerA, map[string]any{
+		"reason": "unauthorized attempt",
+	}, nil)
+	if code != http.StatusForbidden || errCode(resp) != "finance.forbidden" {
+		t.Fatalf("manager void owner expense: status %d code %q, want 403 finance.forbidden (body %s)",
+			code, errCode(resp), resp)
+	}
+}
+
+func TestFeatureExpense_ManagerVoidPendingExpenseCancelsApproval(t *testing.T) {
+	f := newFinanceFixture(t)
+
+	// Manager A creates expense above single limit without emergency -> pending approval
+	code, resp := f.call(http.MethodPost, "/api/manager/finance/expenses", f.managerA, map[string]any{
+		"category_code": "vendor",
+		"amount_paise":  600000,
+		"vendor_name":   "Big Equipment",
+	}, idemHeader("mgr-pending-void-1"))
+	if code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("create pending expense failed: status %d (body %s)", code, resp)
+	}
+
+	var created struct {
+		Expense domain.Expense `json:"expense"`
+	}
+	mustJSON(t, resp, &created)
+	if created.Expense.Status != domain.ExpensePendingApproval {
+		t.Fatalf("expected pending_approval status, got %s", created.Expense.Status)
+	}
+
+	// Manager voids their own pending expense
+	voidPath := "/api/manager/finance/expenses/" + created.Expense.ID.String() + "/void"
+	code, resp = f.call(http.MethodPost, voidPath, f.managerA, map[string]any{
+		"reason": "no longer needed",
+	}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("manager void pending expense failed: status %d code %q (body %s)", code, errCode(resp), resp)
+	}
+
+	// Verify expense status is cancelled in store
+	exp, err := f.store.GetExpense(context.Background(), created.Expense.ID)
+	if err != nil || exp.Status != domain.ExpenseCancelled {
+		t.Fatalf("expected cancelled expense status, got %v, err %v", exp, err)
+	}
+
+	// Verify pending approvals for this expense are cancelled (no pending approvals remaining)
+	apprs, err := f.store.ListApprovals(context.Background(), f.propA, "pending")
+	if err != nil {
+		t.Fatalf("list pending approvals: %v", err)
+	}
+	for _, a := range apprs {
+		if a.SubjectID == created.Expense.ID {
+			t.Fatalf("expected approval for voided expense to be cancelled, found pending approval: %v", a)
+		}
+	}
+}
+
+func TestFeatureExpense_ManagerVoidAboveOwnerThresholdRequiresOwner(t *testing.T) {
+	f := newFinanceFixture(t)
+
+	// Manager A creates an emergency expense above owner approval threshold (600,000 > 500,000)
+	code, resp := f.call(http.MethodPost, "/api/manager/finance/expenses", f.managerA, map[string]any{
+		"category_code": "vendor",
+		"amount_paise":  600000,
+		"emergency":     true,
+		"vendor_name":   "Emergency Generator Repair",
+	}, idemHeader("mgr-emerg-void-1"))
+	if code != http.StatusCreated && code != http.StatusOK {
+		t.Fatalf("create emergency expense failed: status %d (body %s)", code, resp)
+	}
+
+	var created struct {
+		Expense domain.Expense `json:"expense"`
+	}
+	mustJSON(t, resp, &created)
+	if created.Expense.Status != domain.ExpenseApproved {
+		t.Fatalf("expected approved emergency expense, got %s", created.Expense.Status)
+	}
+
+	// Manager attempts to void approved expense above threshold -> ErrApprovalRequired (400)
+	mgrVoidPath := "/api/manager/finance/expenses/" + created.Expense.ID.String() + "/void"
+	code, resp = f.call(http.MethodPost, mgrVoidPath, f.managerA, map[string]any{
+		"reason": "repair cancelled",
+	}, nil)
+	if code != http.StatusBadRequest || errCode(resp) != "finance.approvalRequired" {
+		t.Fatalf("expected 400 finance.approvalRequired, got status %d code %q (body %s)",
+			code, errCode(resp), resp)
+	}
+
+	// Owner CAN void it
+	ownerVoidPath := "/api/owner/finance/expenses/" + created.Expense.ID.String() + "/void"
+	code, resp = f.call(http.MethodPost, ownerVoidPath, f.ownerA, map[string]any{
+		"reason": "owner approved cancellation",
+	}, nil)
+	if code != http.StatusOK {
+		t.Fatalf("owner void failed: status %d code %q (body %s)", code, errCode(resp), resp)
+	}
+}
+
+

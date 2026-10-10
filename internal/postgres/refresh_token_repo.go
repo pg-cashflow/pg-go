@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	ErrRefreshTokenNotFound = errors.New("refresh token not found")
-	ErrReplayDetected       = errors.New("refresh token replay detected")
-	ErrRefreshTokenExpired  = errors.New("refresh token expired")
+	ErrRefreshTokenNotFound = domain.ErrRefreshTokenNotFound
+	ErrReplayDetected       = domain.ErrReplayDetected
+	ErrRefreshTokenExpired  = domain.ErrRefreshTokenExpired
 )
 
 type RefreshTokenRepo struct {

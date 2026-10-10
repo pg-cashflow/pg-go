@@ -291,25 +291,44 @@ func ParseSettlementWebhook(raw []byte) (*SettlementWebhookRecord, error) {
 		return nil, fmt.Errorf("missing settlement_id in webhook payload")
 	}
 
+	if s.PaymentAmount == nil {
+		return nil, fmt.Errorf("missing gross payment amount")
+	}
 	gross, err := coercePaise(s.PaymentAmount)
 	if err != nil {
 		return nil, fmt.Errorf("invalid gross payment amount: %w", err)
+	}
+
+	if s.AmountSettled == nil {
+		return nil, fmt.Errorf("missing net settled amount")
 	}
 	net, err := coercePaise(s.AmountSettled)
 	if err != nil {
 		return nil, fmt.Errorf("invalid net settled amount: %w", err)
 	}
-	fee, err := coercePaise(s.ServiceCharge)
-	if err != nil {
-		return nil, fmt.Errorf("invalid service charge: %w", err)
+
+	var fee int64
+	if s.ServiceCharge != nil {
+		fee, err = coercePaise(s.ServiceCharge)
+		if err != nil {
+			return nil, fmt.Errorf("invalid service charge: %w", err)
+		}
 	}
-	tax, err := coercePaise(s.ServiceTax)
-	if err != nil {
-		return nil, fmt.Errorf("invalid service tax: %w", err)
+
+	var tax int64
+	if s.ServiceTax != nil {
+		tax, err = coercePaise(s.ServiceTax)
+		if err != nil {
+			return nil, fmt.Errorf("invalid service tax: %w", err)
+		}
 	}
-	adj, err := coercePaise(s.Adjustment)
-	if err != nil {
-		return nil, fmt.Errorf("invalid adjustment: %w", err)
+
+	var adj int64
+	if s.Adjustment != nil {
+		adj, err = coercePaise(s.Adjustment)
+		if err != nil {
+			return nil, fmt.Errorf("invalid adjustment: %w", err)
+		}
 	}
 
 	rec := &SettlementWebhookRecord{
@@ -376,13 +395,13 @@ func getAmountPaise(m map[string]any, k string) (int64, error) {
 
 func coercePaise(val any) (int64, error) {
 	if val == nil {
-		return 0, nil
+		return 0, fmt.Errorf("nil amount")
 	}
 	switch v := val.(type) {
 	case string:
 		s := strings.TrimSpace(v)
 		if s == "" {
-			return 0, nil
+			return 0, fmt.Errorf("empty amount string")
 		}
 		p, err := ParseRupeesToPaise(s)
 		if err == nil {

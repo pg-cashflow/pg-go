@@ -2,20 +2,26 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 type mockOTPRepo struct {
+	mu       sync.Mutex
 	requests []*postgres.OTPRequest
 }
 
 func (m *mockOTPRepo) Create(_ context.Context, req *postgres.OTPRequest) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	req.ID = uuid.New()
 	m.requests = append(m.requests, req)
 	return nil
@@ -26,6 +32,8 @@ func (m *mockOTPRepo) LatestUnused(_ context.Context, phone string) (*postgres.O
 }
 
 func (m *mockOTPRepo) LatestUnusedByPurpose(_ context.Context, phone string, purpose string, batchID *uuid.UUID) (*postgres.OTPRequest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for i := len(m.requests) - 1; i >= 0; i-- {
 		r := m.requests[i]
 		if r.Phone == phone && !r.Used {
@@ -44,6 +52,8 @@ func (m *mockOTPRepo) LatestUnusedByPurpose(_ context.Context, phone string, pur
 }
 
 func (m *mockOTPRepo) IncrementAttempts(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, r := range m.requests {
 		if r.ID == id {
 			r.Attempts++
@@ -54,16 +64,23 @@ func (m *mockOTPRepo) IncrementAttempts(_ context.Context, id uuid.UUID) error {
 }
 
 func (m *mockOTPRepo) MarkUsed(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, r := range m.requests {
 		if r.ID == id {
+			if r.Used {
+				return domain.ErrOTPAlreadyUsed
+			}
 			r.Used = true
 			return nil
 		}
 	}
-	return nil
+	return domain.ErrOTPAlreadyUsed
 }
 
 func (m *mockOTPRepo) CountRecent(_ context.Context, phone string, since time.Time) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	count := 0
 	for _, r := range m.requests {
 		if r.Phone == phone && r.ExpiresAt.After(since) {
@@ -278,6 +295,86 @@ func TestVerifyStepUpOTP_PurposeAndBatchBinding(t *testing.T) {
 	// OTP for batch A MUST succeed for batch A
 	if err := svc.VerifyStepUpOTPSpecific(ctx, phone, batchACode, "payout_approval", &batchA); err != nil {
 		t.Fatalf("expected success when verifying batch A OTP for batch A, got: %v", err)
+	}
+}
+
+type raceMockOTPRepo struct {
+	mockOTPRepo
+	readBarrier sync.WaitGroup
+	startMark   chan struct{}
+}
+
+func (r *raceMockOTPRepo) LatestUnusedByPurpose(ctx context.Context, phone string, purpose string, batchID *uuid.UUID) (*postgres.OTPRequest, error) {
+	req, err := r.mockOTPRepo.LatestUnusedByPurpose(ctx, phone, purpose, batchID)
+	if err != nil {
+		return nil, err
+	}
+	copied := *req
+	r.readBarrier.Done()
+	<-r.startMark
+	return &copied, nil
+}
+
+func TestVerifyStepUpOTP_ConcurrentRaceExactlyOneWins(t *testing.T) {
+	ctx := context.Background()
+	smsGateway := &mockSMSGateway{}
+	const concurrency = 10
+
+	otpRepo := &raceMockOTPRepo{
+		startMark: make(chan struct{}),
+	}
+	otpRepo.readBarrier.Add(concurrency)
+
+	svc := NewService(otpRepo, nil, nil, nil, smsGateway, "otp-secret", "jwt-secret")
+
+	phone := "+919876543210"
+	batchID := uuid.New()
+
+	if err := svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchID); err != nil {
+		t.Fatalf("request step up OTP: %v", err)
+	}
+	lastMsg := smsGateway.sentMessages[len(smsGateway.sentMessages)-1]
+	code := strings.TrimSuffix(strings.Split(lastMsg, " ")[5], ".")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successCount := 0
+	invalidCount := 0
+	otherErrors := 0
+
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			err := svc.VerifyStepUpOTPSpecific(ctx, phone, code, "payout_approval", &batchID)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				successCount++
+			case errors.Is(err, ErrInvalidOTP):
+				invalidCount++
+			default:
+				otherErrors++
+			}
+		}()
+	}
+
+	// Wait until all workers have read the unconsumed OTP (reproducing TOCTOU condition)
+	otpRepo.readBarrier.Wait()
+	// Release all workers simultaneously to race on MarkUsed
+	close(otpRepo.startMark)
+
+	wg.Wait()
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 successful OTP verification, got %d", successCount)
+	}
+	if invalidCount != concurrency-1 {
+		t.Errorf("expected %d invalid OTP errors, got %d", concurrency-1, invalidCount)
+	}
+	if otherErrors != 0 {
+		t.Errorf("expected 0 other errors, got %d", otherErrors)
 	}
 }
 

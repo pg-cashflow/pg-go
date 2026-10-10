@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 type memoryRefreshTokenRepo struct {
@@ -36,11 +35,11 @@ func (m *memoryRefreshTokenRepo) StoreRefreshToken(ctx context.Context, rt *doma
 func (m *memoryRefreshTokenRepo) GetRefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rt, ok := m.tokens[hash]
+	oldRT, ok := m.tokens[hash]
 	if !ok {
-		return nil, postgres.ErrRefreshTokenNotFound
+		return nil, domain.ErrRefreshTokenNotFound
 	}
-	return rt, nil
+	return oldRT, nil
 }
 
 func (m *memoryRefreshTokenRepo) RevokeRefreshToken(ctx context.Context, id uuid.UUID) error {
@@ -90,7 +89,7 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 
 	oldRT, ok := m.tokens[oldHash]
 	if !ok {
-		return nil, postgres.ErrRefreshTokenNotFound
+		return nil, domain.ErrRefreshTokenNotFound
 	}
 
 	familyStarted := oldRT.FamilyStartedAt
@@ -130,16 +129,16 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 				}
 			}
 		}
-		return nil, postgres.ErrReplayDetected
+		return nil, domain.ErrReplayDetected
 	}
 
 	// 90-day ceiling check
 	if time.Since(familyStarted) > 90*24*time.Hour {
-		return nil, postgres.ErrRefreshTokenExpired
+		return nil, domain.ErrRefreshTokenExpired
 	}
 
 	if time.Now().After(oldRT.ExpiresAt) {
-		return nil, postgres.ErrRefreshTokenExpired
+		return nil, domain.ErrRefreshTokenExpired
 	}
 
 	newRT.ID = uuid.New()

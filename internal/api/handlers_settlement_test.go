@@ -113,6 +113,9 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 	h := &Handlers{
 		Deps: Deps{
 			Pool: nil,
+			UserStore: &mockDualControlUserStore{
+				owners: []domain.User{{ID: ownerID}, {ID: uuid.New()}},
+			},
 		},
 	}
 	// Inject mock through unexported/exported accessor pattern

@@ -9,6 +9,11 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
+var (
+	ErrOTPAlreadyUsed   = domain.ErrOTPAlreadyUsed
+	ErrTokenAlreadyUsed = domain.ErrTokenAlreadyUsed
+)
+
 type OTPRepo struct{ pool *pgxpool.Pool }
 
 func NewOTPRepo(pool *pgxpool.Pool) *OTPRepo { return &OTPRepo{pool: pool} }
@@ -68,8 +73,14 @@ func (r *OTPRepo) IncrementAttempts(ctx context.Context, id uuid.UUID) error {
 }
 
 func (r *OTPRepo) MarkUsed(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `UPDATE otp_requests SET used=TRUE WHERE id=$1`, id)
-	return err
+	tag, err := r.pool.Exec(ctx, `UPDATE otp_requests SET used=TRUE WHERE id=$1 AND used=FALSE`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOTPAlreadyUsed
+	}
+	return nil
 }
 
 func (r *OTPRepo) CountRecent(ctx context.Context, phone string, since time.Time) (int, error) {
@@ -112,8 +123,14 @@ func (r *TokenRepo) GetByHash(ctx context.Context, hash string) (*domain.Payment
 }
 
 func (r *TokenRepo) MarkUsed(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `UPDATE payment_tokens SET used=TRUE WHERE id=$1`, id)
-	return err
+	tag, err := r.pool.Exec(ctx, `UPDATE payment_tokens SET used=TRUE WHERE id=$1 AND used=FALSE`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrTokenAlreadyUsed
+	}
+	return nil
 }
 
 type PushRepo struct{ pool *pgxpool.Pool }

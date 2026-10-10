@@ -247,13 +247,12 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 	if err != nil || val != 25000 {
 		t.Fatalf("expected 25000, got %d, err %v", val, err)
 	}
-	val, err = coercePaise(nil)
-	if err != nil || val != 0 {
-		t.Fatalf("expected 0, nil for nil, got %d, err %v", val, err)
-	}
 
 	// Fail-closed invalid cases
 	invalidInputs := []any{
+		nil,
+		"",
+		"   ",
 		"not-a-number",
 		"-100.50",
 		-50,
@@ -267,5 +266,92 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error for invalid input %v (%T), got nil", in, in)
 		}
+	}
+}
+
+func TestParseSettlementWebhook_MissingAmount(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name: "missing payment_amount",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"amount_settled": 97.94
+					}
+				}
+			}`,
+		},
+		{
+			name: "nil payment_amount",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"payment_amount": null,
+						"amount_settled": 97.94
+					}
+				}
+			}`,
+		},
+		{
+			name: "missing amount_settled",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"payment_amount": 100.00
+					}
+				}
+			}`,
+		},
+		{
+			name: "nil amount_settled",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"payment_amount": 100.00,
+						"amount_settled": null
+					}
+				}
+			}`,
+		},
+		{
+			name: "empty string payment_amount",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"payment_amount": "",
+						"amount_settled": 97.94
+					}
+				}
+			}`,
+		},
+		{
+			name: "whitespace amount_settled",
+			payload: `{
+				"data": {
+					"settlement": {
+						"settlement_id": "738",
+						"payment_amount": 100.00,
+						"amount_settled": "   "
+					}
+				}
+			}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, err := ParseSettlementWebhook([]byte(tc.payload))
+			if err == nil {
+				t.Fatalf("expected error for payload, got parsed record: %+v", rec)
+			}
+		})
 	}
 }
