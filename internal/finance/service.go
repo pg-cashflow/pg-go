@@ -22,17 +22,14 @@ type EventPublisher interface {
 type Service struct {
 	Store Store
 	Pub   EventPublisher
-	Clock timeutil.Clock
 	Now   func() time.Time
 }
 
 func NewService(store Store, pub EventPublisher) *Service {
-	clk := timeutil.System
 	return &Service{
 		Store: store,
 		Pub:   pub,
-		Clock: clk,
-		Now:   clk.Now,
+		Now:   timeutil.System.Now,
 	}
 }
 

@@ -43,6 +43,7 @@ internal/web/dist/*
 
 # Test logs, coverage profiles, and security scan reports
 *.log
+coverage
 coverage/
 cover_*.out
 cover_*

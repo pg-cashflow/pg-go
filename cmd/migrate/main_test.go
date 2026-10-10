@@ -19,10 +19,17 @@ func TestMigrate_FailClosedWithoutDB(t *testing.T) {
 		"SYSTEMROOT=" + os.Getenv("SYSTEMROOT"),
 	}
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("expected migrate to exit non-zero without database URL, but succeeded: %s", string(out))
-	}
 	outStr := string(out)
+	if err == nil {
+		t.Fatalf("expected migrate to exit non-zero without database URL, but succeeded: %s", outStr)
+	}
+	if strings.Contains(outStr, "panic:") {
+		t.Fatalf("migrate panicked instead of failing closed: %s", outStr)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() == 0 {
+		t.Fatalf("expected non-zero exit code: %v", err)
+	}
 	if !strings.Contains(outStr, "DATABASE_URL is required") && !strings.Contains(outStr, "exit status") {
 		t.Logf("migrate output: %s", outStr)
 	}

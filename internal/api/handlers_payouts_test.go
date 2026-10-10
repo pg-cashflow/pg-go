@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -383,6 +384,12 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 
 	// 9. Draft Export Gating & Dual-Control Approval Flow
 	t.Run("Draft export gate and approval flow", func(t *testing.T) {
+		var logBuf bytes.Buffer
+		captureLogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		prevLogger := slog.Default()
+		slog.SetDefault(captureLogger)
+		defer slog.SetDefault(prevLogger)
+
 		// Attempt export while in draft - must be blocked with 409 Conflict
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/payouts/batches/%s/export", batchID), nil)
@@ -390,12 +397,16 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		if w.Code != http.StatusConflict {
 			t.Fatalf("expected 409 Conflict exporting draft batch, got %d: %s", w.Code, w.Body.String())
 		}
+		if strings.Contains(logBuf.String(), "audit=payout_export") {
+			t.Fatalf("refused draft export must not emit audit line, got: %s", logBuf.String())
+		}
+		logBuf.Reset()
 
 		// Affirmative mismatch rejection (mismatched paise)
 		mismatchBody := map[string]interface{}{
 			"expected_item_count":  1,
 			"expected_total_paise": 999999,
-			"reauth_confirmation": "CONFIRM_TEST",
+			"reauth_confirmation":  "CONFIRM_TEST",
 		}
 		mismatchJSON, _ := json.Marshal(mismatchBody)
 		w = httptest.NewRecorder()
@@ -410,7 +421,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		fakeReauthBody := map[string]interface{}{
 			"expected_item_count":  1,
 			"expected_total_paise": 750000,
-			"reauth_confirmation": "CONFIRM_TEST",
+			"reauth_confirmation":  "CONFIRM_TEST",
 		}
 		fakeJSON, _ := json.Marshal(fakeReauthBody)
 		w = httptest.NewRecorder()
@@ -511,6 +522,17 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 		if !strings.Contains(csvContent, "7500.00") {
 			t.Errorf("expected ₹7500.00 in exported CSV, got:\n%s", csvContent)
+		}
+
+		auditOutput := logBuf.String()
+		if !strings.Contains(auditOutput, "audit=payout_export") {
+			t.Errorf("expected audit=payout_export in log, got: %s", auditOutput)
+		}
+		if !strings.Contains(auditOutput, batchID.String()) {
+			t.Errorf("expected batch ID %s in audit log, got: %s", batchID, auditOutput)
+		}
+		if !strings.Contains(auditOutput, ownerID.String()) {
+			t.Errorf("expected actor ID %s in audit log, got: %s", ownerID, auditOutput)
 		}
 	})
 
@@ -1011,6 +1033,3 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		t.Errorf("expected DB batch status 'processing', got '%s'", dbBatch2.Status)
 	}
 }
-
-
-

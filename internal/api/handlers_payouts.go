@@ -680,6 +680,7 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 		checksumVal = *batch.FileChecksum
 	}
 	slog.Info("payout batch exported",
+		"audit", "payout_export",
 		"actor_id", actorID,
 		"property_id", pid,
 		"batch_id", batch.ID,

@@ -63,9 +63,9 @@ jobs:
     name: Apply Expand-Only Database Migrations
     needs: verify
     environment: production
-    runs-on: [self-hosted, pg-app-server]
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout pg-go
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
