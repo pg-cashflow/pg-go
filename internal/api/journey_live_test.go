@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,11 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg, err := config.Load()
 	if err != nil {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed")
+	}
+
+	u, err := url.Parse(cfg.DatabaseURL)
+	if err != nil || strings.TrimPrefix(u.Path, "/") != "pg_test" {
+		t.Fatalf("SAFETY CHECK: live test harness requires disposable database 'pg_test', got %q", u.Path)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

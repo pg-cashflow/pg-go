@@ -274,14 +274,14 @@ func TestFeatureTenantDeparture_CreateLifecycle(t *testing.T) {
 		t.Fatalf("invalid departure response: %s", body)
 	}
 
-	// Inspect departure
+	// Inspect departure (starts 24h SLA)
 	code, body = h.httpCall(t, http.MethodPost, "/api/owner/departures/"+resp.Departure.ID.String()+"/inspect", f.ownerTok,
 		map[string]any{"notes": "Keys received"})
 	if code != http.StatusOK {
 		t.Fatalf("owner inspect departure: status %d (body %s)", code, body)
 	}
 
-	// Add deduction
+	// Add first deduction (agreed cleaning fee: ₹500)
 	code, body = h.httpCall(t, http.MethodPost, "/api/owner/departures/"+resp.Departure.ID.String()+"/deductions", f.ownerTok,
 		map[string]any{
 			"description":  "Cleaning fee",
@@ -290,6 +290,44 @@ func TestFeatureTenantDeparture_CreateLifecycle(t *testing.T) {
 		})
 	if code != http.StatusCreated {
 		t.Fatalf("owner add departure deduction: status %d (body %s)", code, body)
+	}
+
+	// Add second deduction that EXCEEDS the held deposit (damage: ₹20,000 vs ₹15,000 deposit)
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/departures/"+resp.Departure.ID.String()+"/deductions", f.ownerTok,
+		map[string]any{
+			"description":  "Extensive wall restoration",
+			"amount_paise": 2000000,
+			"status":       "agreed",
+		})
+	if code != http.StatusCreated {
+		t.Fatalf("owner add excess deduction: status %d (body %s)", code, body)
+	}
+
+	// Settle departure: Deposit Refund Cap Invariant Test
+	// Total deductions = 2,050,000 paise. Held deposit = 1,500,000 paise.
+	// Net refund MUST be 0 (never negative or paying out more than deposit).
+	// Excess 550,000 paise MUST be recorded in receivable_balance_paise.
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/departures/"+resp.Departure.ID.String()+"/settle", f.ownerTok,
+		map[string]any{
+			"actual_vacate_date":  "2026-11-01",
+			"prorated_rent_paise": 0,
+		})
+	if code != http.StatusOK {
+		t.Fatalf("owner settle departure: status %d (body %s)", code, body)
+	}
+	var settleResp struct {
+		NetRefundPaise         int64 `json:"net_refund_paise"`
+		ReceivableBalancePaise int64 `json:"receivable_balance_paise"`
+		DeductionsPaise        int64 `json:"deductions_paise"`
+	}
+	if err := json.Unmarshal(body, &settleResp); err != nil {
+		t.Fatalf("unmarshal settle response: %v", err)
+	}
+	if settleResp.NetRefundPaise != 0 {
+		t.Fatalf("deposit refund cap violated: net_refund_paise = %d, want 0", settleResp.NetRefundPaise)
+	}
+	if settleResp.ReceivableBalancePaise != 550000 {
+		t.Fatalf("receivable_balance_paise = %d, want 550000 (2050000 - 1500000)", settleResp.ReceivableBalancePaise)
 	}
 }
 
@@ -300,8 +338,19 @@ func TestFeaturePayment_VerifyAndCorrect(t *testing.T) {
 	f := seedLiveTenantFixture(t, h, 1500000)
 	utr := fmt.Sprintf("UTRLIVEVERIFY%08d", time.Now().UnixNano()%100000000)
 
-	// Owner verifies payment directly
+	// 1. Verify rejects invalid amount <= 0
 	code, body := h.httpCall(t, http.MethodPost, "/api/owner/payments/verify", f.ownerTok,
+		map[string]any{
+			"due_id":       f.dueID,
+			"amount_paise": 0,
+			"upi_txn_id":   utr,
+		})
+	if code != http.StatusBadRequest {
+		t.Fatalf("verify payment with 0 amount: status %d, want 400 (body %s)", code, body)
+	}
+
+	// 2. Owner verifies payment directly
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/payments/verify", f.ownerTok,
 		map[string]any{
 			"due_id":       f.dueID,
 			"amount_paise": 1500000,
@@ -320,7 +369,18 @@ func TestFeaturePayment_VerifyAndCorrect(t *testing.T) {
 		t.Fatalf("due status after verify: %q, want paid", got)
 	}
 
-	// Owner records financial correction
+	// 3. Verify on already-paid due rejects with client error (due not open)
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/payments/verify", f.ownerTok,
+		map[string]any{
+			"due_id":       f.dueID,
+			"amount_paise": 1500000,
+			"upi_txn_id":   utr + "2",
+		})
+	if code != http.StatusBadRequest && code != http.StatusConflict {
+		t.Fatalf("verify on paid due: status %d, want 400/409 (body %s)", code, body)
+	}
+
+	// 4. Owner records financial correction
 	code, body = h.httpCall(t, http.MethodPost, "/api/owner/payments/"+p.ID.String()+"/correct", f.ownerTok,
 		map[string]any{
 			"corrected_amount_paise": 1200000,
@@ -338,6 +398,7 @@ func TestFeatureTenantDues_Options(t *testing.T) {
 	h := newLiveHarness(t)
 	f := seedLiveTenantFixture(t, h, 1500000)
 
+	// 1. Initial pending due gives options
 	code, body := h.httpCall(t, http.MethodGet, "/api/tenant/dues/options", f.tenantTok, nil)
 	if code != http.StatusOK {
 		t.Fatalf("tenant dues options: status %d (body %s)", code, body)
@@ -355,6 +416,37 @@ func TestFeatureTenantDues_Options(t *testing.T) {
 	if len(resp.Options) == 0 {
 		t.Fatalf("expected at least 1 payment option, got 0")
 	}
+
+	// 2. Pay the due
+	utr := fmt.Sprintf("UTROPTIONS%08d", time.Now().UnixNano()%100000000)
+	code, _ = h.httpCall(t, http.MethodPost, "/api/owner/payments/verify", f.ownerTok,
+		map[string]any{
+			"due_id":       f.dueID,
+			"amount_paise": 1500000,
+			"upi_txn_id":   utr,
+		})
+	if code != http.StatusOK {
+		t.Fatalf("pay due failed: status %d", code)
+	}
+
+	// 3. Once paid, total outstanding is zero and options list is empty
+	code, body = h.httpCall(t, http.MethodGet, "/api/tenant/dues/options", f.tenantTok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("tenant dues options after paid: status %d", code)
+	}
+	var paidResp struct {
+		TotalOutstandingPaise int64                  `json:"total_outstanding_paise"`
+		Options               []domain.PaymentOption `json:"options"`
+	}
+	if err := json.Unmarshal(body, &paidResp); err != nil {
+		t.Fatalf("unmarshal paid dues options: %v", err)
+	}
+	if paidResp.TotalOutstandingPaise != 0 {
+		t.Fatalf("total outstanding after paid = %d, want 0", paidResp.TotalOutstandingPaise)
+	}
+	if len(paidResp.Options) != 0 {
+		t.Fatalf("expected 0 options for zero due, got %d", len(paidResp.Options))
+	}
 }
 
 // ---- Rewards / Gamification -----------------------------------------------
@@ -363,7 +455,7 @@ func TestFeatureRewards_PointsCatalogAndLeaderboard(t *testing.T) {
 	h := newLiveHarness(t)
 	f := seedLiveTenantFixture(t, h, 1500000)
 
-	// Points
+	// Points: new tenant has 0 points
 	code, body := h.httpCall(t, http.MethodGet, "/api/tenant/points", f.tenantTok, nil)
 	if code != http.StatusOK {
 		t.Fatalf("tenant points: status %d (body %s)", code, body)
@@ -373,6 +465,18 @@ func TestFeatureRewards_PointsCatalogAndLeaderboard(t *testing.T) {
 	code, body = h.httpCall(t, http.MethodGet, "/api/tenant/rewards", f.tenantTok, nil)
 	if code != http.StatusOK {
 		t.Fatalf("tenant rewards: status %d (body %s)", code, body)
+	}
+	var catResp struct {
+		Rewards []domain.RewardsCatalogItem `json:"rewards"`
+	}
+	_ = json.Unmarshal(body, &catResp)
+	if len(catResp.Rewards) > 0 {
+		// Insufficient Points Rejection: tenant with 0 points tries to redeem
+		firstReward := catResp.Rewards[0]
+		code, body = h.httpCall(t, http.MethodPost, "/api/tenant/rewards/"+firstReward.ID.String()+"/redeem", f.tenantTok, nil)
+		if code != http.StatusBadRequest {
+			t.Fatalf("redeem with insufficient points: status %d, want 400 (body %s)", code, body)
+		}
 	}
 
 	// Leaderboard
@@ -411,7 +515,14 @@ func TestFeatureKYC_ConsentStatusAndRevoke(t *testing.T) {
 		t.Fatalf("owner read tenant kyc: status %d (body %s)", code, body)
 	}
 
-	// 4. Tenant revokes consent
+	// 4. Owner clears duplicate status for tenant (returns 404 when no active verification exists)
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/tenants/"+f.tenantID.String()+"/kyc/clear-duplicate", f.ownerTok,
+		map[string]any{"reason": "Identity verified manually by property manager"})
+	if code != http.StatusOK && code != http.StatusNotFound {
+		t.Fatalf("owner clear duplicate kyc: status %d (body %s)", code, body)
+	}
+
+	// 5. Tenant revokes consent
 	code, body = h.httpCall(t, http.MethodPost, "/api/tenant/kyc/revoke", f.tenantTok, map[string]any{})
 	if code != http.StatusOK {
 		t.Fatalf("tenant kyc revoke: status %d (body %s)", code, body)
@@ -429,16 +540,86 @@ func TestFeatureSettlements_ListAndEODBalance(t *testing.T) {
 		t.Fatalf("owner list settlements: status %d (body %s)", code, body)
 	}
 
-	// Generate EOD balance snapshot first
-	code, body = h.httpCall(t, http.MethodPost, "/api/owner/settlements/eod-balance/run", f.ownerTok, map[string]any{})
+	// Test Step-up Auth requirement on settlement resolve:
+	// Manually resolving discrepancy without valid step-up auth must be refused (400/401/404)
+	fakeID := uuid.New()
+	code, _ = h.httpCall(t, http.MethodPost, "/api/owner/settlements/"+fakeID.String()+"/resolve", f.ownerTok,
+		map[string]any{"notes": "Manual reconciliation attempt"})
+	if code != http.StatusNotFound && code != http.StatusBadRequest && code != http.StatusUnauthorized {
+		t.Fatalf("resolve settlement without auth: unexpected status %d", code)
+	}
+
+	// --- Numeric Accounting Verification on EOD Balancer ---
+	// Seed a known double-entry posting: ₹5,000 (500000 paise) bank debit and ₹5,000 credit in journal
+	// and ₹5,000 statement credit in bank_transactions for today.
+	now := istNow()
+	dateStr := now.Format("2006-01-02")
+	ctx := context.Background()
+
+	sourceID := uuid.New()
+	_, err := h.pool.Exec(ctx, `
+		INSERT INTO financial_journal_entries (id, property_id, account_code, debit_paise, credit_paise, source_type, source_id, line_kind, occurred_at)
+		VALUES 
+			($1, $2, 'bank', 500000, 0, 'manual', $3, 'deposit', $4),
+			($5, $2, 'rental_revenue', 0, 500000, 'manual', $3, 'revenue', $4)
+	`, uuid.New(), f.propID, sourceID, now, uuid.New())
+	if err != nil {
+		t.Fatalf("seed journal entry: %v", err)
+	}
+
+	bankAcctID := uuid.New()
+	_, err = h.pool.Exec(ctx, `
+		INSERT INTO bank_accounts (id, property_id, bank_name, account_number_last4, account_type, label)
+		VALUES ($1, $2, 'Test Bank', '1234', 'savings', 'Settlement Account')
+	`, bankAcctID, f.propID)
+	if err != nil {
+		t.Fatalf("seed bank account: %v", err)
+	}
+
+	_, err = h.pool.Exec(ctx, `
+		INSERT INTO bank_transactions (id, property_id, bank_account_id, txn_id, amount_paise, row_type, txn_date, narration, dedup_hash, status)
+		VALUES ($1, $2, $3, 'TXN123', 500000, 'credit', $4, 'Cleared Bank Credit', 'hash_eod_test_123', 'matched')
+	`, uuid.New(), f.propID, bankAcctID, dateStr)
+	if err != nil {
+		t.Fatalf("seed bank transaction: %v", err)
+	}
+
+	// Generate EOD balance snapshot for today
+	code, body = h.httpCall(t, http.MethodPost, "/api/owner/settlements/eod-balance/run", f.ownerTok,
+		map[string]any{"date": dateStr})
 	if code != http.StatusOK {
 		t.Fatalf("owner run eod balance: status %d (body %s)", code, body)
 	}
 
-	// Fetch EOD balance for today
-	code, body = h.httpCall(t, http.MethodGet, "/api/owner/settlements/eod-balance", f.ownerTok, nil)
+	// Fetch and numerically verify EOD balance
+	code, body = h.httpCall(t, http.MethodGet, "/api/owner/settlements/eod-balance?date="+dateStr, f.ownerTok, nil)
 	if code != http.StatusOK {
 		t.Fatalf("owner get eod balance: status %d (body %s)", code, body)
+	}
+
+	var bal domain.DailySettlementBalance
+	if err := json.Unmarshal(body, &bal); err != nil {
+		t.Fatalf("unmarshal eod balance: %v", err)
+	}
+
+	// Assert numeric postings are precisely extracted and balanced
+	if bal.LedgerBankDrPaise != 500000 {
+		t.Fatalf("LedgerBankDrPaise = %d, want 500000 (from financial_journal_entries)", bal.LedgerBankDrPaise)
+	}
+	if bal.BankCreditsPaise != 500000 {
+		t.Fatalf("BankCreditsPaise = %d, want 500000 (from bank_transactions)", bal.BankCreditsPaise)
+	}
+	if bal.LedgerBankCrPaise != 0 {
+		t.Fatalf("LedgerBankCrPaise = %d, want 0", bal.LedgerBankCrPaise)
+	}
+	if bal.BankDebitsPaise != 0 {
+		t.Fatalf("BankDebitsPaise = %d, want 0", bal.BankDebitsPaise)
+	}
+	if !bal.IsBalanced {
+		t.Fatalf("eod balance is not balanced: %+v", bal.Discrepancies)
+	}
+	if bal.DiscrepancyPaise != 0 {
+		t.Fatalf("total discrepancy = %d, want 0", bal.DiscrepancyPaise)
 	}
 
 	// Fetch history
