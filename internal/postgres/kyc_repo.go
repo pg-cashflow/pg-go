@@ -27,7 +27,7 @@ const (
 		verified_at, expires_at, created_at, updated_at`
 
 	kycConsentCols = `id, tenant_id, purpose, consent_version, consent_text,
-		consent_text_hash, consent_given_at, ip_address, user_agent, revoked_at`
+		consent_text_hash, consent_given_at, ip_address::text, user_agent, revoked_at`
 
 	kycAuditCols = `id, tenant_id, actor, action, detail_hash, prev_hash, created_at`
 )

@@ -36,10 +36,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/finance"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
+	"github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
@@ -100,27 +103,48 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	h.ledger = finance.NewLedgerOutboxWorker(pool, h.outbox, h.finSvc)
 	eventRepo := postgres.NewEventRepo(pool)
 	tenantSvc := tenant.NewServiceWithPool(pool, h.tenants, h.dueRepo, eventRepo, postgres.NewPushRepo(pool))
+	gamRepo := postgres.NewGamificationRepo(pool)
+	gamSvc := gamification.NewService(gamRepo, h.tenants, h.dueRepo, &events.NoopPublisher{}, nil)
+	kycSvc := kyc.NewService(postgres.NewKYCRepo(pool), nil, kyc.Config{
+		IdentitySecret:           "test-identity-secret-key-32-bytes!!",
+		HashKeyVersion:           1,
+		VerificationValidityDays: 365,
+	})
+	collectorSvc := collector.New(h.intents, nil)
+	bankAcctRepo := postgres.NewBankAccountRepo(pool)
+	bankTxnRepo := postgres.NewBankTransactionRepo(pool)
+	settlementRepo := postgres.NewSettlementRepo(pool)
+	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(pool)
 
 	gin.SetMode(gin.TestMode)
 	h.router = NewRouter(Deps{
-		JWTSecret:          h.secret,
-		CashfreeSecret:     h.whSecret,
-		PropertyStore:      propRepo,
-		UserStore:          h.users,
-		AuthUserRepo:       h.users,
-		TenantStore:        h.tenants,
-		AuthTenantRepo:     h.tenants,
-		DueStore:           h.dueRepo,
-		ReportStore:        postgres.NewPaymentReportRepo(pool),
-		PaymentStore:       h.payRepo,
-		GatewayPaymentRepo: h.payRepo,
-		IntentStore:        h.intents,
-		Payments:           paySvc,
-		Tenants:            tenantSvc,
-		Finance:            h.finSvc,
-		FinanceEnabled:     true,
-		Pool:               pool,
-		LedgerOutboxRepo:   h.outbox,
+		JWTSecret:              h.secret,
+		CashfreeSecret:         h.whSecret,
+		PropertyStore:          propRepo,
+		UserStore:              h.users,
+		AuthUserRepo:           h.users,
+		TenantStore:            h.tenants,
+		AuthTenantRepo:         h.tenants,
+		DueStore:               h.dueRepo,
+		ReportStore:            postgres.NewPaymentReportRepo(pool),
+		PaymentStore:           h.payRepo,
+		GatewayPaymentRepo:     h.payRepo,
+		IntentStore:            h.intents,
+		Payments:               paySvc,
+		Tenants:                tenantSvc,
+		Finance:                h.finSvc,
+		FinanceEnabled:         true,
+		Pool:                   pool,
+		LedgerOutboxRepo:       h.outbox,
+		GamificationStore:      gamRepo,
+		Gamification:           gamSvc,
+		KYCSvc:                 kycSvc,
+		Collector:              collectorSvc,
+		BankAccountRepo:        bankAcctRepo,
+		BankTxnRepo:            bankTxnRepo,
+		SettlementRepo:         settlementRepo,
+		SettlementBalancerRepo: settlementBalancerRepo,
+		PayoutRepo:             postgres.NewPayoutRepo(pool),
 	})
 	return h
 }
@@ -128,24 +152,43 @@ func newLiveHarness(t *testing.T) *liveHarness {
 // scrub removes everything the journey wrote for one property. Ledger tables
 // need the maintenance flag, as in the E2E test.
 func (h *liveHarness) scrub(propID uuid.UUID) {
-	_ = postgres.WithinTx(context.Background(), h.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	ctx := context.Background()
+	_, _ = h.pool.Exec(ctx, "ALTER TABLE financial_corrections DISABLE TRIGGER trg_financial_corrections_immutable;")
+	_, _ = h.pool.Exec(ctx, "ALTER TABLE daily_settlement_balance_runs DISABLE TRIGGER trg_prevent_modification;")
+
+	_ = postgres.WithinTx(ctx, h.pool, func(tx pgx.Tx) error {
 		_, _ = tx.Exec(ctx, "SET LOCAL app.ledger_maintenance = 'on';")
 		for _, q := range []string{
+			"DELETE FROM tenant_departures WHERE property_id = $1",
+			"DELETE FROM kyc_verification WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id = $1)",
+			"DELETE FROM kyc_consent WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id = $1)",
+			"DELETE FROM points_ledger WHERE property_id = $1",
+			"DELETE FROM tenant_streaks WHERE property_id = $1",
+			"DELETE FROM daily_settlement_balance_runs WHERE property_id = $1",
+			"DELETE FROM daily_settlement_balances WHERE property_id = $1",
+			"DELETE FROM gateway_settlements WHERE property_id = $1",
+			"DELETE FROM deposit_settlements WHERE property_id = $1",
+			"DELETE FROM financial_corrections WHERE property_id = $1",
+			"DELETE FROM bank_transactions WHERE bank_account_id IN (SELECT id FROM bank_accounts WHERE property_id = $1)",
+			"DELETE FROM bank_accounts WHERE property_id = $1",
 			"DELETE FROM financial_journal_entries WHERE property_id = $1",
 			"DELETE FROM ledger_outbox_events WHERE property_id = $1",
 			"DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE property_id = $1)",
 			"DELETE FROM payments WHERE property_id = $1",
-			"DELETE FROM payment_intents WHERE property_id = $1",
+			"DELETE FROM payment_intent_dues WHERE due_id IN (SELECT id FROM dues WHERE property_id = $1)",
+			"DELETE FROM payment_intents WHERE due_id IN (SELECT id FROM dues WHERE property_id = $1)",
 			"DELETE FROM dues WHERE property_id = $1",
-			"DELETE FROM tenants WHERE property_id = $1",
 			"DELETE FROM users WHERE property_id = $1",
+			"DELETE FROM tenants WHERE property_id = $1",
 			"DELETE FROM properties WHERE id = $1",
 		} {
 			_, _ = tx.Exec(ctx, q, propID)
 		}
 		return nil
 	})
+
+	_, _ = h.pool.Exec(ctx, "ALTER TABLE financial_corrections ENABLE TRIGGER trg_financial_corrections_immutable;")
+	_, _ = h.pool.Exec(ctx, "ALTER TABLE daily_settlement_balance_runs ENABLE TRIGGER trg_prevent_modification;")
 }
 
 // httpCall sends one request through the harness router.

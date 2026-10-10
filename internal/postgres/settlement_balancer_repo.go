@@ -332,13 +332,12 @@ func (r *SettlementBalancerRepo) ComputeDayAggregates(ctx context.Context, prope
 	// 6. General Ledger Bank Account Net Movement on this day (IST)
 	queryLedgerBank := `
 		SELECT
-			COALESCE(SUM(l.debit_paise), 0),
-			COALESCE(SUM(l.credit_paise), 0)
-		FROM financial_journal_lines l
-		JOIN financial_journal_entries e ON l.entry_id = e.id
-		WHERE e.property_id = $1
-		  AND l.account_code = 'bank'
-		  AND e.occurred_at >= $2 AND e.occurred_at <= $3
+			COALESCE(SUM(debit_paise), 0),
+			COALESCE(SUM(credit_paise), 0)
+		FROM financial_journal_entries
+		WHERE property_id = $1
+		  AND account_code = 'bank'
+		  AND occurred_at >= $2 AND occurred_at <= $3
 	`
 	if err := tx.QueryRow(ctx, queryLedgerBank, propertyID, startOfDayIST, endOfDayIST).Scan(
 		&bal.LedgerBankDrPaise,
