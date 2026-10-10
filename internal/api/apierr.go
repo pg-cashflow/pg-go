@@ -10,6 +10,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/payment"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 // ClientError is the only error type whose message is ever written to an HTTP
@@ -66,8 +67,12 @@ func paymentClientErr(err error) error {
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentAmbiguousMatch)
 	case errors.Is(err, payment.ErrNoMatch):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentNoMatch)
-	case errors.Is(err, payment.ErrInvalidAmount):
+	case errors.Is(err, payment.ErrInvalidAmount), errors.Is(err, postgres.ErrInvalidRefundAmount):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentInvalidAmount)
+	case errors.Is(err, postgres.ErrDepositAlreadySettled):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodePaymentDuplicateTxn)
+	case errors.Is(err, postgres.ErrDueNotPaidDeposit):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentDueNotOpen)
 	default:
 		return err
 	}

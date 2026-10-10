@@ -2,12 +2,17 @@ package jobs_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,6 +179,50 @@ func TestGate12_MigrateExecution(t *testing.T) {
 	}
 }
 
+var (
+	builtServerOnce sync.Once
+	builtServerPath string
+	builtServerErr  error
+)
+
+func getOrBuildServer(t *testing.T) string {
+	t.Helper()
+	builtServerOnce.Do(func() {
+		tmpDir, err := os.MkdirTemp("", "pg-server-build-*")
+		if err != nil {
+			builtServerErr = fmt.Errorf("mkdir temp: %w", err)
+			return
+		}
+		binName := "server"
+		if runtime.GOOS == "windows" {
+			binName = "server.exe"
+		}
+		builtServerPath = filepath.Join(tmpDir, binName)
+		cmdPath, _ := filepath.Abs(filepath.Join("..", "..", "cmd", "server"))
+		buildCmd := exec.Command("go", "build", "-o", builtServerPath, ".")
+		buildCmd.Dir = cmdPath
+		buildCmd.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOPROXY=off")
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			builtServerErr = fmt.Errorf("build server failed: %w (out: %s)", err, string(out))
+			return
+		}
+	})
+	if builtServerErr != nil {
+		t.Fatalf("%v", builtServerErr)
+	}
+	return builtServerPath
+}
+
+func getFreePort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("get free port: %v", err)
+	}
+	defer l.Close()
+	return strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+}
+
 // TestGate12_ServerGracefulShutdown validates that cmd/server responds
 // to SIGINT/Interrupt, drains active connections, and terminates cleanly.
 func TestGate12_ServerGracefulShutdown(t *testing.T) {
@@ -185,26 +234,26 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
 	}
 
-	testPort := "18092"
-	cmdPath := filepath.Join("..", "..", "cmd", "server")
+	serverBin := getOrBuildServer(t)
+	testPort := getFreePort(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "run", ".")
-	cmd.Dir = cmdPath
+	cmd := exec.CommandContext(ctx, serverBin)
 	cmd.Env = append(os.Environ(),
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
-		"HTTP_ADDR=:"+testPort,
+		"HTTP_ADDR=127.0.0.1:"+testPort,
 		"PORT="+testPort,
 		"DATABASE_URL="+cfg.DatabaseURL,
 		"DATABASE_MAINT_URL="+cfg.DatabaseMaintURL,
 	)
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start cmd/server failed: %v", err)
+		t.Fatalf("start cmd/server binary failed: %v", err)
 	}
+	startedPID := cmd.Process.Pid
 
 	defer func() {
 		if cmd.Process != nil {
@@ -212,28 +261,37 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 		}
 	}()
 
-	// Poll until server responds on /health (allow up to 25s for Go compilation + startup)
+	// Poll until server responds on /healthz and verify returned PID matches started process
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	healthURL := fmt.Sprintf("http://localhost:%s/health", testPort)
+	healthURL := fmt.Sprintf("http://127.0.0.1:%s/healthz?pid=1", testPort)
 	serverReady := false
 
-	for i := 0; i < 100; i++ {
-		time.Sleep(250 * time.Millisecond)
+	for i := 0; i < 60; i++ {
+		time.Sleep(100 * time.Millisecond)
 		resp, err := client.Get(healthURL)
 		if err == nil && resp.StatusCode == http.StatusOK {
-			_ = resp.Body.Close()
-			serverReady = true
-			break
+			var hResp struct {
+				Status string `json:"status"`
+				PID    int    `json:"pid"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&hResp); err == nil {
+				_ = resp.Body.Close()
+				if hResp.PID == startedPID {
+					serverReady = true
+					break
+				}
+			} else {
+				_ = resp.Body.Close()
+			}
 		}
 	}
 
 	if !serverReady {
-		t.Fatalf("cmd/server failed to become ready on port %s within 25 seconds", testPort)
+		t.Fatalf("cmd/server binary (PID %d) failed to become ready on port %s within timeout", startedPID, testPort)
 	}
 
-	// Send Interrupt signal to trigger graceful shutdown
+	// Trigger shutdown: on Unix Process.Signal sends SIGINT; on Windows Process.Kill stops binary cleanly
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Logf("Process.Signal failed (platform limitation on Windows), using Process.Kill: %v", err)
 		_ = cmd.Process.Kill()
 	}
 
@@ -244,10 +302,10 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil && !strings.Contains(err.Error(), "interrupt") && !strings.Contains(err.Error(), "exit status 1") {
+		if err != nil && !strings.Contains(err.Error(), "interrupt") && !strings.Contains(err.Error(), "exit status 1") && !strings.Contains(err.Error(), "killed") {
 			t.Logf("server terminated with: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("server process did not exit within 5 seconds of interrupt signal")
+		t.Fatalf("server process (PID %d) did not exit within 5 seconds of interrupt signal", startedPID)
 	}
 }

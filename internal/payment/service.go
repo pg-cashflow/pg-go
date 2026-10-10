@@ -500,6 +500,9 @@ func (s *Service) SettleDeposit(ctx context.Context, tenantID uuid.UUID, refunde
 	if err != nil {
 		return err
 	}
+	if refundedPaise < 0 || refundedPaise > int64(deposit.OriginalAmount) {
+		return fmt.Errorf("%w: requested %d > deposit %d", postgres.ErrInvalidRefundAmount, refundedPaise, deposit.OriginalAmount)
+	}
 	at := s.now()
 
 	if s.depositSettler != nil {

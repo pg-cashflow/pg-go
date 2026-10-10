@@ -1,0 +1,48 @@
+﻿?   	github.com/pg-cashflow/pg-go/cmd/billing-cycle	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/cashfree-poll	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/daily-rollup	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/digilocker-reconcile	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/financial-summary	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/gamification-cycle	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/kpi-snapshot	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/kyc-expiry	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/migrate	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/reminder	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/sandbox-smoke	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/search-reindex	[no test files]
+?   	github.com/pg-cashflow/pg-go/cmd/server	[no test files]
+ok  	github.com/pg-cashflow/pg-go/internal/aadhaar	1.038s
+ok  	github.com/pg-cashflow/pg-go/internal/api	26.679s
+?   	github.com/pg-cashflow/pg-go/internal/apierr	[no test files]
+ok  	github.com/pg-cashflow/pg-go/internal/attendance	0.667s
+ok  	github.com/pg-cashflow/pg-go/internal/auth	4.444s
+ok  	github.com/pg-cashflow/pg-go/internal/billing	0.959s
+ok  	github.com/pg-cashflow/pg-go/internal/cashfree	3.150s
+ok  	github.com/pg-cashflow/pg-go/internal/collector	0.758s
+ok  	github.com/pg-cashflow/pg-go/internal/config	0.638s
+ok  	github.com/pg-cashflow/pg-go/internal/crypto	0.635s
+ok  	github.com/pg-cashflow/pg-go/internal/csv	0.704s
+ok  	github.com/pg-cashflow/pg-go/internal/domain	0.763s
+?   	github.com/pg-cashflow/pg-go/internal/events	[no test files]
+ok  	github.com/pg-cashflow/pg-go/internal/finance	5.160s
+ok  	github.com/pg-cashflow/pg-go/internal/gamification	1.078s
+ok  	github.com/pg-cashflow/pg-go/internal/intelligence	0.794s
+ok  	github.com/pg-cashflow/pg-go/internal/jobs	62.735s
+ok  	github.com/pg-cashflow/pg-go/internal/join	2.585s
+ok  	github.com/pg-cashflow/pg-go/internal/kyc	0.910s
+ok  	github.com/pg-cashflow/pg-go/internal/localization	2.468s
+ok  	github.com/pg-cashflow/pg-go/internal/magiclink	0.680s
+ok  	github.com/pg-cashflow/pg-go/internal/mailer	0.849s
+ok  	github.com/pg-cashflow/pg-go/internal/notification	0.691s
+ok  	github.com/pg-cashflow/pg-go/internal/payment	1.896s
+ok  	github.com/pg-cashflow/pg-go/internal/postgres	33.600s
+ok  	github.com/pg-cashflow/pg-go/internal/push	1.230s
+ok  	github.com/pg-cashflow/pg-go/internal/qr	0.592s
+?   	github.com/pg-cashflow/pg-go/internal/requestscope	[no test files]
+ok  	github.com/pg-cashflow/pg-go/internal/roi	0.797s
+ok  	github.com/pg-cashflow/pg-go/internal/search	0.666s
+ok  	github.com/pg-cashflow/pg-go/internal/sms	1.369s
+ok  	github.com/pg-cashflow/pg-go/internal/tenant	1.071s
+ok  	github.com/pg-cashflow/pg-go/internal/testutil	0.540s
+?   	github.com/pg-cashflow/pg-go/internal/web	[no test files]
+?   	github.com/pg-cashflow/pg-go/web	[no test files]

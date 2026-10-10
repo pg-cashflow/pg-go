@@ -526,7 +526,7 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 		return
 	}
 	if err := h.Payments.SettleDeposit(c.Request.Context(), id, body.RefundedPaise, body.Reason); err != nil {
-		respondErr(c, err)
+		respondErr(c, paymentClientErr(err))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-10-09T17:02:54.5638496Z",
-  "debits_paise": 361470000,
-  "credits_paise": 361470000,
-  "payment_count": 345909,
-  "journal_entry_count": 901,
+  "timestamp": "2026-10-10T06:23:52.119008Z",
+  "debits_paise": 150880000,
+  "credits_paise": 150880000,
+  "payment_count": 257,
+  "journal_entry_count": 347,
   "deadlocks": 0,
   "unmatched_orders_count": 0
 }

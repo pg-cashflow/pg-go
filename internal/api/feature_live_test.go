@@ -660,3 +660,85 @@ func TestFeatureBankStatements_AccountsAndTransactions(t *testing.T) {
 	}
 }
 
+// ---- Deposit Settlement: Cap / Bounds Check HTTP Tests -------------------
+
+func TestFeatureDepositSettle_OverRefundRejected(t *testing.T) {
+	h := newLiveHarness(t)
+	f := seedLiveTenantFixture(t, h, 1500000)
+	ctx := context.Background()
+
+	// Seed second owner to satisfy dual control for owner operations without external OTP service
+	coOwnerID := uuid.New()
+	coOwnerPhone := fmt.Sprintf("+919%09d", (time.Now().UnixNano()+7)%1000000000)
+	if _, err := h.pool.Exec(ctx, `INSERT INTO users (id, phone, role, property_id) VALUES ($1, $2, 'owner', $3)`,
+		coOwnerID, coOwnerPhone, f.propID); err != nil {
+		t.Fatalf("seed co-owner: %v", err)
+	}
+
+	// Seed a paid deposit due of ₹5,000 (500,000 paise)
+	depositDueID := uuid.New()
+	now := istNow()
+	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if _, err := h.pool.Exec(ctx, `
+		INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
+		VALUES ($1, $2, $3, $4, 'deposit', 'paid', 500000, 500000, $5, $6, $7)`,
+		depositDueID, f.propID, f.tenantID, "DEP"+uuid.New().String()[:5],
+		periodStart, periodStart.AddDate(0, 1, 0), periodStart.AddDate(0, 0, 5)); err != nil {
+		t.Fatalf("seed deposit due: %v", err)
+	}
+
+	// 1. Over-refund: requested ₹6,000 (600,000 paise) > deposit ₹5,000 (500,000 paise)
+	// Must return 400 Bad Request with code payment.invalidAmount
+	code, body := h.httpCall(t, http.MethodPost, fmt.Sprintf("/api/owner/tenants/%s/deposit/settle", f.tenantID), f.ownerTok,
+		map[string]any{
+			"refunded_amount_paise": 600000,
+			"reason":                "Excess refund attempt exceeding deposit",
+		})
+	if code != http.StatusBadRequest {
+		t.Fatalf("over-refund status = %d, want 400 (body: %s)", code, body)
+	}
+	if gotCode := errCode(string(body)); gotCode != "payment.invalidAmount" {
+		t.Fatalf("over-refund error code = %q, want 'payment.invalidAmount' (body: %s)", gotCode, body)
+	}
+
+	// 2. Negative refund amount: requested -100 paise must also be rejected
+	code, body = h.httpCall(t, http.MethodPost, fmt.Sprintf("/api/owner/tenants/%s/deposit/settle", f.tenantID), f.ownerTok,
+		map[string]any{
+			"refunded_amount_paise": -100,
+			"reason":                "Negative refund attempt",
+		})
+	if code != http.StatusBadRequest {
+		t.Fatalf("negative refund status = %d, want 400 (body: %s)", code, body)
+	}
+	if gotCode := errCode(string(body)); gotCode != "payment.invalidAmount" {
+		t.Fatalf("negative refund error code = %q, want 'payment.invalidAmount' (body: %s)", gotCode, body)
+	}
+
+	// 3. Valid settlement within bounds: ₹3,500 refund + ₹1,500 deduction = ₹5,000
+	code, body = h.httpCall(t, http.MethodPost, fmt.Sprintf("/api/owner/tenants/%s/deposit/settle", f.tenantID), f.ownerTok,
+		map[string]any{
+			"refunded_amount_paise": 350000,
+			"reason":                "Legitimate move-out deduction and refund",
+		})
+	if code != http.StatusOK {
+		t.Fatalf("valid deposit settlement status = %d, want 200 (body: %s)", code, body)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("valid deposit settlement body unexpected: %s", body)
+	}
+
+	// 4. Idempotent replay: calling again with identical parameters succeeds idempotently (200 OK)
+	code, body = h.httpCall(t, http.MethodPost, fmt.Sprintf("/api/owner/tenants/%s/deposit/settle", f.tenantID), f.ownerTok,
+		map[string]any{
+			"refunded_amount_paise": 350000,
+			"reason":                "Legitimate move-out deduction and refund",
+		})
+	if code != http.StatusOK {
+		t.Fatalf("idempotent replay status = %d, want 200 (body: %s)", code, body)
+	}
+	if !strings.Contains(string(body), `"ok":true`) {
+		t.Fatalf("idempotent replay body unexpected: %s", body)
+	}
+}
+
+

@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -156,9 +157,14 @@ func NewRouter(d Deps) *gin.Engine {
 	h := &Handlers{Deps: d}
 
 	// Root / Unauthenticated / Standalone HTML
-	r.GET("/healthz", func(c *gin.Context) {
+	healthHandler := func(c *gin.Context) {
+		if c.Query("pid") == "1" {
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "pid": os.Getpid()})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	}
+	r.GET("/healthz", healthHandler)
 	r.GET("/metrics", h.Metrics)
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
@@ -169,9 +175,7 @@ func NewRouter(d Deps) *gin.Engine {
 	// Data API routes (Namespaced under /api to avoid SPA collisions)
 	api := r.Group("/api")
 	{
-		api.GET("/healthz", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"status": "ok"})
-		})
+		api.GET("/healthz", healthHandler)
 		api.GET("/metrics", h.Metrics)
 		api.GET("/push/vapid-public-key", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
