@@ -13,8 +13,8 @@ import (
 )
 
 type threshold struct {
-	pkg       string
-	minCover  float64
+	pkg      string
+	minCover float64
 }
 
 var aspirationalThresholds = []threshold{
@@ -29,6 +29,9 @@ var regressionFloors = []threshold{
 	{pkg: "github.com/pg-cashflow/pg-go/internal/auth", minCover: 60.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/payment", minCover: 50.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/api", minCover: 45.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/jobs", minCover: 60.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/gamification", minCover: 35.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/postgres", minCover: 35.0},
 }
 
 type pkgStats struct {

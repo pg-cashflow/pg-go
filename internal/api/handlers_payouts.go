@@ -261,15 +261,15 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"departure":                     res.Departure,
-		"payout_item":                  res.PayoutItem,
-		"due_adjustments":              res.DueAdjustments,
-		"internal_payment_id":          res.InternalPaymentID,
+		"payout_item":                   res.PayoutItem,
+		"due_adjustments":               res.DueAdjustments,
+		"internal_payment_id":           res.InternalPaymentID,
 		"outstanding_dues_netted_paise": res.OutstandingDuesNettedPaise,
 		"unused_rent_refund_paise":      res.UnusedRentRefundPaise,
 		"prorated_rent_owed_paise":      res.ProratedRentOwedPaise,
-		"deductions_paise":             res.DeductionsPaise,
-		"net_refund_paise":             res.NetRefundPaise,
-		"receivable_balance_paise":     res.ReceivableBalancePaise,
+		"deductions_paise":              res.DeductionsPaise,
+		"net_refund_paise":              res.NetRefundPaise,
+		"receivable_balance_paise":      res.ReceivableBalancePaise,
 	})
 }
 
@@ -444,11 +444,11 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 }
 
 type approveBatchBody struct {
-	ExpectedItemCount   int    `json:"expected_item_count" binding:"required"`
-	ExpectedTotalPaise  int64  `json:"expected_total_paise" binding:"required"`
-	OTP                 string `json:"otp"`
-	FirebaseIDToken     string `json:"firebase_id_token"`
-	ReauthConfirmation  string `json:"reauth_confirmation"`
+	ExpectedItemCount  int    `json:"expected_item_count" binding:"required"`
+	ExpectedTotalPaise int64  `json:"expected_total_paise" binding:"required"`
+	OTP                string `json:"otp"`
+	FirebaseIDToken    string `json:"firebase_id_token"`
+	ReauthConfirmation string `json:"reauth_confirmation"`
 }
 
 func maskPhone(phone string) string {
@@ -674,6 +674,20 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 		}
 	}
 
+	actorID, _ := userIDFromClaims(c)
+	checksumVal := ""
+	if batch.FileChecksum != nil {
+		checksumVal = *batch.FileChecksum
+	}
+	slog.Info("payout batch exported",
+		"actor_id", actorID,
+		"property_id", pid,
+		"batch_id", batch.ID,
+		"batch_number", batch.BatchNumber,
+		"row_count", len(items),
+		"checksum", checksumVal,
+	)
+
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"payout_%s.csv\"", batch.BatchNumber))
 	if batch.FileChecksum != nil {
@@ -845,4 +859,3 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 		"items": items,
 	})
 }
-

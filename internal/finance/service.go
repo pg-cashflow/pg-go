@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/timeutil"
 )
 
 // EventPublisher publishes domain events for audit and notifications.
@@ -21,11 +22,18 @@ type EventPublisher interface {
 type Service struct {
 	Store Store
 	Pub   EventPublisher
+	Clock timeutil.Clock
 	Now   func() time.Time
 }
 
 func NewService(store Store, pub EventPublisher) *Service {
-	return &Service{Store: store, Pub: pub, Now: func() time.Time { return time.Now().UTC() }}
+	clk := timeutil.System
+	return &Service{
+		Store: store,
+		Pub:   pub,
+		Clock: clk,
+		Now:   clk.Now,
+	}
 }
 
 func (s *Service) publish(ctx context.Context, propertyID uuid.UUID, typ domain.EventType, payload any) {
@@ -526,17 +534,17 @@ func (s *Service) PatchUnifiedSettings(ctx context.Context, propertyID uuid.UUID
 }
 
 type OperatingSummary struct {
-	PeriodMonth                string `json:"period_month"`
-	CollectionsRentPaise       int64  `json:"collections_rent_paise"`
-	OperatingRevenuePaise      int64  `json:"operating_revenue_paise"`
-	OpexPaise                  int64  `json:"opex_paise"`
-	OCFPaise                   int64  `json:"ocf_paise"`
-	ManagerAdvanceOutstanding  int64  `json:"manager_advance_outstanding_paise"`
-	TDRExpensePaise            int64  `json:"tdr_expense_paise"`
-	TDRIsEstimated             bool   `json:"tdr_is_estimated"`
-	LoyaltyIssuedPaise         int64  `json:"loyalty_issued_paise"`
-	LabelCollections           string `json:"label_collections"`
-	LabelOperating             string `json:"label_operating"`
+	PeriodMonth               string `json:"period_month"`
+	CollectionsRentPaise      int64  `json:"collections_rent_paise"`
+	OperatingRevenuePaise     int64  `json:"operating_revenue_paise"`
+	OpexPaise                 int64  `json:"opex_paise"`
+	OCFPaise                  int64  `json:"ocf_paise"`
+	ManagerAdvanceOutstanding int64  `json:"manager_advance_outstanding_paise"`
+	TDRExpensePaise           int64  `json:"tdr_expense_paise"`
+	TDRIsEstimated            bool   `json:"tdr_is_estimated"`
+	LoyaltyIssuedPaise        int64  `json:"loyalty_issued_paise"`
+	LabelCollections          string `json:"label_collections"`
+	LabelOperating            string `json:"label_operating"`
 }
 
 func (s *Service) OperatingSummary(ctx context.Context, propertyID uuid.UUID, period string, collectionsRent int64) (*OperatingSummary, error) {

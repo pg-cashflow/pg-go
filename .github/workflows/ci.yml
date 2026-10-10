@@ -60,10 +60,34 @@ jobs:
           set -o pipefail
           go test -race -v -coverprofile=coverage.out ./... -timeout 10m | tee test_output.log
           go run ./scripts/audit_skips.go test_output.log
-          go run ./scripts/check-coverage.go -profile=coverage.out
+          go run ./scripts/check-coverage.go -profile=coverage.out -require-all
+
+      - name: Run Ledger Controls Integrity Suite (ADR-015 / ADR-016)
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/ledger_controls_test.sql
+
+      - name: Run Fuzz Smoke Suite (30s per target)
+        run: |
+          go test -fuzz=FuzzNormalizeUTR -fuzztime=30s ./internal/domain
+          go test -fuzz=FuzzParseBankCSV -fuzztime=30s ./internal/csv
+          go test -fuzz=FuzzNormalizePhone -fuzztime=30s ./internal/auth
+          go test -fuzz=FuzzParseWebhook -fuzztime=30s ./internal/cashfree
+          go test -fuzz=FuzzDecodeAadhaarQR -fuzztime=30s ./internal/aadhaar
 
       - name: Run Go Vet
         run: go vet ./...
+
+      - name: Upload Test and Coverage Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts
+          path: |
+            test_output.log
+            coverage.out
 
   security:
     name: Security & Vulnerability Analysis
@@ -100,4 +124,13 @@ jobs:
       - name: Govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          govulncheck -json ./... > govulncheck-report.json || true
           govulncheck ./...
+
+      - name: Upload Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            govulncheck-report.json

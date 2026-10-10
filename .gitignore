@@ -40,3 +40,13 @@ secrets/
 # Embedded frontend build artifacts
 internal/web/dist/*
 !internal/web/dist/index.html
+
+# Test logs, coverage profiles, and security scan reports
+*.log
+coverage/
+cover_*.out
+cover_*
+coverage.out
+gitleaks-report.json
+govulncheck-report.json
+

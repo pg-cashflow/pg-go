@@ -84,8 +84,9 @@ jobs:
           KYC_IDENTITY_SECRET: ci_test_kyc_identity_secret_32_chars!
         run: |
           set -o pipefail
-          go test -race -v ./... -timeout 5m | tee test_output.log
+          go test -race -v -coverprofile=coverage.out ./... -timeout 10m | tee test_output.log
           go run ./scripts/audit_skips.go test_output.log
+          go run ./scripts/check-coverage.go -profile=coverage.out -require-all
 
       - name: Vet pg-go
         working-directory: pg-go
