@@ -89,6 +89,13 @@ func TestLabB_PoolSaturationAndQueryLatency(t *testing.T) {
 		t.Fatalf("failed seeding dues dataset: %v", err)
 	}
 
+	// The plan assertion below depends on planner statistics. Without ANALYZE the
+	// planner estimates one row for the RLS-filtered scan and may pick a top-N
+	// sort over the ordered index. Make the statistics precondition explicit.
+	if _, err := pool.Exec(ctx, `ANALYZE dues`); err != nil {
+		t.Fatalf("analyze dues: %v", err)
+	}
+
 	scopedCtx := requestscope.WithPropertyID(ctx, propID)
 	scopedDB := NewScopedDB(pool)
 

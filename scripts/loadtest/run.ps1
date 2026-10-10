@@ -13,6 +13,9 @@ param (
 
 $ErrorActionPreference = "Stop"
 
+[System.Environment]::SetEnvironmentVariable("GOTOOLCHAIN", "local", "Process")
+[System.Environment]::SetEnvironmentVariable("GOPROXY", "off", "Process")
+
 # Auto-load .env file if present
 if (Test-Path ".env") {
     Get-Content ".env" | ForEach-Object {
@@ -61,7 +64,7 @@ try {
     Write-Host "Fake Cashfree Gateway is UP." -ForegroundColor Green
 } catch {
     Write-Host "Fake Gateway not running. Starting fake gateway on port 8081 in background..." -ForegroundColor Yellow
-    $gwSecret = if ($env:CASHFREE_WEBHOOK_SECRET) { $env:CASHFREE_WEBHOOK_SECRET } elseif ($env:CASHFREE_SECRET_KEY) { $env:CASHFREE_SECRET_KEY } else { "test_wh_secret_key" }
+    $gwSecret = if ($env:CASHFREE_PG_WEBHOOK_SECRET) { $env:CASHFREE_PG_WEBHOOK_SECRET } elseif ($env:CASHFREE_WEBHOOK_SECRET) { $env:CASHFREE_WEBHOOK_SECRET } elseif ($env:CASHFREE_PG_SECRET_KEY) { $env:CASHFREE_PG_SECRET_KEY } elseif ($env:CASHFREE_SECRET_KEY) { $env:CASHFREE_SECRET_KEY } else { "test_wh_secret_key" }
     $gwProc = Start-Process -FilePath "go" -ArgumentList "run", "scripts/loadtest/fake_gateway.go", "-port=8081", "-target=$BaseUrl", "-secret=$gwSecret" -PassThru
     Start-Sleep -Seconds 3
     Write-Host "Fake Gateway started with PID $($gwProc.Id) using gateway secret." -ForegroundColor Green

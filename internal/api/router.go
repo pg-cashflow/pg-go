@@ -352,7 +352,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/payroll/finalize", h.OwnerFinalizePayroll)
 		}
 
-		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo))
+		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
 		{
 			manager.POST("/inspections", h.ManagerSubmitInspection)
 			manager.GET("/inspections", h.ManagerListInspections)
@@ -365,7 +365,6 @@ func NewRouter(d Deps) *gin.Engine {
 			manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
 			manager.GET("/finance/expenses", h.ListExpenses)
 			manager.POST("/finance/expenses", h.PostExpense)
-			manager.POST("/finance/expenses/:id/void", h.VoidExpense)
 			manager.POST("/finance/expenses/:id/payments", h.PostExpensePayment)
 			manager.GET("/finance/today", h.ManagerFinanceToday)
 			manager.POST("/finance/meal-prep", h.PostMealPrep)

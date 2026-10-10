@@ -1,281 +1,316 @@
 package api
 
+// Route x role authorization matrix.
+//
+// Every route registered by NewRouter is enumerated with gin's Routes() and
+// exercised for each caller class:
+//
+//   - anonymous          : no bearer token             -> must be 401
+//   - a role not allowed : valid token, wrong role     -> must be 403
+//   - a role allowed     : valid token, right role     -> must NOT be 401/403
+//   - owner, foreign ID  : owner token + X-Property-ID
+//                          naming another property     -> must be 403 on
+//                          owner and manager routes
+//
+// The allowed roles are taken from CONTRACT.md's role table, not from the code
+// under test. A route registered in the wrong auth group therefore fails here
+// even when no feature test ever calls it. Any route that this file cannot
+// classify fails the test, so new routes cannot silently skip the matrix.
+
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
-// isPublicRoute determines if a registered route is designed to be public/unauthenticated.
-func isPublicRoute(path, method string) bool {
-	publicExact := map[string]bool{
-		"/healthz":                             true,
-		"/metrics":                             true,
-		"/api/healthz":                         true,
-		"/api/metrics":                         true,
-		"/api/locales":                         true,
-		"/api/push/vapid-public-key":           true,
-		"/api/owner/calendar.ics":              true,
-		"/api/auth/otp/request":                true,
-		"/api/auth/otp/verify":                 true,
-		"/api/auth/firebase":                   true,
-		"/api/auth/refresh":                    true,
-		"/api/auth/logout":                     true,
-		"/api/public/cashfree/kyc/webhook":     true,
-		"/webhooks/cashfree":                   true,
-		"/webhooks/cashfree/payouts":           true,
-		"/webhooks/cashfree/settlements":       true,
-	}
-	if publicExact[path] {
-		return true
-	}
-	if strings.HasPrefix(path, "/p/") {
-		return true
-	}
-	if strings.HasPrefix(path, "/api/join/invite/") {
-		return true
-	}
-	return false
+type matrixCaller string
+
+const (
+	callerAnon        matrixCaller = "anonymous"
+	callerOwner       matrixCaller = "owner"
+	callerManager     matrixCaller = "manager"
+	callerTenant      matrixCaller = "tenant"
+	callerPendingJoin matrixCaller = "pending_join"
+)
+
+var matrixCallers = []matrixCaller{callerAnon, callerOwner, callerManager, callerTenant, callerPendingJoin}
+
+type routeClass struct {
+	allowed map[matrixCaller]bool
+	// anonOK marks public routes: anonymous callers must not be rejected for auth.
+	anonOK bool
 }
 
-// TestAPI_ComprehensiveRouteRoleMatrix derives every route registered in NewRouter
-// and verifies strict RBAC gating across all identity profiles:
-// 1. Anonymous (unauthenticated) -> 401 Unauthorized on all protected routes
-// 2. Tenant -> 403 Forbidden on /api/owner/* and /api/manager/*
-// 3. Manager -> 403 Forbidden on /api/owner/* and /api/tenant/*
-// 4. Owner -> 403 Forbidden on /api/tenant/*, passes /api/owner/* and /api/manager/*
-// 5. Pending-Join Tenant -> 403 Forbidden on /api/owner/*, /api/manager/*, /api/tenant/*
-func TestAPI_ComprehensiveRouteRoleMatrix(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	jwtSecret := "role-matrix-test-secret-32-chars-long!"
-	deps := Deps{
-		JWTSecret: jwtSecret,
+// classifyRoute maps a route to its contract-defined access. It returns false
+// for any route that has no classification, which fails the matrix.
+func classifyRoute(path string) (routeClass, bool) {
+	allow := func(cs ...matrixCaller) map[matrixCaller]bool {
+		m := map[matrixCaller]bool{}
+		for _, c := range cs {
+			m[c] = true
+		}
+		return m
 	}
-	router := NewRouter(deps)
-	routes := router.Routes()
-
-	if len(routes) == 0 {
-		t.Fatal("expected registered routes from router, got 0")
+	switch {
+	// Protected exceptions that sit under otherwise-public prefixes.
+	// Shared, role-agnostic routes. A pending-join token carries role=tenant, and
+	// CONTRACT.md grants these to "any authenticated role", so it is included.
+	case path == "/api/auth/revoke-sessions":
+		return routeClass{allowed: allow(callerOwner, callerManager, callerTenant, callerPendingJoin)}, true
+	case path == "/api/join/me", path == "/api/join":
+		return routeClass{allowed: allow(callerPendingJoin)}, true
+	case path == "/api/owner/calendar.ics":
+		// Token is a query parameter, not a bearer header: handled by the handler.
+		return routeClass{anonOK: true}, true
+	// Public routes.
+	case path == "/healthz", path == "/metrics", path == "/api/healthz", path == "/api/metrics",
+		strings.HasPrefix(path, "/p/"), strings.HasPrefix(path, "/webhooks/"),
+		strings.HasPrefix(path, "/api/auth/"), path == "/api/push/vapid-public-key",
+		strings.HasPrefix(path, "/api/join/invite/"), path == "/api/locales",
+		strings.HasPrefix(path, "/api/public/"):
+		return routeClass{anonOK: true}, true
+	// Role-scoped groups.
+	case strings.HasPrefix(path, "/api/owner/"):
+		return routeClass{allowed: allow(callerOwner)}, true
+	case strings.HasPrefix(path, "/api/manager/"):
+		return routeClass{allowed: allow(callerOwner, callerManager)}, true
+	case strings.HasPrefix(path, "/api/tenant/"):
+		return routeClass{allowed: allow(callerTenant)}, true
+	case path == "/api/search", path == "/api/notifications",
+		strings.HasPrefix(path, "/api/notifications/"), strings.HasPrefix(path, "/api/me/preferences"):
+		return routeClass{allowed: allow(callerOwner, callerManager, callerTenant, callerPendingJoin)}, true
 	}
+	return routeClass{}, false
+}
 
-	propID := uuid.New()
-	tenantID := uuid.New()
+// matrixFixture holds the identities and stores shared by every matrix case.
+type matrixFixture struct {
+	secret      string
+	propA       uuid.UUID // the owner's and manager's property
+	propB       uuid.UUID // belongs to someone else
+	ownerUser   *domain.User
+	managerUser *domain.User
+	tenantUser  *domain.User
+	pendingUser *domain.User
+	tenantID    uuid.UUID
+	tokens      map[matrixCaller]string
+}
 
-	// Mint JWTs for each role
-	ownerUser := &domain.User{
-		ID:           uuid.New(),
-		Role:         domain.RoleOwner,
-		PropertyID:   &propID,
-		TokenVersion: 1,
+func newMatrixFixture(t *testing.T) *matrixFixture {
+	t.Helper()
+	f := &matrixFixture{
+		secret:   "test-secret-key-with-sufficient-length-32",
+		propA:    uuid.New(),
+		propB:    uuid.New(),
+		tenantID: uuid.New(),
 	}
-	ownerToken, err := auth.IssueAccessToken(jwtSecret, ownerUser)
-	if err != nil {
-		t.Fatalf("mint owner token: %v", err)
+	propA, tenantID := f.propA, f.tenantID
+	f.ownerUser = &domain.User{ID: uuid.New(), Role: domain.RoleOwner, Phone: "+919000000101", PropertyID: &propA}
+	f.managerUser = &domain.User{ID: uuid.New(), Role: domain.RoleManager, Phone: "+919000000102", PropertyID: &propA}
+	f.tenantUser = &domain.User{ID: uuid.New(), Role: domain.RoleTenant, Phone: "+919000000103", PropertyID: &propA, TenantID: &tenantID}
+	f.pendingUser = &domain.User{ID: uuid.New(), Role: domain.RoleTenant, Phone: "+919000000104", PropertyID: &propA}
+	f.tokens = map[matrixCaller]string{}
+	for caller, u := range map[matrixCaller]*domain.User{
+		callerOwner:       f.ownerUser,
+		callerManager:     f.managerUser,
+		callerTenant:      f.tenantUser,
+		callerPendingJoin: f.pendingUser,
+	} {
+		tok, err := auth.IssueToken(f.secret, u)
+		if err != nil {
+			t.Fatalf("issue %s token: %v", caller, err)
+		}
+		f.tokens[caller] = tok
 	}
+	return f
+}
 
-	managerUser := &domain.User{
-		ID:           uuid.New(),
-		Role:         domain.RoleManager,
-		PropertyID:   &propID,
-		TokenVersion: 1,
+// newRouter builds a fresh router per case, so per-route rate limiters start clean.
+func (f *matrixFixture) newRouter() *gin.Engine {
+	propertyStore := &scopeTestPropertyStore{props: map[uuid.UUID]*domain.Property{
+		f.propA: {ID: f.propA, OwnerPhone: f.ownerUser.Phone},
+		f.propB: {ID: f.propB, OwnerPhone: "+919000000199"}, // owned by someone else
+	}}
+	userStore := &scopeTestUserStore{users: map[uuid.UUID]*domain.User{
+		f.ownerUser.ID:   f.ownerUser,
+		f.managerUser.ID: f.managerUser,
+		f.tenantUser.ID:  f.tenantUser,
+		f.pendingUser.ID: f.pendingUser,
+	}}
+	return NewRouter(Deps{
+		JWTSecret:      f.secret,
+		MagicLink:      &stubRouterMagicLink{},
+		PropertyStore:  propertyStore,
+		UserStore:      userStore,
+		AuthTenantRepo: matrixTenantRepo{tenantID: f.tenantID, propertyID: f.propA},
+		AuthUserRepo:   userStore,
+	})
+}
+
+// matrixTenantRepo returns one active tenant for the tenant caller.
+type matrixTenantRepo struct {
+	tenantID   uuid.UUID
+	propertyID uuid.UUID
+}
+
+func (r matrixTenantRepo) GetByID(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	if id != r.tenantID {
+		return nil, errors.New("tenant not found")
 	}
-	managerToken, err := auth.IssueAccessToken(jwtSecret, managerUser)
-	if err != nil {
-		t.Fatalf("mint manager token: %v", err)
-	}
+	return &domain.Tenant{ID: id, PropertyID: r.propertyID, Status: domain.TenantStatusActive}, nil
+}
+func (r matrixTenantRepo) GetByPhone(_ context.Context, _ string) (*domain.Tenant, error) {
+	return nil, errors.New("tenant not found")
+}
 
-	tenantUser := &domain.User{
-		ID:           uuid.New(),
-		Role:         domain.RoleTenant,
-		TenantID:     &tenantID,
-		PropertyID:   &propID,
-		TokenVersion: 1,
-	}
-	tenantToken, err := auth.IssueAccessToken(jwtSecret, tenantUser)
-	if err != nil {
-		t.Fatalf("mint tenant token: %v", err)
-	}
-
-	pendingJoinUser := &domain.User{
-		ID:           uuid.New(),
-		Role:         domain.RoleTenant,
-		TenantID:     nil, // pending join
-		PropertyID:   &propID,
-		TokenVersion: 1,
-	}
-	pendingJoinToken, err := auth.IssueAccessToken(jwtSecret, pendingJoinUser)
-	if err != nil {
-		t.Fatalf("mint pending join token: %v", err)
-	}
-
-	// Helper to build test request path by substituting Gin route parameters
-	buildPath := func(ginPath string) string {
-		p := ginPath
-		p = strings.ReplaceAll(p, ":id", uuid.New().String())
-		p = strings.ReplaceAll(p, ":token", "test-token-uuid")
-		p = strings.ReplaceAll(p, ":code", "TEST1234")
-		p = strings.ReplaceAll(p, ":action", "approve")
-		return p
-	}
-
-	t.Run("Anonymous_MustRejectProtectedRoutesWith401", func(t *testing.T) {
-		testedCount := 0
-		for _, rt := range routes {
-			if !strings.HasPrefix(rt.Path, "/api") && !strings.HasPrefix(rt.Path, "/webhooks") && !strings.HasPrefix(rt.Path, "/p/") {
-				continue
-			}
-			if isPublicRoute(rt.Path, rt.Method) {
-				continue
-			}
-
-			testedCount++
-			reqPath := buildPath(rt.Path)
-			req := httptest.NewRequest(rt.Method, reqPath, nil)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusUnauthorized {
-				t.Errorf("[%s %s] expected 401 Unauthorized for anonymous, got %d (body: %s)",
-					rt.Method, rt.Path, rec.Code, rec.Body.String())
-				continue
-			}
-
-			var body map[string]any
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err == nil {
-				if code, ok := body["code"].(string); ok {
-					if code != string(apierr.CodeAuthMissingToken) {
-						t.Errorf("[%s %s] expected code %q, got %q", rt.Method, rt.Path, apierr.CodeAuthMissingToken, code)
-					}
+// fillPath replaces gin path parameters with concrete values. A /properties/:id
+// parameter is filled with the owner's own property so the handler's success
+// path is exercised; every other ID is random, which exercises not-found paths.
+func fillPath(path string, ownProperty uuid.UUID) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		switch {
+		case p == "*" || strings.HasPrefix(p, "*"):
+			parts[i] = "x"
+		case strings.HasPrefix(p, ":"):
+			switch p {
+			case ":action":
+				parts[i] = "approve"
+			case ":token":
+				parts[i] = "tok-matrix"
+			case ":code":
+				parts[i] = "INVITE01"
+			default:
+				if i > 0 && parts[i-1] == "properties" {
+					parts[i] = ownProperty.String()
+				} else {
+					parts[i] = uuid.New().String()
 				}
 			}
 		}
-		if testedCount < 100 {
-			t.Fatalf("expected to test at least 100 protected routes for anonymous rejection, tested %d", testedCount)
+	}
+	return strings.Join(parts, "/")
+}
+
+// matrixResult is the status plus the apierr code from the response envelope.
+type matrixResult struct {
+	status  int
+	errCode string
+}
+
+// isAuthLayerRefusal reports whether a result came from the auth middleware
+// (role gate, missing token, property scope) rather than from a handler.
+func (r matrixResult) isAuthLayerRefusal() bool {
+	return (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) &&
+		strings.HasPrefix(r.errCode, "auth.")
+}
+
+func (f *matrixFixture) do(t *testing.T, router *gin.Engine, method, path string, caller matrixCaller, extraHeaders map[string]string) matrixResult {
+	t.Helper()
+	var body io.Reader
+	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
+		body = bytes.NewBufferString("{}")
+	}
+	req := httptest.NewRequest(method, path, body)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if tok, ok := f.tokens[caller]; ok {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	var env struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	return matrixResult{status: w.Code, errCode: env.Code}
+}
+
+func TestRouteRoleAuthorizationMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gin.DefaultWriter = io.Discard
+	gin.DefaultErrorWriter = io.Discard
+
+	f := newMatrixFixture(t)
+	routes := f.newRouter().Routes()
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Path != routes[j].Path {
+			return routes[i].Path < routes[j].Path
 		}
-		t.Logf("✓ Verified %d protected routes strictly reject anonymous access with 401", testedCount)
+		return routes[i].Method < routes[j].Method
 	})
 
-	t.Run("Tenant_CannotAccessOwnerOrManagerRoutes", func(t *testing.T) {
-		for _, rt := range routes {
-			isOwner := strings.HasPrefix(rt.Path, "/api/owner") && rt.Path != "/api/owner/calendar.ics"
-			isManager := strings.HasPrefix(rt.Path, "/api/manager")
-
-			if !isOwner && !isManager {
-				continue
-			}
-
-			reqPath := buildPath(rt.Path)
-			req := httptest.NewRequest(rt.Method, reqPath, nil)
-			req.Header.Set("Authorization", "Bearer "+tenantToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("[%s %s] expected 403 Forbidden for tenant accessing owner/manager route, got %d (body: %s)",
-					rt.Method, rt.Path, rec.Code, rec.Body.String())
-			}
+	var unclassified []string
+	cases := 0
+	for _, rt := range routes {
+		class, ok := classifyRoute(rt.Path)
+		if !ok {
+			unclassified = append(unclassified, rt.Method+" "+rt.Path)
+			continue
 		}
-	})
-
-	t.Run("Manager_CannotAccessOwnerOrTenantRoutes", func(t *testing.T) {
-		for _, rt := range routes {
-			isOwner := strings.HasPrefix(rt.Path, "/api/owner") && rt.Path != "/api/owner/calendar.ics"
-			isTenant := strings.HasPrefix(rt.Path, "/api/tenant")
-
-			if !isOwner && !isTenant {
-				continue
+		path := fillPath(rt.Path, f.propA)
+		name := rt.Method + " " + rt.Path
+		t.Run(name, func(t *testing.T) {
+			// Public routes: an anonymous caller must not be told to authenticate.
+			if class.anonOK {
+				res := f.do(t, f.newRouter(), rt.Method, path, callerAnon, nil)
+				cases++
+				// Public routes may refuse on their own terms (for example a missing
+				// refresh token), but never with a role or session gate.
+				if res.isAuthLayerRefusal() && res.status == http.StatusForbidden {
+					t.Errorf("public route %s refused an anonymous caller at the auth layer (%s)", name, res.errCode)
+				}
+				return
 			}
-
-			reqPath := buildPath(rt.Path)
-			req := httptest.NewRequest(rt.Method, reqPath, nil)
-			req.Header.Set("Authorization", "Bearer "+managerToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("[%s %s] expected 403 Forbidden for manager accessing owner/tenant route, got %d (body: %s)",
-					rt.Method, rt.Path, rec.Code, rec.Body.String())
+			for _, caller := range matrixCallers {
+				res := f.do(t, f.newRouter(), rt.Method, path, caller, nil)
+				cases++
+				switch {
+				case caller == callerAnon:
+					if res.status != http.StatusUnauthorized || !strings.HasPrefix(res.errCode, "auth.") {
+						t.Errorf("%s anonymous: got %d/%q, want 401 auth.*", name, res.status, res.errCode)
+					}
+				case class.allowed[caller]:
+					if res.isAuthLayerRefusal() {
+						t.Errorf("%s %s (allowed): refused by auth layer %d/%q", name, caller, res.status, res.errCode)
+					}
+				default:
+					if res.status != http.StatusForbidden || !strings.HasPrefix(res.errCode, "auth.") {
+						t.Errorf("%s %s (not allowed): got %d/%q, want 403 auth.*", name, caller, res.status, res.errCode)
+					}
+				}
 			}
-		}
-	})
-
-	t.Run("Owner_CannotAccessTenantRoutes", func(t *testing.T) {
-		for _, rt := range routes {
-			if !strings.HasPrefix(rt.Path, "/api/tenant") {
-				continue
+			// Cross-property: an owner token naming another owner's property must be refused
+			// on owner and manager routes, which both resolve X-Property-ID.
+			if strings.HasPrefix(rt.Path, "/api/owner/") || strings.HasPrefix(rt.Path, "/api/manager/") {
+				res := f.do(t, f.newRouter(), rt.Method, path, callerOwner,
+					map[string]string{"X-Property-ID": f.propB.String()})
+				cases++
+				if res.status != http.StatusForbidden || res.errCode != "auth.forbidden" {
+					t.Errorf("%s owner with foreign X-Property-ID: got %d/%q, want 403 auth.forbidden", name, res.status, res.errCode)
+				}
 			}
-
-			reqPath := buildPath(rt.Path)
-			req := httptest.NewRequest(rt.Method, reqPath, nil)
-			req.Header.Set("Authorization", "Bearer "+ownerToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("[%s %s] expected 403 Forbidden for owner accessing tenant route, got %d (body: %s)",
-					rt.Method, rt.Path, rec.Code, rec.Body.String())
-			}
-		}
-	})
-
-	t.Run("PendingJoin_CannotAccessOwnerOrManagerOrTenantRoutes", func(t *testing.T) {
-		for _, rt := range routes {
-			isOwner := strings.HasPrefix(rt.Path, "/api/owner") && rt.Path != "/api/owner/calendar.ics"
-			isManager := strings.HasPrefix(rt.Path, "/api/manager")
-			isTenant := strings.HasPrefix(rt.Path, "/api/tenant")
-
-			if !isOwner && !isManager && !isTenant {
-				continue
-			}
-
-			reqPath := buildPath(rt.Path)
-			req := httptest.NewRequest(rt.Method, reqPath, nil)
-			req.Header.Set("Authorization", "Bearer "+pendingJoinToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusForbidden {
-				t.Errorf("[%s %s] expected 403 Forbidden for pending-join user, got %d (body: %s)",
-					rt.Method, rt.Path, rec.Code, rec.Body.String())
-			}
-		}
-	})
-
-	t.Run("Owner_AuthorizedOnOwnerAndManagerRoutes", func(t *testing.T) {
-		// Verify that owner passes auth middleware on owner and manager routes
-		// (i.e. status is NOT 401 Unauthorized or 403 Forbidden from auth layer)
-		sampleRoutes := []struct {
-			method string
-			path   string
-		}{
-			{http.MethodGet, "/api/owner/properties"},
-			{http.MethodGet, "/api/owner/tenants"},
-			{http.MethodGet, "/api/owner/dues"},
-			{http.MethodGet, "/api/owner/finance/summary"},
-			{http.MethodGet, "/api/manager/inspections"},
-			{http.MethodGet, "/api/manager/hazards"},
-			{http.MethodGet, "/api/notifications"},
-			{http.MethodGet, "/api/me/preferences"},
-		}
-
-		for _, sr := range sampleRoutes {
-			req := httptest.NewRequest(sr.method, sr.path, nil)
-			req.Header.Set("Authorization", "Bearer "+ownerToken)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
-				t.Errorf("[%s %s] owner should pass auth gate, but got auth rejection code %d (body: %s)",
-					sr.method, sr.path, rec.Code, rec.Body.String())
-			}
-		}
-	})
+		})
+	}
+	if len(unclassified) > 0 {
+		t.Fatalf("%d route(s) not classified in the authorization matrix; add them to classifyRoute:\n  %s",
+			len(unclassified), strings.Join(unclassified, "\n  "))
+	}
+	t.Logf("matrix: %d routes, %d authorization checks", len(routes), cases)
 }

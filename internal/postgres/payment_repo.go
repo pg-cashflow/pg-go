@@ -482,7 +482,7 @@ func (r *PaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (
 
 func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, payment_id, cf_refund_id, refund_reference, amount_paise, status, source, initiated_by, reason, raw_payload, created_at, updated_at
+		SELECT id, payment_id, cf_refund_id, refund_reference, amount_paise, status, source, initiated_by, reason, raw_response, created_at, updated_at
 		FROM gateway_refunds
 		WHERE status IN ('initiated', 'pending', 'on_hold') AND created_at < $1
 		ORDER BY created_at ASC`, olderThan)

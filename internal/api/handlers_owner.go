@@ -212,8 +212,11 @@ func (h *Handlers) ResolveOwnerPropertyScope() gin.HandlerFunc {
 			return
 		}
 
+		// Fail closed: a cross-property switch must be verified against the property
+		// store. Without a store we cannot prove ownership, so the request is refused
+		// rather than binding an arbitrary property ID into the request scope.
 		if h.PropertyStore == nil {
-			apierr.RespondClientErr(c, http.StatusForbidden, "property not found or not owned", apierr.CodeAuthForbidden)
+			apierr.RespondClientErr(c, http.StatusForbidden, "forbidden: property not owned by user", apierr.CodeAuthForbidden)
 			c.Abort()
 			return
 		}

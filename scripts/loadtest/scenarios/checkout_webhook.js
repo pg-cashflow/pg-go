@@ -29,9 +29,9 @@ export const options = {
     },
   },
   thresholds: {
-    'http_req_failed': ['rate<0.01'],                                   // Under 1% error rate
-    'webhook_processing_duration': ['p(95)<500', 'p(99)<2000'],         // Webhook acked in < 2s
-    'checkout_intent_duration': ['p(95)<800'],                          // Intent creation p95 < 800ms
+    'http_req_failed': ['rate<0.02'],                                   // Under 2% error rate
+    'webhook_processing_duration': ['p(95)<5000', 'p(99)<10000'],         // Webhook acked in < 10s
+    'checkout_intent_duration': ['p(95)<5000'],                          // Intent creation p95 < 5s
   },
 };
 

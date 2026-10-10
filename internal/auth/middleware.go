@@ -26,28 +26,23 @@ func ClaimsFromContext(c *gin.Context) (*Claims, bool) {
 	return claims, ok
 }
 
-// AttachRequestPropertyScope injects the verified property scope into the request context.
+// AttachRequestPropertyScope binds the property ID from the verified token claims
+// into the request context.
+//
+// It deliberately does NOT read X-Property-ID or property_id for any role. Owners
+// may switch between properties, but that switch must be verified against the
+// property store by ResolveOwnerPropertyScope (owner routes) before any handler
+// runs. Trusting a request header here let an owner whose token carries no
+// property_id read or write another property through routes that only call this
+// middleware, such as the manager group.
 func AttachRequestPropertyScope(c *gin.Context, claims *Claims) {
 	if claims == nil || c == nil || c.Request == nil {
 		return
 	}
-	var propID uuid.UUID
-	if claims.PropertyID != nil && *claims.PropertyID != uuid.Nil {
-		propID = *claims.PropertyID
-	} else if claims.Role == domain.RoleOwner {
-		if headerVal := c.GetHeader("X-Property-ID"); headerVal != "" {
-			if parsed, err := uuid.Parse(headerVal); err == nil && parsed != uuid.Nil {
-				propID = parsed
-			}
-		} else if qVal := c.Query("property_id"); qVal != "" {
-			if parsed, err := uuid.Parse(qVal); err == nil && parsed != uuid.Nil {
-				propID = parsed
-			}
-		}
+	if claims.PropertyID == nil || *claims.PropertyID == uuid.Nil {
+		return
 	}
-	if propID != uuid.Nil {
-		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), propID))
-	}
+	c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), *claims.PropertyID))
 }
 
 // RequireOwner validates the Bearer JWT and requires role=owner.
