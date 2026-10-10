@@ -62,6 +62,8 @@ func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
 				"TEMP=" + os.Getenv("TEMP"),
 				"TMP=" + os.Getenv("TMP"),
 				"USERPROFILE=" + os.Getenv("USERPROFILE"),
+				"HOME=" + os.Getenv("HOME"),
+				"XDG_CACHE_HOME=" + os.Getenv("XDG_CACHE_HOME"),
 				"LOCALAPPDATA=" + os.Getenv("LOCALAPPDATA"),
 				"DATABASE_URL=",
 				"DATABASE_MAINT_URL=",
