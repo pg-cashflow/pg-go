@@ -206,4 +206,3 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, intent)
 }
-

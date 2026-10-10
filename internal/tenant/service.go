@@ -141,21 +141,21 @@ func createTenantCore(
 ) (*domain.Tenant, error) {
 	dueDay := in.DueDay
 	t := &domain.Tenant{
-		PropertyID:         in.PropertyID,
-		Name:               in.Name,
-		Phone:              in.Phone,
-		RoomNumber:         in.RoomNumber,
-		AadhaarLast4:       in.AadhaarLast4,
-		RentAmount:         in.RentAmount,
-		DueDay:             &dueDay,
-		NoticePeriodDays:   in.NoticePeriodDays,
-		Status:             domain.TenantStatusActive,
-		PermanentAddress:   in.PermanentAddress,
-		CurrentAddress:     in.CurrentAddress,
-		ParentName:         in.ParentName,
-		EmergencyPhone:     in.EmergencyPhone,
-		JoinedOn:           in.JoinedOn,
-		IDPhotoBytes:       in.IDPhotoBytes,
+		PropertyID:       in.PropertyID,
+		Name:             in.Name,
+		Phone:            in.Phone,
+		RoomNumber:       in.RoomNumber,
+		AadhaarLast4:     in.AadhaarLast4,
+		RentAmount:       in.RentAmount,
+		DueDay:           &dueDay,
+		NoticePeriodDays: in.NoticePeriodDays,
+		Status:           domain.TenantStatusActive,
+		PermanentAddress: in.PermanentAddress,
+		CurrentAddress:   in.CurrentAddress,
+		ParentName:       in.ParentName,
+		EmergencyPhone:   in.EmergencyPhone,
+		JoinedOn:         in.JoinedOn,
+		IDPhotoBytes:     in.IDPhotoBytes,
 	}
 	if err := tenants.Create(ctx, t); err != nil {
 		return nil, err

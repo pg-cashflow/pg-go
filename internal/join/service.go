@@ -20,12 +20,12 @@ import (
 )
 
 var (
-	ErrInvalidInvite   = errors.New("join: invalid invite code")
-	ErrAlreadyActive   = errors.New("join: already an active tenant")
-	ErrNotPending      = errors.New("join: no pending join request")
-	ErrNameRequired    = errors.New("join: name is required")
-	ErrNotFound        = errors.New("join: not found")
-	ErrNotPendingOwner = errors.New("join: request is not pending")
+	ErrInvalidInvite     = errors.New("join: invalid invite code")
+	ErrAlreadyActive     = errors.New("join: already an active tenant")
+	ErrNotPending        = errors.New("join: no pending join request")
+	ErrNameRequired      = errors.New("join: name is required")
+	ErrNotFound          = errors.New("join: not found")
+	ErrNotPendingOwner   = errors.New("join: request is not pending")
 	ErrProfileIncomplete = errors.New("join: profile incomplete")
 	ErrPhotoRequired     = errors.New("join: id photo required")
 	ErrConsentRequired   = errors.New("join: consent required")

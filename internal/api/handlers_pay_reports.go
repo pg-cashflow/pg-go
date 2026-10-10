@@ -362,4 +362,3 @@ func (h *Handlers) RejectPaymentReport(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, rep)
 }
-

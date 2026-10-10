@@ -170,4 +170,3 @@ func TestKeyRing_VersionedRotation(t *testing.T) {
 		t.Fatalf("expected ErrInvalidKeyVersion for missing key version, got %v", err)
 	}
 }
-

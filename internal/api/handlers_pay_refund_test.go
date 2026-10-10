@@ -61,14 +61,14 @@ func (m *mockCFClient) FetchRefundStatus(ctx context.Context, orderID, refundID 
 }
 
 type mockRefundPaymentRepo struct {
-	mu          sync.Mutex
-	payments    map[uuid.UUID]*domain.Payment
-	refunds     map[uuid.UUID]*domain.GatewayRefund
-	refundByRef map[string]*domain.GatewayRefund
-	refundByCF  map[string]*domain.GatewayRefund
+	mu           sync.Mutex
+	payments     map[uuid.UUID]*domain.Payment
+	refunds      map[uuid.UUID]*domain.GatewayRefund
+	refundByRef  map[string]*domain.GatewayRefund
+	refundByCF   map[string]*domain.GatewayRefund
 	refundByIdem map[string]*domain.GatewayRefund // key: paymentID_idempotencyKey
-	allocations []domain.PaymentAllocation
-	refAllocs   []domain.RefundAllocation
+	allocations  []domain.PaymentAllocation
+	refAllocs    []domain.RefundAllocation
 }
 
 func newMockRefundPaymentRepo() *mockRefundPaymentRepo {
@@ -260,8 +260,12 @@ func (s *mockRefundDueStore) GetByID(_ context.Context, id uuid.UUID) (*domain.D
 	}
 	return d, nil
 }
-func (s *mockRefundDueStore) List(context.Context, postgres.DueListFilter) ([]domain.Due, error) { return nil, nil }
-func (s *mockRefundDueStore) ListByTenant(context.Context, uuid.UUID) ([]domain.Due, error) { return nil, nil }
+func (s *mockRefundDueStore) List(context.Context, postgres.DueListFilter) ([]domain.Due, error) {
+	return nil, nil
+}
+func (s *mockRefundDueStore) ListByTenant(context.Context, uuid.UUID) ([]domain.Due, error) {
+	return nil, nil
+}
 
 type mockRefundIntentStore struct {
 	mu      sync.Mutex
@@ -280,16 +284,24 @@ func (s *mockRefundIntentStore) GetByCFPaymentID(_ context.Context, cfID string)
 	return s.byCF[cfID], nil
 }
 func (s *mockRefundIntentStore) MarkPaid(context.Context, uuid.UUID, string) error { return nil }
-func (s *mockRefundIntentStore) GetDuesSnapshot(context.Context, uuid.UUID) ([]domain.PaymentIntentDue, error) { return nil, nil }
+func (s *mockRefundIntentStore) GetDuesSnapshot(context.Context, uuid.UUID) ([]domain.PaymentIntentDue, error) {
+	return nil, nil
+}
 
 type mockRefundTenantStore struct {
 	t *domain.Tenant
 }
 
-func (s *mockRefundTenantStore) GetByID(context.Context, uuid.UUID) (*domain.Tenant, error) { return s.t, nil }
-func (s *mockRefundTenantStore) ListByProperty(context.Context, uuid.UUID) ([]domain.Tenant, error) { return nil, nil }
+func (s *mockRefundTenantStore) GetByID(context.Context, uuid.UUID) (*domain.Tenant, error) {
+	return s.t, nil
+}
+func (s *mockRefundTenantStore) ListByProperty(context.Context, uuid.UUID) ([]domain.Tenant, error) {
+	return nil, nil
+}
 func (s *mockRefundTenantStore) Update(context.Context, *domain.Tenant) error { return nil }
-func (s *mockRefundTenantStore) GetIDPhoto(context.Context, uuid.UUID) ([]byte, error) { return nil, nil }
+func (s *mockRefundTenantStore) GetIDPhoto(context.Context, uuid.UUID) ([]byte, error) {
+	return nil, nil
+}
 
 func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 	if h.UserStore == nil {

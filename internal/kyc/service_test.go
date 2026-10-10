@@ -399,7 +399,7 @@ type fakePermanentError struct {
 	msg string
 }
 
-func (e *fakePermanentError) Error() string { return e.msg }
+func (e *fakePermanentError) Error() string     { return e.msg }
 func (e *fakePermanentError) IsPermanent() bool { return true }
 
 type fakePermanentHTTPError struct {

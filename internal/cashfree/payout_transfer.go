@@ -43,7 +43,7 @@ type BatchTransferResponse struct {
 type TransferStatusItem struct {
 	TransferID        string  `json:"transfer_id"`
 	CFTransferID      string  `json:"cf_transfer_id"`
-	Status            string  `json:"status"` // "SUCCESS", "PENDING", "FAILED", "APPROVAL_PENDING", "REVERSED", "REJECTED"
+	Status            string  `json:"status"`      // "SUCCESS", "PENDING", "FAILED", "APPROVAL_PENDING", "REVERSED", "REJECTED"
 	StatusCode        string  `json:"status_code"` // e.g. "WAIT_TIME_EXCEEDED", "BENE_BANK_DECLINED"
 	StatusDescription string  `json:"status_description"`
 	UTR               *string `json:"utr,omitempty"`

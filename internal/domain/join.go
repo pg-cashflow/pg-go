@@ -110,4 +110,3 @@ type PayIntent struct {
 	DueCount         int         `json:"due_count,omitempty"`
 	DueIDs           []uuid.UUID `json:"due_ids,omitempty"`
 }
-

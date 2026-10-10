@@ -79,6 +79,7 @@ func TestFinanceClientErrorCharacterization(t *testing.T) {
 		{finance.ErrExpenseStateChanged, http.StatusConflict, finance.ErrExpenseStateChanged.Error(), apierr.CodeFinanceExpenseStateChanged},
 		{finance.ErrReasonRequired, http.StatusBadRequest, finance.ErrReasonRequired.Error(), apierr.CodeFinanceReasonRequired},
 		{finance.ErrDateOutOfRange, http.StatusBadRequest, finance.ErrDateOutOfRange.Error(), apierr.CodeFinanceDateOutOfRange},
+		{finance.ErrInvalidSettings, http.StatusBadRequest, finance.ErrInvalidSettings.Error(), apierr.CodeFinanceInvalidSettings},
 		{finance.ErrPeriodNotCloseable, http.StatusBadRequest, finance.ErrPeriodNotCloseable.Error(), apierr.CodeFinancePeriodNotCloseable},
 		{finance.ErrPeriodClosed, http.StatusConflict, finance.ErrPeriodClosed.Error(), apierr.CodeFinancePeriodClosed},
 		{finance.ErrNotFound, http.StatusNotFound, "not found", apierr.CodeFinanceNotFound},

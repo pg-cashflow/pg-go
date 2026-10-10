@@ -9,19 +9,19 @@ import (
 )
 
 type VarianceInput struct {
-	Period            string
-	BudgetedOCFPaise  int64
+	Period             string
+	BudgetedOCFPaise   int64
 	BudgetOccupancyBPS int
-	BudgetRentPerBed  int64
-	CapacityBeds      int
-	OccupiedBeds      int
-	BilledRentPaise   int64
+	BudgetRentPerBed   int64
+	CapacityBeds       int
+	OccupiedBeds       int
+	BilledRentPaise    int64
 	CollectedRentPaise int64
-	CategoryOpex      map[string]int64
-	BudgetOpex        map[string]int64
-	TDRPaise          int64
-	TDREstimated      bool
-	LoyaltyVariance   int64
+	CategoryOpex       map[string]int64
+	BudgetOpex         map[string]int64
+	TDRPaise           int64
+	TDREstimated       bool
+	LoyaltyVariance    int64
 }
 
 func BuildVarianceBridge(in VarianceInput, actualOCF int64) domain.VarianceBridge {

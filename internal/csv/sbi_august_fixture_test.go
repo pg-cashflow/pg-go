@@ -27,14 +27,14 @@ func TestParse_SBI_AugustStatement_66RowsTieOut(t *testing.T) {
 	runningBalPaise := int64(81)
 
 	type testRowSpec struct {
-		date       string
-		narration  string
-		ref        string
-		credit     int64 // paise
-		debit      int64 // paise
-		isUPI      bool
-		isRev      bool
-		isPayPal   bool
+		date      string
+		narration string
+		ref       string
+		credit    int64 // paise
+		debit     int64 // paise
+		isUPI     bool
+		isRev     bool
+		isPayPal  bool
 	}
 
 	var specs []testRowSpec

@@ -740,5 +740,3 @@ func TestFeatureDepositSettle_OverRefundRejected(t *testing.T) {
 		t.Fatalf("idempotent replay body unexpected: %s", body)
 	}
 }
-
-

@@ -518,4 +518,3 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 
 	c.JSON(http.StatusOK, rfRow)
 }
-

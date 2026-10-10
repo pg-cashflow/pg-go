@@ -444,8 +444,8 @@ func TestMirrorPaymentAllocations_MultiDueAndUnapplied(t *testing.T) {
 	}
 
 	allocations := []PaymentAllocationItem{
-		{AmountPaise: 1000000, DueKind: domain.DueKindDeposit},     // ₹10,000 deposit
-		{AmountPaise: 2000000, DueKind: domain.DueKindRent},        // ₹20,000 rent
+		{AmountPaise: 1000000, DueKind: domain.DueKindDeposit},    // ₹10,000 deposit
+		{AmountPaise: 2000000, DueKind: domain.DueKindRent},       // ₹20,000 rent
 		{AmountPaise: 200000, DueKind: domain.DueKindElectricity}, // ₹2,000 utility
 	}
 	unappliedPaise := int64(300000) // ₹3,000 overpayment / tenant credit
@@ -656,5 +656,3 @@ func TestPayExpense_Concurrency_Bound(t *testing.T) {
 		t.Fatalf("expected total paid 600000, got %d", totalPaid)
 	}
 }
-
-

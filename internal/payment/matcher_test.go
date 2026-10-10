@@ -287,4 +287,3 @@ func TestMatchPayment_HeuristicDoesNotAutoSettle(t *testing.T) {
 		t.Fatalf("expected 1 payment created for deterministic match, got %d", len(pays.created))
 	}
 }
-

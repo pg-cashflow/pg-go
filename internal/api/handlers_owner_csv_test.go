@@ -1216,6 +1216,3 @@ func TestBankAccountManagement_CRUD(t *testing.T) {
 		t.Fatalf("expected 0 active accounts after deactivation, got %d", len(listResAfter.BankAccounts))
 	}
 }
-
-
-

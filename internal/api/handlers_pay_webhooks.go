@@ -237,11 +237,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 				note := "unapplied duplicate: dues already closed, pending owner refund or manual allocation"
 				p := &domain.Payment{
-					DueID:       snapshot[0].DueID,
-					TenantID:    tenantID,
-					UPITxnID:    &txnID,
-					CFPaymentID: &cfID,
-					Amount:      succ.AmountPaise,
+					DueID:             snapshot[0].DueID,
+					TenantID:          tenantID,
+					UPITxnID:          &txnID,
+					CFPaymentID:       &cfID,
+					Amount:            succ.AmountPaise,
 					MatchedBy:         domain.MatchedByCashfree,
 					MatchedAt:         at,
 					IsUnapplied:       true,
@@ -287,11 +287,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 			// APPLIED TO OPEN DUES BRANCH
 			p := &domain.Payment{
-				DueID:       snapshot[0].DueID,
-				TenantID:    tenantID,
-				UPITxnID:    &txnID,
-				CFPaymentID: &cfID,
-				Amount:      succ.AmountPaise,
+				DueID:             snapshot[0].DueID,
+				TenantID:          tenantID,
+				UPITxnID:          &txnID,
+				CFPaymentID:       &cfID,
+				Amount:            succ.AmountPaise,
 				MatchedBy:         domain.MatchedByCashfree,
 				MatchedAt:         at,
 				IsUnapplied:       false,

@@ -1704,4 +1704,3 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 		UpdatedAt:        now,
 	}, nil
 }
-

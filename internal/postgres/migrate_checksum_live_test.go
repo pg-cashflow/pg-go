@@ -221,4 +221,3 @@ func TestLivePostgresMigrate_LineEndingNormalizationAndSemanticTamperRejection(t
 		t.Fatalf("expected 'never edit an applied migration' error, got %v", err)
 	}
 }
-

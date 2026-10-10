@@ -49,13 +49,13 @@ func TestLivePostgresBalanceRunsImmutabilityAndCascadeBlock(t *testing.T) {
 	reconDate := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
 	bal := &domain.DailySettlementBalance{
-		PropertyID:            propID,
-		ReconDate:             reconDate,
-		GatewayGrossPaise:     100000,
+		PropertyID:             propID,
+		ReconDate:              reconDate,
+		GatewayGrossPaise:      100000,
 		GatewayNetSettledPaise: 98000,
-		GatewayFeesPaise:      2000,
-		BankCreditsPaise:      98000,
-		IsBalanced:            true,
+		GatewayFeesPaise:       2000,
+		BankCreditsPaise:       98000,
+		IsBalanced:             true,
 	}
 
 	if err := balancer.UpsertDailyBalance(ctx, bal); err != nil {

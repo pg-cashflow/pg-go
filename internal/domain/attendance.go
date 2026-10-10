@@ -16,26 +16,26 @@ const (
 
 // StaffProfile links a staff member to their property, base compensation, and payout payee.
 type StaffProfile struct {
-	ID                  uuid.UUID          `json:"id"`
-	PropertyID          uuid.UUID          `json:"property_id"`
-	PayeeID             uuid.UUID          `json:"payee_id"`
-	Name                string             `json:"name"`
-	Role                string             `json:"role"`
-	Phone               *string            `json:"phone,omitempty"`
-	BaseMonthlyWagePaise int64             `json:"base_monthly_wage_paise"`
-	EffectiveFrom       time.Time          `json:"effective_from"`
-	EffectiveTo         *time.Time         `json:"effective_to,omitempty"`
-	Status              StaffProfileStatus `json:"status"`
-	CreatedAt           time.Time          `json:"created_at"`
-	UpdatedAt           time.Time          `json:"updated_at"`
+	ID                   uuid.UUID          `json:"id"`
+	PropertyID           uuid.UUID          `json:"property_id"`
+	PayeeID              uuid.UUID          `json:"payee_id"`
+	Name                 string             `json:"name"`
+	Role                 string             `json:"role"`
+	Phone                *string            `json:"phone,omitempty"`
+	BaseMonthlyWagePaise int64              `json:"base_monthly_wage_paise"`
+	EffectiveFrom        time.Time          `json:"effective_from"`
+	EffectiveTo          *time.Time         `json:"effective_to,omitempty"`
+	Status               StaffProfileStatus `json:"status"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
 }
 
 // WorkingDaysBasis defines how total basis days in a month are computed.
 type WorkingDaysBasis string
 
 const (
-	WorkingDaysBasisCalendarDays    WorkingDaysBasis = "calendar_days"
-	WorkingDaysBasisFixed30         WorkingDaysBasis = "fixed_30"
+	WorkingDaysBasisCalendarDays     WorkingDaysBasis = "calendar_days"
+	WorkingDaysBasisFixed30          WorkingDaysBasis = "fixed_30"
 	WorkingDaysBasisExcludingSundays WorkingDaysBasis = "working_days_excluding_sundays"
 )
 

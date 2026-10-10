@@ -7,8 +7,8 @@ type Code string
 
 const (
 	// Auth
-	CodeAuthMissingToken          Code = "auth.missingToken"         // #nosec G101
-	CodeAuthInvalidToken          Code = "auth.invalidToken"         // #nosec G101
+	CodeAuthMissingToken          Code = "auth.missingToken" // #nosec G101
+	CodeAuthInvalidToken          Code = "auth.invalidToken" // #nosec G101
 	CodeAuthAccessRevoked         Code = "auth.accessRevoked"
 	CodeAuthProfileIncomplete     Code = "auth.profileIncomplete"
 	CodeAuthForbidden             Code = "auth.forbidden"
@@ -49,31 +49,32 @@ const (
 	CodePaymentInvalidAmount         Code = "payment.invalidAmount"
 
 	// Finance
-	CodeFinanceDuplicateRequest   Code = "finance.duplicateRequest"
+	CodeFinanceDuplicateRequest    Code = "finance.duplicateRequest"
 	CodeFinanceIdempotencyRequired Code = "finance.idempotencyRequired"
-	CodeFinanceInvalidAmount      Code = "finance.invalidAmount"
-	CodeFinanceInvalidKind        Code = "finance.invalidKind"
-	CodeFinanceOverpay            Code = "finance.overpay"
-	CodeFinanceExpenseNotPayable  Code = "finance.expenseNotPayable"
-	CodeFinancePolicyExceeded     Code = "finance.policyExceeded"
-	CodeFinanceApprovalRequired   Code = "finance.approvalRequired"
-	CodeFinancePeriodNotCloseable Code = "finance.periodNotCloseable"
+	CodeFinanceInvalidAmount       Code = "finance.invalidAmount"
+	CodeFinanceInvalidKind         Code = "finance.invalidKind"
+	CodeFinanceOverpay             Code = "finance.overpay"
+	CodeFinanceExpenseNotPayable   Code = "finance.expenseNotPayable"
+	CodeFinancePolicyExceeded      Code = "finance.policyExceeded"
+	CodeFinanceApprovalRequired    Code = "finance.approvalRequired"
+	CodeFinancePeriodNotCloseable  Code = "finance.periodNotCloseable"
 	CodeFinancePeriodNotReopenable Code = "finance.periodNotReopenable"
-	CodeFinancePeriodClosed       Code = "finance.periodClosed"
-	CodeFinanceNotFound           Code = "finance.notFound"
-	CodeFinanceForbidden          Code = "finance.forbidden"
-	CodeFinanceDisabled           Code = "finance.disabled"
-	CodeFinanceExpenseNotVoidable Code = "finance.expenseNotVoidable"
+	CodeFinancePeriodClosed        Code = "finance.periodClosed"
+	CodeFinanceNotFound            Code = "finance.notFound"
+	CodeFinanceForbidden           Code = "finance.forbidden"
+	CodeFinanceDisabled            Code = "finance.disabled"
+	CodeFinanceExpenseNotVoidable  Code = "finance.expenseNotVoidable"
 	CodeFinanceExpenseStateChanged Code = "finance.expenseStateChanged"
-	CodeFinanceReasonRequired     Code = "finance.reasonRequired"
-	CodeFinanceDateOutOfRange     Code = "finance.dateOutOfRange"
+	CodeFinanceReasonRequired      Code = "finance.reasonRequired"
+	CodeFinanceDateOutOfRange      Code = "finance.dateOutOfRange"
+	CodeFinanceInvalidSettings     Code = "finance.invalidSettings"
 
 	// Request & Bind
-	CodeRequestInvalidBody       Code = "request.invalidBody"
-	CodeRequestInvalidId         Code = "request.invalidId"
-	CodeRequestDueDayInvalid     Code = "request.dueDayInvalid"
-	CodeRequestImageTooLarge     Code = "request.imageTooLarge"
-	CodeRequestImageReadFailed   Code = "request.imageReadFailed"
+	CodeRequestInvalidBody     Code = "request.invalidBody"
+	CodeRequestInvalidId       Code = "request.invalidId"
+	CodeRequestDueDayInvalid   Code = "request.dueDayInvalid"
+	CodeRequestImageTooLarge   Code = "request.imageTooLarge"
+	CodeRequestImageReadFailed Code = "request.imageReadFailed"
 
 	// Preferences
 	CodePreferencesLocaleRequired Code = "preferences.localeRequired"
@@ -139,6 +140,7 @@ var AllCodes = []Code{
 	CodeFinanceExpenseStateChanged,
 	CodeFinanceReasonRequired,
 	CodeFinanceDateOutOfRange,
+	CodeFinanceInvalidSettings,
 
 	CodeRequestInvalidBody,
 	CodeRequestInvalidId,

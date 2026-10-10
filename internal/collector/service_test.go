@@ -157,8 +157,8 @@ func TestPNGURL(t *testing.T) {
 }
 
 type lockingIntentStore struct {
-	reusable   *domain.PaymentIntent
-	superseded bool
+	reusable        *domain.PaymentIntent
+	superseded      bool
 	createdWithDues bool
 }
 
@@ -232,4 +232,3 @@ func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
 		t.Fatal("expected CreateWithDues to be called")
 	}
 }
-

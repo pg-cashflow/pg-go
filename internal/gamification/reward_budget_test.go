@@ -367,4 +367,3 @@ func TestAwardPoints_ConcurrentBudgetNoOvershoot(t *testing.T) {
 		t.Fatalf("expected %d rejections with ErrPropertyBudgetExceeded, got %d", concurrency-1, budgetExceededCount)
 	}
 }
-

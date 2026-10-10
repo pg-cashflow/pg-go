@@ -30,7 +30,7 @@ func TestMigrate_FailClosedWithoutDB(t *testing.T) {
 	if !ok || exitErr.ExitCode() == 0 {
 		t.Fatalf("expected non-zero exit code: %v", err)
 	}
-	if !strings.Contains(outStr, "DATABASE_URL is required") && !strings.Contains(outStr, "exit status") {
-		t.Logf("migrate output: %s", outStr)
+	if !strings.Contains(outStr, "DATABASE_URL is required") {
+		t.Fatalf("expected output to contain %q, got: %s", "DATABASE_URL is required", outStr)
 	}
 }

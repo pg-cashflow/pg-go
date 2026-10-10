@@ -225,12 +225,12 @@ func handleDispatchWebhook(w http.ResponseWriter, r *http.Request) {
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	stats := map[string]interface{}{
-		"status":          "ok",
-		"orders_created":  atomic.LoadUint64(&totalOrdersCreated),
-		"webhooks_sent":   atomic.LoadUint64(&totalWebhooksSent),
-		"webhooks_acked":  atomic.LoadUint64(&totalWebhooksAcked),
-		"target_url":      *targetURL,
-		"target_path":     *webhookPath,
+		"status":         "ok",
+		"orders_created": atomic.LoadUint64(&totalOrdersCreated),
+		"webhooks_sent":  atomic.LoadUint64(&totalWebhooksSent),
+		"webhooks_acked": atomic.LoadUint64(&totalWebhooksAcked),
+		"target_url":     *targetURL,
+		"target_path":    *webhookPath,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats)

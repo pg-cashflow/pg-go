@@ -431,15 +431,15 @@ func (h *Handlers) PatchFinanceSettings(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Settings *domain.PropertyFinanceSettings      `json:"settings"`
-		Policy   *domain.ApprovalPolicy               `json:"policy"`
+		Settings *domain.FinanceSettingsPatch         `json:"settings"`
+		Policy   *domain.ApprovalPolicyPatch          `json:"policy"`
 		Loyalty  *domain.PropertyGamificationSettings `json:"loyalty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
 		return
 	}
-	st, pol, loy, err := h.Finance.PatchUnifiedSettings(c.Request.Context(), pid, body.Settings, body.Policy, body.Loyalty)
+	st, pol, loy, err := h.Finance.MergeFinanceConfig(c.Request.Context(), pid, body.Settings, body.Policy, body.Loyalty)
 	if err != nil {
 		respondErr(c, financeClientErr(err))
 		return
@@ -1085,4 +1085,3 @@ func (h *Handlers) OwnerCapitalPaybackReport(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, rep)
 }
-

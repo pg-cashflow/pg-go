@@ -8,9 +8,9 @@ import (
 )
 
 type mockPushRepo struct {
-	upsertCalled   bool
+	upsertCalled    bool
 	deletedEndpoint string
-	subs           []Subscription
+	subs            []Subscription
 }
 
 func (m *mockPushRepo) Upsert(ctx context.Context, s *Subscription) error {

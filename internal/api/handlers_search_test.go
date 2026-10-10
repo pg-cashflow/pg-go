@@ -81,5 +81,3 @@ func (r *idORRepo) SearchLexical(_ context.Context, p search.Params, types []sea
 	}
 	return nil, false, nil
 }
-
-

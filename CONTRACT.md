@@ -83,6 +83,7 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `finance.expenseStateChanged` | 409 | Finance | Expense status changed during the request; retry |
 | `finance.reasonRequired` | 400 | Finance | Void reason must be 3 to 500 characters |
 | `finance.dateOutOfRange` | 400 | Finance | Expense date is in the future or older than 90 days |
+| `finance.invalidSettings` | 400 | Finance | Invalid property finance settings or approval policy |
 | `request.invalidBody` | 400 | Request | Request payload is malformed or missing required fields |
 | `request.invalidId` | 400 | Request | UUID URL parameter is malformed |
 | `request.dueDayInvalid` | 400 | Request | Due day must be an integer between 1 and 28 |
@@ -912,6 +913,7 @@ Validation & error responses:
 | **Finance** | `finance.expenseStateChanged` | 409 | Expense status changed between read and write; the client can retry |
 | **Finance** | `finance.reasonRequired` | 400 | Void reason must be 3 to 500 characters |
 | **Finance** | `finance.dateOutOfRange` | 400 | Expense `occurred_at` is in the future or older than 90 days |
+| **Finance** | `finance.invalidSettings` | 400 | Settings or policy limits are negative, exceed maximum thresholds, or have invalid fiscal day |
 | **Request** | `request.invalidBody` | 400 | Request JSON payload malformed or missing required fields |
 | **Request** | `request.invalidId` | 400 | UUID URL parameter is malformed |
 | **Request** | `request.dueDayInvalid` | 400 | Due day must be an integer between 1 and 28 |

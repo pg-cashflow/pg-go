@@ -213,7 +213,7 @@ func TestGate14_VerhoeffChecksumValidation(t *testing.T) {
 	prefix := "29384756102"
 	checkDigit := generateVerhoeffCheckDigit(prefix)
 	validAadhaar := prefix + string(rune('0'+checkDigit))
-	
+
 	// Corrupted last digit
 	corruptDigit := (checkDigit + 1) % 10
 	invalidAadhaar := prefix + string(rune('0'+corruptDigit))

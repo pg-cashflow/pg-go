@@ -128,4 +128,3 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 		t.Fatalf("unexpected PayoutEncryptionSecret: %s", cfg.PayoutEncryptionSecret)
 	}
 }
-

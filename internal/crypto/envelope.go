@@ -210,4 +210,3 @@ func DecryptWithKeyRing(kr *KeyRing, ciphertext []byte) ([]byte, byte, error) {
 
 	return plaintext, version, nil
 }
-

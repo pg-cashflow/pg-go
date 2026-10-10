@@ -85,7 +85,6 @@ func (h *Handlers) TenantDuesOptions(c *gin.Context) {
 	})
 }
 
-
 // TenantDueQR handles GET /tenant/dues/:id/qr.
 func (h *Handlers) TenantDueQR(c *gin.Context) {
 	t := tenantFromContext(c)

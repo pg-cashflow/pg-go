@@ -53,6 +53,28 @@ type routeClass struct {
 	anonOK bool
 }
 
+var exactPublicPaths = map[string]bool{
+	"/healthz":                         true,
+	"/metrics":                         true,
+	"/p/:token":                        true,
+	"/p/:token/push/subscribe":         true,
+	"/webhooks/cashfree":               true,
+	"/webhooks/cashfree/payouts":       true,
+	"/webhooks/cashfree/settlements":   true,
+	"/api/healthz":                     true,
+	"/api/metrics":                     true,
+	"/api/push/vapid-public-key":       true,
+	"/api/join/invite/:code":           true,
+	"/api/owner/calendar.ics":          true,
+	"/api/auth/otp/request":            true,
+	"/api/auth/otp/verify":             true,
+	"/api/auth/firebase":               true,
+	"/api/auth/refresh":                true,
+	"/api/auth/logout":                 true,
+	"/api/locales":                     true,
+	"/api/public/cashfree/kyc/webhook": true,
+}
+
 // classifyRoute maps a route to its contract-defined access. It returns false
 // for any route that has no classification, which fails the matrix.
 func classifyRoute(path string) (routeClass, bool) {
@@ -71,15 +93,8 @@ func classifyRoute(path string) (routeClass, bool) {
 		return routeClass{allowed: allow(callerOwner, callerManager, callerTenant, callerPendingJoin)}, true
 	case path == "/api/join/me", path == "/api/join":
 		return routeClass{allowed: allow(callerPendingJoin)}, true
-	case path == "/api/owner/calendar.ics":
-		// Token is a query parameter, not a bearer header: handled by the handler.
-		return routeClass{anonOK: true}, true
-	// Public routes.
-	case path == "/healthz", path == "/metrics", path == "/api/healthz", path == "/api/metrics",
-		strings.HasPrefix(path, "/p/"), strings.HasPrefix(path, "/webhooks/"),
-		strings.HasPrefix(path, "/api/auth/"), path == "/api/push/vapid-public-key",
-		strings.HasPrefix(path, "/api/join/invite/"), path == "/api/locales",
-		strings.HasPrefix(path, "/api/public/"):
+	case exactPublicPaths[path]:
+		// Exact reviewed public routes. Prefix matching prohibited to prevent unreviewed open routes.
 		return routeClass{anonOK: true}, true
 	// Role-scoped groups.
 	case strings.HasPrefix(path, "/api/owner/"):
@@ -257,8 +272,12 @@ func TestRouteRoleAuthorizationMatrix(t *testing.T) {
 	})
 
 	var unclassified []string
+	seenPublic := make(map[string]bool)
 	cases := 0
 	for _, rt := range routes {
+		if exactPublicPaths[rt.Path] {
+			seenPublic[rt.Path] = true
+		}
 		class, ok := classifyRoute(rt.Path)
 		if !ok {
 			unclassified = append(unclassified, rt.Method+" "+rt.Path)
@@ -311,6 +330,11 @@ func TestRouteRoleAuthorizationMatrix(t *testing.T) {
 	if len(unclassified) > 0 {
 		t.Fatalf("%d route(s) not classified in the authorization matrix; add them to classifyRoute:\n  %s",
 			len(unclassified), strings.Join(unclassified, "\n  "))
+	}
+	for p := range exactPublicPaths {
+		if !seenPublic[p] {
+			t.Errorf("reviewed public path %q is not registered in the router", p)
+		}
 	}
 	t.Logf("matrix: %d routes, %d authorization checks", len(routes), cases)
 }

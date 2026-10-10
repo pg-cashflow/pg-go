@@ -230,5 +230,3 @@ func TestGetDigiLockerDocument_4xxPermanent(t *testing.T) {
 		t.Errorf("expected 404 to be permanent")
 	}
 }
-
-

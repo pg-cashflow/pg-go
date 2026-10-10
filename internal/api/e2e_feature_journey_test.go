@@ -155,15 +155,15 @@ func TestE2E_FullFeatureLifecycleJourney(t *testing.T) {
 	// 3. HTTP POST /api/owner/tenants (Onboard Tenant via API)
 	tenantPhone := fmt.Sprintf("+918%09d", time.Now().UnixNano()%1000000000)
 	roomNum := "302"
-	rentPaise := int64(1200000) // ₹12,000 = 1,200,000 paise
+	rentPaise := int64(1200000)    // ₹12,000 = 1,200,000 paise
 	depositPaise := int64(2400000) // ₹24,000
 	createTenantReqBody := map[string]any{
-		"name":               "Rohan Varma",
-		"phone":              tenantPhone,
-		"room_number":        roomNum,
-		"rent_amount":        rentPaise,
-		"deposit_amount":     depositPaise,
-		"due_day":            5,
+		"name":           "Rohan Varma",
+		"phone":          tenantPhone,
+		"room_number":    roomNum,
+		"rent_amount":    rentPaise,
+		"deposit_amount": depositPaise,
+		"due_day":        5,
 	}
 	createTenantJSON, _ := json.Marshal(createTenantReqBody)
 	req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants", bytes.NewReader(createTenantJSON))

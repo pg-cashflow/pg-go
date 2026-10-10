@@ -498,6 +498,118 @@ func (s *Service) PatchSettings(ctx context.Context, propertyID uuid.UUID, setti
 	return st, pol, err
 }
 
+const MaxExpenseLimitPaise = 1_000_000_000_00 // 10 crore paise
+
+func ValidateApprovalPolicy(p domain.ApprovalPolicy) error {
+	if p.ManagerDailyLimitPaise < 0 || p.ManagerDailyLimitPaise > MaxExpenseLimitPaise {
+		return ErrInvalidSettings
+	}
+	if p.SingleExpenseLimitPaise < 0 || p.SingleExpenseLimitPaise > MaxExpenseLimitPaise {
+		return ErrInvalidSettings
+	}
+	if p.ManagerMonthlyLimitPaise < 0 || p.ManagerMonthlyLimitPaise > MaxExpenseLimitPaise {
+		return ErrInvalidSettings
+	}
+	if p.OwnerApprovalThresholdPaise < 0 || p.OwnerApprovalThresholdPaise > MaxExpenseLimitPaise {
+		return ErrInvalidSettings
+	}
+	if p.ReimbursementThresholdPaise < 0 || p.ReimbursementThresholdPaise > MaxExpenseLimitPaise {
+		return ErrInvalidSettings
+	}
+	return nil
+}
+
+func ValidateFinanceSettings(s domain.PropertyFinanceSettings) error {
+	if s.FiscalMonthStartDay < 1 || s.FiscalMonthStartDay > 31 {
+		return ErrInvalidSettings
+	}
+	if s.TDREffectiveBPS < 0 || s.TDREffectiveBPS > 10000 {
+		return ErrInvalidSettings
+	}
+	return nil
+}
+
+func (s *Service) MergeFinanceConfig(
+	ctx context.Context,
+	propertyID uuid.UUID,
+	settingsPatch *domain.FinanceSettingsPatch,
+	policyPatch *domain.ApprovalPolicyPatch,
+	loyalty *domain.PropertyGamificationSettings,
+) (*domain.PropertyFinanceSettings, *domain.ApprovalPolicy, *domain.PropertyGamificationSettings, error) {
+	_ = s.Store.EnsureDefaults(ctx, propertyID)
+	curS, err := s.Store.GetSettings(ctx, propertyID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	curP, err := s.Store.GetPolicy(ctx, propertyID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if settingsPatch != nil {
+		if settingsPatch.FiscalMonthStartDay != nil {
+			curS.FiscalMonthStartDay = *settingsPatch.FiscalMonthStartDay
+		}
+		if settingsPatch.ManagerCanViewCapital != nil {
+			curS.ManagerCanViewCapital = *settingsPatch.ManagerCanViewCapital
+		}
+		if settingsPatch.ManagerCanViewROI != nil {
+			curS.ManagerCanViewROI = *settingsPatch.ManagerCanViewROI
+		}
+		if settingsPatch.ManagerCanViewLeakage != nil {
+			curS.ManagerCanViewLeakage = *settingsPatch.ManagerCanViewLeakage
+		}
+		if settingsPatch.TDREffectiveBPS != nil {
+			curS.TDREffectiveBPS = *settingsPatch.TDREffectiveBPS
+		}
+		if settingsPatch.TDRIsEstimated != nil {
+			curS.TDRIsEstimated = *settingsPatch.TDRIsEstimated
+		}
+	}
+
+	if policyPatch != nil {
+		if policyPatch.ManagerDailyLimitPaise != nil {
+			curP.ManagerDailyLimitPaise = *policyPatch.ManagerDailyLimitPaise
+		}
+		if policyPatch.SingleExpenseLimitPaise != nil {
+			curP.SingleExpenseLimitPaise = *policyPatch.SingleExpenseLimitPaise
+		}
+		if policyPatch.ManagerMonthlyLimitPaise != nil {
+			curP.ManagerMonthlyLimitPaise = *policyPatch.ManagerMonthlyLimitPaise
+		}
+		if policyPatch.OwnerApprovalThresholdPaise != nil {
+			curP.OwnerApprovalThresholdPaise = *policyPatch.OwnerApprovalThresholdPaise
+		}
+		if policyPatch.ReimbursementThresholdPaise != nil {
+			curP.ReimbursementThresholdPaise = *policyPatch.ReimbursementThresholdPaise
+		}
+		if policyPatch.EmergencyBypassEnabled != nil {
+			curP.EmergencyBypassEnabled = *policyPatch.EmergencyBypassEnabled
+		}
+	}
+
+	curS.PropertyID = propertyID
+	curP.PropertyID = propertyID
+
+	if err := ValidateFinanceSettings(curS); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ValidateApprovalPolicy(curP); err != nil {
+		return nil, nil, nil, err
+	}
+
+	if err := s.Store.SaveUnifiedSettings(ctx, propertyID, &curS, &curP, loyalty); err != nil {
+		return nil, nil, nil, err
+	}
+
+	evtPayload := map[string]any{"settings": curS, "policy": curP}
+	if loyalty != nil {
+		evtPayload["loyalty"] = loyalty
+	}
+	s.publish(ctx, propertyID, domain.EvtFinancePolicyChanged, evtPayload)
+	return &curS, &curP, loyalty, nil
+}
+
 func (s *Service) PatchUnifiedSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy, loyalty *domain.PropertyGamificationSettings) (*domain.PropertyFinanceSettings, *domain.ApprovalPolicy, *domain.PropertyGamificationSettings, error) {
 	_ = s.Store.EnsureDefaults(ctx, propertyID)
 	curS, err := s.Store.GetSettings(ctx, propertyID)
@@ -518,6 +630,12 @@ func (s *Service) PatchUnifiedSettings(ctx context.Context, propertyID uuid.UUID
 	if policy != nil {
 		policy.PropertyID = propertyID
 		curP = *policy
+	}
+	if err := ValidateFinanceSettings(curS); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ValidateApprovalPolicy(curP); err != nil {
+		return nil, nil, nil, err
 	}
 	if err := s.Store.SaveUnifiedSettings(ctx, propertyID, &curS, &curP, loyalty); err != nil {
 		return nil, nil, nil, err

@@ -12,6 +12,7 @@ import (
 
 func TestMetricsEndpoint_JSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("METRICS_ALLOW_OPEN", "true")
 	h := &Handlers{}
 
 	r := gin.New()
@@ -40,6 +41,7 @@ func TestMetricsEndpoint_JSON(t *testing.T) {
 
 func TestMetricsEndpoint_Prometheus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("METRICS_ALLOW_OPEN", "true")
 	h := &Handlers{}
 
 	r := gin.New()
@@ -65,26 +67,26 @@ func TestMetricsEndpoint_Prometheus(t *testing.T) {
 	}
 }
 
-func TestMetricsEndpoint_ProductionAuthRequired(t *testing.T) {
+func TestMetricsEndpoint_AuthClosedByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{}
 
 	r := gin.New()
 	r.GET("/metrics", h.Metrics)
 
-	// In production with no token configured, must fail closed with 401
-	t.Setenv("APP_ENV", "production")
+	// 1. By default with no token and no METRICS_ALLOW_OPEN, must fail closed with 401
 	t.Setenv("METRICS_TOKEN", "")
+	t.Setenv("METRICS_ALLOW_OPEN", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected status 401 Unauthorized in production without token, got %d", w.Code)
+		t.Fatalf("expected status 401 Unauthorized by default without token, got %d", w.Code)
 	}
 
-	// In production with token configured, valid token succeeds
+	// 2. With token configured, valid token succeeds
 	t.Setenv("METRICS_TOKEN", "secret-test-token")
 	reqAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	reqAuth.Header.Set("Authorization", "Bearer secret-test-token")
@@ -93,5 +95,26 @@ func TestMetricsEndpoint_ProductionAuthRequired(t *testing.T) {
 
 	if wAuth.Code != http.StatusOK {
 		t.Fatalf("expected status 200 OK with valid bearer token, got %d", wAuth.Code)
+	}
+
+	// 3. With token configured, invalid token fails with 401
+	reqBadAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqBadAuth.Header.Set("Authorization", "Bearer wrong-token")
+	wBadAuth := httptest.NewRecorder()
+	r.ServeHTTP(wBadAuth, reqBadAuth)
+
+	if wBadAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized with invalid bearer token, got %d", wBadAuth.Code)
+	}
+
+	// 4. With METRICS_ALLOW_OPEN=true and no token, succeeds without auth
+	t.Setenv("METRICS_TOKEN", "")
+	t.Setenv("METRICS_ALLOW_OPEN", "true")
+	reqOpen := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	wOpen := httptest.NewRecorder()
+	r.ServeHTTP(wOpen, reqOpen)
+
+	if wOpen.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK when METRICS_ALLOW_OPEN=true, got %d", wOpen.Code)
 	}
 }

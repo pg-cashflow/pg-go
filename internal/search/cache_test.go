@@ -46,7 +46,7 @@ func TestCache_doesNotCachePartialOrScopes(t *testing.T) {
 func TestCache_boundedAndExpires(t *testing.T) {
 	c := NewCache(20*time.Millisecond, 5)
 	for i := 0; i < 50; i++ {
-		k := string(rune('a' + i%26)) + string(rune('A'+i/26))
+		k := string(rune('a'+i%26)) + string(rune('A'+i/26))
 		_, _, _ = c.Do(k, func() ([]Result, bool, error) { return nil, false, nil })
 	}
 	if len(c.m) > 5 {

@@ -55,7 +55,7 @@ func (s *scopeTestUserStore) GetByID(_ context.Context, id uuid.UUID) (*domain.U
 	}
 	return nil, errors.New("user not found")
 }
-func (s *scopeTestUserStore) SetPropertyID(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *scopeTestUserStore) SetPropertyID(_ context.Context, _, _ uuid.UUID) error      { return nil }
 func (s *scopeTestUserStore) IncrementTokenVersion(_ context.Context, _ uuid.UUID) error { return nil }
 
 // seedForeignExpense inserts one expense that belongs to propertyID and returns its ID.

@@ -203,10 +203,10 @@ func TestVerifyFirebaseStepUp_Freshness(t *testing.T) {
 	secret := "test-secret-at-least-32-bytes-long"
 
 	tests := []struct {
-		name      string
-		authTime  time.Time
-		maxAge    time.Duration
-		wantErr   error
+		name     string
+		authTime time.Time
+		maxAge   time.Duration
+		wantErr  error
 	}{
 		{
 			name:     "fresh token (1 minute old)",
@@ -377,4 +377,3 @@ func TestVerifyStepUpOTP_ConcurrentRaceExactlyOneWins(t *testing.T) {
 		t.Errorf("expected 0 other errors, got %d", otherErrors)
 	}
 }
-

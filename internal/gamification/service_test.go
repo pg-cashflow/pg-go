@@ -16,13 +16,13 @@ import (
 
 type memStore struct {
 	Store
-	mu             sync.Mutex
-	txMu           sync.Mutex
-	settings       *domain.PropertyGamificationSettings
-	rules          map[string]domain.PointRule
-	ledger         []domain.PointsLedgerEntry
-	streak         map[uuid.UUID]*domain.TenantStreak
-	catalog        map[uuid.UUID]domain.RewardsCatalogItem
+	mu              sync.Mutex
+	txMu            sync.Mutex
+	settings        *domain.PropertyGamificationSettings
+	rules           map[string]domain.PointRule
+	ledger          []domain.PointsLedgerEntry
+	streak          map[uuid.UUID]*domain.TenantStreak
+	catalog         map[uuid.UUID]domain.RewardsCatalogItem
 	redemptions     []domain.Redemption
 	violations      []domain.Violation
 	readings        []domain.MeterReading
@@ -183,7 +183,6 @@ func (m *memStore) AddTenantCreditTx(ctx context.Context, tx pgx.Tx, tenantID uu
 func (m *memStore) InsertOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error {
 	return nil
 }
-
 
 func (m *memStore) GetTenantMonthPoints(ctx context.Context, tenantID uuid.UUID, monthYear string, isRSVP bool) (int, error) {
 	sum := 0
@@ -729,7 +728,6 @@ func TestRedemption_CashCredit_FailsClosedAndClamps(t *testing.T) {
 	})
 }
 
-
 func TestConsumer_MinorGamificationSuppressed(t *testing.T) {
 	store := newMemStore()
 	tenantID := uuid.New()
@@ -1033,5 +1031,3 @@ func TestRedeem_FoodAndPerkFulfilment(t *testing.T) {
 		t.Fatalf("expected error when fulfilling already fulfilled redemption")
 	}
 }
-
-

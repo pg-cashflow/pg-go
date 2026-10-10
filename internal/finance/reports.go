@@ -12,38 +12,38 @@ import (
 
 // ClearingDriftReport analyzes the gateway_clearing account for unreconciled or stuck balances.
 type ClearingDriftReport struct {
-	PropertyID              uuid.UUID `json:"property_id"`
-	AsOf                    time.Time `json:"as_of"`
+	PropertyID               uuid.UUID `json:"property_id"`
+	AsOf                     time.Time `json:"as_of"`
 	TotalGrossCollectedPaise int64     `json:"total_gross_collected_paise"`
-	TotalGrossSettledPaise  int64     `json:"total_gross_settled_paise"`
-	TotalRefundedPaise      int64     `json:"total_refunded_paise"`
-	NetUnclearedPaise       int64     `json:"net_uncleared_paise"`
-	AgingPast3DaysPaise     int64     `json:"aging_past_3_days_paise"`
-	HasDriftBreach          bool      `json:"has_drift_breach"`
+	TotalGrossSettledPaise   int64     `json:"total_gross_settled_paise"`
+	TotalRefundedPaise       int64     `json:"total_refunded_paise"`
+	NetUnclearedPaise        int64     `json:"net_uncleared_paise"`
+	AgingPast3DaysPaise      int64     `json:"aging_past_3_days_paise"`
+	HasDriftBreach           bool      `json:"has_drift_breach"`
 }
 
 // DepositReserveReport compares ring-fenced bank balance against total tenant deposit obligations.
 type DepositReserveReport struct {
-	PropertyID               uuid.UUID `json:"property_id"`
-	AsOf                     time.Time `json:"as_of"`
-	TotalDepositLiabilityPaise int64    `json:"total_deposit_liability_paise"`
-	BankCashBalancePaise     int64     `json:"bank_cash_balance_paise"`
-	ReserveSurplusDeficitPaise int64    `json:"reserve_surplus_deficit_paise"`
-	IsDeficit                bool      `json:"is_deficit"`
-	CoveragePercentageBPS    int       `json:"coverage_percentage_bps"` // 10000 = 100%
+	PropertyID                 uuid.UUID `json:"property_id"`
+	AsOf                       time.Time `json:"as_of"`
+	TotalDepositLiabilityPaise int64     `json:"total_deposit_liability_paise"`
+	BankCashBalancePaise       int64     `json:"bank_cash_balance_paise"`
+	ReserveSurplusDeficitPaise int64     `json:"reserve_surplus_deficit_paise"`
+	IsDeficit                  bool      `json:"is_deficit"`
+	CoveragePercentageBPS      int       `json:"coverage_percentage_bps"` // 10000 = 100%
 }
 
 // CapitalPaybackReport analyzes capital invested versus cumulative operating cash flows.
 type CapitalPaybackReport struct {
-	PropertyID               uuid.UUID `json:"property_id"`
-	AsOf                     time.Time `json:"as_of"`
-	TotalInvestedPaise       int64     `json:"total_invested_paise"`
-	TotalWithdrawnPaise      int64     `json:"total_withdrawn_paise"`
-	NetCapitalDeployedPaise  int64     `json:"net_capital_deployed_paise"`
-	CumulativeOCFPaise       int64     `json:"cumulative_ocf_paise"`
-	UnrecoveredCapitalPaise  int64     `json:"unrecovered_capital_paise"`
-	IsBreakevenAchieved      bool      `json:"is_breakeven_achieved"`
-	PaybackPercentageBPS     int       `json:"payback_percentage_bps"`
+	PropertyID              uuid.UUID `json:"property_id"`
+	AsOf                    time.Time `json:"as_of"`
+	TotalInvestedPaise      int64     `json:"total_invested_paise"`
+	TotalWithdrawnPaise     int64     `json:"total_withdrawn_paise"`
+	NetCapitalDeployedPaise int64     `json:"net_capital_deployed_paise"`
+	CumulativeOCFPaise      int64     `json:"cumulative_ocf_paise"`
+	UnrecoveredCapitalPaise int64     `json:"unrecovered_capital_paise"`
+	IsBreakevenAchieved     bool      `json:"is_breakeven_achieved"`
+	PaybackPercentageBPS    int       `json:"payback_percentage_bps"`
 }
 
 // SubBusinessDays subtracts N business days (skipping Saturday and Sunday) from t in UTC.
@@ -93,11 +93,11 @@ func (s *Service) GetClearingDriftReport(ctx context.Context, propertyID uuid.UU
 	if hasBreach {
 		// Publish high-priority leakage/reconciliation event
 		s.publish(ctx, propertyID, domain.EvtLeakageDetected, map[string]any{
-			"type":              "gateway_clearing_drift",
-			"severity":          "high",
-			"aging_paise":       agingPast3Days,
-			"net_uncleared":     netUncleared,
-			"message":           fmt.Sprintf("T+3 gateway clearing drift breach: %d paise older than 3 business days remained unsettled", agingPast3Days),
+			"type":          "gateway_clearing_drift",
+			"severity":      "high",
+			"aging_paise":   agingPast3Days,
+			"net_uncleared": netUncleared,
+			"message":       fmt.Sprintf("T+3 gateway clearing drift breach: %d paise older than 3 business days remained unsettled", agingPast3Days),
 		})
 	}
 
@@ -105,10 +105,10 @@ func (s *Service) GetClearingDriftReport(ctx context.Context, propertyID uuid.UU
 		PropertyID:               propertyID,
 		AsOf:                     now,
 		TotalGrossCollectedPaise: totalDr,
-		TotalGrossSettledPaise:  totalCr,
-		NetUnclearedPaise:       netUncleared,
-		AgingPast3DaysPaise:     agingPast3Days,
-		HasDriftBreach:          hasBreach,
+		TotalGrossSettledPaise:   totalCr,
+		NetUnclearedPaise:        netUncleared,
+		AgingPast3DaysPaise:      agingPast3Days,
+		HasDriftBreach:           hasBreach,
 	}, nil
 }
 

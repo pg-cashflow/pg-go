@@ -11,9 +11,9 @@ import (
 type ctxKey string
 
 const (
-	RequestIDHeader          = "X-Request-ID"
-	CorrelationIDHeader      = "X-Correlation-ID"
-	requestIDCtxKey   ctxKey = "request_id"
+	RequestIDHeader            = "X-Request-ID"
+	CorrelationIDHeader        = "X-Correlation-ID"
+	requestIDCtxKey     ctxKey = "request_id"
 )
 
 // RequestIDMiddleware injects or propagates a unique correlation ID for every request.

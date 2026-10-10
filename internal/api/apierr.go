@@ -114,6 +114,8 @@ func financeClientErr(err error) error {
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinanceReasonRequired)
 	case errors.Is(err, finance.ErrDateOutOfRange):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinanceDateOutOfRange)
+	case errors.Is(err, finance.ErrInvalidSettings):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinanceInvalidSettings)
 	case errors.Is(err, finance.ErrDisabled):
 		return clientErrWithCode(http.StatusServiceUnavailable, "finance disabled", apierr.CodeFinanceDisabled)
 	default:

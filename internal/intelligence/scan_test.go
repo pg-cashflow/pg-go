@@ -14,9 +14,9 @@ func TestScanVacancyAndLoyalty(t *testing.T) {
 	svc := NewService(st)
 	pid := uuid.New()
 	leaks, _, err := svc.Scan(context.Background(), ScanInput{
-		PropertyID: pid,
-		Recon:      &payment.ReconciliationSummary{OutstandingRent: 620000},
-		Occupancy:  finance.Occupancy{CapacityBeds: 10, OccupiedBeds: 6, BedsAtRisk: 1},
+		PropertyID:         pid,
+		Recon:              &payment.ReconciliationSummary{OutstandingRent: 620000},
+		Occupancy:          finance.Occupancy{CapacityBeds: 10, OccupiedBeds: 6, BedsAtRisk: 1},
 		LoyaltyIssuedPaise: 200000,
 		LoyaltyBudgetPaise: 100000,
 		MealExpected:       map[string]int{"lunch": 70},

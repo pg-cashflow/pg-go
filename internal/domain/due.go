@@ -28,21 +28,21 @@ const (
 )
 
 type Due struct {
-	ID             uuid.UUID  `json:"id"`
-	DueCode        string     `json:"due_code"`
-	TenantID       uuid.UUID  `json:"tenant_id"`
-	PropertyID     uuid.UUID  `json:"property_id"`
+	ID                      uuid.UUID  `json:"id"`
+	DueCode                 string     `json:"due_code"`
+	TenantID                uuid.UUID  `json:"tenant_id"`
+	PropertyID              uuid.UUID  `json:"property_id"`
 	Kind                    DueKind    `json:"kind"`
-	Amount                  int64      `json:"amount"` // paise current payable
-	OriginalAmount          int64      `json:"original_amount"` // immutable
+	Amount                  int64      `json:"amount"`                              // paise current payable
+	OriginalAmount          int64      `json:"original_amount"`                     // immutable
 	ContractualCeilingPaise *int64     `json:"contractual_ceiling_paise,omitempty"` // persisted ceiling for prorated/vacated dues
 	PeriodStart             time.Time  `json:"period_start"`
-	PeriodEnd      time.Time  `json:"period_end"`
-	DueDate        time.Time  `json:"due_date"`
-	Status         DueStatus  `json:"status"`
-	PaidAt         *time.Time `json:"paid_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	PeriodEnd               time.Time  `json:"period_end"`
+	DueDate                 time.Time  `json:"due_date"`
+	Status                  DueStatus  `json:"status"`
+	PaidAt                  *time.Time `json:"paid_at,omitempty"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
 }
 
 const dueCodeAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -299,4 +299,3 @@ func (d *Due) CalculatePaymentStatus(asOf time.Time) CalculatedPaymentStatus {
 	}
 	return PaymentStatusDue
 }
-

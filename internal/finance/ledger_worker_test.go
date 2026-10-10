@@ -494,4 +494,3 @@ func TestLedgerOutboxWorker_PayoutDispatcherUnconfiguredDoesNotDeadLetter(t *tes
 		t.Errorf("expected 0 dead letter alerts, got %d", len(alerter.calledWith))
 	}
 }
-

@@ -20,12 +20,12 @@ func NewService(fin *finance.Service) *Service {
 }
 
 type Report struct {
-	Period     string              `json:"period"`
-	Occupancy  finance.Occupancy   `json:"occupancy"`
-	Operating  *finance.OperatingSummary `json:"operating"`
-	BreakEven  BreakEven           `json:"break_even"`
-	Recovery   Recovery            `json:"recovery"`
-	Official   bool                `json:"official"`
+	Period    string                    `json:"period"`
+	Occupancy finance.Occupancy         `json:"occupancy"`
+	Operating *finance.OperatingSummary `json:"operating"`
+	BreakEven BreakEven                 `json:"break_even"`
+	Recovery  Recovery                  `json:"recovery"`
+	Official  bool                      `json:"official"`
 }
 
 func (s *Service) Report(ctx context.Context, propertyID uuid.UUID, period string, recon *payment.ReconciliationSummary, rooms []domain.Room, tenants []domain.Tenant, billedRent, fixedOpex, variableOpex int64) (*Report, error) {

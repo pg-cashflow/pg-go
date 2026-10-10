@@ -249,5 +249,3 @@ type SettlementBalancerStore interface {
 type SettlementReconcilerService interface {
 	ReconcileWebhookSettlement(ctx context.Context, rec *cashfree.SettlementWebhookRecord) (*domain.GatewaySettlement, error)
 }
-
-

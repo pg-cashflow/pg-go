@@ -86,4 +86,3 @@ type BankTransactionFilter struct {
 	Limit    int
 	Offset   int
 }
-

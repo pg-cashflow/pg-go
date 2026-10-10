@@ -9,8 +9,10 @@ import (
 //   - 10 digits (e.g. "9876543210") -> "+919876543210"
 //   - 11 digits with leading 0 (e.g. "09876543210") -> "+919876543210"
 //   - 12 digits starting with 91 (e.g. "919876543210") -> "+919876543210"
+//
 // International numbers:
 //   - Must start with "+" and have 10 to 15 digits.
+//
 // Any input that is too short (<10 digits), too long (>15 digits), or malformed returns "".
 func NormalizePhone(p string) string {
 	raw := strings.TrimSpace(p)

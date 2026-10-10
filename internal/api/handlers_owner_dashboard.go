@@ -938,4 +938,3 @@ func (h *Handlers) OwnerUpdatePropertySettings(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"settings": current})
 }
-

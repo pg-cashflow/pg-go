@@ -258,4 +258,3 @@ func (s *Service) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, re
 	red.UpdatedAt = s.now().UTC()
 	return red, nil
 }
-

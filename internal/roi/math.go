@@ -7,13 +7,13 @@ import (
 )
 
 type BreakEven struct {
-	ContributionPerBedPaise int64   `json:"contribution_per_bed_paise"`
-	FixedOpexPaise          int64   `json:"fixed_opex_paise"`
-	BreakEvenBeds           int     `json:"break_even_beds"`
-	BreakEvenOccupancyBPS   int     `json:"break_even_occupancy_bps"`
-	CurrentOccupancyBPS     int     `json:"current_occupancy_bps"`
-	SafetyMarginPP          int     `json:"safety_margin_pp"` // percentage points * 100? use occupancy bps delta / 100
-	SafetyMarginBPS         int     `json:"safety_margin_bps"`
+	ContributionPerBedPaise int64 `json:"contribution_per_bed_paise"`
+	FixedOpexPaise          int64 `json:"fixed_opex_paise"`
+	BreakEvenBeds           int   `json:"break_even_beds"`
+	BreakEvenOccupancyBPS   int   `json:"break_even_occupancy_bps"`
+	CurrentOccupancyBPS     int   `json:"current_occupancy_bps"`
+	SafetyMarginPP          int   `json:"safety_margin_pp"` // percentage points * 100? use occupancy bps delta / 100
+	SafetyMarginBPS         int   `json:"safety_margin_bps"`
 }
 
 func ComputeBreakEven(fixedOpex, variableOpex, operatingRevenue int64, occ finance.Occupancy) BreakEven {
@@ -82,12 +82,12 @@ type ScenarioInput struct {
 }
 
 type ScenarioResult struct {
-	OccupiedBeds            int     `json:"occupied_beds"`
-	RevenuePaise            int64   `json:"revenue_paise"`
-	OpexPaise               int64   `json:"opex_paise"`
-	OCFPaise                int64   `json:"ocf_paise"`
-	BreakEvenOccupancyBPS   int     `json:"break_even_occupancy_bps"`
-	TBEMonths               float64 `json:"tbe_months"`
+	OccupiedBeds          int     `json:"occupied_beds"`
+	RevenuePaise          int64   `json:"revenue_paise"`
+	OpexPaise             int64   `json:"opex_paise"`
+	OCFPaise              int64   `json:"ocf_paise"`
+	BreakEvenOccupancyBPS int     `json:"break_even_occupancy_bps"`
+	TBEMonths             float64 `json:"tbe_months"`
 }
 
 func Simulate(in ScenarioInput) ScenarioResult {

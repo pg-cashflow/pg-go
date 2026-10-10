@@ -478,4 +478,3 @@ func TestRefreshTokenSessionCeilingWithPurge(t *testing.T) {
 		t.Fatalf("expected ErrRefreshTokenExpired when exceeding 90-day ceiling, got %v", err)
 	}
 }
-

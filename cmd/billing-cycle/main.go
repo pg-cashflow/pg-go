@@ -78,18 +78,18 @@ func main() {
 	}
 
 	job := &jobs.BillingCycle{
-		Billing:          billingSvc,
-		Tenants:          tenantRepo,
-		Properties:       propertyRepo,
-		MagicLink:        magicSvc,
-		SMS:              gateway,
-		Push:             pushSvc,
+		Billing:           billingSvc,
+		Tenants:           tenantRepo,
+		Properties:        propertyRepo,
+		MagicLink:         magicSvc,
+		SMS:               gateway,
+		Push:              pushSvc,
 		RecurringExpenses: recurringScheduler,
-		Mailer:           mail,
-		Events:           pub,
-		BaseURL:          cfg.MagicLinkBaseURL,
-		Log:              slog.Default(),
-		ErrOpenDueExists: billing.ErrOpenDueExists,
+		Mailer:            mail,
+		Events:            pub,
+		BaseURL:           cfg.MagicLinkBaseURL,
+		Log:               slog.Default(),
+		ErrOpenDueExists:  billing.ErrOpenDueExists,
 	}
 
 	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "billing_cycle")

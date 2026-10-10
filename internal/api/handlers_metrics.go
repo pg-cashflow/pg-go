@@ -28,12 +28,12 @@ type OutboxMetrics struct {
 }
 
 type RuntimeMetrics struct {
-	NumGoroutine   int    `json:"num_goroutines"`
-	AllocBytes     uint64 `json:"alloc_bytes"`
-	TotalAlloc     uint64 `json:"total_alloc_bytes"`
-	SysBytes       uint64 `json:"sys_bytes"`
-	NumGC          uint32 `json:"num_gc"`
-	GoVersion      string `json:"go_version"`
+	NumGoroutine int    `json:"num_goroutines"`
+	AllocBytes   uint64 `json:"alloc_bytes"`
+	TotalAlloc   uint64 `json:"total_alloc_bytes"`
+	SysBytes     uint64 `json:"sys_bytes"`
+	NumGC        uint32 `json:"num_gc"`
+	GoVersion    string `json:"go_version"`
 }
 
 type DatabaseMetrics struct {
@@ -58,13 +58,11 @@ type QueryPerfSummary struct {
 // Supports application/json format or Prometheus text format based on Accept header.
 func (h *Handlers) Metrics(c *gin.Context) {
 	expectedToken := os.Getenv("METRICS_TOKEN")
+	allowOpen := strings.ToLower(os.Getenv("METRICS_ALLOW_OPEN")) == "true"
+
 	if expectedToken == "" {
-		env := strings.ToLower(os.Getenv("APP_ENV"))
-		if env == "" {
-			env = strings.ToLower(os.Getenv("ENVIRONMENT"))
-		}
-		if env == "production" || env == "prod" || os.Getenv("METRICS_REQUIRE_AUTH") == "true" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication in production"})
+		if !allowOpen {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication"})
 			return
 		}
 	} else {

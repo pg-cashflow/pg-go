@@ -150,4 +150,3 @@ func TestFailOnSkipfIfDBRequired_WhenNoRequireDB(t *testing.T) {
 		t.Fatalf("did not expect failure when REQUIRE_DB not set")
 	}
 }
-

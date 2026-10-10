@@ -58,14 +58,14 @@ type ProviderPayment struct {
 
 // ProviderRefund is the normalized representation of a refund transaction.
 type ProviderRefund struct {
-	RefundID      string
-	PaymentID     string
-	AmountPaise   int64
-	Status        string // "SUCCESS", "PENDING", "FAILED", "ON_HOLD", "CANCELLED"
-	Reason        string
-	Source        string
-	ProcessedAt   time.Time
-	RawResponse   []byte
+	RefundID    string
+	PaymentID   string
+	AmountPaise int64
+	Status      string // "SUCCESS", "PENDING", "FAILED", "ON_HOLD", "CANCELLED"
+	Reason      string
+	Source      string
+	ProcessedAt time.Time
+	RawResponse []byte
 }
 
 // NormalizedEventType identifies common payment lifecycle events across all gateways.

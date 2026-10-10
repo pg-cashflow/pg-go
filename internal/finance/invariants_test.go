@@ -661,7 +661,7 @@ func TestMoneyMath_EODMultiWayBalancer_PropertyEvals(t *testing.T) {
 		settledPortion := int64(rng.Intn(int(gwCollections)) + 1)
 		feePaise := settledPortion * int64(rng.Intn(200)+100) / 10000 // 1.00% to 3.00%
 		taxPaise := feePaise * 18 / 100                               // 18% GST
-		adjPaise := int64(rng.Intn(500))                             // 0 to 500 paise adjustments
+		adjPaise := int64(rng.Intn(500))                              // 0 to 500 paise adjustments
 		netSettledPaise := settledPortion - (feePaise + taxPaise + adjPaise)
 		if netSettledPaise <= 0 {
 			continue
@@ -765,6 +765,3 @@ func TestMoneyMath_EODMultiWayBalancer_Perturbation_FailClosedEvals(t *testing.T
 		}
 	}
 }
-
-
-

@@ -554,16 +554,16 @@ func tenantResponse(t *domain.Tenant) gin.H {
 		"joined_on":            t.JoinedOn,
 		"has_id_photo":         t.HasIDPhoto,
 		// Minor Protection & Guardian KYC (ADR migration 021, CONTRACT Rev 13 §1)
-		"majority_date":                 t.MajorityDate,
-		"guardian_name":                 t.GuardianName,
-		"guardian_phone":                t.GuardianPhone,
-		"guardian_relation":             t.GuardianRelation,
-		"guardian_kyc_reference_id":     t.GuardianKYCReferenceID,
-		"guardian_consent_verified_at":  t.GuardianConsentVerifiedAt,
-		"is_gamification_disabled":      t.IsGamificationDisabled,
-		"is_minor":                      t.IsMinor(time.Now().UTC()),
-		"created_at":                    t.CreatedAt,
-		"updated_at":                    t.UpdatedAt,
+		"majority_date":                t.MajorityDate,
+		"guardian_name":                t.GuardianName,
+		"guardian_phone":               t.GuardianPhone,
+		"guardian_relation":            t.GuardianRelation,
+		"guardian_kyc_reference_id":    t.GuardianKYCReferenceID,
+		"guardian_consent_verified_at": t.GuardianConsentVerifiedAt,
+		"is_gamification_disabled":     t.IsGamificationDisabled,
+		"is_minor":                     t.IsMinor(time.Now().UTC()),
+		"created_at":                   t.CreatedAt,
+		"updated_at":                   t.UpdatedAt,
 	}
 	return resp
 }

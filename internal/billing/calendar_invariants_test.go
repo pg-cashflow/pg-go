@@ -16,10 +16,10 @@ func TestCalendar_MonthEndClampingTable(t *testing.T) {
 	}
 
 	type monthCase struct {
-		year               int
-		month              time.Month
-		lastDay            int
-		isLeap             bool
+		year                int
+		month               time.Month
+		lastDay             int
+		isLeap              bool
 		expectedClampedDays []int // days that must be processed on the final day of this month
 	}
 

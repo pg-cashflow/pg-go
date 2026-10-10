@@ -152,4 +152,3 @@ func TestParseWebhookTypes(t *testing.T) {
 		t.Fatalf("unexpected dispute content: %+v", disp)
 	}
 }
-

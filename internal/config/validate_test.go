@@ -37,8 +37,8 @@ func TestValidateForRealDeployment_ValidWithoutKYC(t *testing.T) {
 
 func TestValidateForRealDeployment_PlaceholderSecrets(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(c *Config)
+		name    string
+		mutate  func(c *Config)
 		wantSub string
 	}{
 		{
@@ -88,8 +88,8 @@ func TestValidateForRealDeployment_PlaceholderSecrets(t *testing.T) {
 
 func TestValidateForRealDeployment_ShortSecrets(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(c *Config)
+		name    string
+		mutate  func(c *Config)
 		wantSub string
 	}{
 		{
@@ -247,4 +247,3 @@ func TestValidateWarnings_AdminEmailUnset(t *testing.T) {
 		t.Fatalf("expected warning about unset ADMIN_EMAIL, got: %v", warns)
 	}
 }
-

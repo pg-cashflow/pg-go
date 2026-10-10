@@ -10,10 +10,10 @@ import (
 
 // CalculationParams holds the input parameters required to calculate monthly wages for a staff member.
 type CalculationParams struct {
-	Staff       domain.StaffProfile
-	Policy      domain.LeavePolicy
-	CycleMonth  string // "YYYY-MM"
-	Records     []domain.AttendanceRecord
+	Staff      domain.StaffProfile
+	Policy     domain.LeavePolicy
+	CycleMonth string // "YYYY-MM"
+	Records    []domain.AttendanceRecord
 }
 
 // CalculateMonthlyWage performs pure integer-paise wage calculation with attendance adjustments,

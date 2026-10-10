@@ -53,6 +53,7 @@
   "finance.expenseStateChanged",
   "finance.reasonRequired",
   "finance.dateOutOfRange",
+  "finance.invalidSettings",
   "request.invalidBody",
   "request.invalidId",
   "request.dueDayInvalid",

@@ -15,6 +15,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/qr"
+	"github.com/pg-cashflow/pg-go/internal/timeutil"
 )
 
 var (
@@ -28,9 +29,9 @@ type txFn func(ctx context.Context, fn func(dues DueRepository, tenants TenantRe
 
 // Service creates and adjusts dues (rent, deposit, prorate, waive).
 type Service struct {
-	dues      DueRepository
-	tenants   TenantRepository
-	pub       events.Publisher
+	dues          DueRepository
+	tenants       TenantRepository
+	pub           events.Publisher
 	runInTx       txFn
 	now           func() time.Time
 	onProrate     func(ctx context.Context, due *domain.Due, original, prorated int64)
@@ -42,7 +43,7 @@ func NewService(dues DueRepository, tenants TenantRepository, pub events.Publish
 		dues:    dues,
 		tenants: tenants,
 		pub:     pub,
-		now:     func() time.Time { return time.Now().UTC() },
+		now:     timeutil.System.Now,
 	}
 	s.runInTx = func(ctx context.Context, fn func(DueRepository, TenantRepository, events.Publisher) error) error {
 		return fn(s.dues, s.tenants, s.pub)

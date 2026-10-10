@@ -279,4 +279,3 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 func ptr(s string) *string {
 	return &s
 }
-

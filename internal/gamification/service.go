@@ -19,7 +19,7 @@ var (
 	ErrMonthlyCapExceeded     = errors.New("monthly earn cap exceeded")
 	ErrPropertyBudgetExceeded = errors.New("property monthly reward budget exceeded")
 	ErrInsufficientPoints     = errors.New("insufficient points balance")
-	ErrTenureRequirement     = errors.New("tenure requirement not met for this reward")
+	ErrTenureRequirement      = errors.New("tenure requirement not met for this reward")
 	ErrStep3ViolationBlocked  = errors.New("cash rent credit redemption suspended for this quarter due to a step-3 house rule violation")
 	ErrInvalidDelta           = errors.New("invalid point delta")
 	ErrMeterReadingDecreased  = errors.New("new meter reading cannot be lower than previous reading")
@@ -142,15 +142,15 @@ type DueWriter interface {
 }
 
 type Service struct {
-	store      Store
-	tenants    TenantReader
-	dues       DueWriter
-	pub        events.Publisher
-	blobs      BlobStore
-	logger     *slog.Logger
-	now        func() time.Time
-	onPoints   func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64)
-	onRedeem   func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64)
+	store    Store
+	tenants  TenantReader
+	dues     DueWriter
+	pub      events.Publisher
+	blobs    BlobStore
+	logger   *slog.Logger
+	now      func() time.Time
+	onPoints func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64)
+	onRedeem func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64)
 }
 
 func NewService(store Store, tenants TenantReader, dues DueWriter, pub events.Publisher, blobs BlobStore) *Service {

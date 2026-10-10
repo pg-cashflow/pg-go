@@ -236,4 +236,3 @@ type customStubBilling struct {
 func (c *customStubBilling) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*domain.Due, error) {
 	return c.createFunc(ctx, tenant)
 }
-

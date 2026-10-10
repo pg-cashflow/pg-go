@@ -526,5 +526,3 @@ func TestFeatureExpense_ManagerVoidAboveOwnerThresholdRequiresOwner(t *testing.T
 		t.Fatalf("owner void failed: status %d code %q (body %s)", code, errCode(resp), resp)
 	}
 }
-
-

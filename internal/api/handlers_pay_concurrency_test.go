@@ -183,7 +183,9 @@ func (s *dedupStubPay) ManualMatch(context.Context, uuid.UUID, int64, string, uu
 func (s *dedupStubPay) MarkCashPaid(context.Context, uuid.UUID, int64, uuid.UUID, string) (*domain.Payment, error) {
 	panic("unused")
 }
-func (s *dedupStubPay) SettleDeposit(context.Context, uuid.UUID, int64, string) error { panic("unused") }
+func (s *dedupStubPay) SettleDeposit(context.Context, uuid.UUID, int64, string) error {
+	panic("unused")
+}
 func (s *dedupStubPay) BuildSummary(context.Context, uuid.UUID, string) (*payment.ReconciliationSummary, error) {
 	panic("unused")
 }

@@ -386,4 +386,3 @@ func PNGURL(role string, dueID uuid.UUID) string {
 	}
 	return "/api/tenant/dues/" + dueID.String() + "/qr"
 }
-

@@ -461,6 +461,3 @@ func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Conte
 func isNoRows(err error) bool {
 	return errors.Is(err, pgx.ErrNoRows)
 }
-
-
-

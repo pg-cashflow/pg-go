@@ -26,18 +26,18 @@ var (
 
 // Chart of accounts (operating + capital). Amounts always paise.
 const (
-	AcctCash                    = "cash"
-	AcctBank                    = "bank"
-	AcctOwnerCapital            = "owner_capital"
-	AcctDepositLiability        = "deposit_liability"
-	AcctTenantReceivable        = "tenant_receivable"
-	AcctRentRevenue             = "rent_revenue"
-	AcctUtilityRecoveryRevenue  = "utility_recovery_revenue"
-	AcctOperatingExpense        = "operating_expense"
-	AcctAccountsPayable         = "accounts_payable"
-	AcctManagerAdvancePayable   = "manager_advance_payable"
-	AcctRewardLiability         = "reward_liability"
-	AcctLoyaltyExpense          = "loyalty_expense"
+	AcctCash                     = "cash"
+	AcctBank                     = "bank"
+	AcctOwnerCapital             = "owner_capital"
+	AcctDepositLiability         = "deposit_liability"
+	AcctTenantReceivable         = "tenant_receivable"
+	AcctRentRevenue              = "rent_revenue"
+	AcctUtilityRecoveryRevenue   = "utility_recovery_revenue"
+	AcctOperatingExpense         = "operating_expense"
+	AcctAccountsPayable          = "accounts_payable"
+	AcctManagerAdvancePayable    = "manager_advance_payable"
+	AcctRewardLiability          = "reward_liability"
+	AcctLoyaltyExpense           = "loyalty_expense"
 	AcctPaymentProcessingExpense = "payment_processing_expense"
 	AcctGatewayClearing          = "gateway_clearing"
 	AcctUnappliedReceipts        = "unapplied_receipts"
@@ -59,11 +59,11 @@ const (
 type ExpenseStatus string
 
 const (
-	ExpenseDraft            ExpenseStatus = "draft"
-	ExpensePendingApproval  ExpenseStatus = "pending_approval"
-	ExpenseApproved         ExpenseStatus = "approved"
-	ExpensePaid             ExpenseStatus = "paid"
-	ExpenseCancelled        ExpenseStatus = "cancelled"
+	ExpenseDraft           ExpenseStatus = "draft"
+	ExpensePendingApproval ExpenseStatus = "pending_approval"
+	ExpenseApproved        ExpenseStatus = "approved"
+	ExpensePaid            ExpenseStatus = "paid"
+	ExpenseCancelled       ExpenseStatus = "cancelled"
 )
 
 type PayerRole string
@@ -173,23 +173,41 @@ type JournalLine struct {
 }
 
 type ApprovalPolicy struct {
-	PropertyID                 uuid.UUID `json:"property_id"`
-	ManagerDailyLimitPaise     int64     `json:"manager_daily_limit_paise"`
-	SingleExpenseLimitPaise    int64     `json:"single_expense_limit_paise"`
-	ManagerMonthlyLimitPaise   int64     `json:"manager_monthly_limit_paise"`
-	OwnerApprovalThresholdPaise int64    `json:"owner_approval_threshold_paise"`
-	ReimbursementThresholdPaise int64    `json:"reimbursement_threshold_paise"`
-	EmergencyBypassEnabled     bool      `json:"emergency_bypass_enabled"`
+	PropertyID                  uuid.UUID `json:"property_id"`
+	ManagerDailyLimitPaise      int64     `json:"manager_daily_limit_paise"`
+	SingleExpenseLimitPaise     int64     `json:"single_expense_limit_paise"`
+	ManagerMonthlyLimitPaise    int64     `json:"manager_monthly_limit_paise"`
+	OwnerApprovalThresholdPaise int64     `json:"owner_approval_threshold_paise"`
+	ReimbursementThresholdPaise int64     `json:"reimbursement_threshold_paise"`
+	EmergencyBypassEnabled      bool      `json:"emergency_bypass_enabled"`
 }
 
 type PropertyFinanceSettings struct {
-	PropertyID             uuid.UUID `json:"property_id"`
-	FiscalMonthStartDay    int16     `json:"fiscal_month_start_day"`
-	ManagerCanViewCapital  bool      `json:"manager_can_view_capital"`
-	ManagerCanViewROI      bool      `json:"manager_can_view_roi"`
-	ManagerCanViewLeakage  bool      `json:"manager_can_view_leakage"`
-	TDREffectiveBPS        int       `json:"tdr_effective_bps"`
-	TDRIsEstimated         bool      `json:"tdr_is_estimated"`
+	PropertyID            uuid.UUID `json:"property_id"`
+	FiscalMonthStartDay   int16     `json:"fiscal_month_start_day"`
+	ManagerCanViewCapital bool      `json:"manager_can_view_capital"`
+	ManagerCanViewROI     bool      `json:"manager_can_view_roi"`
+	ManagerCanViewLeakage bool      `json:"manager_can_view_leakage"`
+	TDREffectiveBPS       int       `json:"tdr_effective_bps"`
+	TDRIsEstimated        bool      `json:"tdr_is_estimated"`
+}
+
+type FinanceSettingsPatch struct {
+	FiscalMonthStartDay   *int16 `json:"fiscal_month_start_day"`
+	ManagerCanViewCapital *bool  `json:"manager_can_view_capital"`
+	ManagerCanViewROI     *bool  `json:"manager_can_view_roi"`
+	ManagerCanViewLeakage *bool  `json:"manager_can_view_leakage"`
+	TDREffectiveBPS       *int   `json:"tdr_effective_bps"`
+	TDRIsEstimated        *bool  `json:"tdr_is_estimated"`
+}
+
+type ApprovalPolicyPatch struct {
+	ManagerDailyLimitPaise      *int64 `json:"manager_daily_limit_paise"`
+	SingleExpenseLimitPaise     *int64 `json:"single_expense_limit_paise"`
+	ManagerMonthlyLimitPaise    *int64 `json:"manager_monthly_limit_paise"`
+	OwnerApprovalThresholdPaise *int64 `json:"owner_approval_threshold_paise"`
+	ReimbursementThresholdPaise *int64 `json:"reimbursement_threshold_paise"`
+	EmergencyBypassEnabled      *bool  `json:"emergency_bypass_enabled"`
 }
 
 type Budget struct {
@@ -201,23 +219,23 @@ type Budget struct {
 }
 
 type RewardLiabilityTxn struct {
-	ID          uuid.UUID `json:"id"`
-	PropertyID  uuid.UUID `json:"property_id"`
+	ID          uuid.UUID  `json:"id"`
+	PropertyID  uuid.UUID  `json:"property_id"`
 	TenantID    *uuid.UUID `json:"tenant_id,omitempty"`
-	Kind        string    `json:"kind"`
-	Points      int       `json:"points"`
-	AmountPaise int64     `json:"amount_paise"`
-	SourceType  string    `json:"source_type"`
-	SourceID    uuid.UUID `json:"source_id"`
-	OccurredAt  time.Time `json:"occurred_at"`
+	Kind        string     `json:"kind"`
+	Points      int        `json:"points"`
+	AmountPaise int64      `json:"amount_paise"`
+	SourceType  string     `json:"source_type"`
+	SourceID    uuid.UUID  `json:"source_id"`
+	OccurredAt  time.Time  `json:"occurred_at"`
 }
 
 type TieOutItem struct {
-	Category     string `json:"category"` // timing | adjustment | proration | reward_credit | investigate
-	AmountPaise  int64  `json:"amount_paise"`
-	SourceID     string `json:"source_id,omitempty"`
-	Note         string `json:"note,omitempty"`
-	UnresolvedMonths int `json:"unresolved_months,omitempty"`
+	Category         string `json:"category"` // timing | adjustment | proration | reward_credit | investigate
+	AmountPaise      int64  `json:"amount_paise"`
+	SourceID         string `json:"source_id,omitempty"`
+	Note             string `json:"note,omitempty"`
+	UnresolvedMonths int    `json:"unresolved_months,omitempty"`
 }
 
 type PeriodTieOut struct {
@@ -253,49 +271,49 @@ type VarianceLine struct {
 }
 
 type VarianceBridge struct {
-	PeriodMonth            string         `json:"period_month"`
-	BudgetedOCFPaise       int64          `json:"budgeted_ocf_paise"`
-	ActualOCFPaise         int64          `json:"actual_ocf_paise"`
-	Lines                  []VarianceLine `json:"lines"`
-	ResidualPaise          int64          `json:"residual_paise"`
+	PeriodMonth      string         `json:"period_month"`
+	BudgetedOCFPaise int64          `json:"budgeted_ocf_paise"`
+	ActualOCFPaise   int64          `json:"actual_ocf_paise"`
+	Lines            []VarianceLine `json:"lines"`
+	ResidualPaise    int64          `json:"residual_paise"`
 }
 
 type KPISnapshot struct {
-	PropertyID                 uuid.UUID       `json:"property_id"`
-	PeriodMonth                string          `json:"period_month"`
-	SnapshotDate               time.Time       `json:"snapshot_date"`
-	OccupancyBPS               int             `json:"occupancy_bps"`
-	OccupiedBeds               int             `json:"occupied_beds"`
-	CapacityBeds               int             `json:"capacity_beds"`
-	ContributionPerBedPaise    int64           `json:"contribution_per_bed_paise"`
-	OpexPaise                  int64           `json:"opex_paise"`
-	OCFPaise                   int64           `json:"ocf_paise"`
-	LeakageTotalPaise          int64           `json:"leakage_total_paise"`
-	VarianceBridge             json.RawMessage `json:"variance_bridge_json,omitempty"`
+	PropertyID              uuid.UUID       `json:"property_id"`
+	PeriodMonth             string          `json:"period_month"`
+	SnapshotDate            time.Time       `json:"snapshot_date"`
+	OccupancyBPS            int             `json:"occupancy_bps"`
+	OccupiedBeds            int             `json:"occupied_beds"`
+	CapacityBeds            int             `json:"capacity_beds"`
+	ContributionPerBedPaise int64           `json:"contribution_per_bed_paise"`
+	OpexPaise               int64           `json:"opex_paise"`
+	OCFPaise                int64           `json:"ocf_paise"`
+	LeakageTotalPaise       int64           `json:"leakage_total_paise"`
+	VarianceBridge          json.RawMessage `json:"variance_bridge_json,omitempty"`
 }
 
 type ROISnapshot struct {
-	PropertyID             uuid.UUID `json:"property_id"`
-	PeriodMonth            string    `json:"period_month"`
-	SnapshotDate           time.Time `json:"snapshot_date"`
-	CapitalInvestedPaise   int64     `json:"capital_invested_paise"`
-	CapitalRecoveredPaise  int64     `json:"capital_recovered_paise"`
-	UnrecoveredPaise       int64     `json:"unrecovered_paise"`
-	TBEMonthsMilli         *int      `json:"tbe_months_milli,omitempty"`
-	BreakEvenOccupancyBPS  *int      `json:"break_even_occupancy_bps,omitempty"`
-	Official               bool      `json:"official"`
+	PropertyID            uuid.UUID `json:"property_id"`
+	PeriodMonth           string    `json:"period_month"`
+	SnapshotDate          time.Time `json:"snapshot_date"`
+	CapitalInvestedPaise  int64     `json:"capital_invested_paise"`
+	CapitalRecoveredPaise int64     `json:"capital_recovered_paise"`
+	UnrecoveredPaise      int64     `json:"unrecovered_paise"`
+	TBEMonthsMilli        *int      `json:"tbe_months_milli,omitempty"`
+	BreakEvenOccupancyBPS *int      `json:"break_even_occupancy_bps,omitempty"`
+	Official              bool      `json:"official"`
 }
 
 type LeakageEvent struct {
-	ID              uuid.UUID       `json:"id"`
-	PropertyID      uuid.UUID       `json:"property_id"`
-	Category        string          `json:"category"`
-	EstimatedPaise  int64           `json:"estimated_paise"`
-	ConfidenceBPS   int             `json:"confidence_bps"`
-	Evidence        json.RawMessage `json:"evidence"`
-	Severity        int             `json:"severity"`
-	Status          string          `json:"status"`
-	DetectedAt      time.Time       `json:"detected_at"`
+	ID             uuid.UUID       `json:"id"`
+	PropertyID     uuid.UUID       `json:"property_id"`
+	Category       string          `json:"category"`
+	EstimatedPaise int64           `json:"estimated_paise"`
+	ConfidenceBPS  int             `json:"confidence_bps"`
+	Evidence       json.RawMessage `json:"evidence"`
+	Severity       int             `json:"severity"`
+	Status         string          `json:"status"`
+	DetectedAt     time.Time       `json:"detected_at"`
 }
 
 type Recommendation struct {
@@ -391,12 +409,12 @@ type GatewaySettlement struct {
 }
 
 type SettlementFilter struct {
-	Status    *SettlementReconStatus
-	Source    *IngestionSource
-	FromDate  *time.Time
-	ToDate    *time.Time
-	Limit     int
-	Offset    int
+	Status   *SettlementReconStatus
+	Source   *IngestionSource
+	FromDate *time.Time
+	ToDate   *time.Time
+	Limit    int
+	Offset   int
 }
 
 type DiscrepancyItem struct {
@@ -407,26 +425,26 @@ type DiscrepancyItem struct {
 }
 
 type DailySettlementBalance struct {
-	ID                     uuid.UUID         `json:"id"`
-	PropertyID             uuid.UUID         `json:"property_id"`
-	ReconDate              time.Time         `json:"recon_date"`
-	GatewayGrossPaise      int64             `json:"gateway_gross_paise"`
-	GatewayNetSettledPaise int64             `json:"gateway_net_settled_paise"`
-	GatewayFeesPaise       int64             `json:"gateway_fees_paise"`
-	GatewayTaxPaise        int64             `json:"gateway_tax_paise"`
-	GatewayAdjustmentPaise int64             `json:"gateway_adjustment_paise"`
-	GatewayInTransitPaise  int64             `json:"gateway_in_transit_paise"`
-	BankCreditsPaise       int64             `json:"bank_credits_paise"`
-	BankDebitsPaise        int64             `json:"bank_debits_paise"`
-	UnappliedQuarantinePaise int64           `json:"unapplied_quarantine_paise"`
-	LedgerBankDrPaise      int64             `json:"ledger_bank_dr_paise"`
-	LedgerBankCrPaise      int64             `json:"ledger_bank_cr_paise"`
-	IsBalanced             bool              `json:"is_balanced"`
-	DiscrepancyPaise       int64             `json:"discrepancy_paise"`
-	Discrepancies          []DiscrepancyItem `json:"discrepancies"`
-	Metadata               map[string]any    `json:"metadata"`
-	CreatedAt              time.Time         `json:"created_at"`
-	UpdatedAt              time.Time         `json:"updated_at"`
+	ID                       uuid.UUID         `json:"id"`
+	PropertyID               uuid.UUID         `json:"property_id"`
+	ReconDate                time.Time         `json:"recon_date"`
+	GatewayGrossPaise        int64             `json:"gateway_gross_paise"`
+	GatewayNetSettledPaise   int64             `json:"gateway_net_settled_paise"`
+	GatewayFeesPaise         int64             `json:"gateway_fees_paise"`
+	GatewayTaxPaise          int64             `json:"gateway_tax_paise"`
+	GatewayAdjustmentPaise   int64             `json:"gateway_adjustment_paise"`
+	GatewayInTransitPaise    int64             `json:"gateway_in_transit_paise"`
+	BankCreditsPaise         int64             `json:"bank_credits_paise"`
+	BankDebitsPaise          int64             `json:"bank_debits_paise"`
+	UnappliedQuarantinePaise int64             `json:"unapplied_quarantine_paise"`
+	LedgerBankDrPaise        int64             `json:"ledger_bank_dr_paise"`
+	LedgerBankCrPaise        int64             `json:"ledger_bank_cr_paise"`
+	IsBalanced               bool              `json:"is_balanced"`
+	DiscrepancyPaise         int64             `json:"discrepancy_paise"`
+	Discrepancies            []DiscrepancyItem `json:"discrepancies"`
+	Metadata                 map[string]any    `json:"metadata"`
+	CreatedAt                time.Time         `json:"created_at"`
+	UpdatedAt                time.Time         `json:"updated_at"`
 }
 
 // EvaluateBalance performs deterministic multi-way mathematical checks across gateway, bank, and ledger legs.

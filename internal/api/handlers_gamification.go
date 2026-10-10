@@ -35,12 +35,12 @@ func (h *Handlers) TenantPoints(c *gin.Context) {
 	ledger, _ := h.GamificationStore.ListLedgerByTenant(c.Request.Context(), t.ID, 20)
 
 	c.JSON(http.StatusOK, gin.H{
-		"balance":          balance,
-		"expiring_soon":    expiringSoon,
-		"earliest_expiry":  earliest,
-		"on_time_months":   streak.OnTimeMonths,
-		"freezes_left":     streak.FreezesAvailable,
-		"ledger":           ledger,
+		"balance":         balance,
+		"expiring_soon":   expiringSoon,
+		"earliest_expiry": earliest,
+		"on_time_months":  streak.OnTimeMonths,
+		"freezes_left":    streak.FreezesAvailable,
+		"ledger":          ledger,
 	})
 }
 
@@ -594,13 +594,13 @@ func (h *Handlers) ManagerLogViolation(c *gin.Context) {
 func (h *Handlers) ManagerRecordMeterReading(c *gin.Context) {
 	claims, _ := auth.ClaimsFromContext(c)
 	var body struct {
-		PropertyID     string   `json:"property_id"`
-		RoomID         *string  `json:"room_id"`
-		FloorID        *string  `json:"floor_id"`
-		Kind           string   `json:"kind"` // electricity, water
-		ReadingValue   float64  `json:"reading_value"`
-		MeterReplaced  bool     `json:"meter_replaced"`
-		ConfirmAnomaly bool     `json:"confirm_anomaly"`
+		PropertyID     string  `json:"property_id"`
+		RoomID         *string `json:"room_id"`
+		FloorID        *string `json:"floor_id"`
+		Kind           string  `json:"kind"` // electricity, water
+		ReadingValue   float64 `json:"reading_value"`
+		MeterReplaced  bool    `json:"meter_replaced"`
+		ConfirmAnomaly bool    `json:"confirm_anomaly"`
 	}
 
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -1040,5 +1040,3 @@ func (h *Handlers) OwnerFulfilRedemption(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"redemption": red})
 }
-
-

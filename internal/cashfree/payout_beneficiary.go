@@ -43,18 +43,18 @@ type BeneficiaryContactDetails struct {
 
 // CreateBeneficiaryRequest represents the body for POST /payout/beneficiary.
 type CreateBeneficiaryRequest struct {
-	BeneficiaryID         string                        `json:"beneficiary_id"`
-	BeneficiaryName       string                        `json:"beneficiary_name"`
-	BeneficiaryInstrument BeneficiaryInstrumentDetails  `json:"beneficiary_instrument_details"`
-	BeneficiaryContact    *BeneficiaryContactDetails    `json:"beneficiary_contact_details,omitempty"`
+	BeneficiaryID         string                       `json:"beneficiary_id"`
+	BeneficiaryName       string                       `json:"beneficiary_name"`
+	BeneficiaryInstrument BeneficiaryInstrumentDetails `json:"beneficiary_instrument_details"`
+	BeneficiaryContact    *BeneficiaryContactDetails   `json:"beneficiary_contact_details,omitempty"`
 }
 
 // BeneficiaryResponse represents the response from Beneficiary V2 endpoints.
 type BeneficiaryResponse struct {
-	BeneficiaryID   string                        `json:"beneficiary_id"`
-	BeneficiaryName string                        `json:"beneficiary_name"`
-	Status          string                        `json:"beneficiary_status"`
-	Instrument      BeneficiaryInstrumentDetails  `json:"beneficiary_instrument_details"`
+	BeneficiaryID   string                       `json:"beneficiary_id"`
+	BeneficiaryName string                       `json:"beneficiary_name"`
+	Status          string                       `json:"beneficiary_status"`
+	Instrument      BeneficiaryInstrumentDetails `json:"beneficiary_instrument_details"`
 }
 
 // CreateBeneficiary registers a beneficiary with Cashfree Transfers V2.

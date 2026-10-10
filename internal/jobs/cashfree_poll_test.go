@@ -199,7 +199,6 @@ func TestCashfreePollReconcilesStuckRefund(t *testing.T) {
 	}
 }
 
-
 func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	dueID := uuid.New()
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{

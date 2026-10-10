@@ -77,7 +77,6 @@ func (s *stubIntentStore) LatestOpenForDue(_ context.Context, _ uuid.UUID) (*dom
 	return nil, pgx.ErrNoRows
 }
 
-
 type stubPay struct {
 	n         int
 	txn       string
@@ -246,12 +245,24 @@ type stubGatewayRepo struct {
 }
 
 func (s *stubGatewayRepo) Create(context.Context, *domain.Payment) error { return nil }
-func (s *stubGatewayRepo) GetByID(context.Context, uuid.UUID) (*domain.Payment, error) { return nil, nil }
-func (s *stubGatewayRepo) GetByUPITxnID(context.Context, string) (*domain.Payment, error) { return nil, nil }
-func (s *stubGatewayRepo) GetByCFPaymentID(context.Context, string) (*domain.Payment, error) { return nil, nil }
-func (s *stubGatewayRepo) RecordProcessedEvent(context.Context, string, string, string, string) (bool, error) { return true, nil }
-func (s *stubGatewayRepo) CreateAllocation(context.Context, uuid.UUID, uuid.UUID, int64) error { return nil }
-func (s *stubGatewayRepo) ListAllocationsByPayment(context.Context, uuid.UUID) ([]domain.PaymentAllocation, error) { return nil, nil }
+func (s *stubGatewayRepo) GetByID(context.Context, uuid.UUID) (*domain.Payment, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetByUPITxnID(context.Context, string) (*domain.Payment, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetByCFPaymentID(context.Context, string) (*domain.Payment, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) RecordProcessedEvent(context.Context, string, string, string, string) (bool, error) {
+	return true, nil
+}
+func (s *stubGatewayRepo) CreateAllocation(context.Context, uuid.UUID, uuid.UUID, int64) error {
+	return nil
+}
+func (s *stubGatewayRepo) ListAllocationsByPayment(context.Context, uuid.UUID) ([]domain.PaymentAllocation, error) {
+	return nil, nil
+}
 func (s *stubGatewayRepo) CreateWebhookEvent(_ context.Context, evt *domain.WebhookEvent) error {
 	evt.ID = uuid.New()
 	s.webhookEvents = append(s.webhookEvents, evt)
@@ -264,7 +275,9 @@ func (s *stubGatewayRepo) UpdateWebhookEventStatus(_ context.Context, _ uuid.UUI
 	}
 	return nil
 }
-func (s *stubGatewayRepo) RecordUnmatchedReceipt(context.Context, string, string, *uuid.UUID, int64, string, []byte) error { return nil }
+func (s *stubGatewayRepo) RecordUnmatchedReceipt(context.Context, string, string, *uuid.UUID, int64, string, []byte) error {
+	return nil
+}
 func (s *stubGatewayRepo) GetRefundByCFRefundID(_ context.Context, cfRefundID string) (*domain.GatewayRefund, error) {
 	if s.refunds != nil {
 		return s.refunds[cfRefundID], nil
@@ -280,14 +293,30 @@ func (s *stubGatewayRepo) CreateOrUpdateRefund(_ context.Context, ref *domain.Ga
 	}
 	return nil
 }
-func (s *stubGatewayRepo) CreateRefundAllocation(context.Context, *domain.RefundAllocation) error { return nil }
-func (s *stubGatewayRepo) GetDueNetPaidPaise(context.Context, uuid.UUID) (int64, error) { return 0, nil }
-func (s *stubGatewayRepo) ListStaleNonTerminalRefunds(context.Context, time.Time) ([]domain.GatewayRefund, error) { return nil, nil }
-func (s *stubGatewayRepo) GetRefundByID(context.Context, uuid.UUID) (*domain.GatewayRefund, error) { return nil, nil }
-func (s *stubGatewayRepo) GetRefundByReference(context.Context, string) (*domain.GatewayRefund, error) { return nil, nil }
-func (s *stubGatewayRepo) GetRefundByPaymentAndIdempotency(context.Context, uuid.UUID, string) (*domain.GatewayRefund, error) { return nil, nil }
-func (s *stubGatewayRepo) GetPaymentRefundedPaise(context.Context, uuid.UUID) (int64, error) { return 0, nil }
-func (s *stubGatewayRepo) ListRefundsByPayment(context.Context, uuid.UUID) ([]domain.GatewayRefund, error) { return nil, nil }
+func (s *stubGatewayRepo) CreateRefundAllocation(context.Context, *domain.RefundAllocation) error {
+	return nil
+}
+func (s *stubGatewayRepo) GetDueNetPaidPaise(context.Context, uuid.UUID) (int64, error) {
+	return 0, nil
+}
+func (s *stubGatewayRepo) ListStaleNonTerminalRefunds(context.Context, time.Time) ([]domain.GatewayRefund, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetRefundByID(context.Context, uuid.UUID) (*domain.GatewayRefund, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetRefundByReference(context.Context, string) (*domain.GatewayRefund, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetRefundByPaymentAndIdempotency(context.Context, uuid.UUID, string) (*domain.GatewayRefund, error) {
+	return nil, nil
+}
+func (s *stubGatewayRepo) GetPaymentRefundedPaise(context.Context, uuid.UUID) (int64, error) {
+	return 0, nil
+}
+func (s *stubGatewayRepo) ListRefundsByPayment(context.Context, uuid.UUID) ([]domain.GatewayRefund, error) {
+	return nil, nil
+}
 
 func TestCashfreeWebhookDeadLetterReturns200(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -424,7 +453,6 @@ func TestCashfreeWebhook_DisputeFailSafe(t *testing.T) {
 	}
 }
 
-
 func postSignedWebhook(t *testing.T, h *Handlers, body string) int {
 	t.Helper()
 	r := gin.New()
@@ -546,7 +574,6 @@ func (s *payTestPropertyStore) GetByInviteCode(_ context.Context, code string) (
 func (s *payTestPropertyStore) Create(_ context.Context, _ *domain.Property) error {
 	return nil
 }
-
 
 func TestTenantSubmitReport_DuplicateImageFlagged(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -817,5 +844,3 @@ func TestTenantDuePayBatch(t *testing.T) {
 		t.Fatalf("expected 400 on invalid option, got %d", recInv.Code)
 	}
 }
-
-

@@ -154,4 +154,3 @@ func TestScopedDB_BatchedPipelining(t *testing.T) {
 		}
 	})
 }
-

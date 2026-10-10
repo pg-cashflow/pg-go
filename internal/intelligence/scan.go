@@ -12,11 +12,11 @@ import (
 )
 
 type ScanInput struct {
-	PropertyID     uuid.UUID
-	Period         string
-	Recon          *payment.ReconciliationSummary
-	Occupancy      finance.Occupancy
-	OutstandingPaise int64
+	PropertyID         uuid.UUID
+	Period             string
+	Recon              *payment.ReconciliationSummary
+	Occupancy          finance.Occupancy
+	OutstandingPaise   int64
 	LoyaltyIssuedPaise int64
 	LoyaltyBudgetPaise int64
 	MealExpected       map[string]int

@@ -341,4 +341,3 @@ func (h *Handlers) OwnerListEODBalances(c *gin.Context) {
 		"total":    len(list),
 	})
 }
-

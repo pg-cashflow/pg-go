@@ -358,4 +358,3 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 		assertEnvelope(t, w, http.StatusForbidden, "already activated", apierr.CodeAuthAlreadyActivated)
 	})
 }
-

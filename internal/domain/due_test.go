@@ -105,25 +105,25 @@ func TestCalculatePaymentOptions(t *testing.T) {
 	// 5. 3 open dues (1, 2, all)
 	t.Run("3 open dues", func(t *testing.T) {
 		d1 := &Due{
-			ID:             uuid.New(),
-			DueCode:        "DUE001",
-			Amount:         500000,
-			Status:         DueStatusPending,
-			DueDate:        now.Add(-60 * 24 * time.Hour),
+			ID:      uuid.New(),
+			DueCode: "DUE001",
+			Amount:  500000,
+			Status:  DueStatusPending,
+			DueDate: now.Add(-60 * 24 * time.Hour),
 		}
 		d2 := &Due{
-			ID:             uuid.New(),
-			DueCode:        "DUE002",
-			Amount:         550000,
-			Status:         DueStatusPending,
-			DueDate:        now.Add(-30 * 24 * time.Hour),
+			ID:      uuid.New(),
+			DueCode: "DUE002",
+			Amount:  550000,
+			Status:  DueStatusPending,
+			DueDate: now.Add(-30 * 24 * time.Hour),
 		}
 		d3 := &Due{
-			ID:             uuid.New(),
-			DueCode:        "DUE003",
-			Amount:         600000,
-			Status:         DueStatusPartial,
-			DueDate:        now,
+			ID:      uuid.New(),
+			DueCode: "DUE003",
+			Amount:  600000,
+			Status:  DueStatusPartial,
+			DueDate: now,
 		}
 		opts := CalculatePaymentOptions([]*Due{d3, d1, d2})
 		if len(opts) != 3 {

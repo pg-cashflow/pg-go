@@ -312,5 +312,3 @@ func TestTenantSubmitReportImageTooLarge_WireFormat(t *testing.T) {
 	// f.Size check fires immediately — no DB call needed.
 	assertWire(t, w, http.StatusBadRequest, "image too large (max 2MB)", "request.imageTooLarge")
 }
-
-

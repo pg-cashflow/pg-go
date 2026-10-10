@@ -16,13 +16,13 @@ const (
 )
 
 type User struct {
-	ID           uuid.UUID  `json:"id"`
-	Phone        string     `json:"phone,omitempty"`
-	Email        string     `json:"email,omitempty"`
-	Role         Role       `json:"role"`
-	TenantID     *uuid.UUID `json:"tenant_id,omitempty"`
-	PropertyID   *uuid.UUID `json:"property_id,omitempty"`
-	FirebaseUID  *string    `json:"-"`
+	ID                 uuid.UUID  `json:"id"`
+	Phone              string     `json:"phone,omitempty"`
+	Email              string     `json:"email,omitempty"`
+	Role               Role       `json:"role"`
+	TenantID           *uuid.UUID `json:"tenant_id,omitempty"`
+	PropertyID         *uuid.UUID `json:"property_id,omitempty"`
+	FirebaseUID        *string    `json:"-"`
 	TokenVersion       int        `json:"-"`
 	Locale             string     `json:"locale,omitempty"`
 	HasSavedPreference bool       `json:"has_saved_preference"`

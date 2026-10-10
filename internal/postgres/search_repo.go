@@ -1304,4 +1304,3 @@ func (r *SearchRepo) searchDocumentsLexical(ctx context.Context, p search.Params
 	defer rows.Close()
 	return eq.scan(rows)
 }
-

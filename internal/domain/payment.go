@@ -39,15 +39,15 @@ type Payment struct {
 }
 
 type FinancialCorrection struct {
-	ID                   uuid.UUID  `json:"id"`
-	PropertyID          uuid.UUID  `json:"property_id"`
-	OriginalPaymentID    uuid.UUID  `json:"original_payment_id"`
-	ReversalPaymentID    *uuid.UUID `json:"reversal_payment_id,omitempty"`
-	CorrectedPaymentID   *uuid.UUID `json:"corrected_payment_id,omitempty"`
-	Reason               string     `json:"reason"`
-	CorrectedBy          uuid.UUID  `json:"corrected_by"`
-	OccurredAt           time.Time  `json:"occurred_at"`
-	CreatedAt            time.Time  `json:"created_at"`
+	ID                 uuid.UUID  `json:"id"`
+	PropertyID         uuid.UUID  `json:"property_id"`
+	OriginalPaymentID  uuid.UUID  `json:"original_payment_id"`
+	ReversalPaymentID  *uuid.UUID `json:"reversal_payment_id,omitempty"`
+	CorrectedPaymentID *uuid.UUID `json:"corrected_payment_id,omitempty"`
+	Reason             string     `json:"reason"`
+	CorrectedBy        uuid.UUID  `json:"corrected_by"`
+	OccurredAt         time.Time  `json:"occurred_at"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 type PaymentAllocation struct {

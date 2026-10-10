@@ -27,6 +27,7 @@ var (
 	ErrExpenseStateChanged  = domain.ErrExpenseStateChanged
 	ErrReasonRequired       = errors.New("finance: reason required (3 to 500 characters)")
 	ErrDateOutOfRange       = errors.New("finance: expense date out of allowed range")
+	ErrInvalidSettings      = errors.New("finance: invalid settings or policy")
 )
 
 type Occupancy struct {

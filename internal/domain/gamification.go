@@ -115,14 +115,14 @@ type PointsLedgerEntry struct {
 
 // TenantStreak records on-time payment streaks and freeze state.
 type TenantStreak struct {
-	TenantID          uuid.UUID  `json:"tenant_id"`
-	PropertyID        uuid.UUID  `json:"property_id"`
-	OnTimeMonths      int        `json:"on_time_months"`
-	CachedBalance     int        `json:"cached_balance"`
-	LastOnTimeDueID   *uuid.UUID `json:"last_on_time_due_id,omitempty"`
-	FreezesAvailable  int16      `json:"freezes_available"`
-	LastFreezeUsedAt  *time.Time `json:"last_freeze_used_at,omitempty"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	TenantID         uuid.UUID  `json:"tenant_id"`
+	PropertyID       uuid.UUID  `json:"property_id"`
+	OnTimeMonths     int        `json:"on_time_months"`
+	CachedBalance    int        `json:"cached_balance"`
+	LastOnTimeDueID  *uuid.UUID `json:"last_on_time_due_id,omitempty"`
+	FreezesAvailable int16      `json:"freezes_available"`
+	LastFreezeUsedAt *time.Time `json:"last_freeze_used_at,omitempty"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // RewardsCatalogItem is a redeemable perk or credit.
@@ -222,32 +222,32 @@ type Violation struct {
 
 // HazardReport is a private/anonymous hazard or maintenance ticket.
 type HazardReport struct {
-	ID                  uuid.UUID  `json:"id"`
-	PropertyID          uuid.UUID  `json:"property_id"`
-	ReportedByTenantID  uuid.UUID  `json:"-"` // anonymous to peers
-	Category            string     `json:"category"`
-	Description         string     `json:"description"`
-	HasPhoto            bool       `json:"has_photo"`
-	PhotoBytes          []byte     `json:"-"`
-	Status              string     `json:"status"` // open, in_progress, resolved, rejected
-	ResolvedAt          *time.Time `json:"resolved_at,omitempty"`
-	ResolvedBy          *uuid.UUID `json:"resolved_by,omitempty"`
-	PointsAwarded       bool       `json:"points_awarded"`
-	CreatedAt           time.Time  `json:"created_at"`
+	ID                 uuid.UUID  `json:"id"`
+	PropertyID         uuid.UUID  `json:"property_id"`
+	ReportedByTenantID uuid.UUID  `json:"-"` // anonymous to peers
+	Category           string     `json:"category"`
+	Description        string     `json:"description"`
+	HasPhoto           bool       `json:"has_photo"`
+	PhotoBytes         []byte     `json:"-"`
+	Status             string     `json:"status"` // open, in_progress, resolved, rejected
+	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy         *uuid.UUID `json:"resolved_by,omitempty"`
+	PointsAwarded      bool       `json:"points_awarded"`
+	CreatedAt          time.Time  `json:"created_at"`
 }
 
 // MeterReading records a room electricity or floor water meter metric.
 type MeterReading struct {
-	ID           uuid.UUID `json:"id"`
-	PropertyID   uuid.UUID `json:"property_id"`
+	ID           uuid.UUID  `json:"id"`
+	PropertyID   uuid.UUID  `json:"property_id"`
 	RoomID       *uuid.UUID `json:"room_id,omitempty"`
 	FloorID      *uuid.UUID `json:"floor_id,omitempty"`
-	Kind         string    `json:"kind"` // electricity, water
-	ReadingValue float64   `json:"reading_value"`
-	ReadingAt    time.Time `json:"reading_at"`
-	Source       string    `json:"source"` // manual, device
-	RecordedBy   uuid.UUID `json:"recorded_by"`
-	CreatedAt    time.Time `json:"created_at"`
+	Kind         string     `json:"kind"` // electricity, water
+	ReadingValue float64    `json:"reading_value"`
+	ReadingAt    time.Time  `json:"reading_at"`
+	Source       string     `json:"source"` // manual, device
+	RecordedBy   uuid.UUID  `json:"recorded_by"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
 // MealRSVP tracks student presence for mess headcount and food waste reduction.

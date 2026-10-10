@@ -8,12 +8,12 @@ import (
 )
 
 type mockKYCExpiryRepo struct {
-	lapsedCount   int64
-	pendingCount  int64
-	lapsedErr     error
-	pendingErr    error
-	cutoffPassed  time.Time
-	nowPassed     time.Time
+	lapsedCount  int64
+	pendingCount int64
+	lapsedErr    error
+	pendingErr   error
+	cutoffPassed time.Time
+	nowPassed    time.Time
 }
 
 func (m *mockKYCExpiryRepo) ExpireLapsedVerifications(ctx context.Context, now time.Time) (int64, error) {

@@ -32,11 +32,11 @@ const (
 )
 
 var (
-	ErrAlreadyVerified          = errors.New("kyc: tenant is already verified")
-	ErrVerificationNotFound     = errors.New("kyc: verification record not found")
-	ErrConsentRevoked           = errors.New("kyc: consent revoked")
-	ErrVerificationNotPending   = errors.New("kyc: verification is not in pending status")
-	ErrVerificationInProgress   = errors.New("kyc: verification already in progress")
+	ErrAlreadyVerified        = errors.New("kyc: tenant is already verified")
+	ErrVerificationNotFound   = errors.New("kyc: verification record not found")
+	ErrConsentRevoked         = errors.New("kyc: consent revoked")
+	ErrVerificationNotPending = errors.New("kyc: verification is not in pending status")
+	ErrVerificationInProgress = errors.New("kyc: verification already in progress")
 )
 
 const (
@@ -149,13 +149,13 @@ func IsNameMatch(profileName, attestedName string) bool {
 }
 
 type KYCAuditLog struct {
-	ID          int64     `json:"id"`
-	TenantID    uuid.UUID `json:"tenant_id"`
-	Actor       string    `json:"actor"`
-	Action      string    `json:"action"`
-	DetailHash  *string   `json:"detail_hash,omitempty"`
-	PrevHash    *string   `json:"prev_hash,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID         int64     `json:"id"`
+	TenantID   uuid.UUID `json:"tenant_id"`
+	Actor      string    `json:"actor"`
+	Action     string    `json:"action"`
+	DetailHash *string   `json:"detail_hash,omitempty"`
+	PrevHash   *string   `json:"prev_hash,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // NormalizeName applies Unicode NFC normalization, converts to lowercase,

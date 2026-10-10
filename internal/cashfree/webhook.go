@@ -82,16 +82,16 @@ type FailedWebhook struct {
 
 // RefundWebhook is extracted from REFUND_STATUS_WEBHOOK or AUTO_REFUND_STATUS_WEBHOOK.
 type RefundWebhook struct {
-	Type          string
-	IsAutoRefund  bool
-	CFRefundID    string
-	RefundID      string
-	OrderID       string
-	CFPaymentID   string
-	RefundStatus  string
-	RefundAmount  int64
-	RefundType    string
-	RefundReason  string
+	Type         string
+	IsAutoRefund bool
+	CFRefundID   string
+	RefundID     string
+	OrderID      string
+	CFPaymentID  string
+	RefundStatus string
+	RefundAmount int64
+	RefundType   string
+	RefundReason string
 }
 
 // DisputeWebhook is extracted from DISPUTE_CREATED_WEBHOOK, PAYMENT_DISPUTE_CREATED_WEBHOOK, or DISPUTE_STATUS_UPDATE_WEBHOOK.

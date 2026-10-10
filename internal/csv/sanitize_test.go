@@ -514,7 +514,3 @@ func TestParse_SniffContentType_Rejections(t *testing.T) {
 		t.Errorf("expected XLSX rejection error, got %v", errXLSX)
 	}
 }
-
-
-
-

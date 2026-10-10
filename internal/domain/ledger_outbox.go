@@ -105,4 +105,3 @@ type CorrectionMirrorPayload struct {
 	AmountPaise        int64      `json:"amount_paise"`
 	OccurredAt         time.Time  `json:"occurred_at"`
 }
-

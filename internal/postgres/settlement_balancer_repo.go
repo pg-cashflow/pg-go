@@ -351,4 +351,3 @@ func (r *SettlementBalancerRepo) ComputeDayAggregates(ctx context.Context, prope
 
 	return bal, nil
 }
-

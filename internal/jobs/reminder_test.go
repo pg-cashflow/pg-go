@@ -605,5 +605,3 @@ func TestReminder_Run_BulkTenantGetterAndMemoization(t *testing.T) {
 		t.Errorf("expected 1 property call due to memoization, got %d", propGetter.calls)
 	}
 }
-
-

@@ -221,9 +221,9 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 
 type CreateRefundRequest struct {
 	RefundAmount json.Number `json:"refund_amount"`
-	RefundID     string  `json:"refund_id"`
-	RefundNote   string  `json:"refund_note,omitempty"`
-	RefundSpeed  string  `json:"refund_speed,omitempty"`
+	RefundID     string      `json:"refund_id"`
+	RefundNote   string      `json:"refund_note,omitempty"`
+	RefundSpeed  string      `json:"refund_speed,omitempty"`
 }
 
 func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*RefundDetails, error) {

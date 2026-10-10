@@ -619,5 +619,3 @@ func TestOwnerRedemptions_ListAndFulfil(t *testing.T) {
 		t.Fatalf("expected status 'fulfilled', got '%s'", fulfilResp.Redemption.Status)
 	}
 }
-
-
