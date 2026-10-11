@@ -161,9 +161,20 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 
 ---
 
-## 6. Round 12 Remediation: Classifier and Test Sentinel Corrections
+## 6. Review Addenda and Hardening Remediation (Rounds 10 to 14)
 
-### 6.6 Gamification Classifier and Attendance Sanitization Corrections
+### 6.1-6.4 Carried-Forward Review Items & Open Invariants (Round 10)
+
+1. **Error text reaches client responses:** `typedClientErr` in `internal/api/apierr.go` returns `err.Error()` whenever a sentinel matches. This is safe only if the sentinel is returned unwrapped. Handlers such as `handlers_kyc.go:121-133` and `handlers_join.go:285-305` pass `err.Error()` into responses. Each sentinel needs checking, and a regression test should assert that no wrapped internal error text reaches response bodies.
+2. **KYC webhook timestamp verification:** `CashfreeKYCWebhook` in `internal/api/handlers_kyc.go` does not currently invoke `VerifyWebhookTimestamp`. Payment, payout, and settlement webhooks enforce this timestamp verification.
+3. **CSP enforcement policy:** `internal/api/router.go` currently sends `Content-Security-Policy-Report-Only` instead of enforcing CSP blocks.
+
+### 6.5 Static and Route Verification (Round 11)
+
+- Verified route matrix and package references across internal API endpoints and middleware handlers.
+- Preserved sanitized error envelopes and verified zero data races across concurrency benchmarks.
+
+### 6.6 Gamification Classifier and Attendance Sanitization Corrections (Round 12)
 
 - **Classifier Error Text Matching Elimination:** Removed message string matching (`strings.Contains(..., "not found")` and `"no rows"`) from `FulfilRedemption` in `internal/gamification/redemptions.go`. The service strictly classifies errors against typed sentinels `domain.ErrNotFound` and `pgx.ErrNoRows`. Database errors containing those substrings are preserved and routed as internal server errors rather than misclassified as HTTP 400 client errors.
 - **Test Double Sentinel Alignment:** Corrected `memStore.GetRedemptionByID` in `internal/gamification/service_test.go` to return `domain.ErrNotFound` instead of raw string error `errors.New("redemption not found")`.
@@ -181,3 +192,4 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 - **Exported Payout Sentinel Error:** Exported `postgres.ErrNoUnbatchedPayoutItems = errors.New("no unbatched pending payout items found")` in `internal/postgres/payout_repo.go` returned when no unbatched items exist.
 - **Handler Error Classification:** Updated `CreateBatchFromUnbatched` in `internal/api/handlers_payouts.go` to match against `postgres.ErrNoUnbatchedPayoutItems` using `errors.Is(err, postgres.ErrNoUnbatchedPayoutItems)` instead of `strings.Contains(err.Error(), "no unbatched")`. Other database errors cleanly fall through to the generic 500 response.
 - **Repository-Wide Message Matching Audit:** Confirmed complete elimination of `strings.Contains(err...)` and `err.Error()` message matching across all non-test packages in `internal/` and `cmd/`.
+

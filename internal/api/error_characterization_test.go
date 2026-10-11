@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -104,6 +105,24 @@ func TestFinanceClientErrorCharacterization(t *testing.T) {
 				t.Errorf("code = %q, want %q", ce.Code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestFinanceClientErr_PeriodClosedHidesTriggerText(t *testing.T) {
+	wrapped := fmt.Errorf("%w: internal sql trigger details that must not leak", finance.ErrPeriodClosed)
+	got := financeClientErr(wrapped)
+	var ce *ClientError
+	if !errors.As(got, &ce) {
+		t.Fatalf("expected ClientError, got %T: %v", got, got)
+	}
+	if ce.HTTPStatus != http.StatusConflict {
+		t.Errorf("status = %d, want %d", ce.HTTPStatus, http.StatusConflict)
+	}
+	if ce.Message != "accounting period is closed" {
+		t.Errorf("message = %q, want %q", ce.Message, "accounting period is closed")
+	}
+	if ce.Code != apierr.CodeFinancePeriodClosed {
+		t.Errorf("code = %q, want %q", ce.Code, apierr.CodeFinancePeriodClosed)
 	}
 }
 

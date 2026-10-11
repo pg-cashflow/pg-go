@@ -101,7 +101,7 @@ func financeClientErr(err error) error {
 	case errors.Is(err, finance.ErrPeriodNotReopenable):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinancePeriodNotReopenable)
 	case errors.Is(err, finance.ErrPeriodClosed):
-		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeFinancePeriodClosed)
+		return clientErrWithCode(http.StatusConflict, "accounting period is closed", apierr.CodeFinancePeriodClosed)
 	case errors.Is(err, finance.ErrNotFound):
 		return clientErrWithCode(http.StatusNotFound, "not found", apierr.CodeFinanceNotFound)
 	case errors.Is(err, finance.ErrForbidden):
