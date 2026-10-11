@@ -1,11 +1,14 @@
 # ADR-026: Hermetic Load-Test URL Override, Sandbox Smoke Workflow, and Status-Label Reconciliation
 
-**Status:** Accepted  
+**Status:** Accepted (Superseded in part by ADR-027 regarding coverage floors)  
 **Date:** 2026-10-11  
 **Basis:** Round 7 Empirical Verification and Defect Remediation  
 **Deciders:** Architecture / Core Engineering  
 **Standard:** ASD-STE100 (Simplified Technical English)  
 **Method:** Empirical First-Principles Verification (Karpathy Method)  
+
+> [!NOTE]
+> **Superseded in Part by ADR-027:** The regression floors (75/50/60/45) described in this ADR were superseded by ADR-027, which restored the ratcheted floors (finance 76%, auth 64%, payment 51.5%, api 62%) and reinstated `-report-aspirational` reporting in CI.
 
 ---
 
@@ -62,7 +65,7 @@ Round 7 audit identified four operational items requiring decisions:
 
 | Item | Old Label | New Label | Evidence |
 |---|---|---|---|
-| Gate 02 / Ticket 18 | Closed (map), Open (ticket) | Open (both) | CI runs `-require-all`, not `-strict`. Enforced floors are 75/50/60/45. Current measured: finance 77.6%, auth 65.6%, payment 53.4%, api 64.0%. |
+| Gate 02 / Ticket 18 | Closed (map), Open (ticket) | Open (both) | CI runs `-require-all`, not `-strict`. Floors superseded by ADR-027 to 76/64/51.5/62. Current measured: finance 77.6%, auth 65.6%, payment 53.4%, api 64.0%. |
 | Gate 09 / Ticket 25 | Resolved | In progress | Workflow written; no run executed. |
 | Gate 11 / Ticket 27 | Open | In progress | Workflow written; no run executed. |
 | Gate 10 / Ticket 26 | Closed (correct) | Closed; fuzz paths corrected | Map cited bare filenames. Actual paths: `internal/domain/utr_fuzz_test.go`, `internal/cashfree/webhook_fuzz_test.go`, `internal/auth/phone_fuzz_test.go`, `internal/csv/csv_fuzz_test.go`, `internal/aadhaar/qr_fuzz_test.go`. |

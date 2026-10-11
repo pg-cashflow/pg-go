@@ -52,12 +52,12 @@ jobs:
           cache: true
 
       - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Install PostgreSQL Client
         run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update
-          sudo apt-get install -y k6 postgresql-client
+          sudo apt-get install -y postgresql-client
 
       - name: Run Database Migrations
         env:
@@ -75,6 +75,9 @@ jobs:
           MAGIC_LINK_HMAC_SECRET: loadtest_magic_link_secret_32_chars!!
           KYC_IDENTITY_SECRET: loadtest_kyc_identity_secret_32_chars!
           PAYOUT_CHECKSUM_SECRET: loadtest_payout_checksum_secret_32chars
+          CASHFREE_PG_APP_ID: fake_app_id_for_loadtest
+          CASHFREE_PG_SECRET_KEY: fake_secret_key_for_loadtest
+          CASHFREE_PG_WEBHOOK_SECRET: fake_webhook_secret_for_loadtest
           CASHFREE_PG_BASE_URL: http://127.0.0.1:8081
           DATABASE_MAX_CONNS: "25"
           HTTP_ADDR: ":8080"

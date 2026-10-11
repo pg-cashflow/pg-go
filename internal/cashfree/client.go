@@ -57,7 +57,6 @@ func (c *Client) WithBaseURL(override string) *Client {
 	return c
 }
 
-
 type createOrderBody struct {
 	OrderID       string         `json:"order_id"`
 	OrderAmount   json.Number    `json:"order_amount"`

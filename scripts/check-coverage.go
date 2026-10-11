@@ -25,10 +25,10 @@ var aspirationalThresholds = []threshold{
 }
 
 var regressionFloors = []threshold{
-	{pkg: "github.com/pg-cashflow/pg-go/internal/finance", minCover: 75.0},
-	{pkg: "github.com/pg-cashflow/pg-go/internal/auth", minCover: 60.0},
-	{pkg: "github.com/pg-cashflow/pg-go/internal/payment", minCover: 50.0},
-	{pkg: "github.com/pg-cashflow/pg-go/internal/api", minCover: 45.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/finance", minCover: 76.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/auth", minCover: 64.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/payment", minCover: 51.5},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/api", minCover: 62.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/jobs", minCover: 60.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/gamification", minCover: 35.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/postgres", minCover: 35.0},
@@ -45,6 +45,7 @@ func main() {
 	profilePath := flag.String("profile", "coverage.out", "Path to coverage profile file (comma-separated list supported)")
 	strict := flag.Bool("strict", false, "Enforce aspirational coverage targets rather than regression floors")
 	requireAll := flag.Bool("require-all", false, "Fail if any tracked package is missing from coverage profiles")
+	reportAspirational := flag.Bool("report-aspirational", false, "Report gaps to aspirational coverage targets (non-blocking)")
 	flag.Parse()
 
 	thresholds := regressionFloors
@@ -146,6 +147,28 @@ func main() {
 		}
 	}
 	fmt.Println("==================================================")
+
+	if *reportAspirational {
+		fmt.Println("==================================================")
+		fmt.Println("    ASPIRATIONAL COVERAGE TARGETS & GAPS (NON-BLOCKING)")
+		fmt.Println("==================================================")
+		for _, a := range aspirationalThresholds {
+			shortPkg := a.pkg[strings.LastIndex(a.pkg, "/")+1:]
+			s, found := stats[a.pkg]
+			if !found || s.totalStmts == 0 {
+				fmt.Printf("ASPIRATIONAL: %-10s Target: %5.1f%% - NO DATA\n", shortPkg, a.minCover)
+				continue
+			}
+			pct := (float64(s.coveredStmts) / float64(s.totalStmts)) * 100.0
+			gap := a.minCover - pct
+			if gap < 0 {
+				gap = 0
+			}
+			fmt.Printf("ASPIRATIONAL: %-10s Actual: %5.1f%%, Target: %5.1f%%, Gap: %4.1f points\n",
+				shortPkg, pct, a.minCover, gap)
+		}
+		fmt.Println("==================================================")
+	}
 
 	if hasFailure {
 		fmt.Println("Gate 02 Status: FAILED (Coverage floor violated)")

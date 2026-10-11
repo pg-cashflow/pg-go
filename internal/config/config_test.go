@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -216,3 +217,111 @@ func TestLoad_CashfreePGBaseURL(t *testing.T) {
 	}
 }
 
+func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"APP_ENV", "CASHFREE_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET",
+		"CASHFREE_PG_BASE_URL",
+	}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	baseSetup := func() {
+		_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+		_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+		_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+		_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+		_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+		_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
+		_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://127.0.0.1:8081")
+	}
+
+	tests := []struct {
+		name        string
+		appEnv      string
+		cashfreeEnv string
+		expectErr   bool
+	}{
+		{
+			name:        "app_env_production_cf_sandbox",
+			appEnv:      "production",
+			cashfreeEnv: "sandbox",
+			expectErr:   true,
+		},
+		{
+			name:        "app_env_production_cf_unset",
+			appEnv:      "production",
+			cashfreeEnv: "",
+			expectErr:   true,
+		},
+		{
+			name:        "app_env_development_cf_production",
+			appEnv:      "development",
+			cashfreeEnv: "production",
+			expectErr:   true,
+		},
+		{
+			name:        "app_env_unset_cf_production_case_insensitive",
+			appEnv:      "",
+			cashfreeEnv: "PRODUCTION",
+			expectErr:   true,
+		},
+		{
+			name:        "app_env_development_cf_sandbox_allowed",
+			appEnv:      "development",
+			cashfreeEnv: "sandbox",
+			expectErr:   false,
+		},
+		{
+			name:        "app_env_test_cf_unset_allowed",
+			appEnv:      "test",
+			cashfreeEnv: "",
+			expectErr:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			baseSetup()
+			if tc.appEnv != "" {
+				_ = os.Setenv("APP_ENV", tc.appEnv)
+			} else {
+				_ = os.Unsetenv("APP_ENV")
+			}
+			if tc.cashfreeEnv != "" {
+				_ = os.Setenv("CASHFREE_ENV", tc.cashfreeEnv)
+			} else {
+				_ = os.Unsetenv("CASHFREE_ENV")
+			}
+
+			cfg, err := Load()
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error when overriding base URL in production (appEnv=%q, cashfreeEnv=%q)", tc.appEnv, tc.cashfreeEnv)
+				}
+				if !strings.Contains(err.Error(), "CASHFREE_PG_BASE_URL override is prohibited in production") {
+					t.Fatalf("expected production prohibited error, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error for non-production override: %v", err)
+				}
+				if cfg.CashfreePGBaseURL != "http://127.0.0.1:8081" {
+					t.Fatalf("expected CashfreePGBaseURL to be set, got %q", cfg.CashfreePGBaseURL)
+				}
+			}
+		})
+	}
+}

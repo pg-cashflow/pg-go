@@ -60,7 +60,7 @@ jobs:
           set -o pipefail
           go test -race -v -coverprofile=coverage.out ./... -timeout 10m | tee test_output.log
           go run ./scripts/audit_skips.go test_output.log
-          go run ./scripts/check-coverage.go -profile=coverage.out -require-all
+          go run ./scripts/check-coverage.go -profile=coverage.out -require-all -report-aspirational
 
       - name: Run Ledger Controls Integrity Suite (ADR-015 / ADR-016)
         env:

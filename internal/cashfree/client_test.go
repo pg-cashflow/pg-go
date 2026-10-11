@@ -171,4 +171,3 @@ func TestClient_WithBaseURL(t *testing.T) {
 		t.Fatalf("expected request to /orders, got %s", requestedPath)
 	}
 }
-

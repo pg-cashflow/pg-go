@@ -177,7 +177,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
 	}
 	if cfg.CashfreePGBaseURL != "" {
-		if cfg.AppEnv == "production" {
+		if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") ||
+			strings.EqualFold(strings.TrimSpace(cfg.CashfreeEnv), "production") {
 			return nil, fmt.Errorf("CASHFREE_PG_BASE_URL override is prohibited in production")
 		}
 		parsed, err := url.Parse(cfg.CashfreePGBaseURL)
