@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -426,4 +427,366 @@ func TestCashfreePayoutWebhookFailsClosedWithoutSecret(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 Service Unavailable, got %d", w.Code)
 	}
+}
+
+type mockPayoutWebhookStore struct {
+	getItemFunc                 func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error)
+	getBatchFunc                func(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error)
+	getPayeeFunc                func(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error)
+	updateStatusFunc            func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
+	updateBatchStatusFunc       func(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
+	setBatchDispatchUnknownFunc func(ctx context.Context, batchID uuid.UUID, reason string) error
+}
+
+func (m *mockPayoutWebhookStore) GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+	if m.getItemFunc != nil {
+		return m.getItemFunc(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *mockPayoutWebhookStore) GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error) {
+	if m.getBatchFunc != nil {
+		return m.getBatchFunc(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *mockPayoutWebhookStore) GetPayeeByID(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
+	if m.getPayeeFunc != nil {
+		return m.getPayeeFunc(ctx, id)
+	}
+	return nil, nil
+}
+
+func (m *mockPayoutWebhookStore) UpdatePayoutItemStatusTx(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+	if m.updateStatusFunc != nil {
+		return m.updateStatusFunc(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason)
+	}
+	return nil
+}
+
+func (m *mockPayoutWebhookStore) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error) {
+	if m.updateBatchStatusFunc != nil {
+		return m.updateBatchStatusFunc(ctx, tx, batchID)
+	}
+	return nil, nil
+}
+
+func (m *mockPayoutWebhookStore) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
+	if m.setBatchDispatchUnknownFunc != nil {
+		return m.setBatchDispatchUnknownFunc(ctx, batchID, reason)
+	}
+	return nil
+}
+
+func createTestSignedWebhookReq(secret string, payload PayoutWebhookEnvelope) *http.Request {
+	rawBody, _ := json.Marshal(payload)
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	sig := signPayoutWebhook(secret, ts, rawBody)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(rawBody))
+	req.Header.Set("x-webhook-signature", sig)
+	req.Header.Set("x-webhook-timestamp", ts)
+	return req
+}
+
+func TestPayoutWebhook_UnitScenarios(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "unit_test_webhook_secret_32_bytes_long"
+	itemID := uuid.New()
+	propID := uuid.New()
+	batchID := uuid.New()
+	payeeID := uuid.New()
+
+	makeEnv := func(evt string, itemID uuid.UUID) PayoutWebhookEnvelope {
+		data := PayoutWebhookData{
+			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID: "cf_tr_unit_1",
+			Status:       "SUCCESS",
+		}
+		dataBytes, _ := json.Marshal(data)
+		return PayoutWebhookEnvelope{
+			Event:     evt,
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+			Data:      dataBytes,
+		}
+	}
+
+	t.Run("nil_repository_returns_503", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           nil,
+				PayoutRepo:                  nil,
+				Pool:                        nil,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 Service Unavailable, got %d", w.Code)
+		}
+	})
+
+	t.Run("item_lookup_db_error_returns_500", func(t *testing.T) {
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return nil, errors.New("db query error")
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error, got %d", w.Code)
+		}
+	})
+
+	t.Run("item_not_found_returns_200", func(t *testing.T) {
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return nil, pgx.ErrNoRows
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for not found item, got %d", w.Code)
+		}
+	})
+
+	t.Run("batch_lookup_db_error_returns_500", func(t *testing.T) {
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, BatchID: &batchID, AmountPaise: 1000}, nil
+			},
+			getBatchFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error) {
+				return nil, errors.New("batch lookup failed")
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error, got %d", w.Code)
+		}
+	})
+
+	t.Run("payee_lookup_db_error_returns_500", func(t *testing.T) {
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, PayeeID: payeeID, AmountPaise: 1000}, nil
+			},
+			getPayeeFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
+				return nil, errors.New("payee lookup failed")
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error, got %d", w.Code)
+		}
+	})
+
+	t.Run("settlement_unresolved_property_returns_500", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 for unresolved property on settlement, got %d", w.Code)
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when property resolution fails")
+		}
+	})
+
+	t.Run("reversal_unresolved_property_returns_500", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutSucceeded}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_REVERSED", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 for unresolved property on reversal, got %d", w.Code)
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when property resolution fails")
+		}
+	})
+
+	t.Run("settlement_idempotency_already_succeeded_returns_200", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutSucceeded}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for already succeeded item, got %d", w.Code)
+		}
+		if updateCalled {
+			t.Fatal("expected update status NOT to be called on idempotent replay")
+		}
+	})
+
+	t.Run("reversal_idempotency_already_reversed_returns_200", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutReversed}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_REVERSED", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for already reversed item, got %d", w.Code)
+		}
+		if updateCalled {
+			t.Fatal("expected update status NOT to be called on idempotent replay")
+		}
+	})
+
+	t.Run("settlement_ledger_mirror_fail_outbox_fail_returns_500", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutProcessing, PayeeID: payeeID}, nil
+			},
+			getPayeeFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
+				return &domain.PayoutPayee{ID: payeeID, PropertyID: propID}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+				LedgerOutboxRepo:            nil, // forces outbox failure
+				Pool:                        nil,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		req := createTestSignedWebhookReq(secret, makeEnv("TRANSFER_SUCCESS", itemID))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 when outbox fallback fails, got %d", w.Code)
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when outbox fallback fails")
+		}
+	})
 }

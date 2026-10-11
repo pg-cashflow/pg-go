@@ -249,3 +249,13 @@ type SettlementBalancerStore interface {
 type SettlementReconcilerService interface {
 	ReconcileWebhookSettlement(ctx context.Context, rec *cashfree.SettlementWebhookRecord) (*domain.GatewaySettlement, error)
 }
+
+// PayoutWebhookStore defines the store interface required by the Cashfree payout webhook handler.
+type PayoutWebhookStore interface {
+	GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error)
+	GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error)
+	GetPayeeByID(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error)
+	UpdatePayoutItemStatusTx(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
+	UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
+	SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error
+}

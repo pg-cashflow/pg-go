@@ -20,6 +20,8 @@ type mockMirrorer struct {
 	calls          []domain.DepartureSettlementMirrorPayload
 	paymentCalls   []domain.PaymentMirrorPayload
 	unappliedCalls []domain.PaymentMirrorPayload
+	settledCalls   []domain.PayoutSettlementMirrorPayload
+	reversedCalls  []domain.PayoutReversalMirrorPayload
 	fail           bool
 }
 
@@ -177,6 +179,30 @@ func (m *mockMirrorer) MirrorPayoutReversed(
 	if m.fail {
 		return errors.New("simulated mirror payout reversed failure")
 	}
+	m.reversedCalls = append(m.reversedCalls, domain.PayoutReversalMirrorPayload{
+		PropertyID:   propertyID,
+		PayoutItemID: payoutItemID,
+		AmountPaise:  amountPaise,
+		OccurredAt:   at,
+	})
+	return nil
+}
+
+func (m *mockMirrorer) MirrorPayoutSettled(
+	ctx context.Context,
+	propertyID, payoutItemID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror payout settled failure")
+	}
+	m.settledCalls = append(m.settledCalls, domain.PayoutSettlementMirrorPayload{
+		PropertyID:   propertyID,
+		PayoutItemID: payoutItemID,
+		AmountPaise:  amountPaise,
+		OccurredAt:   at,
+	})
 	return nil
 }
 
@@ -505,4 +531,96 @@ func TestLedgerOutboxWorker_PayoutDispatcherUnconfiguredDoesNotDeadLetter(t *tes
 	if len(alerter.calledWith) != 0 {
 		t.Errorf("expected 0 dead letter alerts, got %d", len(alerter.calledWith))
 	}
+}
+
+func TestLedgerWorker_Dispatch_PayoutSettlementAndReversal(t *testing.T) {
+	ctx := context.Background()
+	propID := uuid.New()
+	itemID := uuid.New()
+	at := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+
+	t.Run("payout_settlement_success", func(t *testing.T) {
+		mock := &mockMirrorer{}
+		w := &LedgerOutboxWorker{mirrorer: mock}
+		payloadBytes, _ := json.Marshal(domain.PayoutSettlementMirrorPayload{
+			PropertyID:   propID,
+			PayoutItemID: itemID,
+			AmountPaise:  500000,
+			OccurredAt:   at,
+		})
+		evt := &domain.LedgerOutboxEvent{
+			EventType: domain.LedgerOutboxPayoutSettlement,
+			Payload:   payloadBytes,
+		}
+		if err := w.dispatch(ctx, evt); err != nil {
+			t.Fatalf("dispatch failed: %v", err)
+		}
+		if len(mock.settledCalls) != 1 {
+			t.Fatalf("expected 1 settled call, got %d", len(mock.settledCalls))
+		}
+		call := mock.settledCalls[0]
+		if call.PropertyID != propID || call.PayoutItemID != itemID || call.AmountPaise != 500000 {
+			t.Fatalf("unexpected call data: %+v", call)
+		}
+	})
+
+	t.Run("payout_settlement_mirrorer_failure", func(t *testing.T) {
+		mock := &mockMirrorer{fail: true}
+		w := &LedgerOutboxWorker{mirrorer: mock}
+		payloadBytes, _ := json.Marshal(domain.PayoutSettlementMirrorPayload{
+			PropertyID:   propID,
+			PayoutItemID: itemID,
+			AmountPaise:  500000,
+			OccurredAt:   at,
+		})
+		evt := &domain.LedgerOutboxEvent{
+			EventType: domain.LedgerOutboxPayoutSettlement,
+			Payload:   payloadBytes,
+		}
+		if err := w.dispatch(ctx, evt); err == nil {
+			t.Fatal("expected error when mirrorer fails, got nil")
+		}
+	})
+
+	t.Run("payout_settlement_nil_mirrorer", func(t *testing.T) {
+		w := &LedgerOutboxWorker{mirrorer: nil}
+		payloadBytes, _ := json.Marshal(domain.PayoutSettlementMirrorPayload{
+			PropertyID:   propID,
+			PayoutItemID: itemID,
+			AmountPaise:  500000,
+			OccurredAt:   at,
+		})
+		evt := &domain.LedgerOutboxEvent{
+			EventType: domain.LedgerOutboxPayoutSettlement,
+			Payload:   payloadBytes,
+		}
+		if err := w.dispatch(ctx, evt); err == nil {
+			t.Fatal("expected error on nil mirrorer, got nil")
+		}
+	})
+
+	t.Run("payout_reversal_success", func(t *testing.T) {
+		mock := &mockMirrorer{}
+		w := &LedgerOutboxWorker{mirrorer: mock}
+		payloadBytes, _ := json.Marshal(domain.PayoutReversalMirrorPayload{
+			PropertyID:   propID,
+			PayoutItemID: itemID,
+			AmountPaise:  300000,
+			OccurredAt:   at,
+		})
+		evt := &domain.LedgerOutboxEvent{
+			EventType: domain.LedgerOutboxPayoutReversal,
+			Payload:   payloadBytes,
+		}
+		if err := w.dispatch(ctx, evt); err != nil {
+			t.Fatalf("dispatch failed: %v", err)
+		}
+		if len(mock.reversedCalls) != 1 {
+			t.Fatalf("expected 1 reversed call, got %d", len(mock.reversedCalls))
+		}
+		call := mock.reversedCalls[0]
+		if call.PropertyID != propID || call.PayoutItemID != itemID || call.AmountPaise != 300000 {
+			t.Fatalf("unexpected call data: %+v", call)
+		}
+	})
 }
