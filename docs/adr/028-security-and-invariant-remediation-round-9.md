@@ -193,3 +193,9 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 - **Handler Error Classification:** Updated `CreateBatchFromUnbatched` in `internal/api/handlers_payouts.go` to match against `postgres.ErrNoUnbatchedPayoutItems` using `errors.Is(err, postgres.ErrNoUnbatchedPayoutItems)` instead of `strings.Contains(err.Error(), "no unbatched")`. Other database errors cleanly fall through to the generic 500 response.
 - **Repository-Wide Message Matching Audit:** Confirmed complete elimination of `strings.Contains(err...)` and `err.Error()` message matching across all non-test packages in `internal/` and `cmd/`.
 
+### 6.9 Operator Logging for Closed-Period Refusals (Round 18)
+
+- **Operator Warning Log Restoration:** Restored `slog.Warn("closed period posting refused", "err", err)` in `financeClientErr` in [apierr.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/apierr.go).
+- **Sanitized Client Error Invariant:** Maintained the constant response message `"accounting period is closed"` with code `apierr.CodeFinancePeriodClosed` to prevent internal database trigger details from leaking to clients.
+- **Characterization Verification:** Verified with `TestFinanceClientErr_PeriodClosedHidesTriggerText` in [error_characterization_test.go](file:///c:/Users/divak/Downloads/pg-go/internal/api/error_characterization_test.go) that trigger error details remain hidden from client responses while operator telemetry captures the diagnostic error.
+
