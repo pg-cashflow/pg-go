@@ -12,8 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 // PayoutWebhookEnvelope represents the outer wrapper of a Cashfree Transfers V2 webhook event.
@@ -233,10 +235,31 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		}
 
 		if h.Finance != nil && propID != uuid.Nil {
-			// Ledger-gap: if MirrorPayoutReversed fails, the status record is already committed.
-			// The error is logged for operator alerting; the gateway should not retry for a ledger-only failure.
 			if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, time.Now().UTC()); err != nil {
-				slog.Error("LEDGER GAP: failed mirroring reversed payout journal", "item_id", item.ID, "err", err)
+				slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
+				if h.LedgerOutboxRepo != nil && h.Pool != nil {
+					payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+						PropertyID:   propID,
+						PayoutItemID: item.ID,
+						AmountPaise:  item.AmountPaise,
+						OccurredAt:   time.Now().UTC(),
+					})
+					if mErr == nil {
+						outboxEvt := &domain.LedgerOutboxEvent{
+							EventType:      domain.LedgerOutboxPayoutReversal,
+							PropertyID:     propID,
+							SourceID:       item.ID,
+							Payload:        payload,
+							IdempotencyKey: fmt.Sprintf("payout_reversed:%s", item.ID),
+							MaxAttempts:    5,
+						}
+						if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+							return h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt)
+						}); txErr != nil {
+							slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", txErr)
+						}
+					}
+				}
 			}
 		}
 

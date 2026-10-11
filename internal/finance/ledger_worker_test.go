@@ -168,6 +168,18 @@ func (m *mockMirrorer) MirrorPaymentCorrection(
 	return nil
 }
 
+func (m *mockMirrorer) MirrorPayoutReversed(
+	ctx context.Context,
+	propertyID, payoutItemID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror payout reversed failure")
+	}
+	return nil
+}
+
 func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)

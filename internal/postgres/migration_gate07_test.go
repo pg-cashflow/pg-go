@@ -173,7 +173,9 @@ func TestGate07_LockSafetyStaticLinter(t *testing.T) {
 		}
 
 		// For any new migrations (> 064), enforce lock_timeout when ALTER TABLE is present
-		if e.Name() > "064" && strings.Contains(strings.ToUpper(content), "ALTER TABLE") {
+		// Compare the 3-digit zero-padded version prefix. A whole-name comparison
+		// ("064_x.sql" > "064") is true, which wrongly enforces the rule on 064.
+		if len(e.Name()) >= 3 && e.Name()[:3] > "064" && strings.Contains(strings.ToUpper(content), "ALTER TABLE") {
 			if !strings.Contains(strings.ToLower(content), "lock_timeout") {
 				t.Errorf("migration %s introduces ALTER TABLE without SET lock_timeout", e.Name())
 			}

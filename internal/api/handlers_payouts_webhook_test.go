@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -77,8 +78,11 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	payoutRepo := postgres.NewPayoutRepo(pool, finSvc)
 
 	webhookSecret := "test_payout_webhook_secret_32_bytes_long"
+	outboxRepo := postgres.NewLedgerOutboxRepo(pool)
 	h := &Handlers{
 		Deps: Deps{
+			Pool:                        pool,
+			LedgerOutboxRepo:            outboxRepo,
 			PayoutRepo:                  payoutRepo,
 			CashfreePayoutWebhookSecret: webhookSecret,
 			Finance:                     finSvc,
@@ -274,6 +278,83 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			t.Fatalf("expected item A status reversed, got %s", updatedItemA.Status)
 		}
 	})
+
+	t.Run("Transfer_Reversed_Ledger_Failure_Enqueues_Outbox", func(t *testing.T) {
+		itemC := &domain.PayoutItem{
+			PayeeID:         payee.ID,
+			ReferenceNumber: "DEP-C-003",
+			AmountPaise:     500000,
+			Purpose:         "Deposit Refund",
+			Status:          domain.PayoutProcessing,
+		}
+		if err := payoutRepo.CreatePayoutItem(ctx, itemC); err != nil {
+			t.Fatalf("create item C: %v", err)
+		}
+
+		// Inject failing finance store to force MirrorPayoutReversed failure
+		failingStore := &failingJournalStore{Store: financeRepo}
+		failingFinSvc := finance.NewService(failingStore, nil)
+		failingH := &Handlers{
+			Deps: Deps{
+				Pool:                        pool,
+				LedgerOutboxRepo:            outboxRepo,
+				PayoutRepo:                  payoutRepo,
+				CashfreePayoutWebhookSecret: webhookSecret,
+				Finance:                     failingFinSvc,
+				WebhookToleranceSec:         300,
+			},
+		}
+		failingRouter := gin.New()
+		failingRouter.POST("/webhooks/cashfree/payouts", failingH.CashfreePayoutWebhook)
+
+		payload := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_REVERSED",
+			EventTime: time.Now().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:        fmt.Sprintf("pgo_%s", itemC.ID),
+			CFTransferID:      "cf_tr_333",
+			Status:            "REVERSED",
+			StatusDescription: "Bank reversal forcing ledger outbox fallback",
+		}
+		payload.Data, _ = json.Marshal(data)
+		rawBody, _ := json.Marshal(payload)
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		sig := signPayoutWebhook(webhookSecret, ts, rawBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(rawBody))
+		req.Header.Set("x-webhook-signature", sig)
+		req.Header.Set("x-webhook-timestamp", ts)
+
+		w := httptest.NewRecorder()
+		failingRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Verify outbox fallback recorded the reversal event
+		var outboxCount int
+		err := pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM ledger_outbox_events 
+			WHERE event_type = $1 AND source_id = $2`,
+			domain.LedgerOutboxPayoutReversal, itemC.ID,
+		).Scan(&outboxCount)
+		if err != nil {
+			t.Fatalf("query outbox: %v", err)
+		}
+		if outboxCount != 1 {
+			t.Fatalf("expected 1 outbox event for reversed payout, got %d", outboxCount)
+		}
+		_, _ = pool.Exec(ctx, `DELETE FROM ledger_outbox_events WHERE source_id = $1`, itemC.ID)
+	})
+}
+
+type failingJournalStore struct {
+	finance.Store
+}
+
+func (s *failingJournalStore) InsertJournal(ctx context.Context, lines []domain.JournalLine) error {
+	return errors.New("simulated database journal failure for outbox fallback test")
 }
 
 func ptr(s string) *string {

@@ -488,15 +488,17 @@ func TestCalculateMonthlyWage_OddHalfDaysAndOddRateRounding(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// 1 excess half day: (1 * 48387) / 2 = 24193 paise deduction (integer truncation).
-	expectedPerDayRate := int64(1500001 / 31)
-	expectedDeduction := (1 * expectedPerDayRate) / 2
-	if calc.TotalDeductionPaise != expectedDeduction {
-		t.Errorf("expected deduction %d, got %d", expectedDeduction, calc.TotalDeductionPaise)
+	// Invariant: Floor truncation policy pins deduction to exactly 24193 paise
+	// 1 excess half day: floor(48387 / 2) = 24193 paise deduction.
+	// Net wage: 1500001 - 24193 = 1475808 paise.
+	const wantDeductionPaise int64 = 24193
+	const wantNetWagePaise int64 = 1475808
+
+	if calc.TotalDeductionPaise != wantDeductionPaise {
+		t.Errorf("expected deduction %d paise, got %d", wantDeductionPaise, calc.TotalDeductionPaise)
 	}
-	expectedNet := calc.ProratedBaseWagePaise - expectedDeduction
-	if calc.NetWagePaise != expectedNet {
-		t.Errorf("expected net wage %d, got %d", expectedNet, calc.NetWagePaise)
+	if calc.NetWagePaise != wantNetWagePaise {
+		t.Errorf("expected net wage %d paise, got %d", wantNetWagePaise, calc.NetWagePaise)
 	}
 
 	// Invariant conservation holds

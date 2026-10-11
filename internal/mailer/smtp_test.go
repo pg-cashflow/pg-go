@@ -10,8 +10,8 @@ var _ Mailer = (*SMTPMailer)(nil)
 
 func TestSMTPMailerImplementsMailer(t *testing.T) {
 	var m Mailer = &SMTPMailer{}
-	if m == nil {
-		t.Fatal("expected non-nil Mailer instance")
+	if err := m.Send(context.Background(), "user@example.com", "subject", "<p>test</p>"); err == nil {
+		t.Fatal("expected error on unconfigured SMTPMailer")
 	}
 }
 
