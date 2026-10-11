@@ -184,9 +184,6 @@ func TestFinance_CoverageBoost(t *testing.T) {
 	if _, _, _, err := svc.PatchUnifiedSettings(ctx, propID, &settings, &policy, &loyalty); err != nil {
 		t.Fatalf("PatchUnifiedSettings failed: %v", err)
 	}
-	if _, _, err := svc.PatchSettings(ctx, propID, &settings, &policy); err != nil {
-		t.Fatalf("PatchSettings failed: %v", err)
-	}
 
 	// 6. MemoryStore - Initial Manager Spend
 	store.SaveInitialManagerSpend(propID, ownerID, 200000, now)

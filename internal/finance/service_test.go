@@ -146,7 +146,9 @@ func TestPatchUnifiedSettings(t *testing.T) {
 		TDRIsEstimated:      false,
 	}
 	polIn := &domain.ApprovalPolicy{
-		ManagerDailyLimitPaise: 2000000,
+		SingleExpenseLimitPaise:  1000000,
+		ManagerDailyLimitPaise:   2000000,
+		ManagerMonthlyLimitPaise: 5000000,
 	}
 	loyIn := &domain.PropertyGamificationSettings{
 		PointValuePaise:    150,

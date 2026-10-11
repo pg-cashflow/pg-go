@@ -24,10 +24,10 @@ func NewLedgerOutboxRepo(db DBTX) *LedgerOutboxRepo {
 
 // InsertLedgerOutboxEventTx inserts an outbox event within the domain write's transaction.
 // Idempotency guarantee:
-// - If an event with the same idempotency_key already exists with an IDENTICAL payload,
-//   it returns nil and sets evt.ID and evt.CreatedAt to the existing record.
-// - If an event with the same idempotency_key already exists with a DIFFERENT payload,
-//   it strictly returns domain.ErrIdempotencyConflict. Idempotency NEVER hides financial payload tampering.
+//   - If an event with the same idempotency_key already exists with an IDENTICAL payload,
+//     it returns nil and sets evt.ID and evt.CreatedAt to the existing record.
+//   - If an event with the same idempotency_key already exists with a DIFFERENT payload,
+//     it strictly returns domain.ErrIdempotencyConflict. Idempotency NEVER hides financial payload tampering.
 func (r *LedgerOutboxRepo) InsertLedgerOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error {
 	if evt.Payload == nil {
 		evt.Payload = json.RawMessage("{}")

@@ -12,7 +12,7 @@ var (
 	ErrNotFound             = domain.ErrNotFound
 	ErrPeriodClosed         = domain.ErrPeriodClosed
 	ErrForbidden            = domain.ErrForbidden
-	ErrPolicyExceeded       = errors.New("finance: spend policy exceeded")
+	ErrPolicyExceeded       = domain.ErrPolicyExceeded
 	ErrApprovalRequired     = errors.New("finance: owner approval required")
 	ErrExpenseNotPayable    = domain.ErrExpenseNotPayable
 	ErrOverpay              = domain.ErrOverpay
@@ -20,7 +20,7 @@ var (
 	ErrPeriodNotCloseable   = errors.New("finance: unexplained tie-out difference blocks close")
 	ErrPeriodNotReopenable  = domain.ErrPeriodNotReopenable
 	ErrIdempotencyRequired  = errors.New("finance: Idempotency-Key required")
-	ErrInvalidAmount        = errors.New("finance: amount must be positive")
+	ErrInvalidAmount        = domain.ErrInvalidAmount
 	ErrInvalidKind          = errors.New("finance: invalid kind")
 	ErrDisabled             = errors.New("finance: finance layer disabled")
 	ErrExpenseNotVoidable   = errors.New("finance: expense cannot be voided in its current status")

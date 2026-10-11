@@ -493,12 +493,7 @@ func (s *Service) SaveBudget(ctx context.Context, b *domain.Budget) error {
 	return nil
 }
 
-func (s *Service) PatchSettings(ctx context.Context, propertyID uuid.UUID, settings *domain.PropertyFinanceSettings, policy *domain.ApprovalPolicy) (*domain.PropertyFinanceSettings, *domain.ApprovalPolicy, error) {
-	st, pol, _, err := s.PatchUnifiedSettings(ctx, propertyID, settings, policy, nil)
-	return st, pol, err
-}
-
-const MaxExpenseLimitPaise = 1_000_000_000_00 // 10 crore paise
+const MaxExpenseLimitPaise = 1_000_000_000_00 // 10^11 paise (100 crore INR)
 
 func ValidateApprovalPolicy(p domain.ApprovalPolicy) error {
 	if p.ManagerDailyLimitPaise < 0 || p.ManagerDailyLimitPaise > MaxExpenseLimitPaise {
@@ -516,11 +511,14 @@ func ValidateApprovalPolicy(p domain.ApprovalPolicy) error {
 	if p.ReimbursementThresholdPaise < 0 || p.ReimbursementThresholdPaise > MaxExpenseLimitPaise {
 		return ErrInvalidSettings
 	}
+	if p.SingleExpenseLimitPaise > p.ManagerDailyLimitPaise || p.ManagerDailyLimitPaise > p.ManagerMonthlyLimitPaise {
+		return ErrInvalidSettings
+	}
 	return nil
 }
 
 func ValidateFinanceSettings(s domain.PropertyFinanceSettings) error {
-	if s.FiscalMonthStartDay < 1 || s.FiscalMonthStartDay > 31 {
+	if s.FiscalMonthStartDay < 1 || s.FiscalMonthStartDay > 28 {
 		return ErrInvalidSettings
 	}
 	if s.TDREffectiveBPS < 0 || s.TDREffectiveBPS > 10000 {

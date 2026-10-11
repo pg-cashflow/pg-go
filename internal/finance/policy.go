@@ -8,71 +8,37 @@ import (
 )
 
 func DefaultPolicy(propertyID uuid.UUID) domain.ApprovalPolicy {
-	return domain.ApprovalPolicy{
-		PropertyID:                  propertyID,
-		ManagerDailyLimitPaise:      1_000_000,
-		SingleExpenseLimitPaise:     500_000,
-		ManagerMonthlyLimitPaise:    5_000_000,
-		OwnerApprovalThresholdPaise: 500_000,
-		ReimbursementThresholdPaise: 250_000,
-		EmergencyBypassEnabled:      true,
-	}
+	return domain.DefaultPolicy(propertyID)
 }
 
 func defaultPolicy(propertyID uuid.UUID) domain.ApprovalPolicy {
-	return DefaultPolicy(propertyID)
+	return domain.DefaultPolicy(propertyID)
 }
 
 func DefaultSettings(propertyID uuid.UUID) domain.PropertyFinanceSettings {
-	return domain.PropertyFinanceSettings{
-		PropertyID:            propertyID,
-		FiscalMonthStartDay:   1,
-		ManagerCanViewLeakage: true,
-		TDRIsEstimated:        true,
-	}
+	return domain.DefaultSettings(propertyID)
 }
 
 func defaultSettings(propertyID uuid.UUID) domain.PropertyFinanceSettings {
-	return DefaultSettings(propertyID)
+	return domain.DefaultSettings(propertyID)
 }
 
-type SpendCheck struct {
-	NeedsApproval bool
-	Reject        error
-}
+type SpendCheck = domain.SpendCheck
 
-type spendCheck = SpendCheck
+type spendCheck = domain.SpendCheck
 
 func EvaluateManagerSpend(p domain.ApprovalPolicy, amount, dailySoFar, monthlySoFar int64, emergency bool) SpendCheck {
-	if amount <= 0 {
-		return SpendCheck{Reject: ErrInvalidAmount}
-	}
-	if dailySoFar+amount > p.ManagerDailyLimitPaise && !(emergency && p.EmergencyBypassEnabled) {
-		return SpendCheck{Reject: ErrPolicyExceeded}
-	}
-	if monthlySoFar+amount > p.ManagerMonthlyLimitPaise && !(emergency && p.EmergencyBypassEnabled) {
-		return SpendCheck{Reject: ErrPolicyExceeded}
-	}
-	if amount > p.SingleExpenseLimitPaise && !(emergency && p.EmergencyBypassEnabled) {
-		if amount > p.OwnerApprovalThresholdPaise {
-			return SpendCheck{NeedsApproval: true}
-		}
-		return SpendCheck{Reject: ErrPolicyExceeded}
-	}
-	if amount > p.OwnerApprovalThresholdPaise && !(emergency && p.EmergencyBypassEnabled) {
-		return SpendCheck{NeedsApproval: true}
-	}
-	return SpendCheck{}
+	return domain.EvaluateManagerSpend(p, amount, dailySoFar, monthlySoFar, emergency)
 }
 
 func evaluateManagerSpend(p domain.ApprovalPolicy, amount, dailySoFar, monthlySoFar int64, emergency bool) SpendCheck {
-	return EvaluateManagerSpend(p, amount, dailySoFar, monthlySoFar, emergency)
+	return domain.EvaluateManagerSpend(p, amount, dailySoFar, monthlySoFar, emergency)
 }
 
 func DayStart(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return domain.DayStart(t)
 }
 
 func dayStart(t time.Time) time.Time {
-	return DayStart(t)
+	return domain.DayStart(t)
 }

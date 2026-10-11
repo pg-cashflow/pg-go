@@ -9,7 +9,7 @@ import (
 
 var (
 	ErrPolicyExceeded = errors.New("finance: spend policy exceeded")
-	ErrInvalidAmount  = errors.New("finance: invalid amount")
+	ErrInvalidAmount  = errors.New("finance: amount must be positive")
 )
 
 func DefaultPolicy(propertyID uuid.UUID) ApprovalPolicy {

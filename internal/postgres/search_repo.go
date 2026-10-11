@@ -935,9 +935,9 @@ func (r *SearchRepo) buildViolationsQuery(p search.Params, tokens []search.Token
 
 // buildBankTransactionsQuery covers unmatched bank statement credits and debits (Ticket 14 / Migration 027).
 // Uses a two-stage lookup:
-// - Stage 1 (fast): Exact/prefix index scan on txn_id via idx_bank_txn_prop_prefix
-// - Stage 2 (fallback): Trigram search on narration via idx_bank_transactions_prop_narration_trgm,
-//   gated on (SELECT count(*) FROM fast) < limit so Postgres skips narration scan with a one-time filter.
+//   - Stage 1 (fast): Exact/prefix index scan on txn_id via idx_bank_txn_prop_prefix
+//   - Stage 2 (fallback): Trigram search on narration via idx_bank_transactions_prop_narration_trgm,
+//     gated on (SELECT count(*) FROM fast) < limit so Postgres skips narration scan with a one-time filter.
 func (r *SearchRepo) buildBankTransactionsQuery(p search.Params, tokens []search.Token, limit int) entityQuery {
 	args := []any{p.PropertyID}
 	var fastClauses []string

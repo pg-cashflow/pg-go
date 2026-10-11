@@ -665,6 +665,78 @@ func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 	}
 }
 
+func TestVerifyCalendarToken_SecurityEdgeCases(t *testing.T) {
+	secret := "calendar_super_secret_key_456"
+	propA := uuid.New()
+	propB := uuid.New()
+
+	// 1. Valid token
+	validTok := generateCalendarToken(propA, secret)
+	gotPID, ok := verifyCalendarToken(validTok, secret)
+	if !ok || gotPID != propA {
+		t.Fatalf("expected valid token to verify for propA (%s), got (%s, %v)", propA, gotPID, ok)
+	}
+
+	// 2. Expired token
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	expiredTok := generateCalendarToken(propA, secret, past)
+	if gotPID, ok := verifyCalendarToken(expiredTok, secret); ok || gotPID != uuid.Nil {
+		t.Fatalf("expected expired token to be rejected, got (%s, %v)", gotPID, ok)
+	}
+
+	// 3. Tampered property ID (cross-property attack: replace propA with propB in payload)
+	parts := strings.Split(validTok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("unexpected token format: %s", validTok)
+	}
+	tamperedPropTok := fmt.Sprintf("%s.%s.%s", propB.String(), parts[1], parts[2])
+	if gotPID, ok := verifyCalendarToken(tamperedPropTok, secret); ok || gotPID != uuid.Nil {
+		t.Fatalf("expected tampered property ID to be rejected by signature check, got (%s, %v)", gotPID, ok)
+	}
+
+	// 4. Forged/tampered signature
+	tamperedSigTok := fmt.Sprintf("%s.%s.abcdef1234567890abcdef1234567890", propA.String(), parts[1])
+	if gotPID, ok := verifyCalendarToken(tamperedSigTok, secret); ok || gotPID != uuid.Nil {
+		t.Fatalf("expected tampered signature to be rejected, got (%s, %v)", gotPID, ok)
+	}
+
+	// 5. Wrong secret
+	wrongSecret := "another_secret_entirely_789"
+	if gotPID, ok := verifyCalendarToken(validTok, wrongSecret); ok || gotPID != uuid.Nil {
+		t.Fatalf("expected token verified against wrong secret to fail, got (%s, %v)", gotPID, ok)
+	}
+
+	// 6. Malformed token formats
+	malformedCases := []string{
+		"",
+		"singlepart",
+		"two.parts",
+		"four.parts.in.token",
+		"not-a-valid-uuid." + parts[1] + "." + parts[2],
+		propA.String() + ".not-a-timestamp." + parts[2],
+	}
+	for _, tc := range malformedCases {
+		if gotPID, ok := verifyCalendarToken(tc, secret); ok || gotPID != uuid.Nil {
+			t.Errorf("expected malformed token %q to be rejected, got (%s, %v)", tc, gotPID, ok)
+		}
+	}
+
+	// 7. Endpoint refusal for expired token
+	r := gin.New()
+	h := &Handlers{
+		Deps: Deps{
+			JWTSecret: secret,
+		},
+	}
+	r.GET("/api/owner/calendar.ics", h.OwnerCalendarICS)
+	reqExpired := httptest.NewRequest(http.MethodGet, "/api/owner/calendar.ics?token="+expiredTok, nil)
+	wExpired := httptest.NewRecorder()
+	r.ServeHTTP(wExpired, reqExpired)
+	if wExpired.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for expired token, got %d", wExpired.Code)
+	}
+}
+
 func TestOwnerPropertySettings_GetAndPatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	jwtSecret := "test_secret_for_settings"

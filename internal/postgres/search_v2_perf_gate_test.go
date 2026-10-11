@@ -548,9 +548,10 @@ func TestPerformanceStressReport(t *testing.T) {
 // TestPerformanceGateStrictTarget validates the strict production performance gate matching ADR-012:
 // - Topology: ~1,000 properties, ~500 tenants for the target property, a few thousand dues/payments/bank rows.
 // - Requirements:
-//   1. Zero sequential scans on large tables (EXPLAIN assertions on index scans).
-//   2. 200+ samples latency benchmark asserting p95 < 100ms and partialRate <= 2.0%.
-//   3. Total search budget under 800ms SLA.
+//  1. Zero sequential scans on large tables (EXPLAIN assertions on index scans).
+//  2. 200+ samples latency benchmark asserting p95 < 100ms and partialRate <= 2.0%.
+//  3. Total search budget under 800ms SLA.
+//
 // This test represents the decisive ship/no-ship production gate.
 func TestPerformanceGateStrictTarget(t *testing.T) {
 	if testing.Short() {

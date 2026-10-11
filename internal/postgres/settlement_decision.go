@@ -23,29 +23,35 @@ func AmountsDiffer(a, b *domain.GatewaySettlement) bool {
 //
 // Rules enforced:
 // 1. Terminal states stay terminal:
-//    - Existing "REVERSED" can never be overwritten by any state.
-//    - Existing "SUCCESS" cannot regress to "PENDING" or "FAILED".
-//    - Existing "FAILED" cannot regress to "PENDING".
+//   - Existing "REVERSED" can never be overwritten by any state.
+//   - Existing "SUCCESS" cannot regress to "PENDING" or "FAILED".
+//   - Existing "FAILED" cannot regress to "PENDING".
+//
 // 2. Legitimate initial reversal:
-//    - Incoming "REVERSED" on a non-REVERSED row transitions to "REVERSED",
-//      re-opens discrepancy with reason "post_reconciliation_reversal", updates reversal figures,
-//      and resets resolution fields.
+//   - Incoming "REVERSED" on a non-REVERSED row transitions to "REVERSED",
+//     re-opens discrepancy with reason "post_reconciliation_reversal", updates reversal figures,
+//     and resets resolution fields.
+//
 // 3. Discrepancy is sticky:
-//    - Once in "discrepancy", only manual operator action can resolve it. Incoming webhooks
-//      (whether identical, replayed, or conflicting) CANNOT overwrite reconciliation_status,
-//      discrepancy_reason, or stored amounts.
+//   - Once in "discrepancy", only manual operator action can resolve it. Incoming webhooks
+//     (whether identical, replayed, or conflicting) CANNOT overwrite reconciliation_status,
+//     discrepancy_reason, or stored amounts.
+//
 // 4. Amount freeze:
-//    - Amounts are frozen once terminal ("SUCCESS" or "REVERSED") or manually reconciled ("manually_reconciled").
-//    - While "PENDING", amounts may be updated (allowing provisional-to-final changes).
+//   - Amounts are frozen once terminal ("SUCCESS" or "REVERSED") or manually reconciled ("manually_reconciled").
+//   - While "PENDING", amounts may be updated (allowing provisional-to-final changes).
+//
 // 5. Tamper / conflicting replay detection:
-//    - If incoming amounts differ on a terminal row ("SUCCESS" / "REVERSED") or reconciled row ("matched"):
-//      flips to "discrepancy" with reason "amount_changed_after_reconciliation", preserves the
-//      stored figures, appends an alert to resolution_notes, and clears resolved_by / resolved_at.
+//   - If incoming amounts differ on a terminal row ("SUCCESS" / "REVERSED") or reconciled row ("matched"):
+//     flips to "discrepancy" with reason "amount_changed_after_reconciliation", preserves the
+//     stored figures, appends an alert to resolution_notes, and clears resolved_by / resolved_at.
+//
 // 6. Manual resolution preservation:
-//    - If row is "manually_reconciled", normal webhook replays cannot overwrite operator figures
-//      or clear the manual reconciliation status.
+//   - If row is "manually_reconciled", normal webhook replays cannot overwrite operator figures
+//     or clear the manual reconciliation status.
+//
 // 7. Banking metadata:
-//    - Official banking metadata (UTR, settled_on, transfer_time) is updated when incoming provides values.
+//   - Official banking metadata (UTR, settled_on, transfer_time) is updated when incoming provides values.
 func DecideSettlementUpdate(existing, incoming *domain.GatewaySettlement) domain.GatewaySettlement {
 	updated := *existing
 
