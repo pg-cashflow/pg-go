@@ -36,14 +36,9 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 
-	// Defense-in-depth: when no secret is configured but IntentStore is wired,
-	// refuse unauthenticated webhooks. Only skip when gateway is fully absent.
+	// Fail closed if CashfreeSecret is unconfigured
 	if h.CashfreeSecret == "" {
-		if h.IntentStore != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payment gateway not configured"})
-			return
-		}
-		c.Status(http.StatusOK)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payment gateway not configured"})
 		return
 	}
 

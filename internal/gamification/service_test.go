@@ -1087,4 +1087,3 @@ func TestFulfilRedemption_NotFoundTextInDBErrorIsInternal(t *testing.T) {
 		t.Fatalf("expected underlying error preserved, got: %v", err)
 	}
 }
-

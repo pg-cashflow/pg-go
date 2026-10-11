@@ -165,7 +165,7 @@ func TestCashfreeWebhookRejectsBadHMAC(t *testing.T) {
 	}
 }
 
-func TestCashfreeWebhookDormantWithoutSecret(t *testing.T) {
+func TestCashfreeWebhookFailsClosedWithoutSecret(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{Deps: Deps{}}
 	r := gin.New()
@@ -173,8 +173,8 @@ func TestCashfreeWebhookDormantWithoutSecret(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(`{"type":"PAYMENT_SUCCESS_WEBHOOK"}`))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("code=%d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable, got %d", w.Code)
 	}
 }
 

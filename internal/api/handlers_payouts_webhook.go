@@ -53,14 +53,10 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 
-	// Defense-in-depth: Validate HMAC signature against dedicated CF_PAYOUT_WEBHOOK_SECRET
+	// Fail closed if CashfreePayoutWebhookSecret is unconfigured
 	secret := h.CashfreePayoutWebhookSecret
 	if secret == "" {
-		if h.PayoutRepo != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payout webhook secret not configured"})
-			return
-		}
-		c.Status(http.StatusOK)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payout webhook secret not configured"})
 		return
 	}
 

@@ -414,3 +414,16 @@ func (s *failingJournalStore) InsertJournal(ctx context.Context, lines []domain.
 func ptr(s string) *string {
 	return &s
 }
+
+func TestCashfreePayoutWebhookFailsClosedWithoutSecret(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{Deps: Deps{CashfreePayoutWebhookSecret: ""}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewBufferString(`{"transfer_id":"tr_1"}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable, got %d", w.Code)
+	}
+}

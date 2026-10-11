@@ -12,7 +12,7 @@ jobs:
 
       - name: No raw err.Error() in HTTP responses (ADR-2 H2)
         run: |
-          if grep -rn 'gin\.H{"error": err\.Error()}' internal/api; then
+          if grep -rnE '(gin\.H\{[^}]*|JSON\([^)]*gin\.H\{[^}]*)err\.Error\(\)|"error"\s*:\s*[A-Za-z_.]*\.Error\(\)' internal/api; then
             echo "FAIL: raw err.Error() in HTTP response found — use respondErr() instead"
             exit 1
           fi

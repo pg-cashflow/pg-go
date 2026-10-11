@@ -1047,4 +1047,3 @@ func TestOwnerDashboard_InternalErrorsAreNotEchoed(t *testing.T) {
 		}
 	})
 }
-
