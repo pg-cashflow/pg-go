@@ -17,6 +17,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
+	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -960,3 +961,90 @@ func TestOwnerDashboardSummaryAndMonthlyCashFlow(t *testing.T) {
 		}
 	})
 }
+
+type testFailingPaymentService struct {
+	*sandboxPaymentService
+	buildSummaryErr error
+}
+
+func (s *testFailingPaymentService) BuildSummary(_ context.Context, _ uuid.UUID, _ string) (*payment.ReconciliationSummary, error) {
+	if s.buildSummaryErr != nil {
+		return nil, s.buildSummaryErr
+	}
+	return &payment.ReconciliationSummary{}, nil
+}
+
+func TestOwnerDashboard_InternalErrorsAreNotEchoed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test_secret_for_error_sanitization"
+	propID := uuid.New()
+	userID := uuid.New()
+
+	ownerUser := &domain.User{
+		ID:         userID,
+		PropertyID: &propID,
+		Role:       domain.RoleOwner,
+	}
+	token, err := auth.IssueToken(jwtSecret, ownerUser)
+	if err != nil {
+		t.Fatalf("IssueToken failed: %v", err)
+	}
+
+	propStore := &dashboardPropStore{
+		props: map[uuid.UUID]*domain.Property{
+			propID: {
+				ID:         propID,
+				OwnerEmail: "owner@test.com",
+				OwnerPhone: "+919876543210",
+			},
+		},
+	}
+	tenantStore := &dashboardTenantStore{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			uuid.New(): {ID: uuid.New(), PropertyID: propID, Status: domain.TenantStatusActive},
+		},
+	}
+
+	sensitiveErrorMsg := "SENSITIVE_INTERNAL_DATABASE_TIMEOUT_TRACE_9876"
+	paySvc := &testFailingPaymentService{
+		sandboxPaymentService: newSandboxPaymentService(),
+		buildSummaryErr:       errors.New(sensitiveErrorMsg),
+	}
+
+	d := Deps{
+		PropertyStore: propStore,
+		TenantStore:   tenantStore,
+		Payments:      paySvc,
+		JWTSecret:     jwtSecret,
+	}
+	r := NewRouter(d)
+
+	t.Run("GET /api/owner/dashboard/summary does not echo raw internal error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard/summary", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error, got %d: %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), sensitiveErrorMsg) {
+			t.Fatalf("expected sensitive error not to be echoed in response body, got: %s", w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/dashboard/monthly-cashflow does not echo raw internal error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard/monthly-cashflow", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error, got %d: %s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), sensitiveErrorMsg) {
+			t.Fatalf("expected sensitive error not to be echoed in response body, got: %s", w.Body.String())
+		}
+	})
+}
+

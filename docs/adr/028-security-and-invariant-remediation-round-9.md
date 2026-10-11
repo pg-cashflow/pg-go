@@ -114,14 +114,50 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 | INV-015 Failure Transparency | Store failure returns 500 | `TestOwnerOccupancy_FailsClosedOnStoreError` (`internal/api`) | Pass |
 | Metrics Auth | Query string token rejected | `TestMetricsEndpoint_AuthClosedByDefault` (`internal/api`) | Pass |
 | Invite Rate Limit | Route matrix integrity | `TestRoute*` (`internal/api`) | Pass |
+| Dashboard Error Sanitization | Internal error details omitted | `TestOwnerDashboard_InternalErrorsAreNotEchoed` (`internal/api`) | Pass |
 | Package Compiles | Full internal packages | `go test ./...` | Pass |
+| Concurrency Race Detection | Zero data races | `go test -count=1 -race ./...` (MinGW-w64 GCC 16.1.0) | Pass |
+| Test Skip Audit | Zero tests skipped | `go test -count=1 -v ./...` | Pass (0 skips) |
 
 ---
 
-## 4. Consequences
+## 4. Addendum: Error Sanitization, Race Detection, and Audit Verification
+
+1. **Dashboard Internal Error Sanitization:**
+   - In `internal/api/handlers_owner_dashboard.go`, `OwnerDashboardSummary` and `OwnerMonthlyCashFlow` previously concatenated raw `err.Error()` in responses when `Finance.OperatingSummary` or `computeMonthlyCashFlow` failed.
+   - All error responses in `OwnerDashboardSummary` and `OwnerMonthlyCashFlow` now use standardized `apierr.ErrorEnvelope` with generic messages (`"failed to build operating summary"`, `"failed to compute monthly cash flow"`).
+   - Verified via `TestOwnerDashboard_InternalErrorsAreNotEchoed`: sensitive error strings are not returned to the client.
+
+2. **Calendar Token Audit Logging:**
+   - In `internal/api/handlers_owner_dashboard.go`, `OwnerGetCalendarToken` previously discarded the database execution error (`_, _ = h.Pool.Exec(...)`) when inserting into `property_calendar_tokens`.
+   - The failure is now logged via `slog.WarnContext(c.Request.Context(), "failed to audit calendar token insert", ...)` without blocking token issuance.
+
+3. **Concurrency Race Detector Verification:**
+   - Executed `go test -count=1 -race ./...` across all 48 test packages with `REQUIRE_DB=1` connected to the live PostgreSQL instance on `localhost:5432` (`postgres://postgres:port%401@localhost:5432/pg_test?sslmode=disable`).
+   - Built with MSYS2 MinGW-w64 GCC 16.1.0 (`C:\msys64\mingw64\bin\gcc.exe`).
+   - Result: All 48 packages returned `ok`. Zero data races and zero build failures detected.
+
+4. **Test Skip Audit:**
+   - Executed `go test -count=1 -v ./...` under `REQUIRE_DB=1` to count all skipped tests.
+   - Result: `TOTAL_SKIPS: 0`. Exactly zero tests were skipped.
+
+5. **Per-Handler Error Leakage Review Decisions:**
+   - `handlers_owner.go:1675`: `domain.NormalizeUTR` error. Client input validation (`ErrInvalidUTRFormat`), safe to return to caller.
+   - `handlers_public.go:307`: Explicit switch on known authentication sentinels (`ErrNoAccount`, `ErrInvalidOTP`, etc.). Unexpected errors fall through to `respondErr` (HTTP 500), safe.
+   - `handlers_search.go:73`: Explicit switch on query validation errors (`ErrQueryRequired`, `ErrQueryTooShort`, `ErrQueryTooLong`). Unexpected errors fall through to `respondErr` (HTTP 500), safe.
+   - `handlers_gamification.go:1038`: Recommends replacing raw `gin.H{"error": err.Error()}` with `respondErr(c, err)` to prevent repository/database errors from leaking as HTTP 400.
+   - `handlers_attendance.go:275`: Recommends isolating domain validation from repository database errors to prevent internal database errors from returning as HTTP 400.
+
+---
+
+## 5. Consequences
 
 - Webhook verification cannot be bypassed with unconfigured or empty keys.
 - SSRF vectors through web push subscriptions are blocked.
 - Gateway financial values are parsed as exact decimals without floating-point precision loss.
 - Occupancy metrics fail transparently with HTTP 500 rather than reporting false zero occupancy.
 - Metrics credentials cannot leak into URL access logs.
+- Internal database details and runtime errors cannot leak into client HTTP responses in owner dashboard endpoints.
+- Concurrency invariants (INV-004, INV-005, INV-012) are empirically verified free of data races under Go's race detector.
+
+

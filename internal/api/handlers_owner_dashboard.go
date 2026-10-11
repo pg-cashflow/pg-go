@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -445,7 +446,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	if h.Finance != nil {
 		sum, err := h.Finance.OperatingSummary(ctx, pid, period, rentCollected)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build operating summary: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to build operating summary"})
 			return
 		}
 		if sum != nil {
@@ -462,7 +463,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 
 	monthlyCashFlow, err := h.computeMonthlyCashFlow(ctx, pid, 6)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to compute monthly cash flow: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute monthly cash flow"})
 		return
 	}
 
@@ -505,7 +506,7 @@ func (h *Handlers) OwnerMonthlyCashFlow(c *gin.Context) {
 	}
 	cf, err := h.computeMonthlyCashFlow(c.Request.Context(), pid, months)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to compute monthly cash flow: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute monthly cash flow"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -765,11 +766,13 @@ func (h *Handlers) OwnerGetCalendarToken(c *gin.Context) {
 		hash := sha256.Sum256([]byte(tok))
 		tokenHash := hex.EncodeToString(hash[:])
 		expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
-		_, _ = h.Pool.Exec(c.Request.Context(), `
+		if _, err := h.Pool.Exec(c.Request.Context(), `
 			INSERT INTO property_calendar_tokens (property_id, token_hash, expires_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (token_hash) DO NOTHING
-		`, pid, tokenHash, expiresAt)
+		`, pid, tokenHash, expiresAt); err != nil {
+			slog.WarnContext(c.Request.Context(), "failed to audit calendar token insert", "property_id", pid, "err", err)
+		}
 	}
 
 	baseURL := h.MagicLinkBaseURL
