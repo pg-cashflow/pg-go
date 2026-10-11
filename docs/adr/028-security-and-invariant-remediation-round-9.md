@@ -170,5 +170,13 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 - **Database Error Text Regression Test:** Added `TestFulfilRedemption_NotFoundTextInDBErrorIsInternal` verifying that database errors containing "not found" substrings are returned as internal errors rather than misclassified as `ErrRedemptionNotFound`.
 - **Attendance Work Date Layout Leak Prevention:** Reverted `work_date` parse failure message in `internal/attendance/service.go` to fixed string `"invalid work_date (expected YYYY-MM-DD)"`, preventing exposure of Go time parser internal layout strings.
 
+---
 
+## 7. Round 13 Remediation: Consumer SQLSTATE Duplicate Award Detection
 
+### 7.1 Elimination of Error Message String Matching in Consumer
+
+- **Consumer Duplicate Award Error Detection:** Replaced error message string matching (`strings.Contains(..., "duplicate key")` and `"unique constraint"`) in `internal/gamification/consumer.go` (`errorsIsDuplicate`) with a typed SQLSTATE check (`errors.As(err, &pgErr) && pgErr.Code == "23505"` using `github.com/jackc/pgx/v5/pgconn`), matching the pattern used in `internal/postgres/finance_repo.go`.
+- **Eliminated Unused Imports:** Removed unused `strings` package dependency from `internal/gamification/consumer.go`.
+- **Unit Test Coverage:** Added `internal/gamification/consumer_duplicate_test.go` (`TestErrorsIsDuplicate`) testing real SQLSTATE 23505, wrapped 23505, other SQLSTATEs (23503), error strings containing "duplicate key" without SQLSTATE, arbitrary errors, and nil error inputs.
+- **Repository-Wide Message Matching Audit:** Confirmed complete elimination of error message string matching across `internal/gamification`, `internal/attendance`, and all associated API handlers.

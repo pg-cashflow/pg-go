@@ -3,12 +3,13 @@ package gamification
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -176,8 +177,6 @@ func (c *EventConsumer) checkReferralReward(ctx context.Context, referredTenantI
 }
 
 func errorsIsDuplicate(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint")
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
