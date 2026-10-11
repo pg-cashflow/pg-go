@@ -127,6 +127,13 @@ func TestGate07_LockSafetyStaticLinter(t *testing.T) {
 
 	dropTableRegex := regexp.MustCompile(`(?i)\bDROP\s+TABLE\s+([^;\n]+)`)
 	dropColumnRegex := regexp.MustCompile(`(?i)\bDROP\s+COLUMN\s+([^;\n]+)`)
+	alterColumnTypeRegex := regexp.MustCompile(`(?i)\bALTER\s+COLUMN\s+\w+\s+TYPE\b`)
+
+	// Legacy migrations (001-064) were grandfathered before lock-safety gate ratification.
+	// Any migration >= 065 MUST explicitly configure lock_timeout if modifying existing tables.
+	legacyAlterColumnExceptions := map[string]string{
+		"046_remediate_p0_invariants.sql": "P0 remediation expanded integer IDs to bigint before gate enforcement",
+	}
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
@@ -153,6 +160,22 @@ func TestGate07_LockSafetyStaticLinter(t *testing.T) {
 			target := strings.ToUpper(strings.TrimSpace(m[1]))
 			if !strings.HasPrefix(target, "IF EXISTS") {
 				t.Errorf("file %s has bare DROP COLUMN without IF EXISTS: %q", e.Name(), m[0])
+			}
+		}
+
+		// Check for dangerous ALTER COLUMN TYPE (exclusive table rewrites)
+		if alterColumnTypeRegex.MatchString(content) {
+			if reason, ok := legacyAlterColumnExceptions[e.Name()]; !ok {
+				t.Errorf("file %s has unsafe ALTER COLUMN TYPE rewriting table without registered exception", e.Name())
+			} else if reason == "" {
+				t.Errorf("file %s has empty justification for ALTER COLUMN TYPE", e.Name())
+			}
+		}
+
+		// For any new migrations (> 064), enforce lock_timeout when ALTER TABLE is present
+		if e.Name() > "064" && strings.Contains(strings.ToUpper(content), "ALTER TABLE") {
+			if !strings.Contains(strings.ToLower(content), "lock_timeout") {
+				t.Errorf("migration %s introduces ALTER TABLE without SET lock_timeout", e.Name())
 			}
 		}
 	}

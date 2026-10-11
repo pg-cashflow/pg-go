@@ -6,9 +6,13 @@ import (
 	"testing"
 )
 
+var _ Mailer = (*SMTPMailer)(nil)
+
 func TestSMTPMailerImplementsMailer(t *testing.T) {
 	var m Mailer = &SMTPMailer{}
-	_ = m
+	if m == nil {
+		t.Fatal("expected non-nil Mailer instance")
+	}
 }
 
 func TestNoopMailerImplementsMailer(t *testing.T) {

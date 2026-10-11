@@ -50,7 +50,7 @@
    - *Resolved By*: `scripts/audit_skips.go` enforcing zero unflagged skips when `REQUIRE_DB=1`.
 2. [Track R.2 (Ticket 18): Gate 02 — Package Coverage Floors & Coverprofile Gating](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r02_gate02_coverage_gate.md) `[Open]`
    - *Dependencies*: Gate 01.
-   - *Status*: `scripts/check-coverage.go` enforces regression floors (finance 75%, auth 60%, payment 50%, api 45%). Aspirational targets (85/85/80/75) reported with gaps. CI runs `-require-all` without `-strict`; strict enforcement blocked until package gaps are closed. Current gaps: finance −7.4%, payment −31.6%, auth −14.4%, api −11.0%.
+   - *Status*: `scripts/check-coverage.go` enforces ratcheted regression floors across 9 packages (finance 76.0%, auth 64.0%, payment 51.5%, api 62.0%, jobs 60.0%, gamification 35.0%, postgres 35.0%, notification 14.0%, tenant 10.0%). Aspirational targets (85/85/80/75) reported with gaps. CI runs `-require-all -report-aspirational` without `-strict`; strict enforcement blocked until package gaps reach aspirational targets. Current gaps: finance −9.0%, payment −33.5%, auth −16.0%, api −13.0%.
 3. [Track R.3 (Ticket 19): Gate 03 — API Contract & Router Response Schema Validation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r03_gate03_api_contract_tests.md) `[Closed]`
    - *Dependencies*: Gate 01.
    - *Resolved By*: `internal/api/contract_test.go` verifying 50+ route inventory, envelope wrappers, error schema, and integer paise precision.
@@ -65,7 +65,7 @@
    - *Resolved By*: `internal/api/route_role_matrix_test.go` asserting 401 anonymous, 403 role isolation, and property boundary enforcement.
 7. [Track R.7 (Ticket 23): Gate 07 — Schema Migration Freshness, Upgrades & Lock Safety](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r07_gate07_migration_tests.md) `[Closed]`
    - *Dependencies*: None.
-   - *Resolved By*: `internal/postgres/migration_gate07_test.go` validating 001–044 continuity, idempotency, table/index invariants, and lock safety DDL linting.
+   - *Resolved By*: `internal/postgres/migration_gate07_test.go` validating 001–064 continuity, idempotency, table/index invariants, and lock safety DDL linting.
 
 ### Tier 2: Nightly & Extended Frontier
 8. [Track R.8 (Ticket 24): Gate 08 — Process Crash, Network Fault & Poison Recovery](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r08_gate08_crash_recovery.md) `[Closed]`

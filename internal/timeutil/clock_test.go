@@ -81,4 +81,8 @@ func TestFixedClock_Concurrency(t *testing.T) {
 	}
 
 	wg.Wait()
+	finalTime := clk.Now()
+	if finalTime.Before(base) {
+		t.Fatalf("expected clock to be at or after base time %v, got %v", base, finalTime)
+	}
 }

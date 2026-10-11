@@ -467,20 +467,32 @@ func TestFinance_CoverageBoost(t *testing.T) {
 	_ = store.UpdateApproval(ctx, &approvalItem)
 
 	// Accruals and Formatting
-	_ = svc.postExpenseAccrual(ctx, &expItem)
-	_ = fmtINR(1234500)
+	if err := svc.postExpenseAccrual(ctx, &expItem); err != nil {
+		t.Fatalf("postExpenseAccrual failed: %v", err)
+	}
+	if inr := fmtINR(1234500); inr == "" {
+		t.Errorf("fmtINR returned empty string")
+	}
 
 	// Occupancy calculations
 	occ := Occupancy{CapacityBeds: 10, OccupiedBeds: 8, BedsAtRisk: 1}
-	_ = OccupancyBPS(occ)
-	_ = ComputeOccupancy([]domain.Room{{Capacity: 10}}, []domain.Tenant{{Status: domain.TenantStatusActive}}, now)
+	if bps := OccupancyBPS(occ); bps != 8000 {
+		t.Errorf("expected 8000 BPS, got %d", bps)
+	}
+	occRes := ComputeOccupancy([]domain.Room{{Capacity: 10}}, []domain.Tenant{{Status: domain.TenantStatusActive}}, now)
+	if occRes.OccupiedBeds != 1 {
+		t.Errorf("expected 1 occupied bed, got %d", occRes.OccupiedBeds)
+	}
 
 	// Journal AccountSum
 	linesTest, _ := MakeLines(propID, expID, "test", now, []LineSpec{
 		{Account: domain.AcctOperatingExpense, Debit: 5000, LineKind: "dr"},
 		{Account: domain.AcctAccountsPayable, Credit: 5000, LineKind: "cr"},
 	})
-	_, _ = AccountSum(linesTest, domain.AcctOperatingExpense)
+	drSum, crSum := AccountSum(linesTest, domain.AcctOperatingExpense)
+	if drSum != 5000 || crSum != 0 {
+		t.Errorf("expected dr 5000 cr 0, got dr %d cr %d", drSum, crSum)
+	}
 
 	// Balancer methods
 	balancer := NewSettlementBalancer(nil)

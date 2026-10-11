@@ -26,12 +26,17 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version-file: 'go.mod'
           cache: true
+
+      - name: Verify Go Dependencies
+        run: go mod verify
 
       - name: Run Migrations on Test DB
         env:
@@ -56,8 +61,53 @@ jobs:
           go run ./scripts/audit_skips.go test_output.log
           go run ./scripts/check-coverage.go -profile=coverage.out -require-all
 
+      - name: Run Ledger Controls Integrity Suite (ADR-015 / ADR-016)
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/ledger_controls_test.sql
+
+      - name: Run Trigger Coverage Suite (kills surviving ledger trigger mutants)
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/ledger_trigger_coverage_test.sql
+
+      - name: Run Fuzz Smoke Suite (30s per target)
+        run: |
+          go test -fuzz=FuzzNormalizeUTR -fuzztime=30s ./internal/domain
+          go test -fuzz=FuzzParseBankCSV -fuzztime=30s ./internal/csv
+          go test -fuzz=FuzzNormalizePhone -fuzztime=30s ./internal/auth
+          go test -fuzz=FuzzParseWebhook -fuzztime=30s ./internal/cashfree
+          go test -fuzz=FuzzDecodeAadhaarQR -fuzztime=30s ./internal/aadhaar
+
       - name: Vet Code
         run: go vet ./...
+
+      - name: No raw err.Error() in HTTP responses (ADR-2 H2)
+        run: |
+          if grep -rn 'gin\.H{"error": err\.Error()}' internal/api; then
+            echo "FAIL: raw err.Error() in HTTP response found — use respondErr() instead"
+            exit 1
+          fi
+          echo "PASS: No raw err.Error() responses in internal/api"
+
+      - name: Gitleaks Secret Scanner
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gosec Security Scanner
+        uses: securego/gosec@v2.22.1
+        with:
+          args: '-conf .gosec.json ./...'
+
+      - name: Govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          govulncheck -json ./... > govulncheck-report.json || true
+          govulncheck ./...
 
   migrate:
     name: Apply Expand-Only Database Migrations

@@ -242,7 +242,9 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			if st.UTR != nil {
 				utr = *st.UTR
 			}
-			_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutSucceeded, &cfID, &utr, nil, nil)
+			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
+				return fmt.Errorf("update payout item succeeded status: %w", err)
+			}
 		case "FAILED":
 			reason := st.StatusDescription
 			if reason == "" {
@@ -252,12 +254,18 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			if st.StatusCode == "WAIT_TIME_EXCEEDED" {
 				targetStatus = domain.PayoutRetriableFailed
 			}
-			_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, targetStatus, &cfID, nil, nil, &reason)
+			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
+				return fmt.Errorf("update payout item failed status: %w", err)
+			}
 		case "APPROVAL_PENDING":
-			_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil)
+			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
+				return fmt.Errorf("update payout item approval pending status: %w", err)
+			}
 		case "REVERSED":
 			reason := "transfer reversed by bank"
-			_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutReversed, &cfID, nil, nil, &reason)
+			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
+				return fmt.Errorf("update payout item reversed status: %w", err)
+			}
 		}
 	}
 

@@ -144,7 +144,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			if h.GatewayPaymentRepo != nil {
-				_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, nil, int64(succ.AmountPaise), "unknown_order", evtRecord.RawPayload)
+				if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, nil, int64(succ.AmountPaise), "unknown_order", evtRecord.RawPayload); err != nil {
+					slog.Error("failed recording unmatched receipt", "order_id", succ.OrderID, "cf_payment_id", succ.CFPaymentID, "err", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "record unmatched receipt failed"})
+					return
+				}
 			}
 			if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
 				_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", nil)
@@ -158,7 +162,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 	if succ.AmountPaise != intent.AmountPaise {
 		if h.GatewayPaymentRepo != nil {
-			_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, &intent.ID, int64(succ.AmountPaise), "amount_mismatch", evtRecord.RawPayload)
+			if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, &intent.ID, int64(succ.AmountPaise), "amount_mismatch", evtRecord.RawPayload); err != nil {
+				slog.Error("failed recording unmatched receipt for amount mismatch", "order_id", succ.OrderID, "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "record unmatched receipt failed"})
+				return
+			}
 		}
 		c.Status(http.StatusOK)
 		return
@@ -483,7 +491,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 	}
 
 	if p == nil {
-		_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, ref.OrderID, ref.CFPaymentID, nil, ref.RefundAmount, "payment_not_found", evtRecord.RawPayload)
+		if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, ref.OrderID, ref.CFPaymentID, nil, ref.RefundAmount, "payment_not_found", evtRecord.RawPayload); err != nil {
+			slog.Error("failed recording unmatched receipt for refund", "order_id", ref.OrderID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "record unmatched receipt failed"})
+			return
+		}
 		if evtRecord.ID != uuid.Nil {
 			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", nil)
 		}
@@ -651,7 +663,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			Reason:          ref.RefundReason,
 			RawPayload:      evtRecord.RawPayload,
 		}
-		_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
+		if err := h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+			slog.Error("failed updating refund status from webhook", "err", err, "cf_refund_id", ref.CFRefundID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update refund failed"})
+			return
+		}
 	}
 
 	if evtRecord.ID != uuid.Nil {

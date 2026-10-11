@@ -180,7 +180,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		}
 
 		if item.BatchID != nil {
-			_, _ = repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID)
+			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
+				slog.Error("failed rolling up batch status after item succeeded", "batch_id", *item.BatchID, "err", err)
+			}
 		}
 
 		// Double-entry ledger mirror: Debit refund_payable, Credit bank
@@ -200,9 +202,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			targetStatus = domain.PayoutRetriableFailed
 		}
 
-		_ = repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, targetStatus, &cfID, nil, nil, &reason)
+		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
+			slog.Error("failed updating payout item to failed", "item_id", item.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+			return
+		}
 		if item.BatchID != nil {
-			_, _ = repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID)
+			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
+			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
+				slog.Error("failed rolling up batch status after item failed", "batch_id", *item.BatchID, "err", err)
+			}
 		}
 
 	case "TRANSFER_REVERSED":
@@ -211,14 +220,23 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if data.StatusDescription != "" {
 			reason = data.StatusDescription
 		}
-		_ = repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutReversed, &cfID, nil, nil, &reason)
+		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
+			slog.Error("failed updating payout item to reversed", "item_id", item.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+			return
+		}
 		if item.BatchID != nil {
-			_, _ = repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID)
+			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
+			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
+				slog.Error("failed rolling up batch status after item reversed", "batch_id", *item.BatchID, "err", err)
+			}
 		}
 
 		if h.Finance != nil && propID != uuid.Nil {
+			// Ledger-gap: if MirrorPayoutReversed fails, the status record is already committed.
+			// The error is logged for operator alerting; the gateway should not retry for a ledger-only failure.
 			if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, time.Now().UTC()); err != nil {
-				slog.Error("failed mirroring reversed payout journal", "item_id", item.ID, "err", err)
+				slog.Error("LEDGER GAP: failed mirroring reversed payout journal", "item_id", item.ID, "err", err)
 			}
 		}
 
@@ -227,14 +245,25 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if reason == "" {
 			reason = "transfer rejected by gateway"
 		}
-		_ = repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutRejected, &cfID, nil, nil, &reason)
+		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
+			slog.Error("failed updating payout item to rejected", "item_id", item.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+			return
+		}
 		if item.BatchID != nil {
-			_, _ = repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID)
+			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
+			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
+				slog.Error("failed rolling up batch status after item rejected", "batch_id", *item.BatchID, "err", err)
+			}
 		}
 
 	case "TRANSFER_ACKNOWLEDGED":
 		// Gateway accepted transfer into in-flight queue; keep processing
-		_ = repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil)
+		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil); err != nil {
+			slog.Error("failed updating payout item to processing", "item_id", item.ID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+			return
+		}
 	}
 
 	c.Status(http.StatusOK)
