@@ -562,7 +562,7 @@ If yes, move the invariant closer to the database.
 Examples:
 
 ```text
-payments.normalized_utr UNIQUE per required scope
+payments.upi_txn_id UNIQUE per required scope
 
 expenses.amount_paise > 0
 

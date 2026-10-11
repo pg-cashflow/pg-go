@@ -2,6 +2,7 @@ package cashfree
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -239,6 +240,10 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 	if err != nil || val != 550050 {
 		t.Fatalf("expected 550050, got %d, err %v", val, err)
 	}
+	val, err = coercePaise(json.Number("5500.50"))
+	if err != nil || val != 550050 {
+		t.Fatalf("expected 550050 from json.Number, got %d, err %v", val, err)
+	}
 	val, err = coercePaise(100)
 	if err != nil || val != 10000 {
 		t.Fatalf("expected 10000, got %d, err %v", val, err)
@@ -248,7 +253,7 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 		t.Fatalf("expected 25000, got %d, err %v", val, err)
 	}
 
-	// Fail-closed invalid cases
+	// Fail-closed invalid cases per INV-014
 	invalidInputs := []any{
 		nil,
 		"",
@@ -258,6 +263,12 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 		-50,
 		int64(-20),
 		float64(-1.5),
+		float64(5500.50), // INV-014: positive float64 rejected
+		float32(5500.50), // INV-014: positive float32 rejected
+		"5500.505",       // INV-014: extra decimals rejected
+		"1e3",            // INV-014: scientific notation rejected
+		json.Number("5500.505"),
+		json.Number("1e3"),
 		struct{}{},
 		[]int{1, 2},
 	}
@@ -266,6 +277,14 @@ func TestCoercePaise_FailClosed(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error for invalid input %v (%T), got nil", in, in)
 		}
+	}
+}
+
+func TestUnmarshalExactNumbers_TrailingData(t *testing.T) {
+	var m map[string]any
+	err := unmarshalExactNumbers([]byte(`{"amount": 100} trailing`), &m)
+	if err == nil {
+		t.Fatal("expected error on trailing data, got nil")
 	}
 }
 

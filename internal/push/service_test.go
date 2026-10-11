@@ -44,9 +44,19 @@ func TestPushService_SubscribeValidation(t *testing.T) {
 		wantErr  bool
 	}{
 		{"empty endpoint", "", "p256dh-key", "auth-token", true},
-		{"empty p256dh", "https://push.example.com/sub", "", "auth-token", true},
-		{"empty auth", "https://push.example.com/sub", "p256dh-key", "", true},
-		{"valid subscription", "https://push.example.com/sub", "p256dh-key", "auth-token", false},
+		{"empty p256dh", "https://fcm.googleapis.com/fcm/send/sub", "", "auth-token", true},
+		{"empty auth", "https://fcm.googleapis.com/fcm/send/sub", "p256dh-key", "", true},
+		{"valid fcm subscription", "https://fcm.googleapis.com/fcm/send/sub", "p256dh-key", "auth-token", false},
+		{"valid apple subscription", "https://web.push.apple.com/sub", "p256dh-key", "auth-token", false},
+		{"valid mozilla subscription", "https://updates.push.services.mozilla.com/wpush/v1/sub", "p256dh-key", "auth-token", false},
+		{"valid wns subscription", "https://db5p.notify.windows.com/wpush/sub", "p256dh-key", "auth-token", false},
+		{"http scheme disallowed", "http://fcm.googleapis.com/fcm/send/sub", "p256dh-key", "auth-token", true},
+		{"arbitrary host disallowed", "https://push.example.com/sub", "p256dh-key", "auth-token", true},
+		{"loopback disallowed", "https://127.0.0.1:8080/sub", "p256dh-key", "auth-token", true},
+		{"metadata endpoint disallowed", "https://169.254.169.254/latest", "p256dh-key", "auth-token", true},
+		{"lookalike domain disallowed", "https://fcm.googleapis.com.attacker.com/sub", "p256dh-key", "auth-token", true},
+		{"userinfo disallowed", "https://user:pass@fcm.googleapis.com/sub", "p256dh-key", "auth-token", true},
+		{"non standard port disallowed", "https://fcm.googleapis.com:8443/sub", "p256dh-key", "auth-token", true},
 	}
 
 	for _, tt := range tests {

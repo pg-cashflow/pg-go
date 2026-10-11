@@ -60,5 +60,7 @@
   "request.imageTooLarge",
   "request.imageReadFailed",
   "preferences.localeRequired",
-  "preferences.invalidLocale"
+  "preferences.invalidLocale",
+  "push.endpointInvalid",
+  "push.endpointConflict"
 ]

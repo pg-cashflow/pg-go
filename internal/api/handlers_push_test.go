@@ -11,9 +11,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/push"
 )
 
 type mockPushService struct {
@@ -125,5 +128,65 @@ func TestPaymentPushSubscribe(t *testing.T) {
 	}
 	if mockPush.endpoint != "https://web.push.apple.com/test-endpoint" {
 		t.Fatalf("expected apple push endpoint, got %s", mockPush.endpoint)
+	}
+}
+
+func TestPaymentPushSubscribe_Errors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tenantID := uuid.New()
+	mockML := &mockMagicLinkService{
+		view: &magiclink.DueView{
+			Due: domain.Due{
+				ID:       uuid.New(),
+				TenantID: tenantID,
+			},
+			ExpiresAt: time.Now().Add(24 * time.Hour),
+		},
+	}
+
+	body := map[string]any{
+		"endpoint": "https://web.push.apple.com/test-endpoint",
+		"keys": map[string]string{
+			"p256dh": "key",
+			"auth":   "auth",
+		},
+	}
+	raw, _ := json.Marshal(body)
+
+	// 1. Invalid endpoint returns 400 with CodePushEndpointInvalid
+	mockPush := &mockPushService{err: push.ErrInvalidPushEndpoint}
+	h := &Handlers{Deps: Deps{Push: mockPush, MagicLink: mockML}}
+	r := gin.New()
+	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
+
+	req := httptest.NewRequest(http.MethodPost, "/p/valid-token-123/push/subscribe", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d", w.Code)
+	}
+	var env apierr.ErrorEnvelope
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	if env.Code != apierr.CodePushEndpointInvalid {
+		t.Fatalf("expected code %v, got %v", apierr.CodePushEndpointInvalid, env.Code)
+	}
+
+	// 2. Conflicting endpoint owned by another tenant returns 409 with CodePushEndpointConflict
+	mockPush.err = postgres.ErrPushEndpointOwned
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/p/valid-token-123/push/subscribe", bytes.NewReader(raw))
+	req2.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict, got %d", w2.Code)
+	}
+	var env2 apierr.ErrorEnvelope
+	_ = json.Unmarshal(w2.Body.Bytes(), &env2)
+	if env2.Code != apierr.CodePushEndpointConflict {
+		t.Fatalf("expected code %v, got %v", apierr.CodePushEndpointConflict, env2.Code)
 	}
 }

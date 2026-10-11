@@ -79,6 +79,10 @@ const (
 	// Preferences
 	CodePreferencesLocaleRequired Code = "preferences.localeRequired"
 	CodePreferencesInvalidLocale  Code = "preferences.invalidLocale"
+
+	// Push
+	CodePushEndpointInvalid  Code = "push.endpointInvalid"
+	CodePushEndpointConflict Code = "push.endpointConflict"
 )
 
 // AllCodes is the canonical slice of every error code.
@@ -150,6 +154,9 @@ var AllCodes = []Code{
 
 	CodePreferencesLocaleRequired,
 	CodePreferencesInvalidLocale,
+
+	CodePushEndpointInvalid,
+	CodePushEndpointConflict,
 }
 
 // ErrorEnvelope is the standard JSON envelope emitted for client-facing errors.

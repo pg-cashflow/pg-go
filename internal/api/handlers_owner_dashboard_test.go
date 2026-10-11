@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -205,6 +206,55 @@ func TestOwnerOccupancy_ComputesCorrectMetrics(t *testing.T) {
 
 	if res.OccupiedBeds != 2 {
 		t.Errorf("expected 2 active occupied beds, got %d", res.OccupiedBeds)
+	}
+}
+
+type errorGamificationStore struct {
+	dashboardGamificationStore
+	listFloorsErr error
+}
+
+func (s *errorGamificationStore) ListFloors(_ context.Context, _ uuid.UUID) ([]domain.Floor, error) {
+	if s.listFloorsErr != nil {
+		return nil, s.listFloorsErr
+	}
+	return s.dashboardGamificationStore.ListFloors(context.Background(), uuid.Nil)
+}
+
+func TestOwnerOccupancy_FailsClosedOnStoreError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test_secret_for_occupancy"
+	propID := uuid.New()
+	userID := uuid.New()
+
+	ownerUser := &domain.User{
+		ID:         userID,
+		PropertyID: &propID,
+		Role:       domain.RoleOwner,
+	}
+	token, err := auth.IssueToken(jwtSecret, ownerUser)
+	if err != nil {
+		t.Fatalf("IssueToken failed: %v", err)
+	}
+
+	h := &Handlers{
+		Deps: Deps{
+			JWTSecret:         jwtSecret,
+			GamificationStore: &errorGamificationStore{listFloorsErr: errors.New("db error")},
+		},
+	}
+
+	r := gin.New()
+	ownerGroup := r.Group("/owner", auth.RequireOwner(jwtSecret, nil))
+	ownerGroup.GET("/occupancy", h.OwnerOccupancy)
+
+	req := httptest.NewRequest(http.MethodGet, "/owner/occupancy", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 InternalServerError per INV-015, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

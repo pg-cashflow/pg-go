@@ -67,9 +67,6 @@ func (h *Handlers) Metrics(c *gin.Context) {
 		}
 	} else {
 		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if token == "" {
-			token = c.Query("token")
-		}
 		if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return

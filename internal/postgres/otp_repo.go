@@ -2,16 +2,19 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 var (
-	ErrOTPAlreadyUsed   = domain.ErrOTPAlreadyUsed
-	ErrTokenAlreadyUsed = domain.ErrTokenAlreadyUsed
+	ErrOTPAlreadyUsed    = domain.ErrOTPAlreadyUsed
+	ErrTokenAlreadyUsed  = domain.ErrTokenAlreadyUsed
+	ErrPushEndpointOwned = errors.New("postgres: push endpoint is already registered to a different tenant")
 )
 
 type OTPRepo struct{ pool *pgxpool.Pool }
@@ -148,13 +151,19 @@ type PushSubscription struct {
 
 func (r *PushRepo) Upsert(ctx context.Context, s *PushSubscription) error {
 	s.CreatedAt = time.Now().UTC()
-	return r.pool.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		INSERT INTO push_subscriptions (tenant_id, endpoint, p256dh, auth, created_at)
 		VALUES ($1,$2,$3,$4,$5)
-		ON CONFLICT (endpoint) DO UPDATE SET tenant_id=EXCLUDED.tenant_id, p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth
+		ON CONFLICT (endpoint) DO UPDATE 
+		SET p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth
+		WHERE push_subscriptions.tenant_id = EXCLUDED.tenant_id
 		RETURNING id`,
 		s.TenantID, s.Endpoint, s.P256dh, s.Auth, s.CreatedAt,
 	).Scan(&s.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrPushEndpointOwned
+	}
+	return err
 }
 
 func (r *PushRepo) ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]PushSubscription, error) {

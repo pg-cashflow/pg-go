@@ -26,6 +26,12 @@ func TestVerifyWebhookHMAC(t *testing.T) {
 	if VerifyWebhookHMAC(secret, ts, body, "") {
 		t.Fatal("empty signature must fail")
 	}
+	if VerifyWebhookHMAC("", ts, body, hmacB64("", ts+body)) {
+		t.Fatal("empty secret must fail closed")
+	}
+	if VerifyWebhookHMAC("", ts, body, "") {
+		t.Fatal("empty secret and empty signature must fail closed")
+	}
 }
 
 func hmacB64(secret, msg string) string {

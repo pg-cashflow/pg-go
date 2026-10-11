@@ -117,4 +117,14 @@ func TestMetricsEndpoint_AuthClosedByDefault(t *testing.T) {
 	if wOpen.Code != http.StatusOK {
 		t.Fatalf("expected status 200 OK when METRICS_ALLOW_OPEN=true, got %d", wOpen.Code)
 	}
+
+	// 5. Query parameter token must be rejected (Authorization header required)
+	t.Setenv("METRICS_TOKEN", "secret-test-token")
+	t.Setenv("METRICS_ALLOW_OPEN", "")
+	reqQuery := httptest.NewRequest(http.MethodGet, "/metrics?token=secret-test-token", nil)
+	wQuery := httptest.NewRecorder()
+	r.ServeHTTP(wQuery, reqQuery)
+	if wQuery.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 Unauthorized for query-string token, got %d", wQuery.Code)
+	}
 }

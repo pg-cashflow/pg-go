@@ -15,6 +15,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/localization"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/push"
 	"github.com/pg-cashflow/pg-go/internal/qr"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
@@ -229,6 +231,14 @@ func (h *Handlers) PaymentPushSubscribe(c *gin.Context) {
 		return
 	}
 	if err := h.Push.Subscribe(c.Request.Context(), view.Due.TenantID, body.Endpoint, body.Keys.P256dh, body.Keys.Auth); err != nil {
+		if errors.Is(err, push.ErrInvalidPushEndpoint) {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "invalid push endpoint", apierr.CodePushEndpointInvalid)
+			return
+		}
+		if errors.Is(err, postgres.ErrPushEndpointOwned) {
+			apierr.RespondClientErr(c, http.StatusConflict, "push endpoint registered to another tenant", apierr.CodePushEndpointConflict)
+			return
+		}
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "subscribe failed"})
 		return
 	}

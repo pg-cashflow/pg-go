@@ -304,7 +304,11 @@ func (c *Client) sign(req *http.Request) {
 }
 
 // VerifyWebhookHMAC checks x-webhook-signature = Base64(HMAC-SHA256(timestamp+rawBody, secret)).
+// Fails closed if secret or signature is empty.
 func VerifyWebhookHMAC(secret, timestamp, rawBody, signature string) bool {
+	if secret == "" || signature == "" {
+		return false
+	}
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(timestamp + rawBody))
 	want := base64.StdEncoding.EncodeToString(mac.Sum(nil))

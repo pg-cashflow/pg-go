@@ -2,13 +2,60 @@ package push
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 
 	"github.com/SherClockHolmes/webpush-go"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
+
+// ErrInvalidPushEndpoint indicates that the push endpoint URL failed security validation.
+var ErrInvalidPushEndpoint = errors.New("push: invalid or disallowed endpoint URL")
+
+func validatePushEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: parse error: %v", ErrInvalidPushEndpoint, err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("%w: scheme must be https", ErrInvalidPushEndpoint)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: userinfo not allowed", ErrInvalidPushEndpoint)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: missing host", ErrInvalidPushEndpoint)
+	}
+	port := u.Port()
+	if port != "" && port != "443" {
+		return fmt.Errorf("%w: non-standard port not allowed", ErrInvalidPushEndpoint)
+	}
+
+	if !isAllowedPushHost(strings.ToLower(host)) {
+		return fmt.Errorf("%w: untrusted host %q", ErrInvalidPushEndpoint, host)
+	}
+	return nil
+}
+
+func isAllowedPushHost(host string) bool {
+	allowedSuffixes := []string{
+		"fcm.googleapis.com",
+		"push.apple.com",
+		"notify.windows.com",
+		"push.services.mozilla.com",
+	}
+	for _, allowed := range allowedSuffixes {
+		if host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
+	}
+	return false
+}
 
 // Service manages Web Push subscriptions and delivery.
 type Service struct {
@@ -43,6 +90,9 @@ func NewService(repo Repository, cfg Config, log *slog.Logger) *Service {
 func (s *Service) Subscribe(ctx context.Context, tenantID uuid.UUID, endpoint, p256dh, auth string) error {
 	if endpoint == "" || p256dh == "" || auth == "" {
 		return fmt.Errorf("push: endpoint, p256dh, and auth are required")
+	}
+	if err := validatePushEndpoint(endpoint); err != nil {
+		return err
 	}
 	sub := &Subscription{
 		TenantID: tenantID,

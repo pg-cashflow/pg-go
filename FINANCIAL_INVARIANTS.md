@@ -11,7 +11,7 @@ Every requirement, schema change, service implementation, database constraint, a
 | Invariant ID | Title | Enforcement Level | Primary Target |
 | :--- | :--- | :--- | :--- |
 | **INV-001** | Idempotent Payment Creation | DB + Application | `payments`, `payment_intents` |
-| **INV-002** | Normalized UTR Uniqueness | DB Constraint | `payments(normalized_utr)` |
+| **INV-002** | UTR Uniqueness | DB Constraint | `payments(upi_txn_id)` |
 | **INV-003** | Atomic Financial Effect | Database Transaction | Payments, Dues, Journal |
 | **INV-004** | Expense Settlement Bound | DB Lock + Constraint | `expenses`, `expense_payments` |
 | **INV-005** | Lossless Credit Mutation | Atomic SQL Update | `tenants.credit_balance_paise` |
@@ -36,11 +36,11 @@ Every requirement, schema change, service implementation, database constraint, a
 * **Invariant**: Providing the same idempotency key or webhook event ID must return the existing payment record and execute zero additional state transitions.
 * **Enforcement**: Database unique constraint on `idempotency_key` or `event_id`, verified within the payment creation transaction.
 
-### INV-002 — Normalized UTR Uniqueness
-> *A normalized UTR shall not identify two independent verified payments within its uniqueness scope.*
-* **Scope**: All payment receipts and manual verifications.
-* **Invariant**: Bank reference numbers (UTR) must be trimmed, uppercased, and stripped of non-alphanumeric noise. No two payments may share the same normalized UTR.
-* **Enforcement**: `UNIQUE INDEX idx_payments_normalized_utr ON payments(normalized_utr) WHERE normalized_utr IS NOT NULL AND status = 'verified'`.
+### INV-002 — UTR Uniqueness
+> *A unique UTR / transaction ID shall not identify two independent payments.*
+* **Scope**: All payment receipts and verifications.
+* **Invariant**: Bank reference numbers (`upi_txn_id`) must be unique across all payment records. Duplicate transaction IDs must be rejected by both application format validation and database integrity constraints.
+* **Enforcement**: Database unique constraint `payments.upi_txn_id UNIQUE` (`migrations/001_initial.sql`).
 
 ### INV-003 — Atomic Financial Effect
 > *A verified payment shall have exactly one corresponding financial effect across all ledgers.*

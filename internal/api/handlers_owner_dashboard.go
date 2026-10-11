@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
@@ -92,19 +93,30 @@ type OwnerDashboardSummaryResponse struct {
 	AsOf                time.Time                `json:"as_of"`
 }
 
-func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) OccupancyMetrics {
+func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (OccupancyMetrics, error) {
 	ctx := c.Request.Context()
 
 	var floors []domain.Floor
 	var rooms []domain.Room
 	if h.GamificationStore != nil {
-		floors, _ = h.GamificationStore.ListFloors(ctx, pid)
-		rooms, _ = h.GamificationStore.ListRooms(ctx, pid)
+		var err error
+		floors, err = h.GamificationStore.ListFloors(ctx, pid)
+		if err != nil {
+			return OccupancyMetrics{}, fmt.Errorf("list floors: %w", err)
+		}
+		rooms, err = h.GamificationStore.ListRooms(ctx, pid)
+		if err != nil {
+			return OccupancyMetrics{}, fmt.Errorf("list rooms: %w", err)
+		}
 	}
 
 	var tenants []domain.Tenant
 	if h.TenantStore != nil {
-		tenants, _ = h.TenantStore.ListByProperty(ctx, pid)
+		var err error
+		tenants, err = h.TenantStore.ListByProperty(ctx, pid)
+		if err != nil {
+			return OccupancyMetrics{}, fmt.Errorf("list tenants: %w", err)
+		}
 	}
 
 	// Filter active tenants and track notice/risk
@@ -304,7 +316,7 @@ func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) Occupa
 		OccupancyRateBps: occRateBps,
 		OccupancyRatePct: occRatePct,
 		Floors:           resultFloors,
-	}
+	}, nil
 }
 
 // OwnerOccupancy handles GET /owner/occupancy.
@@ -316,7 +328,11 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 		return
 	}
 
-	occ := h.computeOccupancyMetrics(c, pid)
+	occ, err := h.computeOccupancyMetrics(c, pid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute occupancy metrics"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"property_id":        pid,
@@ -405,14 +421,18 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	period := c.DefaultQuery("period", time.Now().In(loc).Format("2006-01"))
 
 	ctx := c.Request.Context()
-	occ := h.computeOccupancyMetrics(c, pid)
+	occ, err := h.computeOccupancyMetrics(c, pid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute occupancy metrics"})
+		return
+	}
 
 	var rentCollected int64
 	var pendingRent int64
 	if h.Payments != nil {
 		recon, err := h.Payments.BuildSummary(ctx, pid, period)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build payments summary: " + err.Error()})
+			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to build payments summary"})
 			return
 		}
 		if recon != nil {

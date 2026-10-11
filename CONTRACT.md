@@ -91,6 +91,8 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `request.imageReadFailed` | 400 | Request | Server failed to read uploaded multipart file stream |
 | `preferences.localeRequired` | 400 | Preferences | Locale field is required |
 | `preferences.invalidLocale` | 400 | Preferences | Unsupported or invalid locale |
+| `push.endpointInvalid` | 400 | Push | Untrusted or invalid push endpoint URL |
+| `push.endpointConflict` | 409 | Push | Push endpoint is already registered to another tenant |
 | `kyc.no_consent` | 409 | KYC | No active DPDP consent recorded for tenant |
 | `kyc.already_verified` | 409 | KYC | Tenant already has an active, valid KYC verification |
 | `kyc.in_flight` | 409 | KYC | Verification attempt is currently in-flight for this tenant |
@@ -921,6 +923,8 @@ Validation & error responses:
 | **Request** | `request.imageReadFailed` | 400 | Server failed to read uploaded multipart file stream |
 | **Preferences** | `preferences.localeRequired` | 400 | Missing locale field in preferences payload |
 | **Preferences** | `preferences.invalidLocale` | 400 | Locale tag not supported or failed database check constraint |
+| **Push** | `push.endpointInvalid` | 400 | Push endpoint URL failed validation (must be HTTPS on allowlisted push service) |
+| **Push** | `push.endpointConflict` | 409 | Push endpoint is already registered to a different tenant |
 | **KYC** | `kyc.no_consent` | 409 | No active DPDP consent recorded for tenant prior to initiating verification |
 | **KYC** | `kyc.already_verified` | 409 | Tenant already has an active, valid KYC verification on file |
 | **KYC** | `kyc.in_flight` | 409 | A verification attempt is already in-progress for this tenant (prevents double-billing) |

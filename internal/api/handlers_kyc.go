@@ -554,6 +554,10 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	if svc == nil {
 		return
 	}
+	if h.CashfreeSecret == "" {
+		c.JSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{Error: "kyc webhook secret not configured"})
+		return
+	}
 
 	// 1. Read raw body FIRST — HMAC verification must happen over exact wire bytes.
 	raw, err := c.GetRawData()

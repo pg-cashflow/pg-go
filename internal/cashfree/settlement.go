@@ -1,6 +1,7 @@
 package cashfree
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,18 @@ import (
 	"strings"
 	"time"
 )
+
+func unmarshalExactNumbers(raw []byte, v any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if dec.More() {
+		return fmt.Errorf("unexpected trailing data")
+	}
+	return nil
+}
 
 var (
 	ErrDisabled           = errors.New("cashfree: client not configured or disabled")
@@ -148,7 +161,7 @@ func ParseOrderSettlementsJSON(raw []byte, defaultOrderID string) ([]OrderSettle
 
 func parseSingleOrderSettlement(raw []byte, fallbackOrderID string) (OrderSettlementRecord, error) {
 	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := unmarshalExactNumbers(raw, &m); err != nil {
 		return OrderSettlementRecord{}, fmt.Errorf("unmarshal settlement json map: %w", err)
 	}
 
@@ -281,7 +294,7 @@ func parseSingleOrderSettlement(raw []byte, fallbackOrderID string) (OrderSettle
 // ParseSettlementWebhook parses Cashfree settlement webhook payloads.
 func ParseSettlementWebhook(raw []byte) (*SettlementWebhookRecord, error) {
 	var payload SettlementWebhookPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if err := unmarshalExactNumbers(raw, &payload); err != nil {
 		return nil, fmt.Errorf("unmarshal settlement webhook: %w", err)
 	}
 
@@ -367,6 +380,8 @@ func coerceString(val any) string {
 	switch v := val.(type) {
 	case string:
 		return strings.TrimSpace(v)
+	case json.Number:
+		return v.String()
 	case float64:
 		return strconv.FormatInt(int64(v), 10)
 	case int64:
@@ -404,19 +419,13 @@ func coercePaise(val any) (int64, error) {
 			return 0, fmt.Errorf("empty amount string")
 		}
 		p, err := ParseRupeesToPaise(s)
-		if err == nil {
-			if p < 0 {
-				return 0, fmt.Errorf("negative amount: %s", s)
-			}
-			return p, nil
+		if err != nil {
+			return 0, fmt.Errorf("unparseable amount string %q: %w", s, err)
 		}
-		if f, err := strconv.ParseFloat(s, 64); err == nil {
-			if f < 0 {
-				return 0, fmt.Errorf("negative amount: %s", s)
-			}
-			return ParseRupeesToPaise(strconv.FormatFloat(f, 'f', 2, 64))
+		if p < 0 {
+			return 0, fmt.Errorf("negative amount: %s", s)
 		}
-		return 0, fmt.Errorf("unparseable amount string %q: %w", s, err)
+		return p, nil
 	case json.Number:
 		p, err := ParseRupeesToPaise(v.String())
 		if err != nil {
@@ -426,16 +435,8 @@ func coercePaise(val any) (int64, error) {
 			return 0, fmt.Errorf("negative json number: %s", v.String())
 		}
 		return p, nil
-	case float64:
-		if v < 0 {
-			return 0, fmt.Errorf("negative float amount: %v", v)
-		}
-		return ParseRupeesToPaise(strconv.FormatFloat(v, 'f', 2, 64))
-	case float32:
-		if v < 0 {
-			return 0, fmt.Errorf("negative float amount: %v", v)
-		}
-		return ParseRupeesToPaise(strconv.FormatFloat(float64(v), 'f', 2, 64))
+	case float64, float32:
+		return 0, fmt.Errorf("floating-point money not allowed per INV-014: %v", v)
 	case int64:
 		if v < 0 {
 			return 0, fmt.Errorf("negative integer amount: %d", v)

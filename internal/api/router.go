@@ -175,7 +175,7 @@ func NewRouter(d Deps) *gin.Engine {
 		api.GET("/push/vapid-public-key", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
 		})
-		api.GET("/join/invite/:code", h.LookupInvite)
+		api.GET("/join/invite/:code", ipRateLimit(10.0/60, 20), h.LookupInvite)
 		api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
 
 		// Per-IP rate limits (ADR-2, M2): 3/min OTP request, 10/min OTP verify, 10/min Firebase, 30/min Refresh

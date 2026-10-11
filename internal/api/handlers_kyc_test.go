@@ -330,6 +330,22 @@ func TestTenantKYCStatus_NoRecords(t *testing.T) {
 
 // ---- CashfreeKYCWebhook — HMAC verification ---------------------------------
 
+func TestCashfreeKYCWebhook_UnconfiguredSecret_Returns503(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	// Router initialized with empty webhook secret
+	r := kycTestTenantRouter(svc, "")
+
+	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-001"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable when CashfreeSecret is empty, got %d", w.Code)
+	}
+}
+
 func TestCashfreeKYCWebhook_BadHMAC_Returns200NotError(t *testing.T) {
 	// Bad signatures must return 200, not 4xx, to prevent Cashfree retry storms.
 	completionCalled := false
@@ -442,7 +458,7 @@ func TestCashfreeKYCWebhook_UnknownEventType_IsNoOp(t *testing.T) {
 			return nil
 		},
 	}
-	secret := ""
+	secret := "test-webhook-secret"
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{}}`
