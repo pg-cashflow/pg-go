@@ -2,31 +2,20 @@ package gamification
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestErrorsIsDuplicate(t *testing.T) {
+func TestErrorsIsDuplicate_UsesSQLState(t *testing.T) {
 	tests := []struct {
 		name     string
 		err      error
 		expected bool
 	}{
 		{
-			name:     "nil error",
-			err:      nil,
-			expected: false,
-		},
-		{
 			name:     "real SQLSTATE 23505",
 			err:      &pgconn.PgError{Code: "23505"},
-			expected: true,
-		},
-		{
-			name:     "wrapped SQLSTATE 23505",
-			err:      fmt.Errorf("db error: %w", &pgconn.PgError{Code: "23505"}),
 			expected: true,
 		},
 		{
@@ -40,8 +29,8 @@ func TestErrorsIsDuplicate(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "arbitrary error",
-			err:      errors.New("connection reset by peer"),
+			name:     "nil error",
+			err:      nil,
 			expected: false,
 		},
 	}

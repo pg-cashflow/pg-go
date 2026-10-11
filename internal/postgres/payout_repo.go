@@ -30,6 +30,8 @@ type PayoutRepo struct {
 	outbox   *LedgerOutboxRepo
 }
 
+var ErrNoUnbatchedPayoutItems = errors.New("no unbatched pending payout items found")
+
 func NewPayoutRepo(pool *pgxpool.Pool, mirrorer ...DepartureMirrorer) *PayoutRepo {
 	var m DepartureMirrorer
 	if len(mirrorer) > 0 {
@@ -425,7 +427,7 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 	rows.Close()
 
 	if len(items) == 0 {
-		return nil, nil, errors.New("no unbatched pending payout items found")
+		return nil, nil, ErrNoUnbatchedPayoutItems
 	}
 
 	var totalPaise int64

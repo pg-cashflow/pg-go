@@ -432,7 +432,7 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 	secret := []byte(h.getChecksumSecret())
 	batch, items, err := repo.CreateBatchFromUnbatchedItems(c.Request.Context(), pid, uid, batchNumber, secret, body.Notes)
 	if err != nil {
-		if strings.Contains(err.Error(), "no unbatched") {
+		if errors.Is(err, postgres.ErrNoUnbatchedPayoutItems) {
 			respondErr(c, clientErr(http.StatusBadRequest, "no unbatched pending payout items found"))
 			return
 		}
