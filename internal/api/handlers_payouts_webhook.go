@@ -146,8 +146,25 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	cfID := data.CFTransferID
 	var propID uuid.UUID
 	if item.BatchID != nil {
-		if b, err := repo.GetBatchByID(ctx, *item.BatchID); err == nil && b != nil {
+		b, err := repo.GetBatchByID(ctx, *item.BatchID)
+		if err != nil {
+			slog.Error("payout webhook: failed to get batch", "batch_id", *item.BatchID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed resolving batch"})
+			return
+		}
+		if b != nil {
 			propID = b.PropertyID
+		}
+	}
+	if propID == uuid.Nil && item.PayeeID != uuid.Nil {
+		p, err := repo.GetPayeeByID(ctx, item.PayeeID)
+		if err != nil {
+			slog.Error("payout webhook: failed to get payee", "payee_id", item.PayeeID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed resolving payee"})
+			return
+		}
+		if p != nil {
+			propID = p.PropertyID
 		}
 	}
 

@@ -67,7 +67,7 @@ func TestAttachPhone(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := repo.GetByID(context.Background(), id)
-	if got.Phone == nil || *got.Phone != "9999999999" {
+	if got.Phone == nil || *got.Phone != "+919999999999" {
 		t.Fatalf("phone=%v", got.Phone)
 	}
 }

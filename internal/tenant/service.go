@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
@@ -20,6 +21,7 @@ import (
 var (
 	ErrInvalidDueDay = errors.New("tenant: due_day must be between 1 and 28")
 	ErrInvalidPhone  = errors.New("tenant: phone is required")
+	ErrPhoneFormat   = errors.New("tenant: invalid phone format")
 	ErrNotFound      = errors.New("tenant: not found")
 )
 
@@ -66,6 +68,21 @@ func NewServiceWithPool(
 	return s
 }
 
+func normalizePhoneInput(p *string) (*string, error) {
+	if p == nil {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(*p)
+	if raw == "" {
+		return nil, nil
+	}
+	norm := auth.NormalizePhone(raw)
+	if norm == "" {
+		return nil, ErrPhoneFormat
+	}
+	return &norm, nil
+}
+
 func normalizeNewTenant(in domain.NewTenantInput, depositPaise int64) (domain.NewTenantInput, int64, error) {
 	if in.DueDay < 1 || in.DueDay > 28 {
 		return in, 0, ErrInvalidDueDay
@@ -82,6 +99,11 @@ func normalizeNewTenant(in domain.NewTenantInput, depositPaise int64) (domain.Ne
 	if depositPaise <= 0 {
 		depositPaise = in.RentAmount
 	}
+	normPhone, err := normalizePhoneInput(in.Phone)
+	if err != nil {
+		return in, 0, err
+	}
+	in.Phone = normPhone
 	return in, depositPaise, nil
 }
 
@@ -201,6 +223,11 @@ func (s *Service) CreatePendingFromOnboarding(ctx context.Context, in domain.New
 	if in.NoticePeriodDays <= 0 {
 		in.NoticePeriodDays = 30
 	}
+	normPhone, err := normalizePhoneInput(in.Phone)
+	if err != nil {
+		return nil, err
+	}
+	in.Phone = normPhone
 	t := &domain.Tenant{
 		PropertyID:       in.PropertyID,
 		Name:             strings.TrimSpace(in.Name),
@@ -259,6 +286,11 @@ func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, 
 	if in.NoticePeriodDays <= 0 {
 		in.NoticePeriodDays = 30
 	}
+	normPhone, err := normalizePhoneInput(in.Phone)
+	if err != nil {
+		return nil, err
+	}
+	in.Phone = normPhone
 	if s.tenantDB == nil || s.eventDB == nil {
 		return nil, fmt.Errorf("tenant: tx create requires pool wiring")
 	}
@@ -432,6 +464,11 @@ func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) error {
 	if t.RentAmount <= 0 {
 		return fmt.Errorf("tenant: rent_amount must be positive")
 	}
+	normPhone, err := normalizePhoneInput(t.Phone)
+	if err != nil {
+		return err
+	}
+	t.Phone = normPhone
 	existing, err := s.tenants.GetByID(ctx, t.ID)
 	if err != nil {
 		return err
@@ -518,20 +555,25 @@ func (s *Service) LogNotice(ctx context.Context, tenantID uuid.UUID, givenAt tim
 
 // AttachPhone sets phone and publishes PhoneAttached (phone-less → self-service upgrade).
 func (s *Service) AttachPhone(ctx context.Context, tenantID uuid.UUID, phone string) error {
-	if phone == "" {
+	raw := strings.TrimSpace(phone)
+	if raw == "" {
 		return ErrInvalidPhone
+	}
+	norm := auth.NormalizePhone(raw)
+	if norm == "" {
+		return ErrPhoneFormat
 	}
 	t, err := s.tenants.GetByID(ctx, tenantID)
 	if err != nil {
 		return err
 	}
-	t.Phone = &phone
+	t.Phone = &norm
 	if err := s.tenants.Update(ctx, t); err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(domain.PhoneAttachedPayload{
 		TenantID: t.ID.String(),
-		Phone:    phone,
+		Phone:    norm,
 	})
 	return s.pub.Publish(ctx, domain.Event{
 		TenantID:   domain.Ptr(t.ID),

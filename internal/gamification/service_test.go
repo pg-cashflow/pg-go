@@ -28,11 +28,15 @@ type memStore struct {
 	violations      []domain.Violation
 	readings        []domain.MeterReading
 	rooms           map[uuid.UUID]domain.Room
-	step3InQuarter  int
-	streakDues      map[string]bool
-	milestoneAwards map[string]bool
-	rentRoll        int64
-	delayQuery      time.Duration
+	step3InQuarter      int
+	streakDues          map[string]bool
+	milestoneAwards     map[string]bool
+	rentRoll            int64
+	delayQuery          time.Duration
+	waterConsumption    float64
+	waterConsumptionErr error
+	activeTenants       int
+	activeTenantsErr    error
 }
 
 type mockTx struct {
@@ -364,6 +368,24 @@ func (m *memStore) GetRoomByID(ctx context.Context, id uuid.UUID) (*domain.Room,
 
 func (m *memStore) UpsertMealRSVP(ctx context.Context, rsvp *domain.MealRSVP) error {
 	return nil
+}
+
+func (m *memStore) GetFloorWaterConsumption(ctx context.Context, floorID uuid.UUID, startDate, endDate time.Time) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.waterConsumptionErr != nil {
+		return 0, m.waterConsumptionErr
+	}
+	return m.waterConsumption, nil
+}
+
+func (m *memStore) CountFloorActiveTenants(ctx context.Context, floorID uuid.UUID) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.activeTenantsErr != nil {
+		return 0, m.activeTenantsErr
+	}
+	return m.activeTenants, nil
 }
 
 type memTenantRepo struct {
@@ -1087,3 +1109,67 @@ func TestFulfilRedemption_NotFoundTextInDBErrorIsInternal(t *testing.T) {
 		t.Fatalf("expected underlying error preserved, got: %v", err)
 	}
 }
+
+func TestCalculateWaterRUBS_ErrorAndAllocationCases(t *testing.T) {
+	ctx := context.Background()
+	floorID := uuid.New()
+	t1 := time.Now().Add(-24 * time.Hour)
+	t2 := time.Now()
+
+	t.Run("success allocation across active tenants", func(t *testing.T) {
+		store := newMemStore()
+		store.waterConsumption = 1000.0
+		store.activeTenants = 4
+		svc := NewService(store, &memTenantRepo{}, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+		bulk, count, perTenant, err := svc.CalculateWaterRUBS(ctx, floorID, t1, t2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if bulk != 1000.0 || count != 4 || perTenant != 250.0 {
+			t.Fatalf("expected 1000, 4, 250; got bulk=%.2f, count=%d, perTenant=%.2f", bulk, count, perTenant)
+		}
+	})
+
+	t.Run("zero active tenants returns zero per-tenant without error", func(t *testing.T) {
+		store := newMemStore()
+		store.waterConsumption = 1000.0
+		store.activeTenants = 0
+		svc := NewService(store, &memTenantRepo{}, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+		bulk, count, perTenant, err := svc.CalculateWaterRUBS(ctx, floorID, t1, t2)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if bulk != 1000.0 || count != 0 || perTenant != 0.0 {
+			t.Fatalf("expected 1000, 0, 0; got bulk=%.2f, count=%d, perTenant=%.2f", bulk, count, perTenant)
+		}
+	})
+
+	t.Run("water consumption error returns error", func(t *testing.T) {
+		store := newMemStore()
+		store.waterConsumptionErr = errors.New("db connection failure")
+		svc := NewService(store, &memTenantRepo{}, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+		_, _, _, err := svc.CalculateWaterRUBS(ctx, floorID, t1, t2)
+		if err == nil {
+			t.Fatalf("expected error from water consumption failure")
+		}
+	})
+
+	t.Run("active tenants count error returns error instead of fail-open", func(t *testing.T) {
+		store := newMemStore()
+		store.waterConsumption = 1000.0
+		store.activeTenantsErr = errors.New("tenants count query failed")
+		svc := NewService(store, &memTenantRepo{}, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+		bulk, count, perTenant, err := svc.CalculateWaterRUBS(ctx, floorID, t1, t2)
+		if err == nil {
+			t.Fatalf("expected error from active tenants count failure, but got nil error")
+		}
+		if bulk != 0 || count != 0 || perTenant != 0 {
+			t.Fatalf("expected zero outputs on error, got bulk=%.2f, count=%d, perTenant=%.2f", bulk, count, perTenant)
+		}
+	})
+}
+

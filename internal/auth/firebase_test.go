@@ -448,3 +448,58 @@ func TestVerifyFirebaseBadInvite(t *testing.T) {
 		t.Fatalf("expected ErrInvalidInvite, got %v", err)
 	}
 }
+
+type stubTenantsByPhone map[string]*domain.Tenant
+
+func (m stubTenantsByPhone) GetByID(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	for _, t := range m {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func (m stubTenantsByPhone) GetByPhone(_ context.Context, phone string) (*domain.Tenant, error) {
+	t, ok := m[phone]
+	if !ok {
+		return nil, pgx.ErrNoRows
+	}
+	return t, nil
+}
+
+func TestVerifyFirebaseTenantCreatedWith10DigitPhone(t *testing.T) {
+	normalizedPhone := "+919876543210"
+	tid := uuid.New()
+	pid := uuid.New()
+	tenants := stubTenantsByPhone{
+		normalizedPhone: {
+			ID:         tid,
+			PropertyID: pid,
+			Phone:      &normalizedPhone,
+			Status:     domain.TenantStatusActive,
+		},
+	}
+	users := &stubUsers{byPhone: map[string]*domain.User{}}
+	svc := NewService(&stubOTP{}, users, tenants, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "firebase-tenant-1", phone: "9876543210"})
+
+	token, user, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token", "")
+	if err != nil {
+		t.Fatalf("VerifyFirebaseAndIssueToken failed: %v", err)
+	}
+	if token == "" {
+		t.Fatal("expected token to be issued")
+	}
+	if user == nil || user.Role != domain.RoleTenant {
+		t.Fatalf("expected tenant role, got %+v", user)
+	}
+	if user.TenantID == nil || *user.TenantID != tid {
+		t.Fatalf("expected tenant id %s, got %+v", tid, user.TenantID)
+	}
+	if user.PropertyID == nil || *user.PropertyID != pid {
+		t.Fatalf("expected property id %s, got %+v", pid, user.PropertyID)
+	}
+}
+

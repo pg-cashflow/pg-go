@@ -180,8 +180,11 @@ func (s *Service) CalculateWaterRUBS(ctx context.Context, floorID uuid.UUID, sta
 	}
 
 	tenantCount, err := s.store.CountFloorActiveTenants(ctx, floorID)
-	if err != nil || tenantCount <= 0 {
-		return bulkLitres, 1, bulkLitres, nil
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if tenantCount <= 0 {
+		return bulkLitres, 0, 0, nil
 	}
 
 	perTenantLitres := bulkLitres / float64(tenantCount)
