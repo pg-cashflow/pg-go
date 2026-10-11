@@ -45,8 +45,8 @@ func TestLivePostgres_PolicyExceededErrorIdentity(t *testing.T) {
 
 	// 1. Seed Property
 	_, err = pool.Exec(ctx, `
-		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
-		VALUES ($1, 'Policy Parity Property', 'Test Address', '+919999900022', 'parity@upi', 'Parity Owner', 'owner_parity@test.com', $2, 'manual_proof')
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode)
+		VALUES ($1, 'Policy Parity Property', 'Test Address', '+919999900022', 'parity@upi', 'Parity Owner', 'owner_parity@test.com', $2, 'manual')
 		ON CONFLICT (id) DO NOTHING
 	`, propID, inviteCode)
 	if err != nil {

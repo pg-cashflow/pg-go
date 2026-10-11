@@ -25,8 +25,8 @@ func TestLivePostgres_FinanceInvariantsDatabaseConstraints(t *testing.T) {
 
 	propID := uuid.New()
 	_, err := pool.Exec(ctx, `
-		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
-		VALUES ($1, 'Constraint Test Property', 'Test Address', '+919999900011', 'test@upi', 'Test Owner', 'owner_test@example.com', $2, 'manual_proof')
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode)
+		VALUES ($1, 'Constraint Test Property', 'Test Address', '+919999900011', 'test@upi', 'Test Owner', 'owner_test@example.com', $2, 'manual')
 		ON CONFLICT (id) DO NOTHING
 	`, propID, "INV"+propID.String()[:5])
 	if err != nil {

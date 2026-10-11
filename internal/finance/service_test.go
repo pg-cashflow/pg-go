@@ -146,9 +146,12 @@ func TestPatchUnifiedSettings(t *testing.T) {
 		TDRIsEstimated:      false,
 	}
 	polIn := &domain.ApprovalPolicy{
-		SingleExpenseLimitPaise:  1000000,
-		ManagerDailyLimitPaise:   2000000,
-		ManagerMonthlyLimitPaise: 5000000,
+		SingleExpenseLimitPaise:     1000000,
+		ManagerDailyLimitPaise:      2000000,
+		ManagerMonthlyLimitPaise:    5000000,
+		OwnerApprovalThresholdPaise: 500000,
+		ReimbursementThresholdPaise: 250000,
+		EmergencyBypassEnabled:      true,
 	}
 	loyIn := &domain.PropertyGamificationSettings{
 		PointValuePaise:    150,
@@ -164,6 +167,9 @@ func TestPatchUnifiedSettings(t *testing.T) {
 	}
 	if polOut.ManagerDailyLimitPaise != 2000000 {
 		t.Fatalf("policy not applied: %+v", polOut)
+	}
+	if polOut.OwnerApprovalThresholdPaise != 500000 || polOut.ReimbursementThresholdPaise != 250000 || !polOut.EmergencyBypassEnabled {
+		t.Fatalf("policy thresholds not applied: %+v", polOut)
 	}
 	if loyOut == nil || loyOut.PointValuePaise != 150 {
 		t.Fatalf("loyalty not applied: %+v", loyOut)
