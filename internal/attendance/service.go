@@ -63,7 +63,7 @@ func (s *Service) MarkDailyAttendance(
 ) error {
 	workDate, err := time.Parse("2006-01-02", req.WorkDate)
 	if err != nil {
-		return &InputError{Msg: fmt.Sprintf("invalid work_date (expected YYYY-MM-DD): %v", err)}
+		return &InputError{Msg: "invalid work_date (expected YYYY-MM-DD)"}
 	}
 
 	if len(req.Entries) == 0 {

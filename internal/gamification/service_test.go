@@ -317,7 +317,7 @@ func (m *memStore) GetRedemptionByID(ctx context.Context, propertyID uuid.UUID, 
 			return &r, nil
 		}
 	}
-	return nil, errors.New("redemption not found")
+	return nil, domain.ErrNotFound
 }
 
 func (m *memStore) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, id uuid.UUID) error {
@@ -1061,6 +1061,29 @@ func TestFulfilRedemption_LookupFailureIsInternal(t *testing.T) {
 		t.Fatalf("expected internal database error, but got ErrRedemptionNotFound")
 	}
 	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Fatalf("expected underlying error preserved, got: %v", err)
+	}
+}
+
+func TestFulfilRedemption_NotFoundTextInDBErrorIsInternal(t *testing.T) {
+	ctx := context.Background()
+	store := &failingLookupStore{
+		memStore:  newMemStore(),
+		lookupErr: errors.New("database row not found in internal table index"),
+	}
+	tRepo := &memTenantRepo{
+		tenants: make(map[uuid.UUID]*domain.Tenant),
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+	_, err := svc.FulfilRedemption(ctx, uuid.New(), uuid.New())
+	if err == nil {
+		t.Fatalf("expected error on database lookup failure")
+	}
+	if errors.Is(err, ErrRedemptionNotFound) {
+		t.Fatalf("expected internal database error, but got ErrRedemptionNotFound")
+	}
+	if !strings.Contains(err.Error(), "database row not found in internal table index") {
 		t.Fatalf("expected underlying error preserved, got: %v", err)
 	}
 }

@@ -159,4 +159,16 @@ Codebase auditing and static analysis identified several security vulnerabilitie
 - Internal database details and runtime errors cannot leak into client HTTP responses in owner dashboard endpoints.
 - Concurrency invariants (INV-004, INV-005, INV-012) are empirically verified free of data races under Go's race detector.
 
+---
+
+## 6. Round 12 Remediation: Classifier and Test Sentinel Corrections
+
+### 6.6 Gamification Classifier and Attendance Sanitization Corrections
+
+- **Classifier Error Text Matching Elimination:** Removed message string matching (`strings.Contains(..., "not found")` and `"no rows"`) from `FulfilRedemption` in `internal/gamification/redemptions.go`. The service strictly classifies errors against typed sentinels `domain.ErrNotFound` and `pgx.ErrNoRows`. Database errors containing those substrings are preserved and routed as internal server errors rather than misclassified as HTTP 400 client errors.
+- **Test Double Sentinel Alignment:** Corrected `memStore.GetRedemptionByID` in `internal/gamification/service_test.go` to return `domain.ErrNotFound` instead of raw string error `errors.New("redemption not found")`.
+- **Database Error Text Regression Test:** Added `TestFulfilRedemption_NotFoundTextInDBErrorIsInternal` verifying that database errors containing "not found" substrings are returned as internal errors rather than misclassified as `ErrRedemptionNotFound`.
+- **Attendance Work Date Layout Leak Prevention:** Reverted `work_date` parse failure message in `internal/attendance/service.go` to fixed string `"invalid work_date (expected YYYY-MM-DD)"`, preventing exposure of Go time parser internal layout strings.
+
+
 
