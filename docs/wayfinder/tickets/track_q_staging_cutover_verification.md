@@ -1,8 +1,9 @@
 # Ticket 16: Track Q — Final Staging Cutover & End-to-End Deployment Verification
 
 - **Type**: `wayfinder:task`
-- **Status**: Resolved
+- **Status**: Blocked
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
+- **Blocked By**: Staging server and database not yet provisioned. Binary build (all 12 `cmd/...` executables) and local migration run (001–064) verified. End-to-end staging deployment blocked until remote infrastructure is available.
 - **Prerequisite**: Track P (End-of-Day Multi-Way Settlement Balancer) resolved.
 
 ---

@@ -198,6 +198,10 @@ func main() {
 	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
 	if cfCfg.Enabled() {
 		cfClient = cashfree.NewClient(cfCfg)
+		if cfg.CashfreePGBaseURL != "" {
+			cfClient.WithBaseURL(cfg.CashfreePGBaseURL)
+			logger.Warn("cashfree pg base url overridden", "url", cfg.CashfreePGBaseURL)
+		}
 		cfOrders = cfClient
 		logger.Info("cashfree orders enabled", "env", cfg.CashfreeEnv)
 	}

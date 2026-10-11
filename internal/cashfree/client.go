@@ -51,6 +51,13 @@ func NewClient(cfg Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}, now: time.Now}
 }
 
+// WithBaseURL overrides the Cashfree API base endpoint (e.g. for local test harness or fake gateway).
+func (c *Client) WithBaseURL(override string) *Client {
+	c.baseOverride = strings.TrimRight(override, "/")
+	return c
+}
+
+
 type createOrderBody struct {
 	OrderID       string         `json:"order_id"`
 	OrderAmount   json.Number    `json:"order_amount"`

@@ -1,0 +1,99 @@
+# Gate 09: k6 Open-Model Load, Soak & Post-Run SQL Invariant Gate
+# Ticket 25 / Track R.9
+#
+# Schedule disabled until a successful manual run has been recorded with
+# the fake gateway confirmed working and k6 installed on the runner.
+# To enable: uncomment the schedule block below.
+#
+# schedule:
+#   - cron: "0 20 * * *"   # Nightly 01:30 IST = 20:00 UTC
+
+name: Gate 09 — k6 Load & Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_soak:
+        description: 'Run 60-minute soak test (true/false)'
+        required: false
+        default: 'false'
+      soak_duration:
+        description: 'Soak test duration (e.g. 60m)'
+        required: false
+        default: '60m'
+
+jobs:
+  load-test:
+    name: k6 Load Test with Fake Gateway
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: pg_loadtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6 postgresql-client
+
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_loadtest?sslmode=disable
+          JWT_SECRET: loadtest_jwt_secret_must_be_32_chars_long!!
+          OTP_HMAC_SECRET: loadtest_otp_hmac_secret_32_chars_long!!
+          MAGIC_LINK_HMAC_SECRET: loadtest_magic_link_secret_32_chars!
+        run: go run ./cmd/migrate
+
+      - name: Start Backend Server
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_loadtest?sslmode=disable
+          JWT_SECRET: loadtest_jwt_secret_must_be_32_characters_long!!
+          OTP_HMAC_SECRET: loadtest_otp_hmac_secret_32_chars_long!!
+          MAGIC_LINK_HMAC_SECRET: loadtest_magic_link_secret_32_chars!!
+          KYC_IDENTITY_SECRET: loadtest_kyc_identity_secret_32_chars!
+          PAYOUT_CHECKSUM_SECRET: loadtest_payout_checksum_secret_32chars
+          CASHFREE_PG_BASE_URL: http://127.0.0.1:8081
+          DATABASE_MAX_CONNS: "25"
+          HTTP_ADDR: ":8080"
+          APP_ENV: development
+        run: go run ./cmd/server &
+
+      - name: Run k6 Load Test via run.sh (Fake Gateway)
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_loadtest?sslmode=disable
+          BASE_URL: http://localhost:8080
+          FAKE_GATEWAY_URL: http://localhost:8081
+          INCLUDE_SOAK: ${{ github.event.inputs.include_soak || 'false' }}
+          SOAK_DURATION: ${{ github.event.inputs.soak_duration || '60m' }}
+        run: bash scripts/loadtest/run.sh
+
+      - name: Upload k6 Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-load-results
+          path: |
+            scripts/loadtest/baseline.json

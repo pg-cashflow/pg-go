@@ -143,3 +143,32 @@ func TestCreateRefund(t *testing.T) {
 		t.Fatalf("unexpected refund details: %+v", ref)
 	}
 }
+
+func TestClient_WithBaseURL(t *testing.T) {
+	var requestedPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payment_session_id":"sess_override_123"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{AppID: "app_test", SecretKey: "sec_test", Env: "sandbox"})
+	c.WithBaseURL(srv.URL)
+
+	if c.endpoint() != srv.URL {
+		t.Fatalf("expected endpoint %s, got %s", srv.URL, c.endpoint())
+	}
+
+	sessionID, _, err := c.CreateUPIOrder(context.Background(), "order_override_1", 10000, "9876543210", "Test Override")
+	if err != nil {
+		t.Fatalf("CreateUPIOrder failed: %v", err)
+	}
+	if sessionID != "sess_override_123" {
+		t.Fatalf("expected session ID sess_override_123, got %s", sessionID)
+	}
+	if requestedPath != "/orders" {
+		t.Fatalf("expected request to /orders, got %s", requestedPath)
+	}
+}
+

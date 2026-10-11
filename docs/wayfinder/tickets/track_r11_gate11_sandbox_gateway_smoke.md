@@ -1,8 +1,9 @@
 # Ticket 27: Track R.11 — Gate 11: Scheduled Cashfree Gateway Sandbox Smoke Harness
 
 - **Type**: `wayfinder:task`
-- **Status**: Open
+- **Status**: In progress
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
+- **In Progress By**: `.github/workflows/sandbox-smoke.yml` written with fail-closed secret verification step and PostgreSQL service. Schedule disabled pending secrets configuration and first successful manual run.
 - **Specification**: [Test Readiness Specification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/TEST_READINESS_SPECIFICATION.md)
 - **Dependencies**: None
 - **Tier**: Weekly Scheduled + Pre-Release

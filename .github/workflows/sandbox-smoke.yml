@@ -1,0 +1,78 @@
+# Gate 11: Scheduled Cashfree Gateway Sandbox Smoke Harness
+# Ticket 27 / Track R.11
+#
+# Schedule disabled until CASHFREE_PG_APP_ID, CASHFREE_PG_SECRET_KEY, and
+# CASHFREE_PG_WEBHOOK_SECRET are configured as GitHub repository secrets and
+# a successful manual run has been recorded.
+# To enable: uncomment the schedule block below.
+#
+# schedule:
+#   - cron: "0 21 * * 0"   # Weekly Sunday 02:30 IST = 21:00 UTC Saturday
+
+name: Gate 11 — Cashfree Sandbox Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sandbox-smoke:
+    name: Cashfree Sandbox Smoke Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: pg_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      # Fail fast before any live network call if required secrets are missing.
+      - name: Verify required Cashfree secrets are present
+        env:
+          CASHFREE_PG_APP_ID: ${{ secrets.CASHFREE_PG_APP_ID }}
+          CASHFREE_PG_SECRET_KEY: ${{ secrets.CASHFREE_PG_SECRET_KEY }}
+          CASHFREE_PG_WEBHOOK_SECRET: ${{ secrets.CASHFREE_PG_WEBHOOK_SECRET }}
+        run: |
+          missing=0
+          [ -z "$CASHFREE_PG_APP_ID" ]      && echo "ERROR: CASHFREE_PG_APP_ID secret is not set"      && missing=1
+          [ -z "$CASHFREE_PG_SECRET_KEY" ]   && echo "ERROR: CASHFREE_PG_SECRET_KEY secret is not set"   && missing=1
+          [ -z "$CASHFREE_PG_WEBHOOK_SECRET" ] && echo "ERROR: CASHFREE_PG_WEBHOOK_SECRET secret is not set" && missing=1
+          [ "$missing" -eq 1 ] && exit 1
+          echo "All required Cashfree secrets are present."
+
+      - name: Run Database Migrations
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_smoke?sslmode=disable
+          JWT_SECRET: ci_test_jwt_secret_must_be_32_characters_long!!
+          OTP_HMAC_SECRET: ci_test_otp_hmac_secret_32_chars_long!!
+          MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
+        run: go run ./cmd/migrate
+
+      - name: Run Cashfree Sandbox Smoke Binary
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_smoke?sslmode=disable
+          JWT_SECRET: ci_test_jwt_secret_must_be_32_characters_long!!
+          OTP_HMAC_SECRET: ci_test_otp_hmac_secret_32_chars_long!!
+          MAGIC_LINK_HMAC_SECRET: ci_test_magic_link_secret_32_chars!
+          CASHFREE_PG_APP_ID: ${{ secrets.CASHFREE_PG_APP_ID }}
+          CASHFREE_PG_SECRET_KEY: ${{ secrets.CASHFREE_PG_SECRET_KEY }}
+          CASHFREE_PG_WEBHOOK_SECRET: ${{ secrets.CASHFREE_PG_WEBHOOK_SECRET }}
+          CASHFREE_ENV: sandbox
+        run: go run ./cmd/sandbox-smoke

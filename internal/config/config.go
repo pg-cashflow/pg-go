@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -69,6 +71,8 @@ type Config struct {
 	PayoutEncryptionSecret string
 	// PayoutEncryptionKeys holds versioned keys for rotation (version -> secret).
 	PayoutEncryptionKeys map[byte]string
+	// CashfreePGBaseURL optionally overrides the gateway endpoint in non-production environments.
+	CashfreePGBaseURL string
 }
 
 func Load() (*Config, error) {
@@ -124,6 +128,7 @@ func Load() (*Config, error) {
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
+		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)
@@ -170,6 +175,25 @@ func Load() (*Config, error) {
 	}
 	if (cfAppID != "" || cfSecret != "") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
 		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
+	}
+	if cfg.CashfreePGBaseURL != "" {
+		if cfg.AppEnv == "production" {
+			return nil, fmt.Errorf("CASHFREE_PG_BASE_URL override is prohibited in production")
+		}
+		parsed, err := url.Parse(cfg.CashfreePGBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CASHFREE_PG_BASE_URL: %w", err)
+		}
+		if parsed.Scheme != "http" {
+			return nil, fmt.Errorf("CASHFREE_PG_BASE_URL scheme must be http (got %q)", parsed.Scheme)
+		}
+		hostname := parsed.Hostname()
+		if hostname == "" {
+			return nil, fmt.Errorf("CASHFREE_PG_BASE_URL must specify a host")
+		}
+		if !isLoopbackHost(hostname) {
+			return nil, fmt.Errorf("CASHFREE_PG_BASE_URL must target a loopback host (got %q)", hostname)
+		}
 	}
 	return cfg, nil
 }
@@ -268,4 +292,12 @@ func envDurationOr(k string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

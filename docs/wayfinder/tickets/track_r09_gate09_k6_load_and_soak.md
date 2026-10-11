@@ -1,9 +1,9 @@
 # Ticket 25: Track R.9 — Gate 09: k6 Open-Model Load, Soak & Post-Run SQL Invariant Gate
 
 - **Type**: `wayfinder:task`
-- **Status**: Resolved
+- **Status**: In progress
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
-- **Resolved By**: Track R.9 Stress Test Suite (fake gateway, k6 scenarios, and SQL invariants)
+- **In Progress By**: `.github/workflows/loadtest.yml` written; `CASHFREE_PG_BASE_URL` added for hermetic fake-gateway runs. Schedule disabled pending first successful manual run.
 - **Specification**: [Test Readiness Specification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/TEST_READINESS_SPECIFICATION.md)
 - **Dependencies**: [Gate 04](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r04_gate04_e2e_money_flow.md), [Gate 05](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r05_gate05_webhook_replay_ordering.md)
 - **Tier**: Nightly + Weekly Pre-Release

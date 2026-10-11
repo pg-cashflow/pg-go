@@ -128,3 +128,91 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 		t.Fatalf("unexpected PayoutEncryptionSecret: %s", cfg.PayoutEncryptionSecret)
 	}
 }
+
+func TestLoad_CashfreePGBaseURL(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "CASHFREE_PG_BASE_URL",
+	}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+	_ = os.Setenv("APP_ENV", "development")
+
+	// Case 1: Unset default returns empty string and succeeds
+	_ = os.Unsetenv("CASHFREE_PG_BASE_URL")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed with unset base URL: %v", err)
+	}
+	if cfg.CashfreePGBaseURL != "" {
+		t.Fatalf("expected empty CashfreePGBaseURL, got %q", cfg.CashfreePGBaseURL)
+	}
+
+	// Case 2: Production refusal
+	_ = os.Setenv("APP_ENV", "production")
+	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+	_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://localhost:8081")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when CASHFREE_PG_BASE_URL is set in production")
+	}
+
+	// Reset to development
+	_ = os.Setenv("APP_ENV", "development")
+
+	// Case 3: Bad scheme (https instead of http)
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "https://localhost:8081")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when CASHFREE_PG_BASE_URL scheme is not http")
+	}
+
+	// Case 4: Remote host refusal
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://api.cashfree.com/pg")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when CASHFREE_PG_BASE_URL targets remote host")
+	}
+
+	// Case 5: Private network non-loopback IP refusal
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://192.168.1.100:8081")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when CASHFREE_PG_BASE_URL targets private non-loopback IP")
+	}
+
+	// Case 6: Valid loopback host: localhost
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://localhost:8081")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load failed for http://localhost:8081: %v", err)
+	}
+	if cfg.CashfreePGBaseURL != "http://localhost:8081" {
+		t.Fatalf("expected http://localhost:8081, got %q", cfg.CashfreePGBaseURL)
+	}
+
+	// Case 7: Valid loopback host: 127.0.0.1
+	_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://127.0.0.1:8081")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load failed for http://127.0.0.1:8081: %v", err)
+	}
+	if cfg.CashfreePGBaseURL != "http://127.0.0.1:8081" {
+		t.Fatalf("expected http://127.0.0.1:8081, got %q", cfg.CashfreePGBaseURL)
+	}
+}
+

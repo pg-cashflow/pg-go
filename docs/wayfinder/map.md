@@ -37,7 +37,7 @@
 - [Track N (Ticket 13): Stream 3 Layer 1 — Cashfree Settlement Ingress & Order-to-Intent Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_n_settlement_reconciliation_layer1.md): Resolved. Ingress for Cashfree settlement webhooks and order-level API polling (2025-01-01 / 2026-01-01 polymorphic parser), order-to-intent matching, integer paise MDR/GST allocation, balanced double-entry journals, human-gated discrepancy review with maker-checker step-up, cross-property IDOR standardization (404), and continuous property-based money-math invariant evals.
 - [Track O (Ticket 14): Stream 3 Layer 2 — Bank Statement Ingress & Unidentified Deposit Reconciliation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_o_bank_statement_ingress_layer2.md): Resolved. Direct CSV bank statement ingress (SBI/HDFC parsers with composite dedup key), deterministic Tier 1 vs heuristic Tier 2 segregation, double-entry quarantine invariant (Dr bank / Cr unapplied_receipts), human-gated discrepancy resolution with dual control/step-up, and continuous property evaluation asserting bank debit conservation.
 - [Track P (Ticket 15): Stream 3 Layer 3 — End-of-Day Multi-Way Settlement Balancer & Audit Trail](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_p_multi_way_settlement_balancer.md): Resolved. Reconciles Cashfree gateway clearing decomposition (Gross = Net + Fees + Tax + Adj), gateway in-transit balance, cleared bank statement inflows/outflows against general ledger journal lines, and Tier 2 unapplied receipt quarantine. Implemented durable daily snapshot store (`daily_settlement_balances`, migration 031), REST endpoints (`/owner/settlements/eod-balance`, `/run`, `/history`), UI integration in `pg-react` with dual tabs and variance breakdown, and 10,000-iteration randomized property invariant evaluations.
-- [Track Q (Ticket 16): Final Staging Cutover & End-to-End Deployment Verification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_q_staging_cutover_verification.md): Resolved. Verified static binary build across all 12 `cmd/...` executables with 0 errors, resolved schema checksum drift, successfully applied and verified all 44 migrations (001–044) with zero drift, verified 100% test suite passing across all packages and invariant property evaluations with zero integer-paise drift.
+- [Track Q (Ticket 16): Final Staging Cutover & End-to-End Deployment Verification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_q_staging_cutover_verification.md): **Blocked** (staging environment not provisioned). Binary build and local migration run verified. End-to-end staging deployment cannot be completed until a remote staging server and database are available.
 
 ## Frontier (Open Tickets)
 
@@ -48,9 +48,9 @@
 1. [Track R.1 (Ticket 17): Gate 01 — Test Skip Audit & Zero Silent Skip Enforcement](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r01_gate01_skip_audit.md) `[Closed]`
    - *Dependencies*: None.
    - *Resolved By*: `scripts/audit_skips.go` enforcing zero unflagged skips when `REQUIRE_DB=1`.
-2. [Track R.2 (Ticket 18): Gate 02 — Package Coverage Floors & Coverprofile Gating](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r02_gate02_coverage_gate.md) `[Closed]`
+2. [Track R.2 (Ticket 18): Gate 02 — Package Coverage Floors & Coverprofile Gating](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r02_gate02_coverage_gate.md) `[Open]`
    - *Dependencies*: Gate 01.
-   - *Resolved By*: `scripts/check-coverage.go` gating package statement coverage floors (`finance` 85%, `payment` 85%, `auth` 80%, `api` 75%).
+   - *Status*: `scripts/check-coverage.go` enforces regression floors (finance 75%, auth 60%, payment 50%, api 45%). Aspirational targets (85/85/80/75) reported with gaps. CI runs `-require-all` without `-strict`; strict enforcement blocked until package gaps are closed. Current gaps: finance −7.4%, payment −31.6%, auth −14.4%, api −11.0%.
 3. [Track R.3 (Ticket 19): Gate 03 — API Contract & Router Response Schema Validation](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r03_gate03_api_contract_tests.md) `[Closed]`
    - *Dependencies*: Gate 01.
    - *Resolved By*: `internal/api/contract_test.go` verifying 50+ route inventory, envelope wrappers, error schema, and integer paise precision.
@@ -71,13 +71,13 @@
 8. [Track R.8 (Ticket 24): Gate 08 — Process Crash, Network Fault & Poison Recovery](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r08_gate08_crash_recovery.md) `[Closed]`
    - *Dependencies*: Gate 04.
    - *Resolved By*: `internal/finance/physical_crash_test.go` and `crash_proof_test.go` verifying uncommitted transaction rollback, outbox recovery with `SKIP LOCKED`, and deduplication.
-9. [Track R.9 (Ticket 25): Gate 09 — k6 Open-Model Load, Soak & Post-Run SQL Invariant Gate](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r09_gate09_k6_load_and_soak.md) `[Resolved]`
+9. [Track R.9 (Ticket 25): Gate 09 — k6 Open-Model Load, Soak & Post-Run SQL Invariant Gate](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r09_gate09_k6_load_and_soak.md) `[In progress]`
    - *Dependencies*: Gate 04, Gate 05.
-   - *Resolved By*: Fake gateway server, k6 read/checkout/soak scenarios, post-run SQL invariants.
+   - *Status*: k6 scenarios, fake gateway, and SQL invariants exist in `scripts/loadtest/`. `CASHFREE_PG_BASE_URL` override added to make load test hermetic. Workflow `.github/workflows/loadtest.yml` written; schedule commented out pending first successful manual run and k6 environment validation.
    - *Target*: k6 50–100 RPS open model, fake gateway stub, 60m soak, post-run SQL 0-drift audit.
 10. [Track R.10 (Ticket 26): Gate 10 — Native Go Fuzzing for Parser Boundaries](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r10_gate10_native_fuzzing.md) `[Closed]`
     - *Dependencies*: None.
-    - *Resolved By*: `testing.F` across 5 parsers: `utr_fuzz_test.go`, `webhook_fuzz_test.go`, `phone_fuzz_test.go`, `csv_fuzz_test.go`, and `qr_fuzz_test.go`.
+    - *Resolved By*: `testing.F` across 5 parsers: `internal/domain/utr_fuzz_test.go`, `internal/cashfree/webhook_fuzz_test.go`, `internal/auth/phone_fuzz_test.go`, `internal/csv/csv_fuzz_test.go`, and `internal/aadhaar/qr_fuzz_test.go`.
 11. [Track R.12 (Ticket 28): Gate 12 — Background Job CLI Flags, Signal Handling & Exit Codes](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r12_gate12_job_binaries_tests.md) `[Closed]`
     - *Dependencies*: None.
     - *Resolved By*: `internal/jobs/jobs_cli_test.go` asserting fail-fast on missing env, dormant cashfree poll, migration execution, and graceful SIGTERM shutdown across all 12 binaries.
@@ -89,8 +89,9 @@
     - *Resolved By*: `internal/kyc/privacy_pii_test.go` verifying zero 12-digit Aadhaar regex matches in application logs, tenant response masking, and atomic DPDP consent wipe.
 
 ### Tier 3: Weekly & Pre-Release Frontier
-14. [Track R.11 (Ticket 27): Gate 11 — Scheduled Cashfree Gateway Sandbox Smoke Harness](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r11_gate11_sandbox_gateway_smoke.md) `[Open]`
+14. [Track R.11 (Ticket 27): Gate 11 — Scheduled Cashfree Gateway Sandbox Smoke Harness](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r11_gate11_sandbox_gateway_smoke.md) `[In progress]`
     - *Dependencies*: None.
+    - *Status*: Workflow `.github/workflows/sandbox-smoke.yml` written with fail-closed secret verification and PostgreSQL service. Schedule commented out pending manual run with `CASHFREE_PG_APP_ID`, `CASHFREE_PG_SECRET_KEY`, and `CASHFREE_PG_WEBHOOK_SECRET` configured as repository secrets.
     - *Target*: Automated weekly scheduled run of `cmd/sandbox-smoke` isolated from PR gates.
 
 
