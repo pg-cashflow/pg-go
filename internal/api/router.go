@@ -228,6 +228,7 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.GET("/dashboard/summary", h.OwnerDashboardSummary)
 			owner.GET("/dashboard/monthly-cashflow", h.OwnerMonthlyCashFlow)
 			owner.GET("/calendar/token", h.OwnerGetCalendarToken)
+			owner.POST("/calendar/revoke", h.OwnerRevokeCalendarToken)
 			owner.GET("/settings", h.OwnerGetPropertySettings)
 			owner.PATCH("/settings", h.OwnerUpdatePropertySettings)
 

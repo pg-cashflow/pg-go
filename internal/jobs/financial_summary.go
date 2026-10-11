@@ -220,8 +220,12 @@ func periodForCadence(cadence string, now time.Time) (period, tmpl, subject stri
 }
 
 func formatINR(paise int64) string {
-	rupees := float64(paise) / 100.0
-	return fmt.Sprintf("₹%.2f", rupees)
+	sign := ""
+	if paise < 0 {
+		sign = "-"
+		paise = -paise
+	}
+	return fmt.Sprintf("%s₹%d.%02d", sign, paise/100, paise%100)
 }
 
 func formatChannels(m map[string]int64) map[string]string {

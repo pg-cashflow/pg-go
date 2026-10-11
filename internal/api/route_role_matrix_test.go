@@ -12,10 +12,12 @@ package api
 //                          naming another property     -> must be 403 on
 //                          owner and manager routes
 //
-// The allowed roles are taken from CONTRACT.md's role table, not from the code
-// under test. A route registered in the wrong auth group therefore fails here
-// even when no feature test ever calls it. Any route that this file cannot
-// classify fails the test, so new routes cannot silently skip the matrix.
+// The allowed roles are statically defined to mirror CONTRACT.md's role table
+// specification, rather than parsed dynamically from the file at runtime or
+// derived from the code under test. A route registered in the wrong auth group
+// therefore fails here even when no feature test ever calls it. Any route that
+// this file cannot classify fails the test, so new routes cannot silently skip
+// the matrix.
 
 import (
 	"bytes"

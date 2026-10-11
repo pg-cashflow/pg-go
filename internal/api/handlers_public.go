@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/localization"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
@@ -76,7 +77,7 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
 <main>
   <h1>{{.PropertyName}}</h1>
   <p class="meta">Pay {{.OwnerName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}</p>
-  <p class="amt">₹{{printf "%.2f" .AmountRupees}}</p>
+  <p class="amt">₹{{.AmountRupees}}</p>
   <p class="meta">Due code: {{.DueCode}} · expires {{.ExpiresAt}}</p>
   {{if .Payable}}
   {{if eq .Mode "cashfree"}}
@@ -129,7 +130,7 @@ type paymentPageData struct {
 	PropertyName     string
 	OwnerName        string
 	RoomNumber       *string
-	AmountRupees     float64
+	AmountRupees     string
 	DueCode          string
 	ExpiresAt        string
 	UPILink          string
@@ -170,7 +171,7 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 		PropertyName: view.PropertyName,
 		OwnerName:    view.OwnerName,
 		RoomNumber:   view.RoomNumber,
-		AmountRupees: float64(view.AmountPaise) / 100.0,
+		AmountRupees: cashfree.FormatPaiseToRupees(view.AmountPaise),
 		DueCode:      view.Due.DueCode,
 		ExpiresAt:    view.ExpiresAt.Format("02 Jan 2006 15:04 MST"),
 		Note:         domain.UPINote(view.Due.DueCode),

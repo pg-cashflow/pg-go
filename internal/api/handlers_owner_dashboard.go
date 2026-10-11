@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -814,6 +816,23 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 		return
 	}
 
+	if h.Pool != nil {
+		hash := sha256.Sum256([]byte(token))
+		tokenHash := hex.EncodeToString(hash[:])
+		var revokedAt *time.Time
+		err := h.Pool.QueryRow(c.Request.Context(), `
+			SELECT revoked_at FROM property_calendar_tokens
+			WHERE property_id = $1 AND token_hash = $2
+		`, propID, tokenHash).Scan(&revokedAt)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.WarnContext(c.Request.Context(), "failed checking calendar token status", "err", err)
+		}
+		if revokedAt != nil {
+			c.String(http.StatusUnauthorized, "calendar token revoked")
+			return
+		}
+	}
+
 	ctx := requestscope.WithPropertyID(c.Request.Context(), propID)
 	c.Request = c.Request.WithContext(ctx)
 
@@ -873,14 +892,18 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 
 	for _, k := range dateKeys {
 		s := summaryByDate[k]
-		rupees := float64(s.AmountPaise) / 100.0
+		rupeesWhole := s.AmountPaise / 100
+		rupeesCents := s.AmountPaise % 100
+		if rupeesCents < 0 {
+			rupeesCents = -rupeesCents
+		}
 
 		b.WriteString("BEGIN:VEVENT\r\n")
 		b.WriteString(fmt.Sprintf("UID:rent-%s-%s@pg-cashflow\r\n", propID.String()[:8], k))
 		b.WriteString(fmt.Sprintf("DTSTAMP:%s\r\n", nowStamp))
 		b.WriteString(fmt.Sprintf("DTSTART;VALUE=DATE:%s\r\n", k))
-		b.WriteString(fmt.Sprintf("SUMMARY:Rent Due: %d dues (₹%.0f)\r\n", s.Count, rupees))
-		b.WriteString(fmt.Sprintf("DESCRIPTION:Aggregated rent dues for %s: %d pending dues totaling ₹%.2f.\r\n", escapeICalText(prop.Name), s.Count, rupees))
+		b.WriteString(fmt.Sprintf("SUMMARY:Rent Due: %d dues (₹%d)\r\n", s.Count, rupeesWhole))
+		b.WriteString(fmt.Sprintf("DESCRIPTION:Aggregated rent dues for %s: %d pending dues totaling ₹%d.%02d.\r\n", escapeICalText(prop.Name), s.Count, rupeesWhole, rupeesCents))
 		b.WriteString("STATUS:CONFIRMED\r\n")
 		b.WriteString("TRANSP:TRANSPARENT\r\n")
 		b.WriteString("END:VEVENT\r\n")
@@ -891,6 +914,38 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 	c.Header("Content-Type", "text/calendar; charset=utf-8")
 	c.Header("Content-Disposition", "inline; filename=\"rent-dues.ics\"")
 	c.String(http.StatusOK, b.String())
+}
+
+// OwnerRevokeCalendarToken handles POST /owner/calendar/revoke.
+// Revokes all active calendar subscription tokens for the property.
+func (h *Handlers) OwnerRevokeCalendarToken(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+
+	if h.Pool != nil {
+		tag, err := h.Pool.Exec(c.Request.Context(), `
+			UPDATE property_calendar_tokens
+			SET revoked_at = NOW()
+			WHERE property_id = $1 AND revoked_at IS NULL
+		`, pid)
+		if err != nil {
+			slog.ErrorContext(c.Request.Context(), "failed revoking calendar tokens", "property_id", pid, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke calendar tokens"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"property_id": pid,
+			"revoked":     tag.RowsAffected(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"property_id": pid,
+		"revoked":     0,
+	})
 }
 
 // OwnerGetPropertySettings handles GET /owner/settings.

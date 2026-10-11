@@ -402,6 +402,131 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			t.Fatalf("expected 500 Internal Server Error when outbox fallback fails, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("Transfer_Success_Ledger_Failure_Enqueues_Outbox_And_Worker_Settles", func(t *testing.T) {
+		itemE := &domain.PayoutItem{
+			PayeeID:         payee.ID,
+			ReferenceNumber: "DEP-E-005",
+			AmountPaise:     650000,
+			Purpose:         "Deposit Refund",
+			Status:          domain.PayoutProcessing,
+		}
+		if err := payoutRepo.CreatePayoutItem(ctx, itemE); err != nil {
+			t.Fatalf("create item E: %v", err)
+		}
+
+		// Inject failing finance store to simulate immediate journal write failure
+		failingStore := &failingJournalStore{Store: financeRepo}
+		failingFinSvc := finance.NewService(failingStore, nil)
+		failingH := &Handlers{
+			Deps: Deps{
+				Pool:                        pool,
+				LedgerOutboxRepo:            outboxRepo,
+				PayoutRepo:                  payoutRepo,
+				CashfreePayoutWebhookSecret: webhookSecret,
+				Finance:                     failingFinSvc,
+				WebhookToleranceSec:         300,
+			},
+		}
+		failingRouter := gin.New()
+		failingRouter.POST("/webhooks/cashfree/payouts", failingH.CashfreePayoutWebhook)
+
+		payload := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_SUCCESS",
+			EventTime: time.Now().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:        fmt.Sprintf("pgo_%s", itemE.ID),
+			CFTransferID:      "cf_tr_555",
+			Status:            "SUCCESS",
+			UTR:               ptr("UTR99999999"),
+			StatusDescription: "Transfer successful via outbox fallback",
+		}
+		payload.Data, _ = json.Marshal(data)
+		rawBody, _ := json.Marshal(payload)
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		sig := signPayoutWebhook(webhookSecret, ts, rawBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(rawBody))
+		req.Header.Set("x-webhook-signature", sig)
+		req.Header.Set("x-webhook-timestamp", ts)
+
+		w := httptest.NewRecorder()
+		failingRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK via outbox fallback, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// 1. Verify item marked succeeded
+		updatedItemE, err := payoutRepo.GetPayoutItemByID(ctx, itemE.ID)
+		if err != nil {
+			t.Fatalf("get item: %v", err)
+		}
+		if updatedItemE.Status != domain.PayoutSucceeded || updatedItemE.UTR == nil || *updatedItemE.UTR != "UTR99999999" {
+			t.Fatalf("unexpected item status: %+v", updatedItemE)
+		}
+
+		// 2. Verify outbox event was enqueued
+		var pendingOutboxCount int
+		err = pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM ledger_outbox_events
+			WHERE event_type = $1 AND source_id = $2 AND processed_at IS NULL AND failed_at IS NULL`,
+			domain.LedgerOutboxPayoutSettlement, itemE.ID,
+		).Scan(&pendingOutboxCount)
+		if err != nil {
+			t.Fatalf("query outbox: %v", err)
+		}
+		if pendingOutboxCount != 1 {
+			t.Fatalf("expected 1 pending outbox event, got %d", pendingOutboxCount)
+		}
+
+		// 3. Process the outbox event using real LedgerOutboxWorker with healthy finSvc
+		worker := finance.NewLedgerOutboxWorker(pool, outboxRepo, finSvc)
+		processed, err := worker.ProcessBatch(ctx, 10)
+		if err != nil {
+			t.Fatalf("worker process batch: %v", err)
+		}
+		if processed < 1 {
+			t.Fatalf("expected at least 1 processed outbox event, got %d", processed)
+		}
+
+		// 4. Verify double-entry journal entries created
+		var journalCount int
+		err = pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM financial_journal_entries
+			WHERE source_type = 'payout_settlement' AND source_id = $1`,
+			itemE.ID,
+		).Scan(&journalCount)
+		if err != nil {
+			t.Fatalf("query journal: %v", err)
+		}
+		if journalCount != 2 {
+			t.Fatalf("expected 2 journal lines (Dr refund_payable, Cr bank), got %d", journalCount)
+		}
+
+		// 5. Replay delivery: must succeed 200 without creating duplicate journal entries
+		reqReplay := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(rawBody))
+		reqReplay.Header.Set("x-webhook-signature", sig)
+		reqReplay.Header.Set("x-webhook-timestamp", ts)
+		wReplay := httptest.NewRecorder()
+		router.ServeHTTP(wReplay, reqReplay)
+		if wReplay.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on replay, got %d", wReplay.Code)
+		}
+
+		var replayJournalCount int
+		err = pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM financial_journal_entries
+			WHERE source_type = 'payout_settlement' AND source_id = $1`,
+			itemE.ID,
+		).Scan(&replayJournalCount)
+		if err != nil {
+			t.Fatalf("query journal after replay: %v", err)
+		}
+		if replayJournalCount != 2 {
+			t.Fatalf("expected still 2 journal lines after replay, got %d", replayJournalCount)
+		}
+	})
 }
 
 type failingJournalStore struct {

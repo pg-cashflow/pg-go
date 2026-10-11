@@ -502,4 +502,3 @@ func TestVerifyFirebaseTenantCreatedWith10DigitPhone(t *testing.T) {
 		t.Fatalf("expected property id %s, got %+v", pid, user.PropertyID)
 	}
 }
-

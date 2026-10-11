@@ -17,17 +17,17 @@ import (
 
 type memStore struct {
 	Store
-	mu              sync.Mutex
-	txMu            sync.Mutex
-	settings        *domain.PropertyGamificationSettings
-	rules           map[string]domain.PointRule
-	ledger          []domain.PointsLedgerEntry
-	streak          map[uuid.UUID]*domain.TenantStreak
-	catalog         map[uuid.UUID]domain.RewardsCatalogItem
-	redemptions     []domain.Redemption
-	violations      []domain.Violation
-	readings        []domain.MeterReading
-	rooms           map[uuid.UUID]domain.Room
+	mu                  sync.Mutex
+	txMu                sync.Mutex
+	settings            *domain.PropertyGamificationSettings
+	rules               map[string]domain.PointRule
+	ledger              []domain.PointsLedgerEntry
+	streak              map[uuid.UUID]*domain.TenantStreak
+	catalog             map[uuid.UUID]domain.RewardsCatalogItem
+	redemptions         []domain.Redemption
+	violations          []domain.Violation
+	readings            []domain.MeterReading
+	rooms               map[uuid.UUID]domain.Room
 	step3InQuarter      int
 	streakDues          map[string]bool
 	milestoneAwards     map[string]bool
@@ -1172,4 +1172,3 @@ func TestCalculateWaterRUBS_ErrorAndAllocationCases(t *testing.T) {
 		}
 	})
 }
-

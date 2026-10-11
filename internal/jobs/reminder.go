@@ -434,18 +434,18 @@ func (j *ReminderJob) publishReminder(ctx context.Context, due domain.Due, remTy
 }
 
 func reminderMessage(remType string, amountPaise int64, payURL string) string {
-	rupees := float64(amountPaise) / 100.0
+	rupees := amountPaise / 100
 	switch remType {
 	case ReminderDMinus3:
-		return fmt.Sprintf("Rent ₹%.0f due in 3 days — pay: %s", rupees, payURL)
+		return fmt.Sprintf("Rent ₹%d due in 3 days — pay: %s", rupees, payURL)
 	case ReminderD0:
-		return fmt.Sprintf("Rent ₹%.0f due today — pay: %s", rupees, payURL)
+		return fmt.Sprintf("Rent ₹%d due today — pay: %s", rupees, payURL)
 	case ReminderDPlus1:
-		return fmt.Sprintf("Overdue since yesterday — Rent ₹%.0f — pay: %s", rupees, payURL)
+		return fmt.Sprintf("Overdue since yesterday — Rent ₹%d — pay: %s", rupees, payURL)
 	case ReminderDPlus7:
-		return fmt.Sprintf("OVERDUE ₹%.0f — contact owner — pay: %s", rupees, payURL)
+		return fmt.Sprintf("OVERDUE ₹%d — contact owner — pay: %s", rupees, payURL)
 	default:
-		return fmt.Sprintf("Rent ₹%.0f — pay: %s", rupees, payURL)
+		return fmt.Sprintf("Rent ₹%d — pay: %s", rupees, payURL)
 	}
 }
 

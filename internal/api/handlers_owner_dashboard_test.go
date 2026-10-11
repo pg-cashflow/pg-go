@@ -647,6 +647,7 @@ func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 	r := gin.New()
 	ownerGroup := r.Group("/owner", auth.RequireOwner(jwtSecret, nil))
 	ownerGroup.GET("/calendar/token", h.OwnerGetCalendarToken)
+	ownerGroup.POST("/calendar/revoke", h.OwnerRevokeCalendarToken)
 	r.GET("/api/owner/calendar.ics", h.OwnerCalendarICS)
 
 	// 1. Get calendar subscription URL
@@ -713,6 +714,15 @@ func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 	// Verify privacy/anonymity: no tenant sensitive info in calendar
 	if strings.Contains(feedBody, "tenant") || strings.Contains(feedBody, "phone") {
 		t.Errorf("feed leaked sensitive personal data: %s", feedBody)
+	}
+
+	// 5. Revoke calendar token
+	reqRevoke := httptest.NewRequest(http.MethodPost, "/owner/calendar/revoke", nil)
+	reqRevoke.Header.Set("Authorization", "Bearer "+token)
+	wRevoke := httptest.NewRecorder()
+	r.ServeHTTP(wRevoke, reqRevoke)
+	if wRevoke.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for calendar revoke, got %d: %s", wRevoke.Code, wRevoke.Body.String())
 	}
 }
 

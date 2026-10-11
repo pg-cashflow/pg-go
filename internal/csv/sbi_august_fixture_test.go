@@ -165,12 +165,12 @@ func TestParse_SBI_AugustStatement_66RowsTieOut(t *testing.T) {
 	for _, s := range specs {
 		if s.credit > 0 {
 			runningBalPaise += s.credit
-			sb.WriteString(fmt.Sprintf("%s,%s,%s,%.2f,,%.2f\n",
-				s.date, s.narration, s.ref, float64(s.credit)/100.0, float64(runningBalPaise)/100.0))
+			sb.WriteString(fmt.Sprintf("%s,%s,%s,%d.%02d,,%d.%02d\n",
+				s.date, s.narration, s.ref, s.credit/100, s.credit%100, runningBalPaise/100, runningBalPaise%100))
 		} else {
 			runningBalPaise -= s.debit
-			sb.WriteString(fmt.Sprintf("%s,%s,%s,,%.2f,%.2f\n",
-				s.date, s.narration, s.ref, float64(s.debit)/100.0, float64(runningBalPaise)/100.0))
+			sb.WriteString(fmt.Sprintf("%s,%s,%s,,%d.%02d,%d.%02d\n",
+				s.date, s.narration, s.ref, s.debit/100, s.debit%100, runningBalPaise/100, runningBalPaise%100))
 		}
 	}
 

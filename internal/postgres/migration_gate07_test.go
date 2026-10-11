@@ -132,7 +132,8 @@ func TestGate07_LockSafetyStaticLinter(t *testing.T) {
 	// Legacy migrations (001-064) were grandfathered before lock-safety gate ratification.
 	// Any migration >= 065 MUST explicitly configure lock_timeout if modifying existing tables.
 	legacyAlterColumnExceptions := map[string]string{
-		"046_remediate_p0_invariants.sql": "P0 remediation expanded integer IDs to bigint before gate enforcement",
+		"046_remediate_p0_invariants.sql":                   "P0 remediation expanded integer IDs to bigint before gate enforcement",
+		"067_widen_phone_and_calendar_token_revocation.sql": "Metadata-only VARCHAR width expansion to 16 for international E.164 phone numbers",
 	}
 
 	for _, e := range entries {

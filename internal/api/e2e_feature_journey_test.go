@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
@@ -251,7 +252,7 @@ func TestE2E_FullFeatureLifecycleJourney(t *testing.T) {
 			},
 			"payment": map[string]any{
 				"cf_payment_id":  cfPaymentID,
-				"payment_amount": float64(rentPaise) / 100.0,
+				"payment_amount": cashfree.FormatPaiseToRupees(rentPaise),
 				"bank_reference": utr,
 			},
 		},
