@@ -313,7 +313,7 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			return fmt.Errorf("mirrorer not configured")
 		}
 		return w.mirrorer.MirrorPaymentCorrection(ctx, p.PropertyID, p.CorrectionID, p.OriginalPaymentID, p.AmountPaise, p.OccurredAt)
-	case "payout_reversal_mirror":
+	case domain.LedgerOutboxPayoutReversal:
 		var p domain.PayoutReversalMirrorPayload
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
 			return fmt.Errorf("unmarshal payout reversal mirror payload: %w", err)

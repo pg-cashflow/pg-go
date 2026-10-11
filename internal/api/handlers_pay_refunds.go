@@ -13,10 +13,296 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
+
+type refundAllocItem struct {
+	dueID       uuid.UUID
+	amountPaise int64
+	dueKind     domain.DueKind
+}
+
+// RefundTxRunner abstracts the transactional operations of the refund flow for unit testing and production safety.
+type RefundTxRunner interface {
+	PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error)
+	CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error
+	SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error
+}
+
+type postgresRefundTxRunner struct {
+	pool *pgxpool.Pool
+}
+
+func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error) {
+	if r.pool == nil {
+		return nil, errors.New("database pool unavailable")
+	}
+	var allocationsToCreate []refundAllocItem
+	err := postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		txPayRepo := postgres.NewPaymentRepo(tx)
+
+		// 1. Lock Tenant (1)
+		var dummy uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
+			return fmt.Errorf("lock tenant: %w", err)
+		}
+
+		// Gather dues linked to this payment via payment_allocations
+		rows, err := tx.Query(ctx, `
+			SELECT pa.due_id, pa.amount_paise, d.due_date, d.kind, d.original_amount, d.amount, d.status
+			FROM payment_allocations pa
+			JOIN dues d ON d.id = pa.due_id
+			WHERE pa.payment_id = $1
+			ORDER BY d.due_date ASC, d.id ASC`, p.ID)
+		if err != nil {
+			return fmt.Errorf("query payment allocations: %w", err)
+		}
+		defer rows.Close()
+
+		var duesList []dueAllocInfo
+		for rows.Next() {
+			var info dueAllocInfo
+			if err := rows.Scan(&info.dueID, &info.allocatedPaise, &info.dueDate, &info.kind, &info.originalAmount, &info.amount, &info.status); err != nil {
+				return err
+			}
+			duesList = append(duesList, info)
+		}
+		rows.Close()
+
+		// 3. Lock Dues (3) in topological sort order: ORDER BY due_date ASC, id ASC
+		if len(duesList) > 0 {
+			dueIDs := make([]uuid.UUID, len(duesList))
+			for i, d := range duesList {
+				dueIDs[i] = d.dueID
+			}
+			_, err = tx.Exec(ctx, `
+				SELECT id FROM dues 
+				WHERE id = ANY($1) 
+				ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
+			if err != nil {
+				return fmt.Errorf("lock dues: %w", err)
+			}
+		}
+
+		// 6. Lock Payment (6)
+		var paymentAmt int
+		var isUnapplied bool
+		if err := tx.QueryRow(ctx, `
+			SELECT amount, is_unapplied 
+			FROM payments 
+			WHERE id = $1 FOR UPDATE`, p.ID).Scan(&paymentAmt, &isUnapplied); err != nil {
+			return fmt.Errorf("lock payment: %w", err)
+		}
+
+		// 7. Lock Payment Allocations (7)
+		_, err = tx.Exec(ctx, `
+			SELECT id FROM payment_allocations 
+			WHERE payment_id = $1 
+			ORDER BY due_id ASC, id ASC FOR UPDATE`, p.ID)
+		if err != nil {
+			return fmt.Errorf("lock payment allocations: %w", err)
+		}
+
+		// 8. Lock Gateway Refunds (8)
+		_, err = tx.Exec(ctx, `
+			SELECT id FROM gateway_refunds 
+			WHERE payment_id = $1 
+			ORDER BY created_at ASC, id ASC FOR UPDATE`, p.ID)
+		if err != nil {
+			return fmt.Errorf("lock gateway refunds: %w", err)
+		}
+
+		// Guard A: Settlement Terminal Boundary Guard
+		var settledDepartureExists bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM tenant_departures 
+				WHERE tenant_id = $1 AND status IN ('approved', 'refunded')
+			)`, p.TenantID).Scan(&settledDepartureExists)
+		if err != nil {
+			return fmt.Errorf("check settled departure: %w", err)
+		}
+		if settledDepartureExists {
+			return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
+		}
+
+		checkDueIDs := make([]uuid.UUID, 0, len(duesList)+1)
+		for _, d := range duesList {
+			checkDueIDs = append(checkDueIDs, d.dueID)
+		}
+		if p.DueID != uuid.Nil {
+			checkDueIDs = append(checkDueIDs, p.DueID)
+		}
+		if len(checkDueIDs) > 0 {
+			var adjExists bool
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM departure_due_adjustments 
+					WHERE due_id = ANY($1)
+				)`, checkDueIDs).Scan(&adjExists)
+			if err != nil {
+				return fmt.Errorf("check departure due adjustments: %w", err)
+			}
+			if adjExists {
+				return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
+			}
+		}
+
+		// Validate remaining refundable balance under lock
+		alreadyRefunded, err := txPayRepo.GetPaymentRefundedPaise(ctx, p.ID)
+		if err != nil {
+			return fmt.Errorf("get refunded paise: %w", err)
+		}
+		if alreadyRefunded+req.AmountPaise > int64(paymentAmt) {
+			return &refundValidationErr{msg: fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded)}
+		}
+
+		// Calculate LIFO refund allocations across dues (due_date DESC)
+		if !isUnapplied && len(duesList) > 0 {
+			remRefund := req.AmountPaise
+			for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
+				d := duesList[i]
+				netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.dueID)
+				if err != nil {
+					return fmt.Errorf("get due net paid: %w", err)
+				}
+				maxAlloc := d.allocatedPaise
+				if netPaid < maxAlloc {
+					maxAlloc = netPaid
+				}
+				if maxAlloc <= 0 {
+					continue
+				}
+				allocAmt := remRefund
+				if allocAmt > maxAlloc {
+					allocAmt = maxAlloc
+				}
+				allocationsToCreate = append(allocationsToCreate, refundAllocItem{
+					dueID:       d.dueID,
+					amountPaise: allocAmt,
+					dueKind:     d.kind,
+				})
+				remRefund -= allocAmt
+			}
+		}
+
+		// Pre-insert gateway_refunds in status 'initiated'
+		if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+			return fmt.Errorf("create initiated refund: %w", err)
+		}
+
+		// Pre-insert refund_allocations
+		for _, item := range allocationsToCreate {
+			dueIDCopy := item.dueID
+			if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+				RefundID:    rfRow.ID,
+				DueID:       &dueIDCopy,
+				AmountPaise: item.amountPaise,
+			}); err != nil {
+				return fmt.Errorf("create refund allocation: %w", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return allocationsToCreate, nil
+}
+
+func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {
+	if r.pool == nil {
+		return errors.New("database pool unavailable")
+	}
+	return postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		txPayRepo := postgres.NewPaymentRepo(tx)
+		if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+			return fmt.Errorf("mark refund failed: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
+			return fmt.Errorf("delete refund allocations: %w", err)
+		}
+		return nil
+	})
+}
+
+func (r *postgresRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	if r.pool == nil {
+		return errors.New("database pool unavailable")
+	}
+	return postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		txPayRepo := postgres.NewPaymentRepo(tx)
+		txDueRepo := postgres.NewDueRepo(tx)
+
+		if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+			return err
+		}
+
+		// If succeeded, recompute dues and enqueue outbox
+		if rfRow.Status == "succeeded" {
+			for _, item := range allocationsToCreate {
+				d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
+				if err == nil && d != nil {
+					if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+						return err
+					}
+				}
+			}
+
+			// In-transaction universal refund ledger outbox enqueue (C-05)
+			var mirrorAllocs []domain.RefundAllocationItemPayload
+			for _, item := range allocationsToCreate {
+				mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+					AmountPaise: item.amountPaise,
+					DueKind:     string(item.dueKind),
+				})
+			}
+			refundPayload := domain.RefundMirrorPayload{
+				PropertyID:  pid,
+				RefundID:    rfRow.ID,
+				PaymentID:   p.ID,
+				AmountPaise: req.AmountPaise,
+				IsUnapplied: p.IsUnapplied,
+				Allocations: mirrorAllocs,
+				DueKind:     string(domain.DueKindRent),
+				OccurredAt:  time.Now().UTC(),
+			}
+			rawPayload, err := json.Marshal(refundPayload)
+			if err != nil {
+				return fmt.Errorf("marshal refund mirror outbox: %w", err)
+			}
+			outboxKey := fmt.Sprintf("refund_mirror:%s", rfRow.ID)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+				VALUES ($1, $2, $3, $4, $5, NOW())
+				ON CONFLICT (idempotency_key) DO NOTHING`,
+				domain.LedgerOutboxRefund, pid, rfRow.ID, rawPayload, outboxKey,
+			)
+			if err != nil {
+				return fmt.Errorf("enqueue refund ledger outbox: %w", err)
+			}
+		} else if rfRow.Status == "failed" || rfRow.Status == "cancelled" {
+			if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (h *Handlers) getRefundTxRunner() RefundTxRunner {
+	if h.RefundTxRunner != nil {
+		return h.RefundTxRunner
+	}
+	if h.Pool != nil {
+		return &postgresRefundTxRunner{pool: h.Pool}
+	}
+	return nil
+}
 
 func isTerminalRefund(status string) bool {
 	s := strings.ToLower(strings.TrimSpace(status))
@@ -190,203 +476,20 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		UpdatedAt:       now,
 	}
 
-	type refundAllocItem struct {
-		dueID       uuid.UUID
-		amountPaise int64
-		dueKind     domain.DueKind
-	}
-	var allocationsToCreate []refundAllocItem
-
-	// Step B: Atomic Row Lock & Allocation Preparation (Universal Lock Hierarchy)
-	if h.Pool != nil {
-		err = postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-			txPayRepo := postgres.NewPaymentRepo(tx)
-
-			// 1. Lock Tenant (1)
-			var dummy uuid.UUID
-			if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
-				return fmt.Errorf("lock tenant: %w", err)
-			}
-
-			// Gather dues linked to this payment via payment_allocations
-			rows, err := tx.Query(ctx, `
-				SELECT pa.due_id, pa.amount_paise, d.due_date, d.kind, d.original_amount, d.amount, d.status
-				FROM payment_allocations pa
-				JOIN dues d ON d.id = pa.due_id
-				WHERE pa.payment_id = $1
-				ORDER BY d.due_date ASC, d.id ASC`, p.ID)
-			if err != nil {
-				return fmt.Errorf("query payment allocations: %w", err)
-			}
-			defer rows.Close()
-
-			var duesList []dueAllocInfo
-			for rows.Next() {
-				var info dueAllocInfo
-				if err := rows.Scan(&info.dueID, &info.allocatedPaise, &info.dueDate, &info.kind, &info.originalAmount, &info.amount, &info.status); err != nil {
-					return err
-				}
-				duesList = append(duesList, info)
-			}
-			rows.Close()
-
-			// 3. Lock Dues (3) in topological sort order: ORDER BY due_date ASC, id ASC
-			if len(duesList) > 0 {
-				dueIDs := make([]uuid.UUID, len(duesList))
-				for i, d := range duesList {
-					dueIDs[i] = d.dueID
-				}
-				_, err = tx.Exec(ctx, `
-					SELECT id FROM dues 
-					WHERE id = ANY($1) 
-					ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
-				if err != nil {
-					return fmt.Errorf("lock dues: %w", err)
-				}
-			}
-
-			// 6. Lock Payment (6)
-			var paymentAmt int
-			var isUnapplied bool
-			if err := tx.QueryRow(ctx, `
-				SELECT amount, is_unapplied 
-				FROM payments 
-				WHERE id = $1 FOR UPDATE`, p.ID).Scan(&paymentAmt, &isUnapplied); err != nil {
-				return fmt.Errorf("lock payment: %w", err)
-			}
-
-			// 7. Lock Payment Allocations (7)
-			_, err = tx.Exec(ctx, `
-				SELECT id FROM payment_allocations 
-				WHERE payment_id = $1 
-				ORDER BY due_id ASC, id ASC FOR UPDATE`, p.ID)
-			if err != nil {
-				return fmt.Errorf("lock payment allocations: %w", err)
-			}
-
-			// 8. Lock Gateway Refunds (8)
-			_, err = tx.Exec(ctx, `
-				SELECT id FROM gateway_refunds 
-				WHERE payment_id = $1 
-				ORDER BY created_at ASC, id ASC FOR UPDATE`, p.ID)
-			if err != nil {
-				return fmt.Errorf("lock gateway refunds: %w", err)
-			}
-
-			// Guard A: Settlement Terminal Boundary Guard
-			// Reject refunds if the tenant's departure is already approved/refunded,
-			// or if any linked dues have departure_due_adjustments.
-			var settledDepartureExists bool
-			err = tx.QueryRow(ctx, `
-				SELECT EXISTS (
-					SELECT 1 FROM tenant_departures 
-					WHERE tenant_id = $1 AND status IN ('approved', 'refunded')
-				)`, p.TenantID).Scan(&settledDepartureExists)
-			if err != nil {
-				return fmt.Errorf("check settled departure: %w", err)
-			}
-			if settledDepartureExists {
-				return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
-			}
-
-			checkDueIDs := make([]uuid.UUID, 0, len(duesList)+1)
-			for _, d := range duesList {
-				checkDueIDs = append(checkDueIDs, d.dueID)
-			}
-			if p.DueID != uuid.Nil {
-				checkDueIDs = append(checkDueIDs, p.DueID)
-			}
-			if len(checkDueIDs) > 0 {
-				var adjExists bool
-				err = tx.QueryRow(ctx, `
-					SELECT EXISTS (
-						SELECT 1 FROM departure_due_adjustments 
-						WHERE due_id = ANY($1)
-					)`, checkDueIDs).Scan(&adjExists)
-				if err != nil {
-					return fmt.Errorf("check departure due adjustments: %w", err)
-				}
-				if adjExists {
-					return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
-				}
-			}
-
-			// Validate remaining refundable balance under lock
-			alreadyRefunded, err := txPayRepo.GetPaymentRefundedPaise(ctx, p.ID)
-			if err != nil {
-				return fmt.Errorf("get refunded paise: %w", err)
-			}
-			if alreadyRefunded+req.AmountPaise > int64(paymentAmt) {
-				return &refundValidationErr{msg: fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded)}
-			}
-
-			// Calculate LIFO refund allocations across dues (due_date DESC)
-			if !isUnapplied && len(duesList) > 0 {
-				remRefund := req.AmountPaise
-				for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
-					d := duesList[i]
-					netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.dueID)
-					if err != nil {
-						return fmt.Errorf("get due net paid: %w", err)
-					}
-					maxAlloc := d.allocatedPaise
-					if netPaid < maxAlloc {
-						maxAlloc = netPaid
-					}
-					if maxAlloc <= 0 {
-						continue
-					}
-					allocAmt := remRefund
-					if allocAmt > maxAlloc {
-						allocAmt = maxAlloc
-					}
-					allocationsToCreate = append(allocationsToCreate, refundAllocItem{
-						dueID:       d.dueID,
-						amountPaise: allocAmt,
-						dueKind:     d.kind,
-					})
-					remRefund -= allocAmt
-				}
-			}
-
-			// Pre-insert gateway_refunds in status 'initiated'
-			if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
-				return fmt.Errorf("create initiated refund: %w", err)
-			}
-
-			// Pre-insert refund_allocations
-			for _, item := range allocationsToCreate {
-				dueIDCopy := item.dueID
-				if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-					RefundID:    rfRow.ID,
-					DueID:       &dueIDCopy,
-					AmountPaise: item.amountPaise,
-				}); err != nil {
-					return fmt.Errorf("create refund allocation: %w", err)
-				}
-			}
-
-			return nil
-		})
-		if err != nil {
-			var vErr *refundValidationErr
-			if errors.As(err, &vErr) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": vErr.msg})
-				return
-			}
-			respondErr(c, err)
-			return
-		}
-	} else if h.GatewayPaymentRepo != nil {
-		// Test harness fallback when Pool is nil
-		alreadyRefunded, _ := h.GatewayPaymentRepo.GetPaymentRefundedPaise(ctx, p.ID)
-		if alreadyRefunded+req.AmountPaise > int64(p.Amount) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "refund amount exceeds remaining balance"})
-			return
-		}
-		_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
-	} else {
+	runner := h.getRefundTxRunner()
+	if runner == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database pool unavailable"})
+		return
+	}
+
+	allocationsToCreate, err := runner.PrepareRefund(ctx, pid, p, req, rfRow)
+	if err != nil {
+		var vErr *refundValidationErr
+		if errors.As(err, &vErr) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": vErr.msg})
+			return
+		}
+		respondErr(c, err)
 		return
 	}
 
@@ -397,21 +500,8 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		rfRow.Status = "failed"
 		// Best-effort cleanup: mark refund as failed and release allocations.
 		// Propagate the cleanup error only to logs; the gateway failure is the primary error.
-		if h.Pool != nil {
-			if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-				txPayRepo := postgres.NewPaymentRepo(tx)
-				if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
-					return fmt.Errorf("mark refund failed: %w", err)
-				}
-				if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
-					return fmt.Errorf("delete refund allocations: %w", err)
-				}
-				return nil
-			}); txErr != nil {
-				slog.Error("refund cleanup after gateway failure", "error", txErr, "refund_id", rfRow.ID)
-			}
-		} else if h.GatewayPaymentRepo != nil {
-			_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
+		if cleanupErr := runner.CleanupFailedRefund(ctx, rfRow); cleanupErr != nil {
+			slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
 		}
 		respondErr(c, clientErr(http.StatusBadGateway, "gateway refund failed"))
 		return
@@ -427,71 +517,10 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	rfRow.ProviderRefundID = &cfResp.CFRefundID
 
 	// Settle or finalize in DB
-	if h.Pool != nil {
-		if settleErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-			txPayRepo := postgres.NewPaymentRepo(tx)
-			txDueRepo := postgres.NewDueRepo(tx)
-
-			if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
-				return err
-			}
-
-			// If succeeded, recompute dues and enqueue outbox
-			if rfRow.Status == "succeeded" {
-				for _, item := range allocationsToCreate {
-					d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
-					if err == nil && d != nil {
-						if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
-							return err
-						}
-					}
-				}
-
-				// In-transaction universal refund ledger outbox enqueue (C-05)
-				var mirrorAllocs []domain.RefundAllocationItemPayload
-				for _, item := range allocationsToCreate {
-					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-						AmountPaise: item.amountPaise,
-						DueKind:     string(item.dueKind),
-					})
-				}
-				refundPayload := domain.RefundMirrorPayload{
-					PropertyID:  pid,
-					RefundID:    rfRow.ID,
-					PaymentID:   p.ID,
-					AmountPaise: req.AmountPaise,
-					IsUnapplied: p.IsUnapplied,
-					Allocations: mirrorAllocs,
-					DueKind:     string(domain.DueKindRent),
-					OccurredAt:  time.Now().UTC(),
-				}
-				rawPayload, err := json.Marshal(refundPayload)
-				if err != nil {
-					return fmt.Errorf("marshal refund mirror outbox: %w", err)
-				}
-				outboxKey := fmt.Sprintf("refund_mirror:%s", rfRow.ID)
-				_, err = tx.Exec(ctx, `
-					INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
-					VALUES ($1, $2, $3, $4, $5, NOW())
-					ON CONFLICT (idempotency_key) DO NOTHING`,
-					domain.LedgerOutboxRefund, pid, rfRow.ID, rawPayload, outboxKey,
-				)
-				if err != nil {
-					return fmt.Errorf("enqueue refund ledger outbox: %w", err)
-				}
-			} else if rfRow.Status == "failed" || rfRow.Status == "cancelled" {
-				if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); settleErr != nil {
-			slog.Error("refund post-settlement failed", "error", settleErr, "refund_id", rfRow.ID)
-			respondErr(c, fmt.Errorf("post-settlement transaction failed: %w", settleErr))
-			return
-		}
-	} else if h.GatewayPaymentRepo != nil {
-		_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
+	if settleErr := runner.SettleRefund(ctx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
+		slog.Error("refund post-settlement failed", "error", settleErr, "refund_id", rfRow.ID)
+		respondErr(c, fmt.Errorf("post-settlement transaction failed: %w", settleErr))
+		return
 	}
 
 	// Post financial ledger reversal outside row locks

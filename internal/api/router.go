@@ -58,6 +58,7 @@ type Deps struct {
 	WebhookAPIVersion   string
 	Pool                *pgxpool.Pool
 	DBCluster           *postgres.DBCluster
+	RefundTxRunner      RefundTxRunner
 
 	Gamification      *gamification.Service
 	GamificationStore gamification.Store

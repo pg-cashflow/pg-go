@@ -325,6 +325,27 @@ func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 	return r
 }
 
+type fakeRefundTxRunner struct {
+	gwRepo GatewayPaymentRepo
+}
+
+func (f *fakeRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error) {
+	alreadyRefunded, _ := f.gwRepo.GetPaymentRefundedPaise(ctx, p.ID)
+	if alreadyRefunded+req.AmountPaise > int64(p.Amount) {
+		return nil, &refundValidationErr{msg: "refund amount exceeds remaining balance"}
+	}
+	_ = f.gwRepo.CreateOrUpdateRefund(ctx, rfRow)
+	return nil, nil
+}
+
+func (f *fakeRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {
+	return f.gwRepo.CreateOrUpdateRefund(ctx, rfRow)
+}
+
+func (f *fakeRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	return f.gwRepo.CreateOrUpdateRefund(ctx, rfRow)
+}
+
 func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 	propID := uuid.New()
 	userID := uuid.New()
@@ -360,7 +381,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		_ = gwRepo.Create(context.Background(), basePayment)
 		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
 
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
 		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
@@ -424,7 +447,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		_ = gwRepo.Create(context.Background(), basePayment)
 
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
 		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
@@ -470,7 +495,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		_ = gwRepo.Create(context.Background(), oldPayment)
 
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
 		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
@@ -516,7 +543,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		_ = gwRepo.Create(context.Background(), basePayment)
 		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
 
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
 		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
@@ -580,7 +609,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		_ = gwRepo.Create(context.Background(), basePayment)
 		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
 
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
 		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
@@ -601,6 +632,52 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("expected 502 Bad Gateway on gateway failure, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	// 6. Fail-closed: Nil Pool and Nil RefundTxRunner Returns 500
+	t.Run("nil pool and nil runner fails closed with 500", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+
+		h := &Handlers{Deps: Deps{
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			// Both Pool and RefundTxRunner are nil
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 100000,
+			"reason":       "Fail closed check",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error when pool/runner is nil, got %d", rec.Code)
+		}
+		if cfClient.refundCalls != 0 {
+			t.Errorf("expected 0 calls to Cashfree when database unavailable, got %d", cfClient.refundCalls)
 		}
 	})
 }

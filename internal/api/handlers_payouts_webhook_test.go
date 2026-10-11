@@ -347,6 +347,60 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		_, _ = pool.Exec(ctx, `DELETE FROM ledger_outbox_events WHERE source_id = $1`, itemC.ID)
 	})
+
+	t.Run("Transfer_Reversed_Outbox_Failure_Returns_500", func(t *testing.T) {
+		itemD := &domain.PayoutItem{
+			PayeeID:         payee.ID,
+			ReferenceNumber: "DEP-D-004",
+			AmountPaise:     400000,
+			Purpose:         "Deposit Refund",
+			Status:          domain.PayoutProcessing,
+		}
+		if err := payoutRepo.CreatePayoutItem(ctx, itemD); err != nil {
+			t.Fatalf("create item D: %v", err)
+		}
+
+		// Inject failing finance store to force MirrorPayoutReversed failure AND nil outbox repo to force outbox fallback failure
+		failingStore := &failingJournalStore{Store: financeRepo}
+		failingFinSvc := finance.NewService(failingStore, nil)
+		failingH := &Handlers{
+			Deps: Deps{
+				Pool:                        pool,
+				LedgerOutboxRepo:            nil, // forces outbox fallback failure
+				PayoutRepo:                  payoutRepo,
+				CashfreePayoutWebhookSecret: webhookSecret,
+				Finance:                     failingFinSvc,
+				WebhookToleranceSec:         300,
+			},
+		}
+		failingRouter := gin.New()
+		failingRouter.POST("/webhooks/cashfree/payouts", failingH.CashfreePayoutWebhook)
+
+		payload := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_REVERSED",
+			EventTime: time.Now().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:        fmt.Sprintf("pgo_%s", itemD.ID),
+			CFTransferID:      "cf_tr_444",
+			Status:            "REVERSED",
+			StatusDescription: "Bank reversal with failing outbox",
+		}
+		payload.Data, _ = json.Marshal(data)
+		rawBody, _ := json.Marshal(payload)
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		sig := signPayoutWebhook(webhookSecret, ts, rawBody)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(rawBody))
+		req.Header.Set("x-webhook-signature", sig)
+		req.Header.Set("x-webhook-timestamp", ts)
+
+		w := httptest.NewRecorder()
+		failingRouter.ServeHTTP(w, req)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 Internal Server Error when outbox fallback fails, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 type failingJournalStore struct {

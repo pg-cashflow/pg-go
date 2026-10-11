@@ -237,28 +237,36 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if h.Finance != nil && propID != uuid.Nil {
 			if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, time.Now().UTC()); err != nil {
 				slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
-				if h.LedgerOutboxRepo != nil && h.Pool != nil {
-					payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
-						PropertyID:   propID,
-						PayoutItemID: item.ID,
-						AmountPaise:  item.AmountPaise,
-						OccurredAt:   time.Now().UTC(),
-					})
-					if mErr == nil {
-						outboxEvt := &domain.LedgerOutboxEvent{
-							EventType:      domain.LedgerOutboxPayoutReversal,
-							PropertyID:     propID,
-							SourceID:       item.ID,
-							Payload:        payload,
-							IdempotencyKey: fmt.Sprintf("payout_reversed:%s", item.ID),
-							MaxAttempts:    5,
-						}
-						if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-							return h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt)
-						}); txErr != nil {
-							slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", txErr)
-						}
-					}
+				if h.LedgerOutboxRepo == nil || h.Pool == nil {
+					slog.Error("ledger outbox repo or pool unavailable for fallback", "item_id", item.ID)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence unavailable"})
+					return
+				}
+				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+					PropertyID:   propID,
+					PayoutItemID: item.ID,
+					AmountPaise:  item.AmountPaise,
+					OccurredAt:   time.Now().UTC(),
+				})
+				if mErr != nil {
+					slog.Error("failed marshaling outbox payload for reversed payout", "item_id", item.ID, "err", mErr)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal outbox payload failed"})
+					return
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      domain.LedgerOutboxPayoutReversal,
+					PropertyID:     propID,
+					SourceID:       item.ID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payout_reversed:%s", item.ID),
+					MaxAttempts:    5,
+				}
+				if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+					return h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt)
+				}); txErr != nil {
+					slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", txErr)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
+					return
 				}
 			}
 		}
