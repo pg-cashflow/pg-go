@@ -2,7 +2,6 @@ package attendance
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -47,6 +46,15 @@ func NewService(pool *pgxpool.Pool, attendanceRepo AttendanceRepository, payoutR
 	}
 }
 
+// InputError represents a client-side validation failure.
+type InputError struct {
+	Msg string
+}
+
+func (e *InputError) Error() string {
+	return e.Msg
+}
+
 // MarkDailyAttendance saves or updates attendance for multiple staff members on a given date.
 func (s *Service) MarkDailyAttendance(
 	ctx context.Context,
@@ -55,11 +63,11 @@ func (s *Service) MarkDailyAttendance(
 ) error {
 	workDate, err := time.Parse("2006-01-02", req.WorkDate)
 	if err != nil {
-		return fmt.Errorf("invalid work_date (expected YYYY-MM-DD): %w", err)
+		return &InputError{Msg: fmt.Sprintf("invalid work_date (expected YYYY-MM-DD): %v", err)}
 	}
 
 	if len(req.Entries) == 0 {
-		return errors.New("no attendance entries provided")
+		return &InputError{Msg: "no attendance entries provided"}
 	}
 
 	staffList, err := s.attendanceRepo.ListStaffProfiles(ctx, propertyID, false)
@@ -74,15 +82,15 @@ func (s *Service) MarkDailyAttendance(
 	seenStaff := make(map[uuid.UUID]bool, len(req.Entries))
 	for _, e := range req.Entries {
 		if !validStaff[e.StaffID] {
-			return fmt.Errorf("staff %s not found for property", e.StaffID)
+			return &InputError{Msg: fmt.Sprintf("staff %s not found for property", e.StaffID)}
 		}
 		if seenStaff[e.StaffID] {
-			return fmt.Errorf("duplicate entry for staff %s in same request", e.StaffID)
+			return &InputError{Msg: fmt.Sprintf("duplicate entry for staff %s in same request", e.StaffID)}
 		}
 		seenStaff[e.StaffID] = true
 
 		if !domain.IsValidAttendanceStatus(e.Status) {
-			return fmt.Errorf("invalid attendance status '%s' for staff %s", e.Status, e.StaffID)
+			return &InputError{Msg: fmt.Sprintf("invalid attendance status '%s' for staff %s", e.Status, e.StaffID)}
 		}
 	}
 

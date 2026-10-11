@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -246,10 +247,13 @@ func (s *Service) ListRedemptionsByProperty(ctx context.Context, propertyID uuid
 func (s *Service) FulfilRedemption(ctx context.Context, propertyID uuid.UUID, redemptionID uuid.UUID) (*domain.Redemption, error) {
 	red, err := s.store.GetRedemptionByID(ctx, propertyID, redemptionID)
 	if err != nil {
-		return nil, fmt.Errorf("redemption not found: %w", err)
+		if errors.Is(err, domain.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrRedemptionNotFound) || strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "no rows") {
+			return nil, ErrRedemptionNotFound
+		}
+		return nil, fmt.Errorf("lookup redemption: %w", err)
 	}
 	if red.Status != "pending" {
-		return nil, fmt.Errorf("cannot fulfil redemption with status: %s", red.Status)
+		return nil, ErrRedemptionNotPending
 	}
 	if err := s.store.FulfilRedemption(ctx, propertyID, redemptionID); err != nil {
 		return nil, err

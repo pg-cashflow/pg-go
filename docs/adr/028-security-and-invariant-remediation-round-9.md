@@ -141,12 +141,11 @@ Codebase auditing and static analysis identified several security vulnerabilitie
    - Executed `go test -count=1 -v ./...` under `REQUIRE_DB=1` to count all skipped tests.
    - Result: `TOTAL_SKIPS: 0`. Exactly zero tests were skipped.
 
-5. **Per-Handler Error Leakage Review Decisions:**
-   - `handlers_owner.go:1675`: `domain.NormalizeUTR` error. Client input validation (`ErrInvalidUTRFormat`), safe to return to caller.
-   - `handlers_public.go:307`: Explicit switch on known authentication sentinels (`ErrNoAccount`, `ErrInvalidOTP`, etc.). Unexpected errors fall through to `respondErr` (HTTP 500), safe.
-   - `handlers_search.go:73`: Explicit switch on query validation errors (`ErrQueryRequired`, `ErrQueryTooShort`, `ErrQueryTooLong`). Unexpected errors fall through to `respondErr` (HTTP 500), safe.
-   - `handlers_gamification.go:1038`: Recommends replacing raw `gin.H{"error": err.Error()}` with `respondErr(c, err)` to prevent repository/database errors from leaking as HTTP 400.
-   - `handlers_attendance.go:275`: Recommends isolating domain validation from repository database errors to prevent internal database errors from returning as HTTP 400.
+5. **Completed Error Isolation and Logging Hardening:**
+   - `handlers_gamification.go:1038`: Implemented sentinel classification in `internal/gamification/redemptions.go` (`ErrRedemptionNotFound`, `ErrRedemptionNotPending`). Validation and not-found states return generic HTTP 400. Unexpected and repository errors route through `respondErr(c, err)` returning HTTP 500 without leaking database details. Verified with `TestFulfilRedemption_LookupFailureIsInternal`.
+   - `handlers_attendance.go:275`: Implemented `*attendance.InputError` for request validation failures in `internal/attendance/service.go`. Validation errors return HTTP 400 with the input error message. Repository database errors route through `respondErr(c, err)` returning HTTP 500.
+   - `handlers_owner_dashboard.go`: Restored `slog.ErrorContext` logging across dashboard error branches (`OwnerOccupancy`, `OwnerDashboardSummary`, `OwnerMonthlyCashFlow`) to preserve operator observability while maintaining sanitized `apierr.ErrorEnvelope` client responses.
+   - `handlers_owner.go:1675`, `handlers_public.go:307`, `handlers_search.go:73`: Verified safe. They strictly wrap domain validation or auth sentinels, with unexpected errors routed to `respondErr`.
 
 ---
 

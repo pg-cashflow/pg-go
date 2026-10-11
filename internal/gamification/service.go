@@ -28,6 +28,8 @@ var (
 	ErrRSVPCutoffPassed       = errors.New("meal RSVP cutoff has passed for this slot (must confirm before 8:00 PM the previous day)")
 	ErrPhotoRequiredOnFail    = errors.New("photo evidence is mandatory for any failed inspection item")
 	ErrInvalidRewardValue     = errors.New("cash reward value is invalid or cannot be verified")
+	ErrRedemptionNotFound     = errors.New("redemption not found")
+	ErrRedemptionNotPending   = errors.New("cannot fulfil redemption: status is not pending")
 )
 
 // istZone is the fixed Indian Standard Time zone. Monthly caps and budgets use IST calendar months.

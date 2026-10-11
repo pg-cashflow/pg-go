@@ -331,6 +331,7 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 
 	occ, err := h.computeOccupancyMetrics(c, pid)
 	if err != nil {
+		slog.ErrorContext(c.Request.Context(), "failed to compute occupancy metrics", "err", err, "property_id", pid)
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute occupancy metrics"})
 		return
 	}
@@ -424,6 +425,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	ctx := c.Request.Context()
 	occ, err := h.computeOccupancyMetrics(c, pid)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to compute occupancy metrics", "err", err, "property_id", pid)
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute occupancy metrics"})
 		return
 	}
@@ -433,6 +435,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	if h.Payments != nil {
 		recon, err := h.Payments.BuildSummary(ctx, pid, period)
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to build payments summary", "err", err, "property_id", pid)
 			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to build payments summary"})
 			return
 		}
@@ -446,6 +449,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 	if h.Finance != nil {
 		sum, err := h.Finance.OperatingSummary(ctx, pid, period, rentCollected)
 		if err != nil {
+			slog.ErrorContext(ctx, "failed to build operating summary", "err", err, "property_id", pid)
 			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to build operating summary"})
 			return
 		}
@@ -463,6 +467,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 
 	monthlyCashFlow, err := h.computeMonthlyCashFlow(ctx, pid, 6)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to compute monthly cash flow", "err", err, "property_id", pid)
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute monthly cash flow"})
 		return
 	}
@@ -506,6 +511,7 @@ func (h *Handlers) OwnerMonthlyCashFlow(c *gin.Context) {
 	}
 	cf, err := h.computeMonthlyCashFlow(c.Request.Context(), pid, months)
 	if err != nil {
+		slog.ErrorContext(c.Request.Context(), "failed to compute monthly cash flow", "err", err, "property_id", pid)
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "failed to compute monthly cash flow"})
 		return
 	}

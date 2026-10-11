@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -1035,7 +1036,11 @@ func (h *Handlers) OwnerFulfilRedemption(c *gin.Context) {
 	}
 	red, err := h.Gamification.FulfilRedemption(c.Request.Context(), pid, redemptionID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		if errors.Is(err, gamification.ErrRedemptionNotFound) || errors.Is(err, gamification.ErrRedemptionNotPending) {
+			respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+			return
+		}
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"redemption": red})

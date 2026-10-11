@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1031,3 +1032,36 @@ func TestRedeem_FoodAndPerkFulfilment(t *testing.T) {
 		t.Fatalf("expected error when fulfilling already fulfilled redemption")
 	}
 }
+
+type failingLookupStore struct {
+	*memStore
+	lookupErr error
+}
+
+func (s *failingLookupStore) GetRedemptionByID(_ context.Context, _ uuid.UUID, _ uuid.UUID) (*domain.Redemption, error) {
+	return nil, s.lookupErr
+}
+
+func TestFulfilRedemption_LookupFailureIsInternal(t *testing.T) {
+	ctx := context.Background()
+	store := &failingLookupStore{
+		memStore:  newMemStore(),
+		lookupErr: errors.New("connection reset by peer"),
+	}
+	tRepo := &memTenantRepo{
+		tenants: make(map[uuid.UUID]*domain.Tenant),
+	}
+	svc := NewService(store, tRepo, &noopDueWriter{}, &noopPublisher{}, NewBlobStore())
+
+	_, err := svc.FulfilRedemption(ctx, uuid.New(), uuid.New())
+	if err == nil {
+		t.Fatalf("expected error on database lookup failure")
+	}
+	if errors.Is(err, ErrRedemptionNotFound) {
+		t.Fatalf("expected internal database error, but got ErrRedemptionNotFound")
+	}
+	if !strings.Contains(err.Error(), "connection reset by peer") {
+		t.Fatalf("expected underlying error preserved, got: %v", err)
+	}
+}
+

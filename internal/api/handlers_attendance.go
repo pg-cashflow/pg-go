@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/attendance"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -272,7 +273,12 @@ func (h *Handlers) OwnerMarkDailyAttendance(c *gin.Context) {
 	}
 
 	if err := h.AttendanceSvc.MarkDailyAttendance(c.Request.Context(), pid, uid, req); err != nil {
-		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
+		var inputErr *attendance.InputError
+		if errors.As(err, &inputErr) {
+			respondErr(c, clientErr(http.StatusBadRequest, inputErr.Error()))
+			return
+		}
+		respondErr(c, err)
 		return
 	}
 
