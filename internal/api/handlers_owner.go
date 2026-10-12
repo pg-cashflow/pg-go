@@ -604,13 +604,11 @@ func (h *Handlers) ListDues(c *gin.Context) {
 			limit = n
 		}
 	}
-	offset := 0
 	if off := c.Query("offset"); off != "" {
-		if n, err := strconv.Atoi(off); err == nil && n > 0 {
-			offset = n
-		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "offset pagination is unsupported; use keyset cursor (cursor_due_date, cursor_id)"})
+		return
 	}
-	f := postgres.DueListFilter{PropertyID: pid, Limit: limit, Offset: offset}
+	f := postgres.DueListFilter{PropertyID: pid, Limit: limit}
 	if cd := c.Query("cursor_due_date"); cd != "" {
 		if t, err := time.Parse(time.RFC3339, cd); err == nil {
 			f.CursorDueDate = &t
@@ -643,7 +641,7 @@ func (h *Handlers) ListDues(c *gin.Context) {
 	if len(list) > limit {
 		list = list[:limit]
 	}
-	resp := gin.H{"dues": list, "limit": limit, "offset": offset}
+	resp := gin.H{"dues": list, "limit": limit}
 	if len(list) == limit {
 		last := list[len(list)-1]
 		resp["next_cursor"] = gin.H{

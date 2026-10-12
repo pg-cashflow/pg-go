@@ -268,3 +268,90 @@ func TestLedger_RedeemApplyCreditPayRest_TrialBalanceZero(t *testing.T) {
 		t.Fatalf("expected rent_revenue credit to be %d, got %d", totalRentPaise, revRow.CreditPaise)
 	}
 }
+
+func TestListExpensesPaginated(t *testing.T) {
+	ctx := context.Background()
+	mem := NewMemoryStore()
+	pid := uuid.New()
+	baseTime := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	// Create 5 expenses: 3 with identical OccurredAt to test tie-breaker, 2 with distinct timestamps
+	exp1 := domain.Expense{
+		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+		PropertyID:     pid,
+		AmountPaise:    10000,
+		IdempotencyKey: "exp-1",
+		OccurredAt:     baseTime.Add(2 * time.Hour),
+		CreatedAt:      baseTime,
+	}
+	exp2 := domain.Expense{
+		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000002"),
+		PropertyID:     pid,
+		AmountPaise:    20000,
+		IdempotencyKey: "exp-2",
+		OccurredAt:     baseTime.Add(1 * time.Hour), // same timestamp as exp3 & exp4
+		CreatedAt:      baseTime,
+	}
+	exp3 := domain.Expense{
+		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000003"),
+		PropertyID:     pid,
+		AmountPaise:    30000,
+		IdempotencyKey: "exp-3",
+		OccurredAt:     baseTime.Add(1 * time.Hour), // same timestamp
+		CreatedAt:      baseTime,
+	}
+	exp4 := domain.Expense{
+		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000004"),
+		PropertyID:     pid,
+		AmountPaise:    40000,
+		IdempotencyKey: "exp-4",
+		OccurredAt:     baseTime.Add(1 * time.Hour), // same timestamp
+		CreatedAt:      baseTime,
+	}
+	exp5 := domain.Expense{
+		ID:             uuid.MustParse("00000000-0000-0000-0000-000000000005"),
+		PropertyID:     pid,
+		AmountPaise:    50000,
+		IdempotencyKey: "exp-5",
+		OccurredAt:     baseTime,
+		CreatedAt:      baseTime,
+	}
+
+	for _, e := range []domain.Expense{exp1, exp2, exp3, exp4, exp5} {
+		if err := mem.InsertExpense(ctx, &e); err != nil {
+			t.Fatalf("failed inserting expense: %v", err)
+		}
+	}
+
+	// Fetch page 1 with limit = 3
+	page1, err := mem.ListExpensesPaginated(ctx, pid, 3, nil, nil)
+	if err != nil {
+		t.Fatalf("page 1 failed: %v", err)
+	}
+	if len(page1) != 3 {
+		t.Fatalf("expected 3 items in page 1, got %d", len(page1))
+	}
+
+	// Fetch page 2 using cursor from last item in page 1
+	lastItem := page1[len(page1)-1]
+	page2, err := mem.ListExpensesPaginated(ctx, pid, 3, &lastItem.OccurredAt, &lastItem.ID)
+	if err != nil {
+		t.Fatalf("page 2 failed: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Fatalf("expected 2 items in page 2, got %d", len(page2))
+	}
+
+	// Check total distinct IDs across page 1 and page 2
+	seen := make(map[uuid.UUID]bool)
+	for _, e := range append(page1, page2...) {
+		if seen[e.ID] {
+			t.Fatalf("duplicate expense ID found across pages: %s", e.ID)
+		}
+		seen[e.ID] = true
+	}
+	if len(seen) != 5 {
+		t.Fatalf("expected exactly 5 distinct expenses across both pages, got %d", len(seen))
+	}
+}
+
