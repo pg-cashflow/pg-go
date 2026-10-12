@@ -106,6 +106,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	if err := payoutRepo.CreatePayee(ctx, payee); err != nil {
 		t.Fatalf("create payee: %v", err)
 	}
+	_, _ = pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID)
 
 	itemA := &domain.PayoutItem{
 		PayeeID:         payee.ID,

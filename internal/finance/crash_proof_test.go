@@ -414,13 +414,15 @@ func TestB17_FullSemanticConflictMatrix(t *testing.T) {
 	}
 }
 
-// TestCrashSafety_NetworkCutRecovery tests Gate 08 / R.8:
-// Simulates a 5-second downstream network outage during outbox event dispatch.
-// Asserts that the worker fails safe without partial state, and resumes cleanly once the network recovers.
-func TestCrashSafety_NetworkCutRecovery(t *testing.T) {
+// TestCrashSafety_MirrorOutageRetryHasNoPartialState tests the failure-injection
+// behavior behind Gate 08 / R.8. The downstream mirror is forced to fail on the
+// first dispatch. The test asserts that the failed attempt records nothing, and
+// that the retry after recovery records exactly one mirror call with the event's
+// payment ID and amount. It does NOT simulate elapsed time or a real network
+// cut; that is covered by the live-Postgres tests in physical_crash_test.go.
+func TestCrashSafety_MirrorOutageRetryHasNoPartialState(t *testing.T) {
 	ctx := context.Background()
-	memStore := NewMemoryStore()
-	mirror := &mockMirrorer{fail: true} // Downstream network cut
+	mirror := &mockMirrorer{fail: true}
 	worker := &LedgerOutboxWorker{mirrorer: mirror}
 
 	propID := uuid.New()
@@ -449,52 +451,41 @@ func TestCrashSafety_NetworkCutRecovery(t *testing.T) {
 		CreatedAt:      now,
 	}
 
-	// 1. Dispatch during 5-second simulated network cut -> fails cleanly
-	err := worker.dispatch(ctx, outboxEvt)
-	if err == nil {
-		t.Fatal("expected dispatch error during network cut, got nil")
+	// 1. Dispatch while the mirror is down: error, and no call is recorded.
+	if err := worker.dispatch(ctx, outboxEvt); err == nil {
+		t.Fatal("expected dispatch error while mirror is down, got nil")
 	}
 	if len(mirror.paymentCalls) != 0 {
-		t.Fatalf("expected 0 mirror calls during network failure, got %d", len(mirror.paymentCalls))
+		t.Fatalf("expected 0 recorded mirror calls during outage, got %d", len(mirror.paymentCalls))
 	}
 
-	// 2. Simulated 5-second recovery window elapses: network connection restored
-	networkRestoredAt := now.Add(5 * time.Second)
-	if networkRestoredAt.Before(now) {
-		t.Fatal("invalid clock")
-	}
+	// 2. Mirror recovers. The same event is dispatched again.
 	mirror.fail = false
-
-	// 3. Worker retry succeeds without data loss or corruption
-	err = worker.dispatch(ctx, outboxEvt)
-	if err != nil {
-		t.Fatalf("expected successful worker dispatch after network recovery, got: %v", err)
+	if err := worker.dispatch(ctx, outboxEvt); err != nil {
+		t.Fatalf("expected successful dispatch after recovery, got: %v", err)
 	}
+
+	// 3. Exactly one recorded call, carrying the event's payment and amount.
 	if len(mirror.paymentCalls) != 1 {
-		t.Fatalf("expected exactly 1 mirror call after network recovery, got %d", len(mirror.paymentCalls))
+		t.Fatalf("expected exactly 1 mirror call after recovery, got %d", len(mirror.paymentCalls))
 	}
-
-	// 4. Verify balanced ledger state
-	specs := []LineSpec{
-		{Account: domain.AcctGatewayClearing, Debit: 800000, LineKind: "cash_in"},
-		{Account: domain.AcctRentRevenue, Credit: 800000, LineKind: "rent_collected"},
+	got := mirror.paymentCalls[0]
+	if got.PaymentID != paymentID {
+		t.Fatalf("payment ID mismatch: got %s want %s", got.PaymentID, paymentID)
 	}
-	lines, err := MakeLines(propID, paymentID, "payment", now, specs)
-	if err != nil {
-		t.Fatalf("MakeLines: %v", err)
+	if got.AmountPaise != 800000 {
+		t.Fatalf("amount mismatch: got %d want 800000", got.AmountPaise)
 	}
-	if err := memStore.InsertJournal(ctx, lines); err != nil {
-		t.Fatalf("InsertJournal: %v", err)
-	}
-	jLines, err := memStore.ListJournal(ctx, propID, time.Time{}, time.Time{}, "")
-	if err != nil || len(jLines) != 2 {
-		t.Fatalf("expected 2 journal lines, got %d (err: %v)", len(jLines), err)
+	if len(got.Allocations) != 1 || got.Allocations[0].AmountPaise != 800000 {
+		t.Fatalf("allocation mismatch: got %+v", got.Allocations)
 	}
 }
 
-// TestCrashSafety_PoisonPillPayloadDeadLetter tests Gate 08 / R.8:
-// Asserts that a corrupted/poison outbox payload fails closed, does not panic, and returns an unmarshal error.
-func TestCrashSafety_PoisonPillPayloadDeadLetter(t *testing.T) {
+// TestCrashSafety_PoisonPayloadRejectedBeforeMirror checks that an undecodable
+// outbox payload returns an unmarshal error and never reaches the mirror. The
+// dead-letter alerting and retry-exhaustion path are NOT exercised here; they
+// require the database-backed worker and are covered elsewhere.
+func TestCrashSafety_PoisonPayloadRejectedBeforeMirror(t *testing.T) {
 	ctx := context.Background()
 	mirror := &mockMirrorer{}
 	worker := &LedgerOutboxWorker{mirrorer: mirror}
@@ -510,15 +501,14 @@ func TestCrashSafety_PoisonPillPayloadDeadLetter(t *testing.T) {
 		MaxAttempts:    3,
 	}
 
-	// Dispatch must return deserialization error and never panic
 	err := worker.dispatch(ctx, poisonEvt)
 	if err == nil {
-		t.Fatal("expected error on poison pill payload, got nil")
+		t.Fatal("expected error on poison payload, got nil")
 	}
 	if !strings.Contains(err.Error(), "unmarshal") {
-		t.Fatalf("expected unmarshal failure for poison pill payload, got: %v", err)
+		t.Fatalf("expected unmarshal failure for poison payload, got: %v", err)
 	}
 	if len(mirror.calls) != 0 {
-		t.Fatalf("expected 0 mirror calls for poison pill event, got %d", len(mirror.calls))
+		t.Fatalf("expected 0 mirror calls for poison payload, got %d", len(mirror.calls))
 	}
 }

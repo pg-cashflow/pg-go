@@ -85,6 +85,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 	if err := payoutRepo.CreatePayee(ctx, payee2); err != nil {
 		t.Fatalf("create payee 2: %v", err)
 	}
+	_, _ = pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id IN ($1, $2)`, payee1.ID, payee2.ID)
 
 	// Create 2 unbatched items
 	item1 := &domain.PayoutItem{

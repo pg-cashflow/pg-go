@@ -360,7 +360,7 @@ func TestCashfreeKYCWebhook_BadHMAC_Returns200NotError(t *testing.T) {
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-001"}}`
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-webhook-timestamp", "1234567890")
+	req.Header.Set("x-webhook-timestamp", fmt.Sprintf("%d", time.Now().Unix()))
 	req.Header.Set("x-webhook-signature", "wrong-signature")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -390,7 +390,7 @@ func TestCashfreeKYCWebhook_CompletedEvent(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-completed","status":"COMPLETED"}}`
-	ts := "1700000000"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
@@ -429,7 +429,7 @@ func TestCashfreeKYCWebhook_FailedEvent(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"VERIFICATION_FAILED","data":{"verification_id":"ver-fail","status":"FAILED","failed_reason":"user declined"}}`
-	ts := "1700000001"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
@@ -462,7 +462,7 @@ func TestCashfreeKYCWebhook_UnknownEventType_IsNoOp(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{}}`
-	ts := "1234"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
@@ -543,7 +543,7 @@ func TestCashfreeKYCWebhook_TransientError_Returns500(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-transient","status":"COMPLETED","entity":"AADHAAR"}}`
-	ts := "1700000002"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
@@ -568,7 +568,7 @@ func TestCashfreeKYCWebhook_UnknownVendorRef_Returns200(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-unknown","status":"COMPLETED","entity":"AADHAAR"}}`
-	ts := "1700000003"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
@@ -597,7 +597,7 @@ func TestCashfreeKYCWebhook_DoubleDelivery(t *testing.T) {
 	r := kycTestTenantRouter(svc, secret)
 
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-double-delivery","status":"COMPLETED","entity":"AADHAAR"}}`
-	ts := "1700000004"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signHMAC(secret, ts, payload)
 
 	// First delivery: normal processing.

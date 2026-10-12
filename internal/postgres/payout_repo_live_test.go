@@ -108,7 +108,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO payout_payees (
 			id, property_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, created_at, updated_at
-		) VALUES ($1, $2, 'tenant_deposit', 'Tenant Payee', '9876543210', $3, '9876543210@upi', true, NOW(), NOW())`,
+		) VALUES ($1, $2, 'tenant_deposit', 'Tenant Payee', '9876543210', $3, '9876543210@upi', true, NOW() - INTERVAL '25 hours', NOW())`,
 		payeeID, propID, payeeHash,
 	)
 	if err != nil {

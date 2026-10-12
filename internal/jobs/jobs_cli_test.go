@@ -68,6 +68,15 @@ func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
 				"DATABASE_URL=",
 				"DATABASE_MAINT_URL=",
 				"JWT_SECRET=",
+				"SMTP_HOST=",
+				"SMTP_PORT=",
+				"SMTP_USERNAME=",
+				"SMTP_PASSWORD=",
+				"SMTP_FROM=",
+				"ADMIN_EMAIL=",
+				"ALERT_EMAIL=",
+				"ADMIN_PHONE=",
+				"ALERT_PHONE=",
 			}
 
 			out, err := cmd.CombinedOutput()
@@ -118,7 +127,7 @@ func TestGate12_CashfreePollDormantWhenUnconfigured(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "go", "run", ".")
 	cmd.Dir = cmdPath
 	// Set whitespace to prevent godotenv from re-populating from .env
-	cmd.Env = append(os.Environ(),
+	cmd.Env = isolatedTestEnv(
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"DATABASE_URL="+cfg.DatabaseURL,
@@ -160,7 +169,7 @@ func TestGate12_MigrateExecution(t *testing.T) {
 
 	cmd := exec.CommandContext(ctx, "go", "run", ".")
 	cmd.Dir = cmdPath
-	cmd.Env = append(os.Environ(),
+	cmd.Env = isolatedTestEnv(
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"DATABASE_URL="+cfg.DatabaseURL,
@@ -242,7 +251,7 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, serverBin)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = isolatedTestEnv(
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
 		"HTTP_ADDR=127.0.0.1:"+testPort,
@@ -299,4 +308,35 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("server process (PID %d) did not exit within 5 seconds of interrupt signal", startedPID)
 	}
+}
+
+// isolatedTestEnv returns parent process environment filtered to strip any
+// live SMTP, mail, and administrative alerting variables, preventing test runs
+// from dispatching real emails or SMS notifications.
+func isolatedTestEnv(extra ...string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		upper := strings.ToUpper(kv)
+		if strings.HasPrefix(upper, "SMTP_") ||
+			strings.HasPrefix(upper, "ADMIN_EMAIL=") ||
+			strings.HasPrefix(upper, "ALERT_EMAIL=") ||
+			strings.HasPrefix(upper, "ADMIN_PHONE=") ||
+			strings.HasPrefix(upper, "ALERT_PHONE=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	// Explicitly neutralize SMTP to empty so NoopMailer is used, and set dummy test AdminEmail
+	env = append(env,
+		"SMTP_HOST=",
+		"SMTP_PORT=",
+		"SMTP_USERNAME=",
+		"SMTP_PASSWORD=",
+		"SMTP_FROM=test-admin@local.test",
+		"ADMIN_EMAIL=test-admin@local.test",
+		"ALERT_EMAIL=test-admin@local.test",
+		"ADMIN_PHONE=",
+		"ALERT_PHONE=",
+	)
+	return append(env, extra...)
 }

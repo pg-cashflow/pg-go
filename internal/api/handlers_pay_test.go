@@ -136,7 +136,7 @@ func TestCashfreeWebhookSettlesSuccess(t *testing.T) {
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 
 	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`
-	ts := "100"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
 	req.Header.Set("x-webhook-timestamp", ts)
 	req.Header.Set("x-webhook-signature", sign("whsec", ts+body))
@@ -457,7 +457,7 @@ func postSignedWebhook(t *testing.T, h *Handlers, body string) int {
 	t.Helper()
 	r := gin.New()
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
-	ts := "100"
+	ts := fmt.Sprintf("%d", time.Now().Unix())
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
 	req.Header.Set("x-webhook-timestamp", ts)
 	req.Header.Set("x-webhook-signature", sign("whsec", ts+body))

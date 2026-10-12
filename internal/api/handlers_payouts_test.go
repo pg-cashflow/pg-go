@@ -217,6 +217,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		if payeeID == uuid.Nil {
 			t.Fatalf("expected valid payee id, got nil")
 		}
+		_, _ = pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID)
 	})
 
 	// 2. List Payees
@@ -852,8 +853,8 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	hash := "mock_hash_1234"
 	last4 := "1234"
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa)
-		VALUES ($1, $2, 'vendor', 'Auto Vendor', $3, $4, $5)`, payeeID, propID, hash, last4, vpa)
+		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, created_at)
+		VALUES ($1, $2, 'vendor', 'Auto Vendor', $3, $4, $5, NOW() - INTERVAL '25 hours')`, payeeID, propID, hash, last4, vpa)
 	if err != nil {
 		t.Fatalf("insert payee: %v", err)
 	}
