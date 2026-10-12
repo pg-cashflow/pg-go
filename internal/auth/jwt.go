@@ -83,5 +83,8 @@ func VerifyToken(secret, tokenString string) (*Claims, error) {
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
+	if claims.ExpiresAt == nil {
+		return nil, fmt.Errorf("token missing exp claim")
+	}
 	return claims, nil
 }

@@ -33,6 +33,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -227,11 +228,24 @@ type matrixResult struct {
 	errCode string
 }
 
+var authMiddlewareCodes = map[string]bool{
+	string(apierr.CodeAuthMissingToken):        true,
+	string(apierr.CodeAuthInvalidToken):        true,
+	string(apierr.CodeAuthAccessRevoked):       true,
+	string(apierr.CodeAuthForbidden):           true,
+	string(apierr.CodeAuthProfileIncomplete):   true,
+	string(apierr.CodeAuthAlreadyActivated):    true,
+}
+
 // isAuthLayerRefusal reports whether a result came from the auth middleware
 // (role gate, missing token, property scope) rather than from a handler.
 func (r matrixResult) isAuthLayerRefusal() bool {
 	return (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) &&
 		strings.HasPrefix(r.errCode, "auth.")
+}
+
+func (r matrixResult) isAuthMiddlewareRefusal() bool {
+	return authMiddlewareCodes[r.errCode]
 }
 
 func (f *matrixFixture) do(t *testing.T, router *gin.Engine, method, path string, caller matrixCaller, extraHeaders map[string]string) matrixResult {
@@ -293,9 +307,9 @@ func TestRouteRoleAuthorizationMatrix(t *testing.T) {
 				res := f.do(t, f.newRouter(), rt.Method, path, callerAnon, nil)
 				cases++
 				// Public routes may refuse on their own terms (for example a missing
-				// refresh token), but never with a role or session gate.
-				if res.isAuthLayerRefusal() && res.status == http.StatusForbidden {
-					t.Errorf("public route %s refused an anonymous caller at the auth layer (%s)", name, res.errCode)
+				// refresh token), but never with an auth middleware guard code.
+				if res.isAuthMiddlewareRefusal() {
+					t.Errorf("public route %s refused an anonymous caller at the auth layer (%d %s)", name, res.status, res.errCode)
 				}
 				return
 			}

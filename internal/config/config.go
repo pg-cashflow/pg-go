@@ -180,6 +180,9 @@ func Load() (*Config, error) {
 	if (cfAppID != "" || cfSecret != "") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
 		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
 	}
+	if cfg.WebhookTimestampToleranceSec <= 0 {
+		return nil, fmt.Errorf("WEBHOOK_TIMESTAMP_TOLERANCE_SEC must be greater than 0 (got %d)", cfg.WebhookTimestampToleranceSec)
+	}
 	if cfg.CashfreePGBaseURL != "" {
 		if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") ||
 			strings.EqualFold(strings.TrimSpace(cfg.CashfreeEnv), "production") {

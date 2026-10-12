@@ -91,7 +91,7 @@ func TestLoadDefaultsWebhookSecretToClientSecret(t *testing.T) {
 }
 
 func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY", "PAYOUT_CHECKSUM_SECRET"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -113,6 +113,7 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
 	_ = os.Setenv("APP_ENV", "production")
 	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
 
 	// In production, when PAYOUT_ENCRYPTION_SECRET is missing, Load must fail closed
 	if _, err := Load(); err == nil {
@@ -245,6 +246,7 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 		_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
 		_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 		_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
+		_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
 		_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://127.0.0.1:8081")
 	}
 
@@ -323,5 +325,48 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLoadRejectsNonPositiveWebhookTimestampTolerance(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "WEBHOOK_TIMESTAMP_TOLERANCE_SEC",
+	}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+	}
+	defer func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+	_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
+
+	for _, invalid := range []string{"0", "-1", "-300"} {
+		_ = os.Setenv("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", invalid)
+		if _, err := Load(); err == nil {
+			t.Fatalf("expected error when WEBHOOK_TIMESTAMP_TOLERANCE_SEC=%s, got nil", invalid)
+		}
+	}
+
+	_ = os.Setenv("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", "300")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error for tolerance 300: %v", err)
+	}
+	if cfg.WebhookTimestampToleranceSec != 300 {
+		t.Fatalf("expected tolerance 300, got %d", cfg.WebhookTimestampToleranceSec)
 	}
 }

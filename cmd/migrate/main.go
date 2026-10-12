@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 )
 
 func main() {
+	flag.Parse()
 	_ = godotenv.Load()
 	cfg, err := config.Load()
 	if err != nil {

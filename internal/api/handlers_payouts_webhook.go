@@ -73,11 +73,13 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 
-	if h.WebhookToleranceSec > 0 {
-		if err := cashfree.VerifyWebhookTimestamp(ts, h.WebhookToleranceSec, time.Now().UTC()); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-			return
-		}
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
 	}
 
 	var env PayoutWebhookEnvelope

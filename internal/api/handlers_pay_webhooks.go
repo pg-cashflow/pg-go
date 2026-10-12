@@ -49,12 +49,14 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify timestamp tolerance (drift check) if configured
-	if h.WebhookToleranceSec > 0 {
-		if err := cashfree.VerifyWebhookTimestamp(ts, h.WebhookToleranceSec, time.Now().UTC()); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-			return
-		}
+	// Verify timestamp tolerance (drift check) with fail-closed default (300s)
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
 	}
 
 	// Ingest raw arrival into webhook_events audit log

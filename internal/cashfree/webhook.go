@@ -166,7 +166,14 @@ func ParseWebhook(raw []byte) (any, string, error) {
 		if err := json.Unmarshal(env.RawData, &p); err != nil {
 			return nil, evtType, fmt.Errorf("payment_failed data json: %w", err)
 		}
-		paise, _ := ParseRupeesToPaise(p.Payment.PaymentAmount.String())
+		var paise int64
+		if amtStr := strings.TrimSpace(p.Payment.PaymentAmount.String()); amtStr != "" {
+			var err error
+			paise, err = ParseRupeesToPaise(amtStr)
+			if err != nil {
+				return nil, evtType, fmt.Errorf("payment_failed amount parse: %w", err)
+			}
+		}
 		reason := p.Payment.PaymentMessage
 		if reason == "" {
 			reason = p.ErrorDetails.ErrorDescription
@@ -263,7 +270,14 @@ func ParseWebhook(raw []byte) (any, string, error) {
 		if err := json.Unmarshal(env.RawData, &p); err != nil {
 			return nil, evtType, fmt.Errorf("dispute data json: %w", err)
 		}
-		paise, _ := ParseRupeesToPaise(p.Dispute.DisputeAmount.String())
+		var paise int64
+		if amtStr := strings.TrimSpace(p.Dispute.DisputeAmount.String()); amtStr != "" {
+			var err error
+			paise, err = ParseRupeesToPaise(amtStr)
+			if err != nil {
+				return nil, evtType, fmt.Errorf("dispute amount parse: %w", err)
+			}
+		}
 		return DisputeWebhook{
 			Type:              evtType,
 			DisputeID:         fmt.Sprintf("%v", p.Dispute.DisputeID),

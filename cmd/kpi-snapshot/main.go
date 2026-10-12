@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 )
 
 func main() {
+	flag.Parse()
 	_ = godotenv.Load()
 	cfg, err := config.Load()
 	if err != nil {

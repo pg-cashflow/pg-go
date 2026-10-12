@@ -152,3 +152,44 @@ func TestParseWebhookTypes(t *testing.T) {
 		t.Fatalf("unexpected dispute content: %+v", disp)
 	}
 }
+
+func TestParseWebhook_MalformedAmountFailsClosed(t *testing.T) {
+	// 1. Payment failed with 3 decimal places (valid JSON number, invalid rupees format)
+	rawFailedMalformed := []byte(`{
+		"type": "PAYMENT_FAILED_WEBHOOK",
+		"data": {
+			"order": {"order_id": "pg-ORDER-2"},
+			"payment": {
+				"cf_payment_id": "999889",
+				"payment_status": "FAILED",
+				"payment_amount": 5500.555,
+				"payment_message": "user cancelled"
+			}
+		}
+	}`)
+	val, _, err := ParseWebhook(rawFailedMalformed)
+	if err == nil {
+		t.Fatalf("expected error parsing PAYMENT_FAILED_WEBHOOK with 3 decimal places, got nil err, payload=%+v", val)
+	}
+
+	// 2. Dispute with 3 decimal places (valid JSON number, invalid rupees format)
+	rawDisputeMalformed := []byte(`{
+		"type": "PAYMENT_DISPUTE_CREATED_WEBHOOK",
+		"data": {
+			"dispute": {
+				"dispute_id": "DISP_98765",
+				"dispute_type": "CHARGEBACK",
+				"dispute_status": "ACTION_REQUIRED",
+				"order_id": "pg-ORDER-4",
+				"cf_payment_id": "999891",
+				"dispute_amount": 12000.999,
+				"reason_code": "FRAUDULENT"
+			}
+		}
+	}`)
+	val, _, err = ParseWebhook(rawDisputeMalformed)
+	if err == nil {
+		t.Fatalf("expected error parsing PAYMENT_DISPUTE_CREATED_WEBHOOK with 3 decimal places, got nil err, payload=%+v", val)
+	}
+}
+

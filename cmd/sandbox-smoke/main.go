@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -24,6 +25,7 @@ func maskString(s string) string {
 }
 
 func main() {
+	flag.Parse()
 	_ = godotenv.Load()
 	cfg, err := config.Load()
 	if err != nil {

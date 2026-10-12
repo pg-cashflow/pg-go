@@ -579,6 +579,21 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
+	// 2.5 Verify timestamp tolerance (replay drift check) with fail-closed default (300s)
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(timestamp, tolerance, time.Now().UTC()); err != nil {
+		slog.Warn("cashfree kyc webhook rejected: timestamp tolerance exceeded",
+			"remote_ip", c.ClientIP(),
+			"timestamp", timestamp,
+			"err", err,
+		)
+		c.Status(http.StatusOK)
+		return
+	}
+
 	// 3. Parse payload from raw bytes (never re-read from c.Request.Body).
 	var payload kycWebhookPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {

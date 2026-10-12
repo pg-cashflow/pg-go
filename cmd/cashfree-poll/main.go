@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"log/slog"
 	"os"
@@ -18,6 +19,7 @@ import (
 // Polls stale Cashfree payment_intents and settles successful captures.
 // No-op when CASHFREE_* keys are unset (dormant).
 func main() {
+	flag.Parse()
 	_ = godotenv.Load()
 	cfg, err := config.Load()
 	if err != nil {

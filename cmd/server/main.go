@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -48,6 +49,7 @@ import (
 
 func main() {
 	_ = godotenv.Load()
+	flag.Parse()
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
