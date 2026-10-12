@@ -600,4 +600,53 @@ func TestFeatureROIScenario_ValidationAndRoleAccess(t *testing.T) {
 	if res.Scenario.BreakEvenOccupancyBPS <= 0 {
 		t.Fatalf("expected positive break even bps, got %d", res.Scenario.BreakEvenOccupancyBPS)
 	}
+
+	// Step 6: Validate boundary rejection for invalid parameters (G3 / Finding 3)
+	invalidCases := []struct {
+		name    string
+		payload map[string]any
+	}{
+		{
+			name: "occupancy bps > 10000",
+			payload: map[string]any{
+				"occupancy_bps": 10001, "capacity_beds": 50, "rent_per_bed_paise": 1500000,
+			},
+		},
+		{
+			name: "occupancy bps < 0",
+			payload: map[string]any{
+				"occupancy_bps": -1, "capacity_beds": 50, "rent_per_bed_paise": 1500000,
+			},
+		},
+		{
+			name: "capacity beds <= 0",
+			payload: map[string]any{
+				"occupancy_bps": 8000, "capacity_beds": 0, "rent_per_bed_paise": 1500000,
+			},
+		},
+		{
+			name: "negative rent amount",
+			payload: map[string]any{
+				"occupancy_bps": 8000, "capacity_beds": 50, "rent_per_bed_paise": -1500000,
+			},
+		},
+		{
+			name: "negative fixed opex",
+			payload: map[string]any{
+				"occupancy_bps": 8000, "capacity_beds": 50, "rent_per_bed_paise": 1500000, "fixed_opex_paise": -100000,
+			},
+		},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run("reject "+tc.name, func(t *testing.T) {
+			code, resp := f.call(http.MethodPost, scenarioPath, f.ownerA, tc.payload, nil)
+			if code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %s, got %d (body: %s)", tc.name, code, resp)
+			}
+			if !strings.Contains(resp, "finance.invalidAmount") {
+				t.Fatalf("expected finance.invalidAmount error code for %s, got: %s", tc.name, resp)
+			}
+		})
+	}
 }

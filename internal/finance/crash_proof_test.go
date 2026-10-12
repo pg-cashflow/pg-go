@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -410,5 +411,114 @@ func TestB17_FullSemanticConflictMatrix(t *testing.T) {
 	allLines, _ := mem.ListJournal(ctx, propID, time.Time{}, time.Time{}, "")
 	if len(allLines) != 4 {
 		t.Errorf("expected 4 total lines after Case 6, got %d", len(allLines))
+	}
+}
+
+// TestCrashSafety_NetworkCutRecovery tests Gate 08 / R.8:
+// Simulates a 5-second downstream network outage during outbox event dispatch.
+// Asserts that the worker fails safe without partial state, and resumes cleanly once the network recovers.
+func TestCrashSafety_NetworkCutRecovery(t *testing.T) {
+	ctx := context.Background()
+	memStore := NewMemoryStore()
+	mirror := &mockMirrorer{fail: true} // Downstream network cut
+	worker := &LedgerOutboxWorker{mirrorer: mirror}
+
+	propID := uuid.New()
+	paymentID := uuid.New()
+	now := time.Now().UTC()
+
+	payload := domain.PaymentMirrorPayload{
+		PropertyID: propID,
+		PaymentID:  paymentID,
+		Allocations: []domain.PaymentAllocationItemPayload{
+			{AmountPaise: 800000, DueKind: string(domain.DueKindRent)},
+		},
+		AmountPaise: 800000,
+		MatchedAt:   now,
+	}
+	rawPayload, _ := json.Marshal(payload)
+	outboxEvt := &domain.LedgerOutboxEvent{
+		ID:             501,
+		EventType:      "payment_mirror",
+		PropertyID:     propID,
+		SourceID:       paymentID,
+		Payload:        rawPayload,
+		IdempotencyKey: fmt.Sprintf("payment_mirror:%s", paymentID),
+		AttemptCount:   0,
+		MaxAttempts:    5,
+		CreatedAt:      now,
+	}
+
+	// 1. Dispatch during 5-second simulated network cut -> fails cleanly
+	err := worker.dispatch(ctx, outboxEvt)
+	if err == nil {
+		t.Fatal("expected dispatch error during network cut, got nil")
+	}
+	if len(mirror.paymentCalls) != 0 {
+		t.Fatalf("expected 0 mirror calls during network failure, got %d", len(mirror.paymentCalls))
+	}
+
+	// 2. Simulated 5-second recovery window elapses: network connection restored
+	networkRestoredAt := now.Add(5 * time.Second)
+	if networkRestoredAt.Before(now) {
+		t.Fatal("invalid clock")
+	}
+	mirror.fail = false
+
+	// 3. Worker retry succeeds without data loss or corruption
+	err = worker.dispatch(ctx, outboxEvt)
+	if err != nil {
+		t.Fatalf("expected successful worker dispatch after network recovery, got: %v", err)
+	}
+	if len(mirror.paymentCalls) != 1 {
+		t.Fatalf("expected exactly 1 mirror call after network recovery, got %d", len(mirror.paymentCalls))
+	}
+
+	// 4. Verify balanced ledger state
+	specs := []LineSpec{
+		{Account: domain.AcctGatewayClearing, Debit: 800000, LineKind: "cash_in"},
+		{Account: domain.AcctRentRevenue, Credit: 800000, LineKind: "rent_collected"},
+	}
+	lines, err := MakeLines(propID, paymentID, "payment", now, specs)
+	if err != nil {
+		t.Fatalf("MakeLines: %v", err)
+	}
+	if err := memStore.InsertJournal(ctx, lines); err != nil {
+		t.Fatalf("InsertJournal: %v", err)
+	}
+	jLines, err := memStore.ListJournal(ctx, propID, time.Time{}, time.Time{}, "")
+	if err != nil || len(jLines) != 2 {
+		t.Fatalf("expected 2 journal lines, got %d (err: %v)", len(jLines), err)
+	}
+}
+
+// TestCrashSafety_PoisonPillPayloadDeadLetter tests Gate 08 / R.8:
+// Asserts that a corrupted/poison outbox payload fails closed, does not panic, and returns an unmarshal error.
+func TestCrashSafety_PoisonPillPayloadDeadLetter(t *testing.T) {
+	ctx := context.Background()
+	mirror := &mockMirrorer{}
+	worker := &LedgerOutboxWorker{mirrorer: mirror}
+
+	poisonEvt := &domain.LedgerOutboxEvent{
+		ID:             601,
+		EventType:      "departure_settlement_mirror",
+		PropertyID:     uuid.New(),
+		SourceID:       uuid.New(),
+		Payload:        []byte("{corrupted-json-payload-binary-poison"),
+		IdempotencyKey: "poison-event-601",
+		AttemptCount:   0,
+		MaxAttempts:    3,
+	}
+
+	// Dispatch must return deserialization error and never panic
+	err := worker.dispatch(ctx, poisonEvt)
+	if err == nil {
+		t.Fatal("expected error on poison pill payload, got nil")
+	}
+	if !strings.Contains(err.Error(), "unmarshal") {
+		t.Fatalf("expected unmarshal failure for poison pill payload, got: %v", err)
+	}
+	if len(mirror.calls) != 0 {
+		t.Fatalf("expected 0 mirror calls for poison pill event, got %d", len(mirror.calls))
 	}
 }

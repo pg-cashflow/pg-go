@@ -1,9 +1,16 @@
 package roi
 
 import (
+	"errors"
 	"math"
 
 	"github.com/pg-cashflow/pg-go/internal/finance"
+)
+
+var (
+	ErrInvalidOccupancy = errors.New("occupancy_bps must be between 0 and 10000")
+	ErrInvalidCapacity  = errors.New("capacity_beds must be greater than zero")
+	ErrNegativeAmount   = errors.New("financial amounts cannot be negative")
 )
 
 type BreakEven struct {
@@ -79,6 +86,19 @@ type ScenarioInput struct {
 	FixedOpexPaise   int64 `json:"fixed_opex_paise"`
 	CapacityBeds     int   `json:"capacity_beds"`
 	CapitalRemaining int64 `json:"capital_remaining_paise"`
+}
+
+func (in ScenarioInput) Validate() error {
+	if in.CapacityBeds <= 0 {
+		return ErrInvalidCapacity
+	}
+	if in.OccupancyBPS < 0 || in.OccupancyBPS > 10000 {
+		return ErrInvalidOccupancy
+	}
+	if in.RentPerBedPaise < 0 || in.FoodCostPaise < 0 || in.ElectricityPaise < 0 || in.FixedOpexPaise < 0 || in.CapitalRemaining < 0 {
+		return ErrNegativeAmount
+	}
+	return nil
 }
 
 type ScenarioResult struct {

@@ -152,17 +152,27 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		Status:     domain.TenantStatusActive,
 	}
 
+	pendingTenantUser := &domain.User{
+		ID:           uuid.New(),
+		Role:         domain.RoleTenant,
+		PropertyID:   &propID,
+		TenantID:     nil,
+		TokenVersion: 1,
+	}
+
 	ownerToken, _ := auth.IssueToken(jwtSecret, ownerUser)
 	managerToken, _ := auth.IssueToken(jwtSecret, managerUser)
 	tenantToken, _ := auth.IssueToken(jwtSecret, tenantUser)
+	pendingTenantToken, _ := auth.IssueToken(jwtSecret, pendingTenantUser)
 
 	finStore := finance.NewMemoryStore()
 	finSvc := finance.NewService(finStore, nil)
 
 	users := map[uuid.UUID]*domain.User{
-		ownerUser.ID:   ownerUser,
-		managerUser.ID: managerUser,
-		tenantUser.ID:  tenantUser,
+		ownerUser.ID:         ownerUser,
+		managerUser.ID:       managerUser,
+		tenantUser.ID:        tenantUser,
+		pendingTenantUser.ID: pendingTenantUser,
 	}
 	uStore := &isolationUserRepo{users: users}
 	tStore := &isolationTenantRepo{tenants: map[uuid.UUID]*domain.Tenant{tenantID: tenantObj}}
@@ -424,10 +434,17 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		}
 	})
 
-	t.Run("GET /api/join/me returns join profile", func(t *testing.T) {
-		w := doReq(http.MethodGet, "/api/join/me", tenantToken, nil, nil)
+	t.Run("GET /api/join/me returns join profile for pending tenant", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/join/me", pendingTenantToken, nil, nil)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/join/me returns 403 for already activated tenant", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/join/me", tenantToken, nil, nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())
 		}
 	})
 
