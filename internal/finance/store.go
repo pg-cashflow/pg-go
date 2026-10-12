@@ -32,6 +32,7 @@ type Store interface {
 	VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID, expected domain.ExpenseStatus, lines []domain.JournalLine, v domain.ExpenseVoid) error
 	GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error)
 	ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error)
+	ListExpensesPaginated(ctx context.Context, propertyID uuid.UUID, limit int, beforeOccurredAt *time.Time, beforeID *uuid.UUID) ([]domain.Expense, error)
 	UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error
 
 	InsertExpensePayment(ctx context.Context, p *domain.ExpensePayment) error

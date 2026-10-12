@@ -107,6 +107,11 @@ type Deps struct {
 	BankAccountRepo BankAccountStore
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
+
+	// MetricsSecret is the static bearer token accepted in the X-Metrics-Token header.
+	// REQ-SEC-003: /metrics requires either this token or a valid owner/manager JWT.
+	// Must be set to a high-entropy random value in production.
+	MetricsSecret string
 }
 
 // redactingLogFormatter is a gin log formatter that replaces /p/<token> paths
@@ -123,6 +128,32 @@ var redactingLogFormatter = func(p gin.LogFormatterParams) string {
 		p.Latency,
 		path,
 	)
+}
+
+// metricsAuth is a Gin middleware that gate-keeps the /metrics endpoint.
+// REQ-SEC-003: Accepts X-Metrics-Token (Prometheus scraper) or a valid owner/manager
+// Bearer JWT. Returns 401 JSON for everything else.
+func metricsAuth(jwtSecret, metricsSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1. Static scraper token path.
+		if metricsSecret != "" {
+			if tok := c.GetHeader("X-Metrics-Token"); tok == metricsSecret {
+				c.Next()
+				return
+			}
+		}
+		// 2. Owner / manager JWT path.
+		if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
+			tokenStr := strings.TrimPrefix(header, "Bearer ")
+			claims, err := auth.VerifyToken(jwtSecret, tokenStr)
+			if err == nil && (claims.Role == "owner" || claims.Role == "manager") {
+				c.Next()
+				return
+			}
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized,
+			gin.H{"error": "metrics endpoint requires X-Metrics-Token header or owner Bearer JWT"})
+	}
 }
 
 // NewRouter wires all Rev 6 routes.
@@ -162,7 +193,7 @@ func NewRouter(d Deps) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	r.GET("/healthz", healthHandler)
-	r.GET("/metrics", h.Metrics)
+	r.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)
 	r.GET("/p/:token", h.PaymentPage)
 	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
@@ -173,7 +204,7 @@ func NewRouter(d Deps) *gin.Engine {
 	api := r.Group("/api")
 	{
 		api.GET("/healthz", healthHandler)
-		api.GET("/metrics", h.Metrics)
+		api.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)
 		api.GET("/push/vapid-public-key", func(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
 		})

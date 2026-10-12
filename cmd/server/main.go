@@ -31,6 +31,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
+	"github.com/pg-cashflow/pg-go/internal/jobs"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
@@ -393,7 +394,10 @@ func main() {
 		SettlementBalancerRepo:      settlementBalancerRepo,
 		SettlementBalancer:          settlementBalancer,
 		LedgerOutboxRepo:            ledgerOutboxRepo,
+		// REQ-SEC-003: set METRICS_SECRET env var for Prometheus scraper access.
+		MetricsSecret: os.Getenv("METRICS_SECRET"),
 	})
+
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -424,6 +428,15 @@ func main() {
 			case <-dispatchCtx.Done():
 				return
 			case <-ticker.C:
+				release, acquired, err := jobs.AcquireJobLock(dispatchCtx, maintPool, "daily_cleanup")
+				if err != nil {
+					logger.Error("daily cleanup lock failed", "err", err)
+					continue
+				}
+				if !acquired {
+					logger.Debug("daily cleanup lock held by another instance, skipping")
+					continue
+				}
 				n, err := outboxRepo.CleanupEvents(dispatchCtx, 30*24*time.Hour, 90*24*time.Hour)
 				if err != nil {
 					logger.Error("outbox cleanup failed", "err", err)
@@ -440,6 +453,7 @@ func main() {
 				} else if in > 0 {
 					logger.Info("report image purge complete", "deleted", in)
 				}
+				_ = release(dispatchCtx)
 			}
 		}
 	}()
@@ -463,7 +477,16 @@ func main() {
 				case <-dispatchCtx.Done():
 					return
 				case <-ticker.C:
+					release, acquired, err := jobs.AcquireJobLock(dispatchCtx, maintPool, "ledger_outbox_worker")
+					if err != nil {
+						logger.Error("ledger outbox worker lock failed", "err", err)
+						continue
+					}
+					if !acquired {
+						continue
+					}
 					processed, err := ledgerWorker.ProcessBatch(dispatchCtx, 50)
+					_ = release(dispatchCtx)
 					if err != nil && !errors.Is(err, context.Canceled) {
 						logger.Error("ledger outbox worker batch failed", "err", err)
 					} else if processed > 0 {

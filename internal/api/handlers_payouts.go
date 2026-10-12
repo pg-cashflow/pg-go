@@ -436,9 +436,15 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 			respondErr(c, clientErr(http.StatusBadRequest, "no unbatched pending payout items found"))
 			return
 		}
+		if errors.Is(err, domain.ErrPayeeCoolingOff) {
+			// REQ-SEC-007: one or more payees was added < 24 h ago.
+			respondErr(c, clientErr(http.StatusBadRequest, "batch blocked: one or more payees is within the 24-hour cooling-off period — wait until all payees are at least 24 hours old"))
+			return
+		}
 		respondErr(c, err)
 		return
 	}
+
 
 	c.JSON(http.StatusCreated, gin.H{"batch": batch, "items": items})
 }
@@ -765,6 +771,9 @@ func (h *Handlers) getPayoutRepo() *postgres.PayoutRepo {
 	return nil
 }
 
+// getChecksumSecret returns the HMAC key used to sign payout batch export files.
+// REQ-SEC-008: In production PAYOUT_CHECKSUM_SECRET must be set (enforced at startup by config.Load).
+// In non-production environments falls back to JWTSecret. Never uses a hard-coded literal.
 func (h *Handlers) getChecksumSecret() string {
 	if h.PayoutChecksumSecret != "" {
 		return h.PayoutChecksumSecret
@@ -772,8 +781,11 @@ func (h *Handlers) getChecksumSecret() string {
 	if h.JWTSecret != "" {
 		return h.JWTSecret
 	}
-	return "payout_checksum_secret"
+	// Neither secret is configured — the server was started with a broken config.
+	// Panic immediately so the error is never silently swallowed.
+	panic("getChecksumSecret: neither PayoutChecksumSecret nor JWTSecret is configured")
 }
+
 
 func (h *Handlers) getPayoutKeyRing() *crypto.KeyRing {
 	if h.PayoutKeyRing != nil {

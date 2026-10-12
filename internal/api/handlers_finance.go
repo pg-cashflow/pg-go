@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -215,12 +216,54 @@ func (h *Handlers) ListExpenses(c *gin.Context) {
 	if !ok {
 		return
 	}
-	list, err := h.Finance.Store.ListExpenses(c.Request.Context(), pid)
+	limit := 50
+	if lStr := c.Query("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 && l <= 100 {
+			limit = l
+		}
+	}
+	var before *time.Time
+	var beforeID *uuid.UUID
+	if cur := c.Query("before_occurred_at"); cur != "" {
+		if t, err := time.Parse(time.RFC3339, cur); err == nil {
+			before = &t
+		}
+	} else if cur := c.Query("cursor"); cur != "" {
+		if t, err := time.Parse(time.RFC3339, cur); err == nil {
+			before = &t
+		}
+	}
+	if cid := c.Query("before_id"); cid != "" {
+		if id, err := uuid.Parse(cid); err == nil {
+			beforeID = &id
+		}
+	} else if cid := c.Query("cursor_id"); cid != "" {
+		if id, err := uuid.Parse(cid); err == nil {
+			beforeID = &id
+		}
+	}
+
+	list, err := h.Finance.Store.ListExpensesPaginated(c.Request.Context(), pid, limit, before, beforeID)
 	if err != nil {
 		respondErr(c, financeClientErr(err))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"expenses": list})
+
+	var nextCursor *string
+	var nextCursorID *string
+	if len(list) == limit {
+		last := list[len(list)-1]
+		cStr := last.OccurredAt.Format(time.RFC3339Nano)
+		idStr := last.ID.String()
+		nextCursor = &cStr
+		nextCursorID = &idStr
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"expenses":       list,
+		"next_cursor":    nextCursor,
+		"next_cursor_id": nextCursorID,
+	})
 }
 
 func (h *Handlers) VoidExpense(c *gin.Context) {
@@ -631,7 +674,7 @@ func (h *Handlers) OwnerStatementBalanceSheet(c *gin.Context) {
 		}
 		to = parsed
 	} else {
-		to = time.Now().UTC()
+		to = time.Now().In(istZone)
 	}
 	lines, err := h.Finance.BalanceSheet(c.Request.Context(), pid, to)
 	if err != nil {
@@ -695,7 +738,7 @@ func (h *Handlers) OwnerStatementTrialBalance(c *gin.Context) {
 		}
 		to = parsed
 	} else {
-		to = time.Now().UTC()
+		to = time.Now().In(istZone)
 	}
 	lines, err := h.Finance.TrialBalance(c.Request.Context(), pid, to)
 	if err != nil {
@@ -725,7 +768,7 @@ func (h *Handlers) OwnerReconcilingItems(c *gin.Context) {
 		}
 		asOf = parsed
 	} else {
-		asOf = time.Now().UTC()
+		asOf = time.Now().In(istZone)
 	}
 	items, err := h.Finance.ReconcilingItems(c.Request.Context(), pid, asOf)
 	if err != nil {
@@ -767,7 +810,7 @@ func (h *Handlers) occupancy(c *gin.Context, pid uuid.UUID) finance.Occupancy {
 		rooms, _ = h.GamificationStore.ListRooms(c.Request.Context(), pid)
 	}
 	tenants, _ := h.TenantStore.ListByProperty(c.Request.Context(), pid)
-	return finance.ComputeOccupancy(rooms, tenants, time.Now().UTC())
+	return finance.ComputeOccupancy(rooms, tenants, time.Now().In(istZone))
 }
 
 func (h *Handlers) OwnerROI(c *gin.Context) {
@@ -830,15 +873,32 @@ func (h *Handlers) ManagerFinanceToday(c *gin.Context) {
 		return
 	}
 	claims, _ := auth.ClaimsFromContext(c)
-	st, _ := h.Finance.Store.GetSettings(c.Request.Context(), pid)
+	st, err := h.Finance.Store.GetSettings(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
 	if claims.Role == domain.RoleManager && !st.ManagerCanViewROI {
 		// still return ops digest without capital
 	}
-	exps, _ := h.Finance.Store.ListExpenses(c.Request.Context(), pid)
-	appr, _ := h.Finance.Store.ListApprovals(c.Request.Context(), pid, "pending")
+	exps, err := h.Finance.Store.ListExpenses(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	appr, err := h.Finance.Store.ListApprovals(c.Request.Context(), pid, "pending")
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
 	var head any
 	if h.Gamification != nil {
-		head, _ = h.Gamification.GetHeadcountReport(c.Request.Context(), pid, time.Now().UTC())
+		var err error
+		head, err = h.Gamification.GetHeadcountReport(c.Request.Context(), pid, time.Now().In(istZone))
+		if err != nil {
+			respondErr(c, financeClientErr(err))
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"expenses":          exps,
@@ -857,8 +917,16 @@ func (h *Handlers) InsightsSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	leaks, _ := h.Finance.Store.ListLeakage(c.Request.Context(), pid)
-	recs, _ := h.Finance.Store.ListRecommendations(c.Request.Context(), pid)
+	leaks, err := h.Finance.Store.ListLeakage(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
+	recs, err := h.Finance.Store.ListRecommendations(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, financeClientErr(err))
+		return
+	}
 	var total int64
 	for _, l := range leaks {
 		total += l.EstimatedPaise

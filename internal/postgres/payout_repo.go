@@ -430,7 +430,35 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		return nil, nil, ErrNoUnbatchedPayoutItems
 	}
 
+	// REQ-SEC-007: Cooling-off guard — reject any batch that contains a payee
+	// registered less than 24 hours ago. Runs inside the same locked transaction
+	// so there is no TOCTOU window between registration and first disbursement.
+	payeeIDs := make([]uuid.UUID, 0, len(items))
+	seen := make(map[uuid.UUID]struct{}, len(items))
+	for _, it := range items {
+		if _, dup := seen[it.PayeeID]; !dup {
+			payeeIDs = append(payeeIDs, it.PayeeID)
+			seen[it.PayeeID] = struct{}{}
+		}
+	}
+	coolingCutoff := time.Now().UTC().Add(-24 * time.Hour)
+	var tooNewID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM payout_payees
+		WHERE id = ANY($1) AND created_at > $2
+		LIMIT 1`, payeeIDs, coolingCutoff,
+	).Scan(&tooNewID)
+	if err == nil {
+		// At least one payee is still within the cooling-off window.
+		return nil, nil, domain.ErrPayeeCoolingOff
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, fmt.Errorf("cooling-off check: %w", err)
+	}
+	// All payees are ≥ 24 h old — proceed.
+
 	var totalPaise int64
+
 	for _, it := range items {
 		totalPaise += it.AmountPaise
 	}

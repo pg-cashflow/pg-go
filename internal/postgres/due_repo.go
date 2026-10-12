@@ -94,7 +94,8 @@ type DueListFilter struct {
 	Kind          *domain.DueKind
 	Status        *domain.DueStatus
 	Limit         int
-	Offset        int
+	// CursorDueDate and CursorID together form the keyset cursor for pagination.
+	// OFFSET is not supported (REQ-PERF-004).
 	CursorDueDate *time.Time
 	CursorID      *uuid.UUID
 }
@@ -131,13 +132,7 @@ func (r *DueRepo) List(ctx context.Context, f DueListFilter) ([]domain.Due, erro
 	}
 	fmt.Fprintf(&b, ` LIMIT $%d`, n)
 	args = append(args, limit)
-	n++
 
-	if f.CursorDueDate == nil && f.Offset > 0 {
-		fmt.Fprintf(&b, ` OFFSET $%d`, n)
-		args = append(args, f.Offset)
-		n++
-	}
 	rows, err := r.db.Query(ctx, b.String(), args...)
 	if err != nil {
 		return nil, err

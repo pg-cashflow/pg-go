@@ -309,17 +309,43 @@ func (m *MemoryStore) GetExpense(_ context.Context, id uuid.UUID) (*domain.Expen
 	return &cp, nil
 }
 
-func (m *MemoryStore) ListExpenses(_ context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
+func (m *MemoryStore) ListExpensesPaginated(_ context.Context, propertyID uuid.UUID, limit int, beforeOccurredAt *time.Time, beforeID *uuid.UUID) ([]domain.Expense, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []domain.Expense
-	for _, e := range m.expenses {
-		if e.PropertyID == propertyID {
-			out = append(out, e)
-		}
+	if limit <= 0 || limit > 100 {
+		limit = 50
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out, nil
+	var filtered []domain.Expense
+	for _, e := range m.expenses {
+		if e.PropertyID != propertyID {
+			continue
+		}
+		if beforeOccurredAt != nil && !beforeOccurredAt.IsZero() {
+			if e.OccurredAt.After(*beforeOccurredAt) {
+				continue
+			}
+			if e.OccurredAt.Equal(*beforeOccurredAt) {
+				if beforeID != nil && e.ID.String() >= beforeID.String() {
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, e)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].OccurredAt.Equal(filtered[j].OccurredAt) {
+			return filtered[i].ID.String() > filtered[j].ID.String()
+		}
+		return filtered[i].OccurredAt.After(filtered[j].OccurredAt)
+	})
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
+}
+
+func (m *MemoryStore) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
+	return m.ListExpensesPaginated(ctx, propertyID, 50, nil, nil)
 }
 
 func (m *MemoryStore) UpdateExpenseStatus(_ context.Context, id uuid.UUID, status domain.ExpenseStatus) error {

@@ -63,8 +63,8 @@ type Config struct {
 	AdminPhone                        string
 	TrustedProxies                    []string
 	// PayoutExportChecksumSecret signs the HMAC on CSV payout batch exports.
-	// If unset, falls back to JWTSecret (see handlers_payouts.go:getChecksumSecret).
-	// Set CF_PAYOUT_EXPORT_SECRET to an independent high-entropy value.
+	// Must be set independently via PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET.
+	// In production this field is required; the server refuses to start without it (REQ-SEC-008).
 	PayoutExportChecksumSecret string
 	// PayoutEncryptionSecret is dedicated to encrypting sensitive beneficiary bank details.
 	// In production, must be independently set and must not fall back to JWTSecret.
@@ -163,6 +163,10 @@ func Load() (*Config, error) {
 		}
 		if strings.TrimSpace(cfg.PayoutEncryptionSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_ENCRYPTION_SECRET is required in production (must not reuse JWT_SECRET)")
+		}
+		// REQ-SEC-008: checksum secret must be independently keyed — never fall through to JWTSecret.
+		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
+			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
 	}
 	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)

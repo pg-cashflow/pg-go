@@ -22,7 +22,11 @@ var (
 	ErrOverpay             = errors.New("payment exceeds remaining expense")
 	// ErrExpenseStateChanged: the expense status changed between read and write (optimistic lock failed).
 	ErrExpenseStateChanged = errors.New("expense state changed during update; retry")
+	// ErrPayeeCoolingOff: REQ-SEC-007 — a payout payee was registered less than 24 hours ago.
+	// Disbursements to this payee are blocked during the cooling-off window to limit fraud exposure.
+	ErrPayeeCoolingOff = errors.New("payee is within the 24-hour cooling-off period; disbursement blocked")
 )
+
 
 // Chart of accounts (operating + capital). Amounts always paise.
 const (

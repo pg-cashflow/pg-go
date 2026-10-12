@@ -54,6 +54,16 @@ func main() {
 		RefundClient: cfClient,
 		Log:          slog.Default(),
 	}
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "cashfree_poll")
+	if err != nil {
+		log.Fatalf("failed to acquire job lock: %v", err)
+	}
+	if !acquired {
+		slog.Default().Info("another cashfree poll job is currently running, exiting gracefully")
+		os.Exit(0)
+	}
+	defer release(context.Background())
+
 	if err := job.Run(ctx); err != nil {
 		log.Fatal(err)
 	}

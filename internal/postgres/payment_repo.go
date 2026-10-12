@@ -581,7 +581,7 @@ func (r *PaymentRepo) ListCorrections(ctx context.Context, propertyID uuid.UUID)
 	return out, rows.Err()
 }
 
-func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time) ([]domain.Payment, error) {
+func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time, beforeID *uuid.UUID) ([]domain.Payment, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
@@ -600,7 +600,13 @@ func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uu
 		args = append(args, *matchedBy)
 		argIdx++
 	}
-	if before != nil && !before.IsZero() {
+	// REQ-PERF-005: compound keyset cursor prevents duplicates/skips at equal timestamps.
+	if before != nil && !before.IsZero() && beforeID != nil {
+		q += fmt.Sprintf(" AND (matched_at, id) < ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, *before, *beforeID)
+		argIdx += 2
+	} else if before != nil && !before.IsZero() {
+		// Backward-compat: timestamp-only when no beforeID provided.
 		q += fmt.Sprintf(" AND matched_at < $%d", argIdx)
 		args = append(args, *before)
 		argIdx++
@@ -609,6 +615,7 @@ func (r *PaymentRepo) ListByPropertyPaginated(ctx context.Context, propertyID uu
 	args = append(args, limit)
 
 	rows, err := r.db.Query(ctx, q, args...)
+
 	if err != nil {
 		return nil, err
 	}

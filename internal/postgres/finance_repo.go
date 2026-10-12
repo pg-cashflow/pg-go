@@ -637,10 +637,28 @@ func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Exp
 	return e, err
 }
 
-func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
-	rows, err := r.pool.Query(ctx, `
+func (r *FinanceRepo) ListExpensesPaginated(ctx context.Context, propertyID uuid.UUID, limit int, beforeOccurredAt *time.Time, beforeID *uuid.UUID) ([]domain.Expense, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	q := `
 		SELECT id, property_id, category_code, COALESCE(vendor_name,''), COALESCE(description,''), amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
-		FROM expenses WHERE property_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 50`, propertyID)
+		FROM expenses WHERE property_id=$1`
+	args := []any{propertyID}
+	argIdx := 2
+	if beforeOccurredAt != nil && !beforeOccurredAt.IsZero() && beforeID != nil {
+		q += fmt.Sprintf(" AND (occurred_at, id) < ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, *beforeOccurredAt, *beforeID)
+		argIdx += 2
+	} else if beforeOccurredAt != nil && !beforeOccurredAt.IsZero() {
+		q += fmt.Sprintf(" AND occurred_at < $%d", argIdx)
+		args = append(args, *beforeOccurredAt)
+		argIdx++
+	}
+	q += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", argIdx)
+	args = append(args, limit)
+
+	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -654,6 +672,10 @@ func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([]domain.Expense, error) {
+	return r.ListExpensesPaginated(ctx, propertyID, 50, nil, nil)
 }
 
 func (r *FinanceRepo) UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error {

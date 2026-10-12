@@ -39,6 +39,16 @@ func main() {
 	}
 	nowIST := time.Now().In(loc)
 
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "daily_rollup")
+	if err != nil {
+		log.Fatalf("failed to acquire job lock: %v", err)
+	}
+	if !acquired {
+		slog.Default().Info("another daily rollup job is currently running, exiting gracefully")
+		os.Exit(0)
+	}
+	defer release(context.Background())
+
 	if err := job.Run(ctx, nowIST); err != nil {
 		log.Fatal(err)
 	}

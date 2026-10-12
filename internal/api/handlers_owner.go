@@ -1568,27 +1568,38 @@ func (h *Handlers) ListPayments(c *gin.Context) {
 		}
 	}
 	var before *time.Time
+	var beforeID *uuid.UUID
 	if cur := c.Query("cursor"); cur != "" {
 		if t, err := time.Parse(time.RFC3339, cur); err == nil {
 			before = &t
 		}
 	}
+	if cid := c.Query("cursor_id"); cid != "" {
+		if id, err := uuid.Parse(cid); err == nil {
+			beforeID = &id
+		}
+	}
 	if paginated, ok := h.PaymentStore.(interface {
-		ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time) ([]domain.Payment, error)
+		ListByPropertyPaginated(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy, limit int, before *time.Time, beforeID *uuid.UUID) ([]domain.Payment, error)
 	}); ok {
-		list, err := paginated.ListByPropertyPaginated(c.Request.Context(), pid, mb, limit, before)
+		list, err := paginated.ListByPropertyPaginated(c.Request.Context(), pid, mb, limit, before, beforeID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 			return
 		}
 		var nextCursor *string
+		var nextCursorID *string
 		if len(list) == limit {
-			lastTime := list[len(list)-1].MatchedAt.Format(time.RFC3339)
-			nextCursor = &lastTime
+			last := list[len(list)-1]
+			ts := last.MatchedAt.Format(time.RFC3339)
+			id := last.ID.String()
+			nextCursor = &ts
+			nextCursorID = &id
 		}
-		c.JSON(http.StatusOK, gin.H{"payments": list, "limit": limit, "next_cursor": nextCursor})
+		c.JSON(http.StatusOK, gin.H{"payments": list, "limit": limit, "next_cursor": nextCursor, "next_cursor_id": nextCursorID})
 		return
 	}
+
 	list, err := h.PaymentStore.ListByProperty(c.Request.Context(), pid, mb)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
