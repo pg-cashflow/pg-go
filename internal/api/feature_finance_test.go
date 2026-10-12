@@ -526,3 +526,78 @@ func TestFeatureExpense_ManagerVoidAboveOwnerThresholdRequiresOwner(t *testing.T
 		t.Fatalf("owner void failed: status %d code %q (body %s)", code, errCode(resp), resp)
 	}
 }
+
+// ---- ROI Scenario Simulation ----------------------------------------------
+
+func TestFeatureROIScenario_ValidationAndRoleAccess(t *testing.T) {
+	// Precondition: Initialize finance test fixture with active router.
+	f := newFinanceFixture(t)
+
+	scenarioPath := "/api/owner/roi/scenario"
+	validPayload := map[string]any{
+		"occupancy_bps":           8000,
+		"rent_per_bed_paise":      1500000,
+		"food_cost_paise":         200000,
+		"electricity_paise":       100000,
+		"fixed_opex_paise":        3000000,
+		"capacity_beds":           50,
+		"capital_remaining_paise": 100000000,
+	}
+
+	// Step 1: Reject unauthenticated request with 401.
+	code, _ := f.call(http.MethodPost, scenarioPath, "", validPayload, nil)
+	if code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated request, got %d", code)
+	}
+
+	// Step 2: Reject manager role with 403.
+	code, _ = f.call(http.MethodPost, scenarioPath, f.managerA, validPayload, nil)
+	if code != http.StatusForbidden {
+		t.Fatalf("expected 403 for manager role, got %d", code)
+	}
+
+	// Step 3: Reject malformed JSON payload with 400.
+	badReq := httptest.NewRequest(http.MethodPost, scenarioPath, strings.NewReader("{invalid-json"))
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("Authorization", "Bearer "+f.ownerA)
+	wBad := httptest.NewRecorder()
+	f.router.ServeHTTP(wBad, badReq)
+	if wBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid json, got %d", wBad.Code)
+	}
+
+	// Step 4: Accept valid owner request with 200 and simulated math output.
+	code, resp := f.call(http.MethodPost, scenarioPath, f.ownerA, validPayload, nil)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 for valid owner request, got %d (body: %s)", code, resp)
+	}
+
+	var res struct {
+		Scenario struct {
+			OccupiedBeds          int     `json:"occupied_beds"`
+			RevenuePaise          int64   `json:"revenue_paise"`
+			OpexPaise             int64   `json:"opex_paise"`
+			OCFPaise              int64   `json:"ocf_paise"`
+			BreakEvenOccupancyBPS int     `json:"break_even_occupancy_bps"`
+			TBEMonths             float64 `json:"tbe_months"`
+		} `json:"scenario"`
+	}
+	mustJSON(t, resp, &res)
+
+	// Step 5: Assert simulation outputs match expected values.
+	if res.Scenario.OccupiedBeds != 40 {
+		t.Fatalf("expected 40 occupied beds, got %d", res.Scenario.OccupiedBeds)
+	}
+	if res.Scenario.RevenuePaise != 60000000 {
+		t.Fatalf("expected 60000000 revenue paise, got %d", res.Scenario.RevenuePaise)
+	}
+	if res.Scenario.OpexPaise != 3300000 {
+		t.Fatalf("expected 3300000 opex paise, got %d", res.Scenario.OpexPaise)
+	}
+	if res.Scenario.OCFPaise != 56700000 {
+		t.Fatalf("expected 56700000 ocf paise, got %d", res.Scenario.OCFPaise)
+	}
+	if res.Scenario.BreakEvenOccupancyBPS <= 0 {
+		t.Fatalf("expected positive break even bps, got %d", res.Scenario.BreakEvenOccupancyBPS)
+	}
+}

@@ -56,7 +56,7 @@ Errors must contain `{ "error": string, "code": string? }`.
 5. Verify that error responses conform to `{ "error": string, "code": string }`.
 6. Assert that every emitted error code starts with a valid domain prefix (`auth.`, `billing.`, `payment.`, `kyc.`, `finance.`).
 7. Run the contract test suite in CI on every pull request.
-8. (Nightly) Run Schemathesis against the OpenAPI schema to fuzz request and response types.
+8. (Roadmap / Nightly): Schemathesis and OWASP ZAP are deferred pending automated OpenAPI 3 schema generation. Go native contract tests in `contract_test.go` and `routes_outcome_test.go` enforce contracts on every PR in CI.
 
 ## Acceptance Criteria
 

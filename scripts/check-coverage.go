@@ -34,6 +34,12 @@ var regressionFloors = []threshold{
 	{pkg: "github.com/pg-cashflow/pg-go/internal/postgres", minCover: 35.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/notification", minCover: 14.0},
 	{pkg: "github.com/pg-cashflow/pg-go/internal/tenant", minCover: 10.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/billing", minCover: 45.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/cashfree", minCover: 60.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/kyc", minCover: 55.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/search", minCover: 70.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/attendance", minCover: 35.0},
+	{pkg: "github.com/pg-cashflow/pg-go/internal/crypto", minCover: 75.0},
 }
 
 type pkgStats struct {

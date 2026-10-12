@@ -1,11 +1,12 @@
 # Ticket 24: Track R.8 — Gate 08: Process Crash, Network Fault & Poison Recovery
 
 - **Type**: `wayfinder:task`
-- **Status**: Open
+- **Status**: Closed
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
 - **Specification**: [Test Readiness Specification](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/TEST_READINESS_SPECIFICATION.md)
 - **Dependencies**: [Gate 04](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_r04_gate04_e2e_money_flow.md)
-- **Tier**: Nightly
+- **Tier**: Nightly / PR Gate
+- **Implementation**: `internal/finance/crash_proof_test.go` and `internal/finance/physical_crash_test.go`
 
 ## Objective
 

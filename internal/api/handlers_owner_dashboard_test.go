@@ -471,9 +471,10 @@ func TestBulkMarkCashPaid_PreviewFiltersEligible(t *testing.T) {
 	}
 
 	var res struct {
-		EligibleCount    int   `json:"eligible_count"`
-		TotalAmountPaise int64 `json:"total_amount_paise"`
-		SkippedDues      []struct {
+		EligibleCount     int     `json:"eligible_count"`
+		TotalAmountPaise  int64   `json:"total_amount_paise"`
+		TotalAmountRupees float64 `json:"total_amount_rupees"`
+		SkippedDues       []struct {
 			DueID  string `json:"due_id"`
 			Reason string `json:"reason"`
 		} `json:"skipped_dues"`
@@ -487,6 +488,10 @@ func TestBulkMarkCashPaid_PreviewFiltersEligible(t *testing.T) {
 	}
 	if res.TotalAmountPaise != 150000 {
 		t.Errorf("expected 150000 paise (100000+50000), got %d", res.TotalAmountPaise)
+	}
+	expectedRupees := float64(res.TotalAmountPaise) / 100.0
+	if res.TotalAmountRupees != expectedRupees || res.TotalAmountRupees != 1500.0 {
+		t.Errorf("expected %.2f rupees, got %.2f (paise: %d)", expectedRupees, res.TotalAmountRupees, res.TotalAmountPaise)
 	}
 	if len(res.SkippedDues) != 1 || res.SkippedDues[0].Reason != "paid" {
 		t.Errorf("expected 1 skipped paid due, got %+v", res.SkippedDues)

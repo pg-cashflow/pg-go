@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,6 +34,21 @@ type outcomeJoinStub struct {
 
 func (outcomeJoinStub) RotateInvite(_ context.Context, _ uuid.UUID) (string, error) {
 	return "INV-ROTATED-99", nil
+}
+
+func (outcomeJoinStub) LookupInvite(_ context.Context, code string) (*domain.Property, error) {
+	if code == "INVALID" {
+		return nil, errors.New("invalid invite code")
+	}
+	return &domain.Property{ID: uuid.New(), Name: "Test Property", OwnerName: "Test Owner"}, nil
+}
+
+func (outcomeJoinStub) Me(_ context.Context, _ uuid.UUID) (*domain.JoinRequest, error) {
+	return &domain.JoinRequest{ID: uuid.New(), Phone: "+919876543210"}, nil
+}
+
+func (outcomeJoinStub) Reject(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
+	return nil
 }
 
 type outcomeEventStore struct{}
@@ -78,6 +94,30 @@ func (outcomeGamificationStore) CreateReferral(_ context.Context, ref *domain.Re
 
 func (outcomeGamificationStore) ListReferralsByTenant(_ context.Context, _ uuid.UUID) ([]domain.Referral, error) {
 	return []domain.Referral{}, nil
+}
+
+func (outcomeGamificationStore) ListInspections(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ *uuid.UUID, _ int) ([]domain.Inspection, error) {
+	return []domain.Inspection{}, nil
+}
+
+func (outcomeGamificationStore) ListViolationsByTenant(_ context.Context, _ uuid.UUID) ([]domain.Violation, error) {
+	return []domain.Violation{}, nil
+}
+
+type outcomeTenantStub struct {
+	TenantService
+}
+
+func (outcomeTenantStub) AttachPhone(_ context.Context, _ uuid.UUID, _ string) error {
+	return nil
+}
+
+type outcomeBillingStub struct {
+	BillingService
+}
+
+func (outcomeBillingStub) Prorate(_ context.Context, _ uuid.UUID, _ time.Time) (*domain.Due, error) {
+	return &domain.Due{ID: uuid.New(), Amount: 50000}, nil
 }
 
 // TestUnreferencedRoutesOutcome verifies HTTP request outcomes for previously unreferenced routes.
@@ -127,25 +167,32 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 	uStore := &isolationUserRepo{users: users}
 	tStore := &isolationTenantRepo{tenants: map[uuid.UUID]*domain.Tenant{tenantID: tenantObj}}
 	pStore := &isolationPropertyStore{props: map[uuid.UUID]*domain.Property{
-		propID: {ID: propID, Name: "Test Property"},
+		propID: {ID: propID, Name: "Test Property", InviteCode: "INV-100"},
+	}}
+
+	dueID := uuid.New()
+	dueStore := &isolationDueStore{dues: map[uuid.UUID]*domain.Due{
+		dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 100000, Status: domain.DueStatusPaid},
 	}}
 
 	router := NewRouter(Deps{
-		JWTSecret:         jwtSecret,
-		Auth:              outcomeAuthStub{},
-		Joins:             outcomeJoinStub{},
-		Finance:           finSvc,
-		FinanceEnabled:    true,
-		Payments:          outcomePaymentStore{},
-		EventStore:        outcomeEventStore{},
-		GamificationStore: outcomeGamificationStore{},
-		Gamification:      gamification.NewService(outcomeGamificationStore{}, nil, nil, nil, nil),
-		PropertyStore:     pStore,
-		TenantStore:       tStore,
-		DueStore:          &isolationDueStore{dues: map[uuid.UUID]*domain.Due{}},
-		PaymentStore:      &isolationPaymentStore{},
-		AuthTenantRepo:    tStore,
-		AuthUserRepo:      uStore,
+		JWTSecret:           jwtSecret,
+		Auth:                outcomeAuthStub{},
+		Joins:               outcomeJoinStub{},
+		Finance:             finSvc,
+		FinanceEnabled:      true,
+		Payments:            outcomePaymentStore{},
+		EventStore:          outcomeEventStore{},
+		GamificationStore:   outcomeGamificationStore{},
+		Gamification:        gamification.NewService(outcomeGamificationStore{}, nil, nil, nil, nil),
+		PropertyStore:       pStore,
+		TenantStore:         tStore,
+		DueStore:            dueStore,
+		PaymentStore:        &isolationPaymentStore{},
+		AuthTenantRepo:      tStore,
+		AuthUserRepo:        uStore,
+		Billing:        outcomeBillingStub{},
+		Tenants:        outcomeTenantStub{},
 	})
 
 	doReq := func(method, path, token string, body any, headers map[string]string) *httptest.ResponseRecorder {
@@ -321,6 +368,155 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		w := doReq(http.MethodGet, "/api/owner/events", ownerToken, nil, nil)
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 7. Owner tenant modifications
+	t.Run("POST /api/owner/tenants/:id/attach-phone validates missing body", func(t *testing.T) {
+		w := doReq(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/attach-phone", ownerToken, map[string]string{}, nil)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for missing phone, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST /api/owner/tenants/:id/attach-phone foreign tenant returns 404", func(t *testing.T) {
+		foreignID := uuid.New()
+		w := doReq(http.MethodPost, "/api/owner/tenants/"+foreignID.String()+"/attach-phone", ownerToken, map[string]string{"phone": "+919999999999"}, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign tenant, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST /api/owner/tenants/:id/attach-phone valid phone returns 200", func(t *testing.T) {
+		w := doReq(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/attach-phone", ownerToken, map[string]string{"phone": "+919999999999"}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST /api/owner/tenants/:id/prorate foreign tenant returns 404", func(t *testing.T) {
+		foreignID := uuid.New()
+		w := doReq(http.MethodPost, "/api/owner/tenants/"+foreignID.String()+"/prorate", ownerToken, map[string]any{"vacate_date": time.Now().Format(time.RFC3339)}, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign tenant, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST /api/owner/tenants/:id/prorate valid tenant returns 200", func(t *testing.T) {
+		w := doReq(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/prorate", ownerToken, map[string]any{"vacate_date": time.Now().Format(time.RFC3339)}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 8. Join requests & invite endpoints
+	t.Run("GET /api/owner/invite returns invite code", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/invite", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/join/invite/:code returns property info", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/join/invite/VALID123", "", nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/join/me returns join profile", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/join/me", tenantToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("POST /api/owner/join-requests/:id/reject rejects request", func(t *testing.T) {
+		reqID := uuid.New()
+		w := doReq(http.MethodPost, "/api/owner/join-requests/"+reqID.String()+"/reject", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 9. Owner ROI, Insights, COI & Forecast endpoints
+	t.Run("GET /api/owner/roi returns 503 when unconfigured", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/roi", ownerToken, nil, nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/roi/recovery returns 503 when unconfigured", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/roi/recovery", ownerToken, nil, nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/roi/break-even returns 503 when unconfigured", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/roi/break-even", ownerToken, nil, nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/insights returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/insights", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/coi returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/coi", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/forecast returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/forecast", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 10. Tenant referrals, inspections & violations
+	t.Run("GET /api/tenant/referrals returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/tenant/referrals", tenantToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/tenant/inspections returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/tenant/inspections", tenantToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/tenant/violations returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/tenant/violations", tenantToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 11. Owner due payment checkout
+	t.Run("GET /api/owner/dues/:id/pay foreign due returns 404", func(t *testing.T) {
+		foreignDueID := uuid.New()
+		w := doReq(http.MethodGet, "/api/owner/dues/"+foreignDueID.String()+"/pay", ownerToken, nil, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign due, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("GET /api/owner/dues/:id/pay paid due returns 200", func(t *testing.T) {
+		w := doReq(http.MethodGet, "/api/owner/dues/"+dueID.String()+"/pay", ownerToken, nil, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for paid due, got %d body=%s", w.Code, w.Body.String())
 		}
 	})
 }
