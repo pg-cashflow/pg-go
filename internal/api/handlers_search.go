@@ -28,7 +28,10 @@ func (h *Handlers) Search(c *gin.Context) {
 	q := c.Query("q")
 	limit := 20
 	if raw := c.Query("limit"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			if n > 100 {
+				n = 100
+			}
 			limit = n
 		}
 	}

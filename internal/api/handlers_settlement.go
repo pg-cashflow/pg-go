@@ -321,6 +321,9 @@ func (h *Handlers) OwnerListEODBalances(c *gin.Context) {
 	offset := 0
 	if l := c.Query("limit"); l != "" {
 		if val, err := strconv.Atoi(l); err == nil && val > 0 {
+			if val > 100 {
+				val = 100
+			}
 			limit = val
 		}
 	}

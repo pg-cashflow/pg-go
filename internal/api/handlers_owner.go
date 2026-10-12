@@ -1201,6 +1201,9 @@ func (h *Handlers) ListBankTransactions(c *gin.Context) {
 	}
 	if lim := strings.TrimSpace(c.Query("limit")); lim != "" {
 		if l, err := strconv.Atoi(lim); err == nil && l > 0 {
+			if l > 100 {
+				l = 100
+			}
 			filter.Limit = l
 		}
 	}

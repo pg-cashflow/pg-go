@@ -35,6 +35,8 @@ func (h *Handlers) ListNotifications(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.Query("limit"))
 	if limit <= 0 {
 		limit = 20
+	} else if limit > 100 {
+		limit = 100
 	}
 
 	items, nextCursor, unread, err := h.NotificationSvc.List(c.Request.Context(), claims.UserID, cursor, limit)
