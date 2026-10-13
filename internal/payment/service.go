@@ -207,6 +207,19 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 		return nil, err
 	}
 
+	// Tenant scope MUST be established before any lookup that can return data.
+	// Fail closed: a missing property scope is an error, never a wildcard.
+	if in.PropertyID == uuid.Nil {
+		return nil, errors.New("payment: property scope required")
+	}
+	due, err := s.dues.GetByID(ctx, in.DueID)
+	if err != nil {
+		return nil, err
+	}
+	if due.PropertyID != in.PropertyID {
+		return nil, errors.New("payment: property mismatch")
+	}
+
 	// Idempotency and UTR uniqueness check (INV-001)
 	if existing, err := s.payments.GetByUPITxnID(ctx, normUTR); err == nil && existing != nil {
 		if existing.DueID == in.DueID && existing.Amount == in.AmountPaise {
@@ -217,13 +230,6 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 		return nil, err
 	}
 
-	due, err := s.dues.GetByID(ctx, in.DueID)
-	if err != nil {
-		return nil, err
-	}
-	if in.PropertyID != uuid.Nil && due.PropertyID != in.PropertyID {
-		return nil, errors.New("payment: property mismatch")
-	}
 	if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
 		return nil, ErrDueNotOpen
 	}

@@ -367,19 +367,23 @@ func (r *TenantRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID) (
 	return out, rows.Err()
 }
 
+// Update persists the owner-editable tenant fields. It deliberately does NOT write
+// credit_balance_paise: credit is mutated only through the atomic statements
+// AddCredit / DeductCredit / AddTenantCreditTx. Writing a credit value read earlier
+// would silently overwrite a concurrent credit change (lost update).
 func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 	t.UpdatedAt = time.Now().UTC()
 	_, err := r.db.Exec(ctx, `
 		UPDATE tenants SET name=$2, phone=$3, room_number=$4, room_id=$5, aadhaar_last4=$6, rent_amount=$7,
-			due_day=$8, notice_period_days=$9, notice_given_at=$10, credit_balance_paise=$11,
-			status=$12, permanent_address=$13, current_address=$14, parent_name=$15,
-			emergency_phone=$16, joined_on=$17,
-			majority_date=$18, guardian_name=$19, guardian_phone=$20, guardian_relation=$21,
-			guardian_kyc_reference_id=$22, guardian_consent_verified_at=$23, is_gamification_disabled=$24,
-			updated_at=$25
+			due_day=$8, notice_period_days=$9, notice_given_at=$10,
+			status=$11, permanent_address=$12, current_address=$13, parent_name=$14,
+			emergency_phone=$15, joined_on=$16,
+			majority_date=$17, guardian_name=$18, guardian_phone=$19, guardian_relation=$20,
+			guardian_kyc_reference_id=$21, guardian_consent_verified_at=$22, is_gamification_disabled=$23,
+			updated_at=$24
 		WHERE id=$1`,
 		t.ID, t.Name, t.Phone, t.RoomNumber, t.RoomID, t.AadhaarLast4, t.RentAmount,
-		t.DueDay, t.NoticePeriodDays, t.NoticeGivenAt, t.CreditBalancePaise,
+		t.DueDay, t.NoticePeriodDays, t.NoticeGivenAt,
 		t.Status, t.PermanentAddress, t.CurrentAddress, t.ParentName,
 		t.EmergencyPhone, t.JoinedOn,
 		t.MajorityDate, t.GuardianName, t.GuardianPhone, t.GuardianRelation,

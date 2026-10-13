@@ -162,6 +162,36 @@ func TestVerifyPayment(t *testing.T) {
 			t.Fatal("expected error for duplicate UTR with mismatched transaction")
 		}
 	})
+
+	t.Run("nil property scope rejected", func(t *testing.T) {
+		_, err := svc.VerifyPayment(ctx, VerifyPaymentInput{
+			PropertyID:  uuid.Nil,
+			DueID:       dueID,
+			AmountPaise: 500000,
+			UTR:         "UTR-NILPROP",
+			RecordedBy:  recorder,
+		})
+		if err == nil {
+			t.Fatal("expected error for nil property scope")
+		}
+	})
+
+	t.Run("cross-property due with matching UTR rejected before idempotency return", func(t *testing.T) {
+		otherProp := uuid.New()
+		_, err := svc.VerifyPayment(ctx, VerifyPaymentInput{
+			PropertyID:  otherProp,
+			DueID:       dueID,
+			AmountPaise: 500000,
+			UTR:         "UTR123456",
+			RecordedBy:  recorder,
+		})
+		if err == nil {
+			t.Fatal("expected property mismatch error for cross-property due replay")
+		}
+		if err.Error() != "payment: property mismatch" {
+			t.Fatalf("expected 'payment: property mismatch', got: %v", err)
+		}
+	})
 }
 
 func TestCorrectPayment(t *testing.T) {

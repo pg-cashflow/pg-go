@@ -81,6 +81,12 @@ jobs:
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/rls_coverage_test.sql
 
+      - name: Run Property-Scope RLS Ratchet (every property_id table is protected or baselined)
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/rls_property_scope_ratchet.sql
+
       - name: Run Fuzz Smoke Suite (30s per target)
         run: |
           go test -fuzz=FuzzNormalizeUTR -fuzztime=30s ./internal/domain
