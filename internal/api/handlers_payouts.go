@@ -293,6 +293,10 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	if !ok {
 		return
 	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
 
 	var body createPayeeBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -332,6 +336,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 
 	salt := []byte(h.getChecksumSecret())
 	acctHash := domain.ComputeAccountHash(salt, acctIdentifier)
+	now := time.Now().UTC()
 
 	payee := &domain.PayoutPayee{
 		PropertyID:             pid,
@@ -346,6 +351,8 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 		UPIVPA:                 body.UPIVPA,
 		KeyVersion:             1,
 		IsVerified:             true, // Owner manual creation is pre-verified
+		VerifiedBy:             &uid,
+		VerifiedAt:             &now,
 	}
 
 	repo := h.getPayoutRepo()

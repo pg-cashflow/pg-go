@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,13 +38,19 @@ func (s *Service) publish(ctx context.Context, propertyID uuid.UUID, typ domain.
 	if s.Pub == nil {
 		return
 	}
-	b, _ := json.Marshal(payload)
-	_ = s.Pub.Publish(ctx, domain.Event{
+	b, err := json.Marshal(payload)
+	if err != nil {
+		slog.Error("finance service: failed to marshal domain event payload", "property_id", propertyID, "event_type", typ, "err", err)
+		return
+	}
+	if err := s.Pub.Publish(ctx, domain.Event{
 		PropertyID: propertyID,
 		EventType:  typ,
 		OccurredAt: s.Now(),
 		Payload:    b,
-	})
+	}); err != nil {
+		slog.Error("finance service: failed to publish domain event", "property_id", propertyID, "event_type", typ, "err", err)
+	}
 }
 
 func (s *Service) AddCapital(ctx context.Context, propertyID, ownerID uuid.UUID, kind domain.CapitalKind, amount int64, purpose, idem string) (*domain.CapitalTransaction, error) {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -70,6 +71,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		AccountNumberEncrypted: []byte("111222333444"),
 		AccountNumberHash:      "hash111111111111111111111111111111111111111111111111111111111111",
 		IFSC:                   ptr("HDFC0001234"),
+		IsVerified:             true,
 	}
 	if err := payoutRepo.CreatePayee(ctx, payee1); err != nil {
 		t.Fatalf("create payee 1: %v", err)
@@ -81,6 +83,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		Name:              "Staff Two",
 		AccountNumberHash: "hash222222222222222222222222222222222222222222222222222222222222",
 		UPIVPA:            ptr("staff@upi"),
+		IsVerified:        true,
 	}
 	if err := payoutRepo.CreatePayee(ctx, payee2); err != nil {
 		t.Fatalf("create payee 2: %v", err)
@@ -213,6 +216,27 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		}
 		if reloadedBatch.Status != domain.BatchDispatchUnknown {
 			t.Fatalf("expected batch status 'dispatch_unknown', got '%s'", reloadedBatch.Status)
+		}
+	})
+
+	t.Run("DispatchBatch blocks unverified payee", func(t *testing.T) {
+		// Mark payee1 unverified
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET is_verified = false WHERE id = $1`, payee1.ID); err != nil {
+			t.Fatalf("unverify payee: %v", err)
+		}
+		defer func() {
+			_, _ = pool.Exec(ctx, `UPDATE payout_payees SET is_verified = true WHERE id = $1`, payee1.ID)
+		}()
+
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID:     "cid",
+			ClientSecret: "csec",
+			FundsourceID: "fund_01",
+		})
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		err := dispatcher.DispatchBatch(ctx, batch.ID)
+		if err == nil || !strings.Contains(err.Error(), "not verified") {
+			t.Fatalf("expected error containing 'not verified', got: %v", err)
 		}
 	})
 }

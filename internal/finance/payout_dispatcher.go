@@ -100,6 +100,9 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		if err != nil {
 			return fmt.Errorf("payout dispatcher: get payee %s for item %s: %w", it.PayeeID, it.ID, err)
 		}
+		if !payee.IsVerified {
+			return fmt.Errorf("payout dispatcher: payee %s for item %s is not verified", it.PayeeID, it.ID)
+		}
 
 		beneID := cashfree.DeriveBeneficiaryID(payee.ID, payee.AccountNumberHash)
 		if err := d.ensureBeneficiary(ctx, payee, beneID); err != nil {

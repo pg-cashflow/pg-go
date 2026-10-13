@@ -409,7 +409,7 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at
 		FROM payout_items pi
 		JOIN payout_payees pp ON pp.id = pi.payee_id
-		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'
+		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending' AND pp.is_verified = TRUE
 		ORDER BY pi.id ASC FOR UPDATE OF pi`, propertyID,
 	)
 	if err != nil {

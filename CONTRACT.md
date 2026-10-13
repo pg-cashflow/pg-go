@@ -1,6 +1,6 @@
 # API Contract (pg-go)
 
-**Rev 13.** HTTP source of truth for [pg-react](https://github.com/pg-cashflow/pg-react). Route list matches `NewRouter` in `internal/api/router.go`. TypeScript field shapes live in pg-react `packages/types/index.ts` (mirror of Go domain types; if they diverge, fix types to match this API).
+**Rev 14.** HTTP source of truth for [pg-react](https://github.com/pg-cashflow/pg-react). Updated through ADR-029 (Tenant Isolation Architecture, Fail-Closed Security, and Complete Route Parity). Route list strictly matches `NewRouter` in `internal/api/router.go`. TypeScript field shapes live in pg-react `packages/types/index.ts` (mirror of Go domain types; if they diverge, fix types to match this API).
 
 **Out of scope:** scheduled CLIs (`billing-cycle`, `reminder`, `cashfree-poll`, `digilocker-reconcile`, `financial-summary`, `gamification-cycle`, `search-reindex`, `kyc-expiry`, `kpi-snapshot`) and env/runbooks — see [README.md](README.md).
 
@@ -138,6 +138,8 @@ Login is Firebase Phone OTP or Google (Gmail). There is **no Owner vs Tenant rol
 | Method | Path | Rate Limit | Body | Response |
 | ------ | ---- | ---------- | ---- | -------- |
 | POST | `/api/auth/firebase` | 10 req/min (burst 15) per IP | `{ "id_token": string, "invite_code"?: string }` | `{ "token": string, "user": { "id": uuid, "phone"?: string, "email"?: string, "role": "owner"\|"manager"\|"tenant", "tenant_id"?: uuid, "property_id"?: uuid, "locale": string, "has_saved_preference": boolean, "created_at": string, "last_login_at"?: string } }` |
+| POST | `/api/auth/refresh` | 30 req/min (burst 60) per IP | None (reads HttpOnly `pg_refresh` cookie) | Rotates refresh token within its session family. Sets new `pg_refresh` cookie. Returns `{ "token": string, "user": User }` with a fresh 15-minute access JWT. Returns 401 if missing/expired; returns 403 `auth.accessRevoked` on replay detection or vacated tenant. |
+| POST | `/api/auth/logout` | None | None | Revokes the presented refresh token family in database and clears the `pg_refresh` cookie. Returns `{ "ok": true }`. |
 | POST | `/api/auth/revoke-sessions` | None | (empty) | `{ "ok": true }` — **any authenticated role** (owner, manager, tenant). Increments `users.token_version` so this and all other sessions for that user fail with 403 `"access revoked"` (`auth.accessRevoked`) on the next API call. Client should clear the stored token. |
 
 | Status | When | Error Code |
@@ -202,6 +204,8 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | Method | Path | Body / Query | Response / Notes |
 | ------ | ---- | ------------ | ---------------- |
 | GET | `/api/owner/properties` | None | `{ "properties": Property[] }` (includes `id`, `name`, `address?`, `owner_phone`, `owner_name`, `owner_email`, `invite_code?`, `payment_mode?`, `payment_collection_mode?`, `gateway_enabled_at?`, `gateway_sub_merchant_id?`, `created_at`; UPI VPA is **never** returned) |
+| POST | `/api/owner/properties` | `{ "name": string, "owner_name"?: string, "address"?: string, "payment_mode"?: "qr"\|"cashfree" }` | Creates an additional property for authenticated owner. Returns 201 `{ "property": Property }`. |
+| POST | `/api/owner/properties/:id/switch` | None | Switches active property scope for single-login owner session. Returns `{ "ok": true, "property": Property }`. |
 | GET | `/api/owner/tenants` | None | `{ "tenants": Tenant[] }` — includes profile fields + `has_id_photo`, `aadhaar_last4` |
 | POST | `/api/owner/tenants` | `{ "name": string, "phone"?: string, "room_number"?: string, "rent_amount": int, "due_day": int, "notice_period_days"?: int, "deposit_amount"?: int }` | Returns `Tenant` object. Creates walk-in tenant directly. |
 | PATCH | `/api/owner/tenants/:id` | `{ "name"?: string, "room_number"?: string, "rent_amount"?: int, "due_day"?: int, "notice_period_days"?: int }` | Partial tenant profile update. Returns updated `Tenant`. |
@@ -226,7 +230,8 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | GET | `/api/owner/occupancy` | None | Aggregated bed capacity, occupancy counts, vacant beds, and floor/room vacancy breakdown. Returns `{ "occupancy_rate_bps": int, "total_capacity": int, "occupied_beds": int, "vacant_beds": int, "floors": FloorOccupancy[] }`. |
 | GET | `/api/owner/dashboard/summary` | Query: `period=YYYY-MM` (optional, defaults to current month in Asia/Kolkata) | Single-request owner dashboard summary. Returns `{ "property_id": uuid, "period": string, "total_occupancy": PropertyOccupancySummary, "floor_occupancy": FloorOccupancy[], "total_collected_paise": int64, "total_pending_paise": int64, "total_expense_paise": int64, "net_cash_flow_paise": int64, "collection_percentage": float64, "monthly_cash_flow": MonthlyCashFlowItem[], "as_of": timestamp }`. |
 | GET | `/api/owner/dashboard/monthly-cashflow` | Query: `months=int` (default 6, max 36) | Server-side periodic monthly cash flow aggregation for owner charts. Returns `{ "property_id": uuid, "cash_flow": MonthlyCashFlowItem[] }`. |
-| GET | `/api/owner/calendar/token` | None | Generates HMAC-signed iCal calendar feed subscription URL. Returns `{ "property_id": uuid, "token": string, "calendar_url": string }`. |
+| GET | `/api/owner/calendar/token` | None | Generates HMAC-signed iCal calendar feed subscription URL. Atomically persists token hash in database. Returns `{ "property_id": uuid, "token": string, "calendar_url": string }`. Returns 500 if DB insert fails. |
+| POST | `/api/owner/calendar/revoke` | None | Revokes all active calendar subscription tokens for the property. Invalidates feed access immediately. Returns `{ "property_id": uuid, "revoked": int64 }`. |
 | GET | `/api/owner/settings` | None | Returns active property settings `{ "settings": PropertySettings }`. |
 | PATCH | `/api/owner/settings` | `{ "payout_auto_dispatch"?: bool, "reminder_offsets"?: int[], "reminder_catch_up_days"?: int, "active_modules"?: map[string]bool, "auto_apply_credit"?: bool }` | Updates property settings. Returns `{ "settings": PropertySettings }`. |
 | GET | `/api/owner/payment-reports` | Query: `status` (`pending_review`\|`confirmed`\|`rejected`) | `{ "payment_reports": PaymentReport[] }` (includes `image_hash`, `is_duplicate`, `ocr_*` fields). |
@@ -311,6 +316,8 @@ Domain Events: `JoinRequested`, `JoinApproved`, `JoinRejected`, `TenantCreated` 
 | GET | `/api/owner/rooms` | Query: `property_id` (required) | `{ "rooms": Room[] }` |
 | POST | `/api/owner/rooms` | `{ "property_id": uuid, "floor_id": uuid, "room_number": string, "capacity": int, "included_units"?: int }` | `{ "room": Room }` |
 | POST | `/api/owner/managers` | `{ "phone": string, "property_id"?: uuid }` | Provisions `users.role=manager`. Defaults to claims `property_id`. Returns `{ "manager": User }`. |
+| GET | `/api/owner/gamification/redemptions` | Query: `status` (`pending`\|`fulfilled`\|`cancelled`), `property_id`? | Lists coupon and perk reward redemptions for property. Returns `{ "redemptions": RewardRedemption[] }`. |
+| POST | `/api/owner/gamification/redemptions/:id/fulfil` | None | Marks a pending coupon or perk redemption fulfilled. Returns `{ "redemption": RewardRedemption }`. Returns 400 if redemption not found or not pending. |
 
 #### PropertyGamificationSettings Shape
 ```json
@@ -369,6 +376,7 @@ Owners may call all manager routes. Managers must operate on their JWT property 
 | POST | `/api/manager/vendor-inspections` | `{ "property_id": uuid, "vendor_name": string, "score_percent": int, "notes"?: string, "penalty_paise"?: int64, "photo_base64"?: string }` | Records vendor audit score. Returns `{ "vendor_inspection": VendorInspection }`. |
 | GET | `/api/manager/finance/expenses` | None | `{ "expenses": Expense[] }`. Scoped to manager property. |
 | POST | `/api/manager/finance/expenses` | `{ "category_code": string, "vendor_name": string, "description": string, "amount_paise": int64, "emergency"?: boolean, "room_id"?: uuid }` | Header: `Idempotency-Key`. Checked against `approval_policies` in DB. **201** `{ "expense": Expense, "approval"?: ApprovalRequest }`. |
+| POST | `/api/manager/finance/expenses/:id/void` | `{ "reason": string }` | Voids a pending or approved expense with audit reason. Atomically posts reversing double-entry journal lines if approved. Returns `{ "expense": Expense }`. |
 | POST | `/api/manager/finance/expenses/:id/payments` | `{ "amount_paise": int64, "method": "cash" \| "upi" \| "bank" }` | Header: `Idempotency-Key`. Out-of-pocket manager payments recorded as `manager_advances`. **201** `{ "payment": ExpensePayment }`. |
 | GET | `/api/manager/finance/today` | None | Operational finance dashboard: `{ "expenses": Expense[], "pending_approvals": ApprovalRequest[], "kitchen_headcount": KitchenHeadcount, "hide_capital": boolean }`. `hide_capital` is `true` when caller is a manager **and** `ManagerCanViewCapital` is `false` in property finance settings. |
 | POST | `/api/manager/finance/meal-prep` | `{ "meal_date": "YYYY-MM-DD", "meal_slot": "breakfast" \| "lunch" \| "dinner", "prepared_count": int, "discarded_count"?: int }` | Actuals for food leakage detector. Returns `{ "prep": MealPrepActual }`. |
@@ -685,7 +693,7 @@ Initiates multi-due checkout session. Accepts either `{ "option_type": "1"|"2"|"
   - Settles `PAYMENT_SUCCESS_WEBHOOK` only when `payment_amount` equals `payment_intents.amount_paise`.
   - Settles via `settleMatched` with `matched_by=cashfree`.
   - Idempotent on `cf_payment_id` and `payments.upi_txn_id`.
-  - `MarkPaid` executed only after settle or duplicate UTR resolution.
+  - Pre-settlement audit snapshot: database errors retrieving dues snapshot (`GetDuesSnapshot`) fail closed inside `WithinTx`, returning HTTP 500 to Cashfree to trigger retries without committing partial or corrupt state.
   - Unknown order → 200; DB errors → 500. Failed/dropped types return 200 and do not modify the due.
 
 ### 2. Cashfree Secure ID KYC Webhook (`POST /api/public/cashfree/kyc/webhook`)
@@ -707,6 +715,25 @@ Initiates multi-due checkout session. Accepts either `{ "option_type": "1"|"2"|"
 - **Error & Retry Classification (ADR-004):**
   - **200 OK:** Returned for successful completions, idempotent re-deliveries of already terminal verifications, bad HMAC signatures (logged as security anomaly), malformed JSON payloads, and permanent 4xx upstream client errors. Drops delivery permanently without retry storms.
   - **500 Internal Server Error:** Returned for transient processing failures (DB disconnection, network timeout fetching verified document), prompting Cashfree to retry delivery with exponential backoff.
+
+### 3. Cashfree Transfers V2 Payout Webhook (`POST /webhooks/cashfree/payouts`)
+
+- **Auth:** Public endpoint. Requires `x-webhook-signature` and `x-webhook-timestamp` headers.
+- **HMAC Verification:** Evaluated with `cashfree.VerifyWebhookHMAC` against `CASHFREE_PAYOUT_WEBHOOK_SECRET` (fails closed with 503 if unconfigured; 401 if signature invalid).
+- **Replay Protection:** Rejects requests exceeding timestamp drift window (default 300s).
+- **Payload Handling:**
+  - Processes `TRANSFER_SUCCESS`, `TRANSFER_FAILED`, `TRANSFER_REVERSED`.
+  - Atomically transitions corresponding `payout_items` and updates batch settlement state within a database transaction.
+  - Generates immutable financial ledger journal entries for completed or reversed payouts.
+
+### 4. Cashfree Gateway Settlement Webhook (`POST /webhooks/cashfree/settlements`)
+
+- **Auth:** Public endpoint. Requires `x-webhook-signature` and `x-webhook-timestamp` headers.
+- **HMAC Verification:** Verified with `cashfree.VerifyWebhookHMAC` against `CASHFREE_WEBHOOK_SECRET`.
+- **Replay Protection:** Rejects requests exceeding timestamp drift window (default 300s).
+- **Payload Handling:**
+  - Ingests gateway settlement batches and individual split records.
+  - Updates daily settlement ledger balances (`daily_settlement_balances`) and triggers reconciliation balancer checks.
 
 ## Payment Reports & Proof Verification (ADR-005)
 
@@ -955,7 +982,8 @@ All mutating financial endpoints require an `Idempotency-Key` header.
 | GET | `/api/owner/finance/capital` | None | `{ capital: CapitalTransaction[] }`. |
 | POST | `/api/owner/finance/expenses` | `{ category_code, vendor_name, description, amount_paise, emergency?, room_id? }` | **201** `{ expense: Expense, approval?: ApprovalRequest }`. Header: `Idempotency-Key`. |
 | GET | `/api/owner/finance/expenses` | None | `{ expenses: Expense[] }`. |
-| POST | `/api/owner/finance/expenses/:id/payments` | `{ amount_paise, method: "cash"\|"upi"\|"bank" }` | **201** `{ payment: ExpensePayment }`. Header: `Idempotency-Key`. Partial payments allowed. |
+| POST | `/api/owner/finance/expenses/:id/payments` | `{ amount_paise, method: "cash"|"upi"|"bank" }` | **201** `{ payment: ExpensePayment }`. Header: `Idempotency-Key`. Partial payments allowed. |
+| POST | `/api/owner/finance/expenses/:id/void` | `{ reason: string }` | **200** `{ expense: Expense }`. Voids expense; reverses journal entry if approved. Header: `Idempotency-Key`. |
 | GET | `/api/owner/finance/advances` | None | `{ advances: ManagerAdvance[], outstanding_paise: int64 }`. Out-of-pocket manager advances. |
 | POST | `/api/owner/finance/reimbursements` | `{ manager_user_id, amount_paise }` | **201** `{ reimbursement: ManagerReimbursement }`. Header: `Idempotency-Key`. Reimburses manager advances. |
 | GET | `/api/owner/finance/budgets` | Query: `period=YYYY-MM` | `{ budgets: Budget[] }`. |
@@ -969,6 +997,15 @@ All mutating financial endpoints require an `Idempotency-Key` header.
 | POST | `/api/owner/finance/approvals/:id/:action` | `{ note? }` (`action` is `approve` or `reject`) | `{ ok: true }`. Approves or rejects expense/advance/budget. |
 | GET | `/api/owner/finance/tie-out` | Query: `period=YYYY-MM` | `{ tie_out: PeriodTieOut, label: "Collections tie-out" }`. Reconciles collections control to ledger collection lines. |
 | POST | `/api/owner/finance/tie-out/close` | Query: `period=YYYY-MM` | `{ tie_out: PeriodTieOut }`. Blocks with `400/422` if unexplained difference `!= 0`. |
+| POST | `/api/owner/finance/tie-out/reopen` | `{ period: "YYYY-MM", reason: string, step_up_otp?: string, firebase_id_token?: string }` | **200** `{ tie_out: PeriodTieOut, status: "reopened" }`. Enforces step-up OTP / dual control before reopening closed tie-out period. |
+| GET | `/api/owner/finance/statements/income-statement` | Query: `period=YYYY-MM` | `{ period, from, to, lines: IncomeStatementLine[] }`. Accrual income statement. |
+| GET | `/api/owner/finance/statements/balance-sheet` | Query: `period=YYYY-MM` or `to=RFC3339` | `{ as_of, lines: BalanceSheetLine[] }`. Balance sheet statement. |
+| GET | `/api/owner/finance/statements/cash-flow` | Query: `period=YYYY-MM` | `{ period, from, to, lines: CashFlowLine[] }`. Cash flow statement. |
+| GET | `/api/owner/finance/statements/trial-balance` | Query: `period=YYYY-MM` or `to=RFC3339` | `{ as_of, lines: TrialBalanceLine[] }`. Balanced trial balance. |
+| GET | `/api/owner/finance/reports/clearing-drift` | None | `ClearingDriftReport`. Unsettled gateway clearing drift vs expected settlement balance. |
+| GET | `/api/owner/finance/reports/deposit-reserve` | None | `DepositReserveReport`. Security deposit reserve ratio vs statutory threshold. |
+| GET | `/api/owner/finance/reports/capital-payback` | None | `CapitalPaybackReport`. Owner capital injection payback progress and remaining unrecovered principal. |
+| GET | `/api/owner/finance/reconciling-items` | Query: `as_of=YYYY-MM-DD` | `{ as_of, items: ReconcilingItem[] }`. Pending reconciling items between bank statements and ledger. |
 | GET | `/api/owner/finance/variance-bridge` | Query: `period=YYYY-MM` | `{ variance_bridge: VarianceBridge, label: "Plan vs actual" }`. Decomposes budget vs actual OCF. |
 | GET | `/api/owner/finance/imports` | None | `{ suggestions: ExpenseImportSuggestion[] }`. Unmatched debit CSV suggestions. |
 
@@ -1127,9 +1164,14 @@ Executed via `POST /api/owner/departures/:id/settle` (`SettleDepartureUnderLock`
 | ------ | ---- | ---- | ----- |
 | GET | `/healthz` | Public | `{ "status": "ok" }` |
 | GET | `/api/healthz` | Public | `{ "status": "ok" }` |
+| GET | `/metrics` | `X-Metrics-Token` or Bearer JWT | Server runtime, memory, DB pool, and latency metrics in JSON or Prometheus format. |
+| GET | `/api/metrics` | `X-Metrics-Token` or Bearer JWT | Alias for `/metrics`. |
+| GET | `/api/owner/calendar.ics` | Query: `token` | RFC 5545 iCalendar feed authenticated via HMAC token. Fails closed (401 invalid/revoked, 503 DB unavailable). |
 | GET | `/api/locales` | Public | Supported locale registry: `{ "locales": LocaleMetadata[], "default_locale": "en-IN" }` |
 | GET | `/api/push/vapid-public-key` | Public | `{ "public_key": "..." }` |
-| POST | `/webhooks/cashfree` | Public | Cashfree Payment Gateway settlement webhook (HMAC verified). |
+| POST | `/webhooks/cashfree` | Public | Cashfree Payment Gateway order webhook (HMAC verified). |
+| POST | `/webhooks/cashfree/payouts` | Public | Cashfree Payout transfer and reversal webhook (HMAC verified). |
+| POST | `/webhooks/cashfree/settlements` | Public | Cashfree Daily Gateway Settlement webhook (HMAC verified). |
 | POST | `/api/public/cashfree/kyc/webhook` | Public | Cashfree Secure ID verification completion webhook (raw HMAC verified). |
 | GET | `/p/:token` | Public | Standalone HTML payment page (save QR, copy VPA/note, open UPI). `/p/[REDACTED]` in server logs. |
 | POST | `/p/:token/push/subscribe` | Public | Web push subscription directly from payment link page. |

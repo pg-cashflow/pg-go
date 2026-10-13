@@ -333,11 +333,11 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 				          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
 				            AND occurred_at >= $3 AND occurred_at < $4), 0)
 				+
-				COALESCE((SELECT SUM(ex.amount_paise) FROM expenses ex
+				COALESCE((SELECT SUM(GREATEST(0, ex.amount_paise - COALESCE((SELECT SUM(ep.amount_paise) FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2), 0)))
+				          FROM expenses ex
 				          WHERE ex.property_id=$1 AND ex.created_by=$2 AND ex.created_by_role='manager'
 				            AND ex.status IN ('approved', 'paid')
-				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4
-				            AND NOT EXISTS (SELECT 1 FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2)), 0)
+				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4), 0)
 			)`
 
 		var daily, monthly int64
@@ -511,11 +511,11 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 				          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
 				            AND occurred_at >= $3 AND occurred_at < $4), 0)
 				+
-				COALESCE((SELECT SUM(ex.amount_paise) FROM expenses ex
+				COALESCE((SELECT SUM(GREATEST(0, ex.amount_paise - COALESCE((SELECT SUM(ep.amount_paise) FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2), 0)))
+				          FROM expenses ex
 				          WHERE ex.property_id=$1 AND ex.created_by=$2 AND ex.created_by_role='manager'
 				            AND ex.status IN ('approved', 'paid')
-				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4
-				            AND NOT EXISTS (SELECT 1 FROM expense_payments ep WHERE ep.expense_id = ex.id AND ep.payer_user_id = $2)), 0)
+				            AND ex.occurred_at >= $3 AND ex.occurred_at < $4), 0)
 			)`
 
 		var daily, monthly int64

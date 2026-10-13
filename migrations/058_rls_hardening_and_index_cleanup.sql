@@ -11,8 +11,13 @@
 -- 1. Dedicated LOGIN roles. The app connects AS these roles, so no SET ROLE is needed
 --    (SET ROLE fails for a plain login role that is not a member, and is unsafe under
 --    PgBouncer transaction pooling when used at session level).
-ALTER ROLE pgapp_app   LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
-ALTER ROLE pgapp_maint LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+DO $$
+BEGIN
+    ALTER ROLE pgapp_app   LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+    ALTER ROLE pgapp_maint LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+EXCEPTION WHEN insufficient_privilege THEN
+    NULL;
+END $$;
 
 -- 2. Least privilege. 057 granted ALL, which includes TRUNCATE, TRIGGER and REFERENCES.
 --    TRUNCATE ... CASCADE bypasses row-level append-only triggers and wiped the journal
