@@ -354,3 +354,23 @@ func TestRouteRoleAuthorizationMatrix(t *testing.T) {
 	}
 	t.Logf("matrix: %d routes, %d authorization checks", len(routes), cases)
 }
+
+// TestRouteRoleAuthorizationMatrix_MovingPublicRouteBehindAuthFails verifies
+// that if a public route (e.g. /webhooks/cashfree) is mistakenly placed behind
+// auth middleware, the matrix assertion detects and refuses it.
+func TestRouteRoleAuthorizationMatrix_MovingPublicRouteBehindAuthFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	f := newMatrixFixture(t)
+	r := gin.New()
+	r.POST("/webhooks/cashfree", auth.RequireOwner(f.secret, nil), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	res := f.do(t, r, http.MethodPost, "/webhooks/cashfree", callerAnon, nil)
+	if !res.isAuthMiddlewareRefusal() {
+		t.Fatalf("expected isAuthMiddlewareRefusal to be true when /webhooks/cashfree is behind auth, got status=%d code=%q", res.status, res.errCode)
+	}
+	if res.errCode != string(apierr.CodeAuthMissingToken) {
+		t.Fatalf("expected errCode %q, got %q", apierr.CodeAuthMissingToken, res.errCode)
+	}
+}
