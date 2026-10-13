@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,71 @@ func (s *stubPIITenantStore) Update(_ context.Context, t *domain.Tenant) error {
 }
 func (s *stubPIITenantStore) GetIDPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return []byte("fake-photo"), nil
+}
+
+type stubPIITenantService struct {
+	attachedPhone string
+}
+
+func (s *stubPIITenantService) CreateTenant(_ context.Context, in domain.NewTenantInput, _ int64) (*domain.Tenant, error) {
+	return &domain.Tenant{
+		ID:         uuid.New(),
+		PropertyID: in.PropertyID,
+		Name:       in.Name,
+		Phone:      in.Phone,
+		RoomNumber: in.RoomNumber,
+		RentAmount: in.RentAmount,
+		DueDay:     &in.DueDay,
+		Status:     domain.TenantStatusActive,
+	}, nil
+}
+func (s *stubPIITenantService) UpdateTenant(_ context.Context, _ *domain.Tenant) error { return nil }
+func (s *stubPIITenantService) Vacate(_ context.Context, _ uuid.UUID) error             { return nil }
+func (s *stubPIITenantService) LogNotice(_ context.Context, _ uuid.UUID, _ time.Time) error {
+	return nil
+}
+func (s *stubPIITenantService) AttachPhone(_ context.Context, _ uuid.UUID, phone string) error {
+	s.attachedPhone = phone
+	return nil
+}
+
+type stubPIIKYCService struct{}
+
+func (s *stubPIIKYCService) RecordConsent(_ context.Context, _ uuid.UUID, _, _, _, _, _, _ string) (*domain.KYCConsent, error) {
+	return &domain.KYCConsent{ID: uuid.New()}, nil
+}
+func (s *stubPIIKYCService) InitiateDigiLocker(_ context.Context, _ uuid.UUID, _ string) (string, error) {
+	return "https://digilocker.test", nil
+}
+func (s *stubPIIKYCService) ProcessDigiLockerCompletion(_ context.Context, _, _, _ string) error {
+	return nil
+}
+func (s *stubPIIKYCService) VerifySecureQR(_ context.Context, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
+}
+func (s *stubPIIKYCService) VerifyAadhaarDocument(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
+}
+func (s *stubPIIKYCService) GetDigiLockerReturnStatus(_ context.Context, _ string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
+}
+func (s *stubPIIKYCService) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
+	return []byte("fake-attested-photo"), nil
+}
+func (s *stubPIIKYCService) RevokeConsent(_ context.Context, _ uuid.UUID, _ string) error {
+	return nil
+}
+func (s *stubPIIKYCService) GetStatus(_ context.Context, _ uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+	return nil, nil, nil
+}
+func (s *stubPIIKYCService) GetOwnerView(_ context.Context, _ uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error) {
+	return nil, nil, nil
+}
+func (s *stubPIIKYCService) GetVerificationByVendorRefID(_ context.Context, _ string) (*domain.KYCVerification, error) {
+	return nil, nil
+}
+func (s *stubPIIKYCService) ClearDuplicateFlag(_ context.Context, _ uuid.UUID, _, _ string) error {
+	return nil
 }
 
 type stubPIIAuthService struct {
@@ -118,28 +184,54 @@ func TestGate14_ZeroPIILeakInAPIHandlers(t *testing.T) {
 
 	rawAadhaar := "293847561028" // 12-digit Aadhaar format
 	rawPhone := "9876543210"     // 10-digit Indian phone format
+	propID := uuid.New()
+	tenantID := uuid.New()
 
 	ten := &domain.Tenant{
-		ID:         uuid.New(),
-		PropertyID: uuid.New(),
+		ID:         tenantID,
+		PropertyID: propID,
 		Phone:      &rawPhone,
 	}
 	tenantStore := &stubPIITenantStore{ten: ten}
+	tenantSvc := &stubPIITenantService{}
+	kycSvc := &stubPIIKYCService{}
 	authSvc := &stubPIIAuthService{}
 
 	h := &api.Handlers{
 		Deps: api.Deps{
 			TenantStore: tenantStore,
+			Tenants:     tenantSvc,
+			KYCSvc:      kycSvc,
 			Auth:        authSvc,
 		},
 	}
 
 	router := gin.New()
+
+	// Tenant route touching Aadhaar
 	router.POST("/tenant/aadhaar", func(c *gin.Context) {
 		c.Set(auth.ContextTenantKey, ten)
 		h.TenantAadhaar(c)
 	})
+
+	// Auth routes touching phone
 	router.POST("/auth/otp/request", h.OTPRequest)
+	router.POST("/auth/otp/verify", h.OTPVerify)
+
+	// Owner routes touching phone and tenant identity photos
+	ownerGroup := router.Group("/owner")
+	ownerGroup.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     uuid.New(),
+			Role:       domain.RoleOwner,
+			PropertyID: &propID,
+		})
+		c.Next()
+	})
+	ownerGroup.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
+	ownerGroup.POST("/tenants", h.CreateTenant)
+	ownerGroup.GET("/tenants/:id/kyc-photo", h.OwnerTenantKYCPhoto)
+	ownerGroup.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
 
 	// 1. Send raw Aadhaar in QR payload to /tenant/aadhaar
 	aadhaarPayload := fmt.Sprintf(`{"consent":true,"confirm":true,"qr_payload":"<PrintLetterBarcodeData uid=\"%s\" name=\"John Doe\" gender=\"M\" dob=\"01-01-1995\"/>"}`, rawAadhaar)
@@ -149,12 +241,42 @@ func TestGate14_ZeroPIILeakInAPIHandlers(t *testing.T) {
 	router.ServeHTTP(wAadhaar, reqAadhaar)
 
 	// 2. Send phone payload to /auth/otp/request
-	// (Note: Auth is not configured on Deps, but handler should fail closed without leaking raw phone in unexpected slog logs)
 	phonePayload := fmt.Sprintf(`{"phone":"%s"}`, rawPhone)
 	reqPhone := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewBufferString(phonePayload))
 	reqPhone.Header.Set("Content-Type", "application/json")
 	wPhone := httptest.NewRecorder()
 	router.ServeHTTP(wPhone, reqPhone)
+
+	// 3. Send phone payload to /auth/otp/verify
+	verifyPayload := fmt.Sprintf(`{"phone":"%s","otp":"123456"}`, rawPhone)
+	reqVerify := httptest.NewRequest(http.MethodPost, "/auth/otp/verify", bytes.NewBufferString(verifyPayload))
+	reqVerify.Header.Set("Content-Type", "application/json")
+	wVerify := httptest.NewRecorder()
+	router.ServeHTTP(wVerify, reqVerify)
+
+	// 4. Send phone payload to /owner/tenants/:id/attach-phone
+	attachPayload := fmt.Sprintf(`{"phone":"%s"}`, rawPhone)
+	reqAttach := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/tenants/%s/attach-phone", tenantID), bytes.NewBufferString(attachPayload))
+	reqAttach.Header.Set("Content-Type", "application/json")
+	wAttach := httptest.NewRecorder()
+	router.ServeHTTP(wAttach, reqAttach)
+
+	// 5. Send phone payload to /owner/tenants
+	createPayload := fmt.Sprintf(`{"name":"Jane Doe","phone":"%s","room_number":"101","rent_amount":1500000,"due_day":1}`, rawPhone)
+	reqCreate := httptest.NewRequest(http.MethodPost, "/owner/tenants", bytes.NewBufferString(createPayload))
+	reqCreate.Header.Set("Content-Type", "application/json")
+	wCreate := httptest.NewRecorder()
+	router.ServeHTTP(wCreate, reqCreate)
+
+	// 6. Request KYC photo
+	reqKYCPhoto := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/owner/tenants/%s/kyc-photo", tenantID), nil)
+	wKYCPhoto := httptest.NewRecorder()
+	router.ServeHTTP(wKYCPhoto, reqKYCPhoto)
+
+	// 7. Request ID photo
+	reqIDPhoto := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/owner/tenants/%s/id-photo", tenantID), nil)
+	wIDPhoto := httptest.NewRecorder()
+	router.ServeHTTP(wIDPhoto, reqIDPhoto)
 
 	logs := logBuf.String()
 
@@ -167,5 +289,10 @@ func TestGate14_ZeroPIILeakInAPIHandlers(t *testing.T) {
 	// Regulatory check: Assert logs do not contain raw Aadhaar string
 	if strings.Contains(logs, rawAadhaar) {
 		t.Fatalf("[LEAK DETECTED] Raw Aadhaar %s found in logs: %s", rawAadhaar, logs)
+	}
+
+	// Regulatory check: Assert logs do not leak raw phone number
+	if strings.Contains(logs, rawPhone) {
+		t.Fatalf("[LEAK DETECTED] Raw phone %s found in logs: %s", rawPhone, logs)
 	}
 }
