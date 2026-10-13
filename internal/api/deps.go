@@ -250,6 +250,12 @@ type SettlementReconcilerService interface {
 	ReconcileWebhookSettlement(ctx context.Context, rec *cashfree.SettlementWebhookRecord) (*domain.GatewaySettlement, error)
 }
 
+type CalendarTokenStore interface {
+	InsertToken(ctx context.Context, propertyID uuid.UUID, tokenHash string, expiresAt time.Time) error
+	GetTokenRevocation(ctx context.Context, propertyID uuid.UUID, tokenHash string) (revoked bool, exists bool, err error)
+	RevokeTokens(ctx context.Context, propertyID uuid.UUID) (int64, error)
+}
+
 // PayoutWebhookStore defines the store interface required by the Cashfree payout webhook handler.
 type PayoutWebhookStore interface {
 	GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error)

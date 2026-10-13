@@ -187,7 +187,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 
 			// Step 2: Dues snapshot from payment_intent_dues
 			snapshot, err := txIntentRepo.GetDuesSnapshot(ctx, intent.ID)
-			if err != nil || len(snapshot) == 0 {
+			if err != nil {
+				return fmt.Errorf("get dues snapshot: %w", err)
+			}
+			if len(snapshot) == 0 {
 				snapshot = []domain.PaymentIntentDue{{DueID: intent.DueID, AmountPaise: int64(intent.AmountPaise)}}
 			}
 

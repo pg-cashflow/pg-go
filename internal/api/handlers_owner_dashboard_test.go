@@ -619,6 +619,54 @@ func (s *testMarkCashPaidService) MarkCashPaid(_ context.Context, dueID uuid.UUI
 	return &domain.Payment{DueID: dueID, Amount: amt}, nil
 }
 
+type mockCalendarTokenStore struct {
+	tokens        map[string]time.Time
+	revokedTokens map[string]time.Time
+	insertErr     error
+	lookupErr     error
+	revokeErr     error
+}
+
+func newMockCalendarTokenStore() *mockCalendarTokenStore {
+	return &mockCalendarTokenStore{
+		tokens:        make(map[string]time.Time),
+		revokedTokens: make(map[string]time.Time),
+	}
+}
+
+func (m *mockCalendarTokenStore) InsertToken(_ context.Context, _ uuid.UUID, tokenHash string, expiresAt time.Time) error {
+	if m.insertErr != nil {
+		return m.insertErr
+	}
+	m.tokens[tokenHash] = expiresAt
+	return nil
+}
+
+func (m *mockCalendarTokenStore) GetTokenRevocation(_ context.Context, _ uuid.UUID, tokenHash string) (bool, bool, error) {
+	if m.lookupErr != nil {
+		return false, false, m.lookupErr
+	}
+	if _, ok := m.tokens[tokenHash]; !ok {
+		return false, false, nil
+	}
+	_, isRevoked := m.revokedTokens[tokenHash]
+	return isRevoked, true, nil
+}
+
+func (m *mockCalendarTokenStore) RevokeTokens(_ context.Context, _ uuid.UUID) (int64, error) {
+	if m.revokeErr != nil {
+		return 0, m.revokeErr
+	}
+	count := int64(0)
+	for h := range m.tokens {
+		if _, already := m.revokedTokens[h]; !already {
+			m.revokedTokens[h] = time.Now()
+			count++
+		}
+	}
+	return count, nil
+}
+
 func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	jwtSecret := "calendar_test_secret_123"
@@ -640,12 +688,15 @@ func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 		propID: {ID: propID, Name: "Green View Residency"},
 	}
 
+	mockStore := newMockCalendarTokenStore()
+
 	h := &Handlers{
 		Deps: Deps{
-			JWTSecret:        jwtSecret,
-			MagicLinkBaseURL: "https://pay.pgcashflow.com",
-			PropertyStore:    &dashboardPropStore{props: props},
-			DueStore:         &dashboardDueStore{dues: dues},
+			JWTSecret:          jwtSecret,
+			MagicLinkBaseURL:   "https://pay.pgcashflow.com",
+			PropertyStore:      &dashboardPropStore{props: props},
+			DueStore:           &dashboardDueStore{dues: dues},
+			CalendarTokenStore: mockStore,
 		},
 	}
 
@@ -729,6 +780,50 @@ func TestOwnerCalendar_TokenAndFeedGeneration(t *testing.T) {
 	if wRevoke.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK for calendar revoke, got %d: %s", wRevoke.Code, wRevoke.Body.String())
 	}
+
+	// 6. Security Check: Access feed AGAIN with revoked token -> 401 Unauthorized
+	reqFeedRevoked := httptest.NewRequest(http.MethodGet, "/api/owner/calendar.ics?token="+tokenRes.Token, nil)
+	wFeedRevoked := httptest.NewRecorder()
+	r.ServeHTTP(wFeedRevoked, reqFeedRevoked)
+	if wFeedRevoked.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for revoked token, got %d: %s", wFeedRevoked.Code, wFeedRevoked.Body.String())
+	}
+	if !strings.Contains(wFeedRevoked.Body.String(), "calendar token revoked") {
+		t.Fatalf("expected 'calendar token revoked' response body, got %s", wFeedRevoked.Body.String())
+	}
+
+	// 7. Security Check: Access feed with validly signed but unrecorded token -> 401 Unauthorized
+	unrecordedTok := generateCalendarToken(propID, jwtSecret, time.Now().UTC().Add(80*24*time.Hour))
+	reqFeedUnrecorded := httptest.NewRequest(http.MethodGet, "/api/owner/calendar.ics?token="+unrecordedTok, nil)
+	wFeedUnrecorded := httptest.NewRecorder()
+	r.ServeHTTP(wFeedUnrecorded, reqFeedUnrecorded)
+	if wFeedUnrecorded.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for unrecorded token, got %d: %s", wFeedUnrecorded.Code, wFeedUnrecorded.Body.String())
+	}
+	if !strings.Contains(wFeedUnrecorded.Body.String(), "calendar token not found or invalid") {
+		t.Fatalf("expected 'calendar token not found or invalid' response, got %s", wFeedUnrecorded.Body.String())
+	}
+
+	// 8. Security Check: Database lookup error -> 503 Service Unavailable (fail-closed)
+	mockStore.lookupErr = errors.New("simulated database connection failure")
+	reqFeedDBErr := httptest.NewRequest(http.MethodGet, "/api/owner/calendar.ics?token="+tokenRes.Token, nil)
+	wFeedDBErr := httptest.NewRecorder()
+	r.ServeHTTP(wFeedDBErr, reqFeedDBErr)
+	if wFeedDBErr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable on DB error, got %d: %s", wFeedDBErr.Code, wFeedDBErr.Body.String())
+	}
+	mockStore.lookupErr = nil
+
+	// 9. Security Check: Database insert failure on token generation -> 500 Internal Server Error
+	mockStore.insertErr = errors.New("simulated database insert failure")
+	reqTokenFail := httptest.NewRequest(http.MethodGet, "/owner/calendar/token", nil)
+	reqTokenFail.Header.Set("Authorization", "Bearer "+token)
+	wTokenFail := httptest.NewRecorder()
+	r.ServeHTTP(wTokenFail, reqTokenFail)
+	if wTokenFail.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error when token insert fails, got %d: %s", wTokenFail.Code, wTokenFail.Body.String())
+	}
+	mockStore.insertErr = nil
 }
 
 func TestVerifyCalendarToken_SecurityEdgeCases(t *testing.T) {

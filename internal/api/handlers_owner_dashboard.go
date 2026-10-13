@@ -770,17 +770,30 @@ func (h *Handlers) OwnerGetCalendarToken(c *gin.Context) {
 	}
 
 	tok := generateCalendarToken(pid, h.JWTSecret)
-	if h.Pool != nil {
-		hash := sha256.Sum256([]byte(tok))
-		tokenHash := hex.EncodeToString(hash[:])
-		expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
+	hash := sha256.Sum256([]byte(tok))
+	tokenHash := hex.EncodeToString(hash[:])
+	expiresAt := time.Now().UTC().Add(90 * 24 * time.Hour)
+
+	if h.CalendarTokenStore != nil {
+		if err := h.CalendarTokenStore.InsertToken(c.Request.Context(), pid, tokenHash, expiresAt); err != nil {
+			slog.ErrorContext(c.Request.Context(), "failed to store calendar token", "property_id", pid, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store calendar token"})
+			return
+		}
+	} else if h.Pool != nil {
 		if _, err := h.Pool.Exec(c.Request.Context(), `
 			INSERT INTO property_calendar_tokens (property_id, token_hash, expires_at)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (token_hash) DO NOTHING
 		`, pid, tokenHash, expiresAt); err != nil {
-			slog.WarnContext(c.Request.Context(), "failed to audit calendar token insert", "property_id", pid, "err", err)
+			slog.ErrorContext(c.Request.Context(), "failed to store calendar token", "property_id", pid, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store calendar token"})
+			return
 		}
+	} else {
+		slog.ErrorContext(c.Request.Context(), "calendar token store unavailable", "property_id", pid)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "calendar token storage unavailable"})
+		return
 	}
 
 	baseURL := h.MagicLinkBaseURL
@@ -816,21 +829,46 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 		return
 	}
 
-	if h.Pool != nil {
-		hash := sha256.Sum256([]byte(token))
-		tokenHash := hex.EncodeToString(hash[:])
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	if h.CalendarTokenStore != nil {
+		revoked, exists, err := h.CalendarTokenStore.GetTokenRevocation(c.Request.Context(), propID, tokenHash)
+		if err != nil {
+			slog.ErrorContext(c.Request.Context(), "failed checking calendar token status", "err", err)
+			c.String(http.StatusServiceUnavailable, "database error checking calendar token status")
+			return
+		}
+		if !exists {
+			c.String(http.StatusUnauthorized, "calendar token not found or invalid")
+			return
+		}
+		if revoked {
+			c.String(http.StatusUnauthorized, "calendar token revoked")
+			return
+		}
+	} else if h.Pool != nil {
 		var revokedAt *time.Time
 		err := h.Pool.QueryRow(c.Request.Context(), `
 			SELECT revoked_at FROM property_calendar_tokens
 			WHERE property_id = $1 AND token_hash = $2
 		`, propID, tokenHash).Scan(&revokedAt)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			slog.WarnContext(c.Request.Context(), "failed checking calendar token status", "err", err)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.String(http.StatusUnauthorized, "calendar token not found or invalid")
+				return
+			}
+			slog.ErrorContext(c.Request.Context(), "failed checking calendar token status", "err", err)
+			c.String(http.StatusServiceUnavailable, "database error checking calendar token status")
+			return
 		}
 		if revokedAt != nil {
 			c.String(http.StatusUnauthorized, "calendar token revoked")
 			return
 		}
+	} else {
+		c.String(http.StatusServiceUnavailable, "calendar token storage unavailable")
+		return
 	}
 
 	ctx := requestscope.WithPropertyID(c.Request.Context(), propID)
@@ -924,6 +962,20 @@ func (h *Handlers) OwnerRevokeCalendarToken(c *gin.Context) {
 		return
 	}
 
+	if h.CalendarTokenStore != nil {
+		revokedCount, err := h.CalendarTokenStore.RevokeTokens(c.Request.Context(), pid)
+		if err != nil {
+			slog.ErrorContext(c.Request.Context(), "failed revoking calendar tokens", "property_id", pid, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke calendar tokens"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"property_id": pid,
+			"revoked":     revokedCount,
+		})
+		return
+	}
+
 	if h.Pool != nil {
 		tag, err := h.Pool.Exec(c.Request.Context(), `
 			UPDATE property_calendar_tokens
@@ -942,10 +994,7 @@ func (h *Handlers) OwnerRevokeCalendarToken(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"property_id": pid,
-		"revoked":     0,
-	})
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "calendar token storage unavailable"})
 }
 
 // OwnerGetPropertySettings handles GET /owner/settings.
