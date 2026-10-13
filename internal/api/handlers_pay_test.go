@@ -931,6 +931,13 @@ func (m *mockCorrectPayService) CorrectPayment(context.Context, payment.CorrectP
 	return &domain.FinancialCorrection{}, nil
 }
 
+func (m *mockCorrectPayService) VerifyPayment(context.Context, payment.VerifyPaymentInput) (*domain.Payment, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &domain.Payment{}, nil
+}
+
 func TestOwnerCorrectPayment_PropertyMismatch404(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	propID := uuid.New()
@@ -971,3 +978,43 @@ func TestOwnerCorrectPayment_PropertyMismatch404(t *testing.T) {
 	}
 }
 
+func TestOwnerVerifyPayment_PropertyMismatch404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+	dueID := uuid.New()
+
+	h := &Handlers{Deps: Deps{
+		Payments: &mockCorrectPayService{err: payment.ErrPropertyMismatch},
+	}}
+
+	r := gin.New()
+	r.POST("/owner/payments/verify", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		h.OwnerVerifyPayment(c)
+	})
+
+	body := map[string]any{
+		"due_id":       dueID.String(),
+		"amount_paise": 500000,
+		"upi_txn_id":   "UTR12345678",
+	}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/owner/payments/verify", bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found on cross-property verify, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if errResp["error"] != "payment not found for property" {
+		t.Errorf("expected 'payment not found for property', got %q", errResp["error"])
+	}
+}
