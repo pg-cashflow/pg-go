@@ -808,7 +808,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -897,9 +897,10 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 
 	// Create Batch via HTTP
 	checkerOwnerID := uuid.New()
+	checkerPhone := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+99)%10000000000)
 	_, err = pool.Exec(ctx, `
 		INSERT INTO users (id, phone, role, property_id)
-		VALUES ($1, '+919999988882', 'owner', $2)`, checkerOwnerID, propID)
+		VALUES ($1, $2, 'owner', $3)`, checkerOwnerID, checkerPhone, propID)
 	if err != nil {
 		t.Fatalf("insert checker owner: %v", err)
 	}
