@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -293,8 +294,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	if !ok {
 		return
 	}
-	uid, ok := userIDFromClaims(c)
-	if !ok {
+	if _, ok := userIDFromClaims(c); !ok {
 		return
 	}
 
@@ -336,7 +336,6 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 
 	salt := []byte(h.getChecksumSecret())
 	acctHash := domain.ComputeAccountHash(salt, acctIdentifier)
-	now := time.Now().UTC()
 
 	payee := &domain.PayoutPayee{
 		PropertyID:             pid,
@@ -350,9 +349,9 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 		BankName:               body.BankName,
 		UPIVPA:                 body.UPIVPA,
 		KeyVersion:             1,
-		IsVerified:             true, // Owner manual creation is pre-verified
-		VerifiedBy:             &uid,
-		VerifiedAt:             &now,
+		IsVerified:             false, // New payees must satisfy an explicit verification step
+		VerifiedBy:             nil,
+		VerifiedAt:             nil,
 	}
 
 	repo := h.getPayoutRepo()
@@ -367,6 +366,40 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"payee": payee})
+}
+
+// OwnerVerifyPayee handles POST /owner/payouts/payees/:id/verify.
+func (h *Handlers) OwnerVerifyPayee(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	payeeID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	payee, err := repo.VerifyPayee(c.Request.Context(), payeeID, pid, uid)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "payee not found"})
+			return
+		}
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"payee": payee})
 }
 
 // OwnerListPayees handles GET /owner/payouts/payees.

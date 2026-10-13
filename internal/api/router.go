@@ -354,6 +354,7 @@ func NewRouter(d Deps) *gin.Engine {
 
 			// Operational Payouts Subsystem (ADR-009)
 			owner.POST("/payouts/payees", h.OwnerCreatePayee)
+			owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
 			owner.GET("/payouts/payees", h.OwnerListPayees)
 			owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 			owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)

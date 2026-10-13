@@ -85,6 +85,18 @@ func (r *PayoutRepo) CreatePayee(ctx context.Context, p *domain.PayoutPayee) err
 	).Scan(&p.ID)
 }
 
+func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy uuid.UUID) (*domain.PayoutPayee, error) {
+	now := time.Now().UTC()
+	return scanPayee(r.pool.QueryRow(ctx, `
+		UPDATE payout_payees
+		SET is_verified = TRUE, verified_by = $3, verified_at = $4, updated_at = $4
+		WHERE id = $1 AND property_id = $2
+		RETURNING `+payeeCols,
+		id, propertyID, verifiedBy, now,
+	))
+}
+
+
 func (r *PayoutRepo) GetPayeeByID(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
 	return scanPayee(r.pool.QueryRow(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE id=$1`, id))
 }

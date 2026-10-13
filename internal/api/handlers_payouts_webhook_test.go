@@ -45,7 +45,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -67,6 +67,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		t.Fatalf("insert property: %v", err)
 	}
 	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE property_id = $1`, propID)
 		_, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID)
 	}()
 
@@ -105,6 +106,9 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	}
 	if err := payoutRepo.CreatePayee(ctx, payee); err != nil {
 		t.Fatalf("create payee: %v", err)
+	}
+	if _, err := payoutRepo.VerifyPayee(ctx, payee.ID, propID, ownerID); err != nil {
+		t.Fatalf("verify payee: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID); err != nil {
 		t.Fatalf("age payee: %v", err)

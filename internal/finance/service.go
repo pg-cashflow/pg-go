@@ -183,11 +183,11 @@ func (s *Service) CreateExpense(ctx context.Context, in CreateExpenseInput) (*do
 	}
 	if e.Status == domain.ExpenseApproved {
 		approval = nil
+		if in.Emergency {
+			s.publish(ctx, in.PropertyID, domain.EvtExpenseApproved, map[string]any{"expense_id": e.ID, "emergency": true})
+		}
 	}
 	s.publish(ctx, in.PropertyID, domain.EvtExpenseCreated, e)
-	if in.Emergency {
-		s.publish(ctx, in.PropertyID, domain.EvtExpenseApproved, map[string]any{"expense_id": e.ID, "emergency": true})
-	}
 	return e, approval, nil
 }
 

@@ -664,3 +664,111 @@ func TestPayExpense_Concurrency_Bound(t *testing.T) {
 		t.Fatalf("expected total paid 600000, got %d", totalPaid)
 	}
 }
+
+type recordingPublisher struct {
+	events []domain.Event
+}
+
+func (r *recordingPublisher) Publish(_ context.Context, e domain.Event) error {
+	r.events = append(r.events, e)
+	return nil
+}
+
+func TestCreateExpense_EmergencyApprovalEventParity(t *testing.T) {
+	ctx := context.Background()
+	pid := uuid.New()
+	mgrID := uuid.New()
+
+	t.Run("emergency without bypass keeps pending status and does not publish approved event", func(t *testing.T) {
+		st := NewMemoryStore()
+		policy := domain.ApprovalPolicy{
+			PropertyID:                  pid,
+			ManagerDailyLimitPaise:      100_000_00,
+			SingleExpenseLimitPaise:     50_000_00,
+			ManagerMonthlyLimitPaise:    500_000_00,
+			OwnerApprovalThresholdPaise: 5_000_00, // lower threshold to force approval
+			EmergencyBypassEnabled:      false,   // bypass disabled
+		}
+		if err := st.SavePolicy(ctx, policy); err != nil {
+			t.Fatalf("save policy: %v", err)
+		}
+
+		pub := &recordingPublisher{}
+		svc := NewService(st, pub)
+
+		e, approval, err := svc.CreateExpense(ctx, CreateExpenseInput{
+			PropertyID:     pid,
+			ActorID:        mgrID,
+			ActorRole:      string(domain.RoleManager),
+			CategoryCode:   "vendor",
+			AmountPaise:    10_000_00, // exceeds OwnerApprovalThresholdPaise
+			Emergency:      true,
+			IdempotencyKey: "exp-emerg-no-bypass",
+		})
+		if err != nil {
+			t.Fatalf("create expense: %v", err)
+		}
+		if e.Status != domain.ExpensePendingApproval {
+			t.Fatalf("expected status %s, got %s", domain.ExpensePendingApproval, e.Status)
+		}
+		if approval == nil {
+			t.Fatalf("expected non-nil approval request")
+		}
+
+		// Verify published events
+		for _, evt := range pub.events {
+			if evt.EventType == domain.EvtExpenseApproved {
+				t.Fatalf("invariant violation: EvtExpenseApproved published for pending expense")
+			}
+		}
+	})
+
+	t.Run("emergency with bypass enabled approves expense and publishes approved event", func(t *testing.T) {
+		st := NewMemoryStore()
+		policy := domain.ApprovalPolicy{
+			PropertyID:                  pid,
+			ManagerDailyLimitPaise:      100_000_00,
+			SingleExpenseLimitPaise:     50_000_00,
+			ManagerMonthlyLimitPaise:    500_000_00,
+			OwnerApprovalThresholdPaise: 5_000_00,
+			EmergencyBypassEnabled:      true, // bypass enabled
+		}
+		if err := st.SavePolicy(ctx, policy); err != nil {
+			t.Fatalf("save policy: %v", err)
+		}
+
+		pub := &recordingPublisher{}
+		svc := NewService(st, pub)
+
+		e, approval, err := svc.CreateExpense(ctx, CreateExpenseInput{
+			PropertyID:     pid,
+			ActorID:        mgrID,
+			ActorRole:      string(domain.RoleManager),
+			CategoryCode:   "vendor",
+			AmountPaise:    10_000_00,
+			Emergency:      true,
+			IdempotencyKey: "exp-emerg-with-bypass",
+		})
+		if err != nil {
+			t.Fatalf("create expense: %v", err)
+		}
+		if e.Status != domain.ExpenseApproved {
+			t.Fatalf("expected status %s, got %s", domain.ExpenseApproved, e.Status)
+		}
+		if approval != nil {
+			t.Fatalf("expected nil approval for auto-approved emergency expense")
+		}
+
+		var approvedEvtFound bool
+		for _, evt := range pub.events {
+			if evt.EventType == domain.EvtExpenseApproved {
+				approvedEvtFound = true
+				break
+			}
+		}
+		if !approvedEvtFound {
+			t.Fatalf("expected EvtExpenseApproved event to be published")
+		}
+	})
+}
+

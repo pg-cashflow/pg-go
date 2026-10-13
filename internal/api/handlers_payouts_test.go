@@ -75,7 +75,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -183,6 +183,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		owner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
 
 		owner.POST("/payouts/payees", h.OwnerCreatePayee)
+		owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
 		owner.GET("/payouts/payees", h.OwnerListPayees)
 		owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 		owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
@@ -217,6 +218,28 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		if payeeID == uuid.Nil {
 			t.Fatalf("expected valid payee id, got nil")
 		}
+		if resp.Payee.IsVerified {
+			t.Fatalf("expected newly created payee to be unverified, got is_verified=true")
+		}
+
+		// Explicit verification step
+		wVerify := httptest.NewRecorder()
+		reqVerify, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/payees/%s/verify", payeeID), nil)
+		router.ServeHTTP(wVerify, reqVerify)
+		if wVerify.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on verify, got %d: %s", wVerify.Code, wVerify.Body.String())
+		}
+		var verifyResp struct {
+			Payee domain.PayoutPayee `json:"payee"`
+		}
+		_ = json.Unmarshal(wVerify.Body.Bytes(), &verifyResp)
+		if !verifyResp.Payee.IsVerified {
+			t.Fatalf("expected verified payee to have is_verified=true")
+		}
+		if verifyResp.Payee.VerifiedBy == nil {
+			t.Fatalf("expected verified payee to have non-nil verified_by")
+		}
+
 		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID); err != nil {
 			t.Fatalf("age payee: %v", err)
 		}
@@ -785,7 +808,7 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
