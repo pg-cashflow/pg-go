@@ -17,6 +17,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -163,6 +164,77 @@ func (s *fakeOwnerAuthService) VerifyStepUpOTPSpecific(_ context.Context, _, _, 
 	return nil
 }
 
+type fakeOwnerTenantService struct {
+	api.TenantService
+	attachedPhones map[uuid.UUID]string
+}
+
+func (s *fakeOwnerTenantService) AttachPhone(_ context.Context, id uuid.UUID, phone string) error {
+	s.attachedPhones[id] = phone
+	return nil
+}
+
+type fakeOwnerPropertyStore struct {
+	props map[uuid.UUID]*domain.Property
+}
+
+func (s *fakeOwnerPropertyStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Property, error) {
+	p, ok := s.props[id]
+	if !ok {
+		return nil, fmt.Errorf("property not found")
+	}
+	cp := *p
+	return &cp, nil
+}
+func (s *fakeOwnerPropertyStore) List(_ context.Context) ([]domain.Property, error) {
+	var list []domain.Property
+	for _, p := range s.props {
+		list = append(list, *p)
+	}
+	return list, nil
+}
+func (s *fakeOwnerPropertyStore) GetByOwnerPhone(_ context.Context, phone string) (*domain.Property, error) {
+	for _, p := range s.props {
+		if p.OwnerPhone == phone {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+func (s *fakeOwnerPropertyStore) GetByInviteCode(_ context.Context, code string) (*domain.Property, error) {
+	for _, p := range s.props {
+		if p.InviteCode == code {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+func (s *fakeOwnerPropertyStore) Create(_ context.Context, p *domain.Property) error {
+	s.props[p.ID] = p
+	return nil
+}
+
+type fakeOwnerJoinService struct {
+	api.JoinService
+	rotatedInvites map[uuid.UUID]string
+	rejectedJoins  map[uuid.UUID]bool
+}
+
+func (s *fakeOwnerJoinService) RotateInvite(_ context.Context, pid uuid.UUID) (string, error) {
+	code := "INVITE-ROTATED-" + pid.String()[:4]
+	s.rotatedInvites[pid] = code
+	return code, nil
+}
+
+func (s *fakeOwnerJoinService) Reject(_ context.Context, pid, id uuid.UUID) error {
+	if s.rejectedJoins[id] {
+		return nil
+	}
+	return joinsvc.ErrNotFound
+}
+
 // TestOwnerSensitiveRoutes_T4a tests the high-risk money-moving and PII endpoints:
 // OwnerTenantKYCPhoto, TenantIDPhoto, WaiveDue, DueToken, PostReimbursement
 func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
@@ -220,11 +292,27 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 
 	dueOwnerID := uuid.New()
 	dueForeignID := uuid.New()
+	dueOwnerPaidID := uuid.New()
 	dueStore := &fakeOwnerDueStore{
 		dues: map[uuid.UUID]*domain.Due{
-			dueOwnerID:   {ID: dueOwnerID, PropertyID: propOwner, TenantID: ownerTenantID, Amount: 100000, Status: domain.DueStatusPending},
-			dueForeignID: {ID: dueForeignID, PropertyID: propForeign, TenantID: foreignTenantID, Amount: 200000, Status: domain.DueStatusPending},
+			dueOwnerID:     {ID: dueOwnerID, PropertyID: propOwner, TenantID: ownerTenantID, Amount: 100000, Status: domain.DueStatusPending},
+			dueOwnerPaidID: {ID: dueOwnerPaidID, PropertyID: propOwner, TenantID: ownerTenantID, Amount: 100000, Status: domain.DueStatusPaid},
+			dueForeignID:   {ID: dueForeignID, PropertyID: propForeign, TenantID: foreignTenantID, Amount: 200000, Status: domain.DueStatusPending},
 		},
+	}
+
+	propStore := &fakeOwnerPropertyStore{
+		props: map[uuid.UUID]*domain.Property{
+			propOwner:   {ID: propOwner, OwnerPhone: ownerPhone, InviteCode: "INVITE123", PaymentMode: domain.PaymentModeManual},
+			propForeign: {ID: propForeign, OwnerPhone: "+919999900000", InviteCode: "INVITEFOREIGN", PaymentMode: domain.PaymentModeManual},
+		},
+	}
+	tenantSvc := &fakeOwnerTenantService{attachedPhones: make(map[uuid.UUID]string)}
+	validJoinID := uuid.New()
+	foreignJoinID := uuid.New()
+	joinSvc := &fakeOwnerJoinService{
+		rotatedInvites: make(map[uuid.UUID]string),
+		rejectedJoins:  map[uuid.UUID]bool{validJoinID: true},
 	}
 
 	billingSvc := &fakeOwnerBillingService{waivedDues: make(map[uuid.UUID]bool)}
@@ -235,7 +323,9 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 	h := &api.Handlers{
 		Deps: api.Deps{
 			JWTSecret:        jwtSecret,
+			PropertyStore:    propStore,
 			TenantStore:      tenantStore,
+			Tenants:          tenantSvc,
 			UserStore:        userStore,
 			Auth:             authSvc,
 			KYCSvc:           kycSvc,
@@ -245,16 +335,23 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 			MagicLinkBaseURL: "https://pg.example.com",
 			Finance:          financeSvc,
 			FinanceEnabled:   true,
+			Joins:            joinSvc,
 		},
 	}
 
 	r := gin.New()
-	ownerGroup := r.Group("/owner", auth.RequireOwner(jwtSecret, nil))
+	ownerGroup := r.Group("/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
 	ownerGroup.GET("/tenants/:id/kyc/photo", h.OwnerTenantKYCPhoto)
 	ownerGroup.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
 	ownerGroup.POST("/dues/:id/waive", h.WaiveDue)
 	ownerGroup.POST("/dues/:id/token", h.DueToken)
 	ownerGroup.POST("/finance/reimbursements", h.PostReimbursement)
+	ownerGroup.GET("/dues/:id/pay", h.OwnerDuePay)
+	ownerGroup.POST("/tenants/:id/prorate", h.TenantProrate)
+	ownerGroup.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
+	ownerGroup.POST("/join-requests/:id/reject", h.RejectJoin)
+	ownerGroup.GET("/invite", h.OwnerInvite)
+	ownerGroup.POST("/invite/rotate", h.OwnerRotateInvite)
 
 	// 1. OwnerTenantKYCPhoto
 	t.Run("OwnerTenantKYCPhoto: Happy path 200", func(t *testing.T) {
@@ -426,6 +523,211 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 when missing Idempotency-Key, got %d", w.Code)
+		}
+	})
+
+	t.Run("WaiveDue: Happy path 200 with step-up auth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/dues/"+dueOwnerID.String()+"/waive", bytes.NewBufferString(`{"otp":"123456"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for waive due with step-up auth, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	// 6. OwnerDuePay
+	t.Run("OwnerDuePay: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/dues/"+dueOwnerPaidID.String()+"/pay", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("OwnerDuePay: Foreign property returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/dues/"+dueForeignID.String()+"/pay", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign due, got %d", w.Code)
+		}
+	})
+
+	t.Run("OwnerDuePay: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/dues/"+dueOwnerPaidID.String()+"/pay", nil)
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
+		}
+	})
+
+	// 7. TenantProrate
+	t.Run("TenantProrate: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+ownerTenantID.String()+"/prorate", bytes.NewBufferString(`{"vacate_date":"2026-10-31T00:00:00Z"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("TenantProrate: Foreign property returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+foreignTenantID.String()+"/prorate", bytes.NewBufferString(`{"vacate_date":"2026-10-31T00:00:00Z"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign tenant prorate, got %d", w.Code)
+		}
+	})
+
+	t.Run("TenantProrate: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+ownerTenantID.String()+"/prorate", bytes.NewBufferString(`{"vacate_date":"2026-10-31T00:00:00Z"}`))
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
+		}
+	})
+
+	// 8. TenantAttachPhone
+	t.Run("TenantAttachPhone: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+ownerTenantID.String()+"/attach-phone", bytes.NewBufferString(`{"phone":"+919876543211"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("TenantAttachPhone: Foreign property returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+foreignTenantID.String()+"/attach-phone", bytes.NewBufferString(`{"phone":"+919876543211"}`))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign tenant attach phone, got %d", w.Code)
+		}
+	})
+
+	t.Run("TenantAttachPhone: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/tenants/"+ownerTenantID.String()+"/attach-phone", bytes.NewBufferString(`{"phone":"+919876543211"}`))
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
+		}
+	})
+
+	// 9. RejectJoin
+	t.Run("RejectJoin: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/join-requests/"+validJoinID.String()+"/reject", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("RejectJoin: Foreign / not found join request returns 404", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/join-requests/"+foreignJoinID.String()+"/reject", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign join request, got %d", w.Code)
+		}
+	})
+
+	t.Run("RejectJoin: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/join-requests/"+validJoinID.String()+"/reject", nil)
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
+		}
+	})
+
+	// 10. OwnerRotateInvite
+	t.Run("OwnerRotateInvite: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("OwnerRotateInvite: Foreign property returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("X-Property-ID", propForeign.String())
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for foreign property scope, got %d", w.Code)
+		}
+	})
+
+	t.Run("OwnerRotateInvite: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
+		}
+	})
+
+	// 11. OwnerInvite
+	t.Run("OwnerInvite: Happy path 200", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("OwnerInvite: Foreign property returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("X-Property-ID", propForeign.String())
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for foreign property scope, got %d", w.Code)
+		}
+	})
+
+	t.Run("OwnerInvite: Tenant role returns 403", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
+		req.Header.Set("Authorization", "Bearer "+tenantToken)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
 		}
 	})
 }
