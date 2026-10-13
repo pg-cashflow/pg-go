@@ -50,6 +50,10 @@ func TestLivePostgresFailClosedRLS(t *testing.T) {
 				GRANT USAGE ON SCHEMA public TO pgapp_app;
 				GRANT ALL ON ALL TABLES IN SCHEMA public TO pgapp_app;
 			END IF;
+			BEGIN
+				EXECUTE format('GRANT pgapp_app TO %I', CURRENT_USER);
+			EXCEPTION WHEN OTHERS THEN NULL;
+			END;
 		END
 		$$;
 	`)

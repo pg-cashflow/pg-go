@@ -878,8 +878,8 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	hash := "mock_hash_1234"
 	last4 := "1234"
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, created_at)
-		VALUES ($1, $2, 'vendor', 'Auto Vendor', $3, $4, $5, NOW() - INTERVAL '25 hours')`, payeeID, propID, hash, last4, vpa)
+		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, is_verified, created_at)
+		VALUES ($1, $2, 'vendor', 'Auto Vendor', $3, $4, $5, TRUE, NOW() - INTERVAL '25 hours')`, payeeID, propID, hash, last4, vpa)
 	if err != nil {
 		t.Fatalf("insert payee: %v", err)
 	}

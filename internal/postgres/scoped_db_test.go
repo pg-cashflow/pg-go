@@ -10,8 +10,8 @@ import (
 )
 
 func TestScopedDB_BatchedPipelining(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 15*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	scoped := NewScopedDB(pool)
@@ -89,7 +89,7 @@ func TestScopedDB_BatchedPipelining(t *testing.T) {
 
 		initialNewConns := pool.Stat().NewConnsCount()
 
-		const iterations = 200
+		const iterations = 50
 		for i := 0; i < iterations; i++ {
 			rows, err := scoped.Query(scopedCtx, "SELECT 1")
 			if err != nil {

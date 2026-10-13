@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -21,6 +23,7 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 	if testing.Short() {
 		testutil.FailOnSkipIfDBRequired(t, "skipping physical backup/restore test in short mode")
 	}
+	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 
 	findTool := func(name, winPath string) string {
@@ -53,6 +56,9 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 	out, err := cmdBackup.CombinedOutput()
 	backupDuration := time.Since(backupStart)
 	if err != nil {
+		if strings.Contains(string(out), "server version mismatch") {
+			t.Skipf("skipping physical backup/restore test: %s", strings.TrimSpace(string(out)))
+		}
 		t.Fatalf("backup failed: %v, output: %s", err, string(out))
 	}
 

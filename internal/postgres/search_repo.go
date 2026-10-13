@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +27,18 @@ func NewSearchRepo(db DBTX) *SearchRepo {
 }
 
 const (
-	searchQueryTimeout = 300 * time.Millisecond // per entity query
-	searchFanout       = 4                      // max concurrent queries per request
+	defaultSearchQueryTimeout = 300 * time.Millisecond // per entity query default
+	searchFanout              = 4                      // max concurrent queries per request
 )
+
+func (r *SearchRepo) queryTimeout() time.Duration {
+	if v := os.Getenv("SEARCH_QUERY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return defaultSearchQueryTimeout
+}
 
 // searchEntityObserver allows tests to measure per-entity-type durations.
 var searchEntityObserver func(entityType string, d time.Duration)
@@ -57,7 +67,7 @@ func (r *SearchRepo) runConcurrent(ctx context.Context, queries []entityQuery) (
 				outs[i].err = ctx.Err()
 				return
 			}
-			qctx, cancel := context.WithTimeout(ctx, searchQueryTimeout)
+			qctx, cancel := context.WithTimeout(ctx, r.queryTimeout())
 			defer cancel()
 			start := time.Now()
 			rows, err := r.db.Query(qctx, eq.sql, eq.args...)

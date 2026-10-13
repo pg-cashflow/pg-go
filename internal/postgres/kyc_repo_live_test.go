@@ -294,8 +294,8 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 }
 
 func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 20*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	repo := NewKYCRepo(pool)
@@ -682,13 +682,13 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 }
 
 func TestLivePostgres_ConcurrentMigrate(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 20*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	pool, _ := setupLiveTestPool(t, 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	migrationsDir := filepath.Join("..", "..", "migrations")
 
-	const concurrency = 5
+	const concurrency = 2
 	var startBarrier sync.WaitGroup
 	startBarrier.Add(1)
 

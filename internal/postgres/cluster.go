@@ -200,6 +200,19 @@ func ConfigurePoolConfig(cfg *pgxpool.Config, opt PoolOptions) {
 	cfg.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = strconv.FormatInt(idleInTxTimeout.Milliseconds(), 10)
 	cfg.ConnConfig.RuntimeParams["lock_timeout"] = strconv.FormatInt(lockTimeout.Milliseconds(), 10)
 
+	prevAfterConnect := cfg.AfterConnect
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if prevAfterConnect != nil {
+			if err := prevAfterConnect(ctx, conn); err != nil {
+				return err
+			}
+		}
+		setSQL := fmt.Sprintf("SET statement_timeout = '%dms'; SET idle_in_transaction_session_timeout = '%dms'; SET lock_timeout = '%dms';",
+			statementTimeout.Milliseconds(), idleInTxTimeout.Milliseconds(), lockTimeout.Milliseconds())
+		_, err := conn.Exec(ctx, setSQL)
+		return err
+	}
+
 	// PgBouncer transaction-pooling compatibility:
 	// In PgBouncer transaction mode, prepared statements cannot be cached across transactions.
 	// Setting QueryExecModeSimpleProtocol and zeroing cache capacity guarantees zero prepared-statement collision errors.

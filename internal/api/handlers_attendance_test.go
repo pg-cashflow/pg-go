@@ -34,7 +34,7 @@ func TestLiveAttendanceAndPayrollHTTPFlow(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)

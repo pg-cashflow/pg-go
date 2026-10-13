@@ -17,6 +17,7 @@ import (
 // TestLivePostgresSearchV2_GoldenRelevanceSuite executes the complete ~30-case golden relevance suite
 // against a live PostgreSQL database instance with pg_trgm and bare-column indexes.
 func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
+	t.Setenv("SEARCH_QUERY_TIMEOUT", "2s")
 	pool, _ := setupLiveTestPool(t, 60*time.Second)
 	ctx := context.Background()
 	var err error

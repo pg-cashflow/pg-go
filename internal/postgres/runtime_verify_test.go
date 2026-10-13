@@ -9,10 +9,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 func TestLivePostgreSQL_SessionTimeouts(t *testing.T) {
+	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
