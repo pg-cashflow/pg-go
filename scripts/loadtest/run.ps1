@@ -33,8 +33,12 @@ if (Test-Path ".env") {
     }
 }
 
-if (-not $DatabaseUrl -and $env:DATABASE_URL) {
-    $DatabaseUrl = $env:DATABASE_URL
+if (-not $DatabaseUrl) {
+    if ($env:TEST_PG_PERF_DATABASE_URL) {
+        $DatabaseUrl = $env:TEST_PG_PERF_DATABASE_URL
+    } elseif ($env:DATABASE_URL) {
+        $DatabaseUrl = $env:DATABASE_URL
+    }
 }
 
 function Write-Step {
