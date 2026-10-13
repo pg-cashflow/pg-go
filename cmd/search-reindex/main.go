@@ -7,9 +7,13 @@ package main
 // No reindexing is required or supported.
 //
 // Usage: this binary now exits immediately with a deprecation message.
-import "log"
+import (
+	"flag"
+	"log"
+)
 
 func main() {
+	flag.Parse()
 	log.Println("[DEPRECATED] search-reindex: ADR-012 decommissioned vector search. No action taken.")
 	log.Println("Search V2 operates directly on live tables (tenants, dues, payments, ...) via pg_trgm indexes.")
 }

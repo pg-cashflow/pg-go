@@ -34,6 +34,7 @@ var allBinaries = []string{
 	"kyc-expiry",
 	"migrate",
 	"search-reindex",
+	"sandbox-smoke",
 }
 
 // TestGate12_BinariesMissingEnvFailFast validates that all cmd/ binaries
@@ -105,6 +106,98 @@ func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
 			if exitErr.ExitCode() == 0 {
 				t.Fatalf("expected non-zero exit code for %s, got 0", bin)
 			}
+		})
+	}
+}
+
+// TestGate12_HelpFlagAndInvalidFlag asserts for each cmd/* binary that:
+// 1. -help exits 0.
+// 2. An invalid flag exits non-zero (POSIX exit code 2).
+func TestGate12_HelpFlagAndInvalidFlag(t *testing.T) {
+	for _, bin := range allBinaries {
+		t.Run(bin+"_help", func(t *testing.T) {
+			cmdPath := filepath.Join("..", "..", "cmd", bin)
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, "go", "run", ".", "-help")
+			cmd.Dir = cmdPath
+			cmd.Env = isolatedTestEnv("GOTOOLCHAIN=local", "GOPROXY=off")
+
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("expected binary %s -help to exit 0, got err: %v (out: %s)", bin, err, string(out))
+			}
+		})
+
+		t.Run(bin+"_invalid_flag", func(t *testing.T) {
+			cmdPath := filepath.Join("..", "..", "cmd", bin)
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer cancel()
+
+			cmd := exec.CommandContext(ctx, "go", "run", ".", "-invalid-unknown-flag-xyz")
+			cmd.Dir = cmdPath
+			cmd.Env = isolatedTestEnv("GOTOOLCHAIN=local", "GOPROXY=off")
+
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("expected binary %s with invalid flag to exit non-zero, got success: %s", bin, string(out))
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() == 0 {
+				t.Fatalf("expected non-zero exit code for flag error on %s, got %v (out: %s)", bin, err, string(out))
+			}
+		})
+	}
+}
+
+// TestGate12_JobBinariesIdempotentLiveRun verifies that background jobs run cleanly against
+// the database with exit code 0 and are safe to run twice (idempotent).
+func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
+	_ = godotenv.Load("../../.env")
+	testutil.RequireDB(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
+	}
+
+	cronBinaries := []string{
+		"daily-rollup",
+		"kyc-expiry",
+		"kpi-snapshot",
+		"search-reindex",
+		"migrate",
+	}
+
+	for _, bin := range cronBinaries {
+		t.Run(bin, func(t *testing.T) {
+			cmdPath := filepath.Join("..", "..", "cmd", bin)
+			runJob := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				cmd := exec.CommandContext(ctx, "go", "run", ".")
+				cmd.Dir = cmdPath
+				cmd.Env = isolatedTestEnv(
+					"GOTOOLCHAIN=local",
+					"GOPROXY=off",
+					"DATABASE_URL="+cfg.DatabaseURL,
+					"DATABASE_MAINT_URL="+cfg.DatabaseMaintURL,
+					"MIGRATIONS_DIR="+filepath.Join("..", "..", "migrations"),
+				)
+
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("expected binary %s to exit 0 on live DB run, got err: %v (out: %s)", bin, err, string(out))
+				}
+			}
+
+			// Run 1: initial run against live DB exits 0
+			runJob()
+
+			// Run 2: idempotent repeated run exits 0 without duplicate errors
+			runJob()
 		})
 	}
 }
