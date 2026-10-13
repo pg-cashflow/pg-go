@@ -73,6 +73,8 @@ func paymentClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodePaymentDuplicateTxn)
 	case errors.Is(err, postgres.ErrDueNotPaidDeposit):
 		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodePaymentDueNotOpen)
+	case errors.Is(err, payment.ErrPropertyMismatch):
+		return clientErr(http.StatusNotFound, "payment not found for property")
 	default:
 		return err
 	}

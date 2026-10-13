@@ -862,7 +862,7 @@ func (h *Handlers) OwnerROIScenario(c *gin.Context) {
 		return
 	}
 	if err := in.Validate(); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "finance.invalidAmount"})
+		respondErr(c, clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.CodeFinanceInvalidAmount))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"scenario": roi.Simulate(in)})

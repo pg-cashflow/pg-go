@@ -25,6 +25,7 @@ var (
 	ErrEmptyTxnID            = errors.New("payment: upi txn id is required")
 	ErrRequiresConfirmation  = errors.New("payment: heuristic match requires owner confirmation")
 	ErrInvalidAmount         = errors.New("payment: amount must be strictly positive")
+	ErrPropertyMismatch      = errors.New("payment: property mismatch")
 )
 
 // txFn runs work with optionally transactional repos.
@@ -217,7 +218,7 @@ func (s *Service) VerifyPayment(ctx context.Context, in VerifyPaymentInput) (*do
 		return nil, err
 	}
 	if due.PropertyID != in.PropertyID {
-		return nil, errors.New("payment: property mismatch")
+		return nil, ErrPropertyMismatch
 	}
 
 	// Idempotency and UTR uniqueness check (INV-001)
@@ -291,7 +292,7 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 		return nil, err
 	}
 	if in.PropertyID != uuid.Nil && due.PropertyID != in.PropertyID {
-		return nil, errors.New("payment: property mismatch")
+		return nil, ErrPropertyMismatch
 	}
 
 	var correction *domain.FinancialCorrection

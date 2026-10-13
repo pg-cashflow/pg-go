@@ -680,6 +680,66 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			t.Errorf("expected 0 calls to Cashfree when database unavailable, got %d", cfClient.refundCalls)
 		}
 	})
+
+	t.Run("rejects cross-property refund attempt with 404", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		otherPropID := uuid.New()
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: otherPropID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: otherPropID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 550000,
+			"reason":       "Cross property refund attempt",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+		if errResp["error"] != "payment not found for property" {
+			t.Errorf("expected 'payment not found for property', got %q", errResp["error"])
+		}
+		if len(gwRepo.refunds) != 0 {
+			t.Errorf("expected no refunds created in repo, got %d", len(gwRepo.refunds))
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

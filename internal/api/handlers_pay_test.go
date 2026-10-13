@@ -918,3 +918,56 @@ func TestTenantDuePayBatch(t *testing.T) {
 		t.Fatalf("expected 400 on invalid option, got %d", recInv.Code)
 	}
 }
+
+type mockCorrectPayService struct {
+	stubPay
+	err error
+}
+
+func (m *mockCorrectPayService) CorrectPayment(context.Context, payment.CorrectPaymentInput) (*domain.FinancialCorrection, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &domain.FinancialCorrection{}, nil
+}
+
+func TestOwnerCorrectPayment_PropertyMismatch404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+	payID := uuid.New()
+
+	h := &Handlers{Deps: Deps{
+		Payments: &mockCorrectPayService{err: payment.ErrPropertyMismatch},
+	}}
+
+	r := gin.New()
+	r.POST("/owner/payments/:id/correct", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		h.OwnerCorrectPayment(c)
+	})
+
+	body := map[string]any{
+		"corrected_amount_paise": 400000,
+		"reason":                 "Testing IDOR property mismatch",
+	}
+	buf, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/owner/payments/"+payID.String()+"/correct", bytes.NewReader(buf))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found on cross-property mismatch, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var errResp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+	if errResp["error"] != "payment not found for property" {
+		t.Errorf("expected 'payment not found for property', got %q", errResp["error"])
+	}
+}
+

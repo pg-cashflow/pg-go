@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -188,8 +189,8 @@ func TestVerifyPayment(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected property mismatch error for cross-property due replay")
 		}
-		if err.Error() != "payment: property mismatch" {
-			t.Fatalf("expected 'payment: property mismatch', got: %v", err)
+		if !errors.Is(err, ErrPropertyMismatch) {
+			t.Fatalf("expected ErrPropertyMismatch, got: %v", err)
 		}
 	})
 }
@@ -231,6 +232,20 @@ func TestCorrectPayment(t *testing.T) {
 	tenants := &stubTenants{byID: map[uuid.UUID]*domain.Tenant{tenantID: {ID: tenantID, PropertyID: propID}}}
 	pub := &recordingPublisher{}
 	svc := NewService(dues, pays, tenants, nil, pub)
+
+	t.Run("rejects cross-property payment correction", func(t *testing.T) {
+		otherProp := uuid.New()
+		_, err := svc.CorrectPayment(ctx, CorrectPaymentInput{
+			PropertyID:      otherProp,
+			PaymentID:       paymentID,
+			CorrectedAmount: 400000,
+			Reason:          "Cross property correction attempt",
+			CorrectedBy:     user,
+		})
+		if !errors.Is(err, ErrPropertyMismatch) {
+			t.Fatalf("expected ErrPropertyMismatch, got: %v", err)
+		}
+	})
 
 	t.Run("requires reason", func(t *testing.T) {
 		_, err := svc.CorrectPayment(ctx, CorrectPaymentInput{
