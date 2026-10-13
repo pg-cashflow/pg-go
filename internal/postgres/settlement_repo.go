@@ -39,7 +39,7 @@ func (r *SettlementRepo) UpsertSettlement(ctx context.Context, s *domain.Gateway
 	if s.PropertyID == nil {
 		if s.OrderID != nil && *s.OrderID != "" {
 			var pid uuid.UUID
-			if err := r.pool.QueryRow(ctx, `SELECT property_id FROM payments WHERE order_id = $1 LIMIT 1`, *s.OrderID).Scan(&pid); err == nil {
+			if err := r.pool.QueryRow(ctx, `SELECT d.property_id FROM payment_intents pi JOIN dues d ON d.id = pi.due_id WHERE pi.provider_order_id = $1 LIMIT 1`, *s.OrderID).Scan(&pid); err == nil {
 				s.PropertyID = &pid
 			}
 		}
@@ -247,7 +247,7 @@ func (r *SettlementRepo) ListSettlements(ctx context.Context, propertyID *uuid.U
 	argIdx := 1
 
 	if propertyID != nil {
-		whereClauses = append(whereClauses, fmt.Sprintf("(property_id = $%d OR property_id IS NULL)", argIdx))
+		whereClauses = append(whereClauses, fmt.Sprintf("property_id = $%d", argIdx))
 		args = append(args, *propertyID)
 		argIdx++
 	}

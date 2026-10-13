@@ -169,7 +169,10 @@ func (h *Handlers) OwnerSwitchProperty(c *gin.Context) {
 	}
 
 	if h.UserStore != nil {
-		_ = h.UserStore.SetPropertyID(c.Request.Context(), claims.UserID, targetID)
+		if err := h.UserStore.SetPropertyID(c.Request.Context(), claims.UserID, targetID); err != nil {
+			respondErr(c, err)
+			return
+		}
 	}
 
 	prop.UPIVPA = ""

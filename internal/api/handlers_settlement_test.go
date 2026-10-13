@@ -59,7 +59,7 @@ func (m *mockAPISettlementRepo) GetSettlementByCFID(_ context.Context, cfID, ord
 func (m *mockAPISettlementRepo) ListSettlements(_ context.Context, pid *uuid.UUID, filter domain.SettlementFilter) ([]*domain.GatewaySettlement, int, error) {
 	var list []*domain.GatewaySettlement
 	for _, v := range m.items {
-		if pid != nil && v.PropertyID != nil && *v.PropertyID != *pid {
+		if pid != nil && (v.PropertyID == nil || *v.PropertyID != *pid) {
 			continue
 		}
 		if filter.Status != nil && v.ReconciliationStatus != *filter.Status {
@@ -110,6 +110,14 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 		ReconciliationStatus: domain.ReconDiscrepancy,
 	}
 
+	nilPropStlmID := uuid.New()
+	stlmRepo.items[nilPropStlmID] = &domain.GatewaySettlement{
+		ID:                   nilPropStlmID,
+		PropertyID:           nil,
+		CFSettlementID:       "CF_SETTLE_UNASSIGNED",
+		ReconciliationStatus: domain.ReconDiscrepancy,
+	}
+
 	h := &Handlers{
 		Deps: Deps{
 			Pool: nil,
@@ -150,7 +158,7 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 				return
 			}
 			stlm, err := stlmRepo.GetSettlement(c.Request.Context(), id)
-			if err != nil || stlm == nil || (stlm.PropertyID != nil && *stlm.PropertyID != pid) {
+			if err != nil || stlm == nil || stlm.PropertyID == nil || *stlm.PropertyID != pid {
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 				return
 			}
@@ -175,7 +183,7 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 				return
 			}
 			stlm, err := stlmRepo.GetSettlement(c.Request.Context(), id)
-			if err != nil || stlm == nil || (stlm.PropertyID != nil && *stlm.PropertyID != pid) {
+			if err != nil || stlm == nil || stlm.PropertyID == nil || *stlm.PropertyID != pid {
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 				return
 			}
@@ -247,6 +255,28 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 		}
 		if updated.ResolutionNotes == nil || *updated.ResolutionNotes != "Verified manually with bank statement" {
 			t.Errorf("expected resolution notes persisted")
+		}
+	})
+
+	t.Run("GET /owner/settlements/:id returns 404 for unassigned settlement with nil property", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("/owner/settlements/%s", nilPropStlmID), nil)
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found on nil property IDOR, got %d", w.Code)
+		}
+	})
+
+	t.Run("POST /owner/settlements/:id/resolve returns 404 for unassigned settlement with nil property", func(t *testing.T) {
+		payload := `{"notes":"Should fail because property is nil"}`
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/settlements/%s/resolve", nilPropStlmID), bytes.NewBufferString(payload))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 Not Found on nil property resolve, got %d", w.Code)
 		}
 	})
 }

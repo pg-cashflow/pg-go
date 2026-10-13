@@ -74,7 +74,7 @@ func (h *Handlers) OwnerGetSettlement(c *gin.Context) {
 	}
 
 	stlm, err := repo.GetSettlement(c.Request.Context(), id)
-	if err != nil || stlm == nil || (stlm.PropertyID != nil && *stlm.PropertyID != pid) {
+	if err != nil || stlm == nil || stlm.PropertyID == nil || *stlm.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -111,7 +111,7 @@ func (h *Handlers) OwnerResolveSettlementDiscrepancy(c *gin.Context) {
 	}
 
 	stlm, err := repo.GetSettlement(c.Request.Context(), id)
-	if err != nil || stlm == nil || (stlm.PropertyID != nil && *stlm.PropertyID != pid) {
+	if err != nil || stlm == nil || stlm.PropertyID == nil || *stlm.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}

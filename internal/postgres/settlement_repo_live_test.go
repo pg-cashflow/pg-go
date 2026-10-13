@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -633,6 +634,121 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 		}
 		if fetched.AdjustmentPaise != -150000 {
 			t.Fatalf("expected adjustment_paise preserved at -150000, got %d", fetched.AdjustmentPaise)
+		}
+	})
+
+	t.Run("settlement property_id resolved from payment_intent provider_order_id", func(t *testing.T) {
+		propID := uuid.New()
+		tenantID := uuid.New()
+		dueID := uuid.New()
+		intentID := uuid.New()
+		orderID := "order_res_" + uuid.New().String()[:8]
+		cfSettlementID := "CF_RES_" + uuid.New().String()[:8]
+
+		// Insert property, tenant, due, intent
+		_, err := pool.Exec(ctx, `
+			INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+			VALUES ($1, 'Property Settle Recon', '123 Test St', '+919876543210', 'owner@upi', 'Owner', 'owner@recon.com', $2)
+		`, propID, uuid.New().String()[:8])
+		if err != nil {
+			t.Fatalf("insert property: %v", err)
+		}
+		defer func() {
+			ctxClean := context.Background()
+			_, _ = pool.Exec(ctxClean, `DELETE FROM gateway_settlements WHERE cf_settlement_id = $1`, cfSettlementID)
+			_, _ = pool.Exec(ctxClean, `DELETE FROM payment_intents WHERE id = $1`, intentID)
+			_, _ = pool.Exec(ctxClean, `DELETE FROM dues WHERE id = $1`, dueID)
+			_, _ = pool.Exec(ctxClean, `DELETE FROM tenants WHERE id = $1`, tenantID)
+			_, _ = pool.Exec(ctxClean, `DELETE FROM properties WHERE id = $1`, propID)
+		}()
+
+		tenantPhone := fmt.Sprintf("+9198%08d", time.Now().UnixNano()%100000000)
+		_, err = pool.Exec(ctx, `
+			INSERT INTO tenants (id, property_id, name, phone, room_number, rent_amount, due_day, status)
+			VALUES ($1, $2, 'Tenant Settle Recon', $3, '201', 500000, 1, 'active')
+		`, tenantID, propID, tenantPhone)
+		if err != nil {
+			t.Fatalf("insert tenant: %v", err)
+		}
+
+		dueCode := uuid.New().String()[:8]
+		_, err = pool.Exec(ctx, `
+			INSERT INTO dues (id, due_code, property_id, tenant_id, amount, original_amount, status, due_date, kind, period_start, period_end)
+			VALUES ($1, $2, $3, $4, 500000, 500000, 'pending', CURRENT_DATE, 'rent', CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month')
+		`, dueID, dueCode, propID, tenantID)
+		if err != nil {
+			t.Fatalf("insert due: %v", err)
+		}
+
+		_, err = pool.Exec(ctx, `
+			INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, expires_at)
+			VALUES ($1, $2, 'cashfree', $3, 500000, 'created', NOW() + INTERVAL '30 minutes')
+		`, intentID, dueID, orderID)
+		if err != nil {
+			t.Fatalf("insert payment_intent: %v", err)
+		}
+
+		// Upsert settlement with PropertyID == nil and OrderID set to orderID
+		stlm := &domain.GatewaySettlement{
+			ID:                   uuid.New(),
+			PropertyID:           nil, // unassigned initially
+			CFSettlementID:       cfSettlementID,
+			OrderID:              &orderID,
+			IngestionSource:      domain.IngestionWebhook,
+			GrossAmountPaise:     500000,
+			NetAmountPaise:       498820,
+			ServiceChargePaise:   1000,
+			ServiceTaxPaise:      180,
+			SettlementStatus:     "SUCCESS",
+			ReconciliationStatus: domain.ReconMatched,
+			RawPayload:           json.RawMessage(`{}`),
+		}
+
+		if err := repo.UpsertSettlement(ctx, stlm); err != nil {
+			t.Fatalf("upsert settlement failed: %v", err)
+		}
+
+		if stlm.PropertyID == nil || *stlm.PropertyID != propID {
+			t.Fatalf("expected settlement PropertyID resolved to %v, got %v", propID, stlm.PropertyID)
+		}
+
+		// Verify database row
+		fetched, err := repo.GetSettlement(ctx, stlm.ID)
+		if err != nil {
+			t.Fatalf("fetch settlement failed: %v", err)
+		}
+		if fetched.PropertyID == nil || *fetched.PropertyID != propID {
+			t.Fatalf("expected persisted PropertyID to be %v, got %v", propID, fetched.PropertyID)
+		}
+
+		// Verify ListSettlements isolates by property
+		otherPropID := uuid.New()
+		listSame, totalSame, err := repo.ListSettlements(ctx, &propID, domain.SettlementFilter{})
+		if err != nil {
+			t.Fatalf("list settlements same property failed: %v", err)
+		}
+		if totalSame < 1 {
+			t.Fatalf("expected at least 1 settlement for propID, got %d", totalSame)
+		}
+		found := false
+		for _, item := range listSame {
+			if item.ID == stlm.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected settlement %v in list for propID", stlm.ID)
+		}
+
+		listOther, _, err := repo.ListSettlements(ctx, &otherPropID, domain.SettlementFilter{})
+		if err != nil {
+			t.Fatalf("list settlements other property failed: %v", err)
+		}
+		for _, item := range listOther {
+			if item.ID == stlm.ID {
+				t.Fatalf("settlement %v leaked into otherPropID list", stlm.ID)
+			}
 		}
 	})
 }
