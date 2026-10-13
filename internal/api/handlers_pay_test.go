@@ -338,6 +338,68 @@ func TestCashfreeWebhookDeadLetterReturns200(t *testing.T) {
 	}
 }
 
+func TestCashfreeWebhook_MalformedAmountPaymentFailedDeadLetter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gwRepo := &stubGatewayRepo{}
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "whsec",
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        &stubIntentStore{},
+	}}
+
+	malformedJSON := `{
+		"type": "PAYMENT_FAILED_WEBHOOK",
+		"data": {
+			"order": {"order_id": "pg-ORDER-FAILED"},
+			"payment": {
+				"cf_payment_id": "999889",
+				"payment_status": "FAILED",
+				"payment_amount": 5500.555,
+				"payment_message": "user cancelled"
+			}
+		}
+	}`
+	code := postSignedWebhook(t, h, malformedJSON)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 OK on dead-letter for malformed amount, got %d", code)
+	}
+	if !gwRepo.deadLettered {
+		t.Fatal("expected malformed payment_failed webhook to be marked dead_letter in audit log")
+	}
+}
+
+func TestCashfreeWebhook_MalformedAmountDisputeDeadLetter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	gwRepo := &stubGatewayRepo{}
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "whsec",
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        &stubIntentStore{},
+	}}
+
+	malformedJSON := `{
+		"type": "PAYMENT_DISPUTE_CREATED_WEBHOOK",
+		"data": {
+			"dispute": {
+				"dispute_id": "DISP_98765",
+				"dispute_type": "CHARGEBACK",
+				"dispute_status": "ACTION_REQUIRED",
+				"order_id": "pg-ORDER-DISP",
+				"cf_payment_id": "999891",
+				"dispute_amount": 12000.999,
+				"reason_code": "FRAUDULENT"
+			}
+		}
+	}`
+	code := postSignedWebhook(t, h, malformedJSON)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 OK on dead-letter for malformed amount, got %d", code)
+	}
+	if !gwRepo.deadLettered {
+		t.Fatal("expected malformed dispute webhook to be marked dead_letter in audit log")
+	}
+}
+
 func TestCashfreeWebhookTimestampDrift401(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{Deps: Deps{
