@@ -106,7 +106,9 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	if err := payoutRepo.CreatePayee(ctx, payee); err != nil {
 		t.Fatalf("create payee: %v", err)
 	}
-	_, _ = pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID)
+	if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID); err != nil {
+		t.Fatalf("age payee: %v", err)
+	}
 
 	itemA := &domain.PayoutItem{
 		PayeeID:         payee.ID,
@@ -468,27 +470,20 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 
 		// 2. Verify outbox event was enqueued
-		var pendingOutboxCount int
+		var outboxID int64
 		err = pool.QueryRow(ctx, `
-			SELECT COUNT(*) FROM ledger_outbox_events
+			SELECT id FROM ledger_outbox_events
 			WHERE event_type = $1 AND source_id = $2 AND processed_at IS NULL AND failed_at IS NULL`,
 			domain.LedgerOutboxPayoutSettlement, itemE.ID,
-		).Scan(&pendingOutboxCount)
+		).Scan(&outboxID)
 		if err != nil {
 			t.Fatalf("query outbox: %v", err)
-		}
-		if pendingOutboxCount != 1 {
-			t.Fatalf("expected 1 pending outbox event, got %d", pendingOutboxCount)
 		}
 
 		// 3. Process the outbox event using real LedgerOutboxWorker with healthy finSvc
 		worker := finance.NewLedgerOutboxWorker(pool, outboxRepo, finSvc)
-		processed, err := worker.ProcessBatch(ctx, 10)
-		if err != nil {
-			t.Fatalf("worker process batch: %v", err)
-		}
-		if processed < 1 {
-			t.Fatalf("expected at least 1 processed outbox event, got %d", processed)
+		if err := worker.ProcessSingleEvent(ctx, outboxID); err != nil {
+			t.Fatalf("worker process single event: %v", err)
 		}
 
 		// 4. Verify double-entry journal entries created

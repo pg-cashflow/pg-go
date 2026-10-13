@@ -217,7 +217,9 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		if payeeID == uuid.Nil {
 			t.Fatalf("expected valid payee id, got nil")
 		}
-		_, _ = pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID)
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID); err != nil {
+			t.Fatalf("age payee: %v", err)
+		}
 	})
 
 	// 2. List Payees

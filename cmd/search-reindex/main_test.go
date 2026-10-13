@@ -17,6 +17,8 @@ func TestSearchReindex_DeprecatedNoAction(t *testing.T) {
 	cmd.Env = []string{
 		"BE_CMD_SEARCH_REINDEX_TEST=1",
 		"SYSTEMROOT=" + os.Getenv("SYSTEMROOT"),
+		"TEMP=" + os.Getenv("TEMP"),
+		"TMP=" + os.Getenv("TMP"),
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
