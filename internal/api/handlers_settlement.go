@@ -175,18 +175,21 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 	}
 
 	// 4. Audit raw payload into webhook_events
-	if h.GatewayPaymentRepo != nil {
-		if aerr := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
-			Provider:         "cashfree",
-			Signature:        &signature,
-			TimestampHeader:  &timestamp,
-			RawPayload:       raw,
-			ProcessingStatus: "received",
-		}); aerr != nil {
-			slog.Error("failed to persist settlement webhook audit event", "error", aerr)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
-			return
-		}
+	if h.GatewayPaymentRepo == nil {
+		slog.Error("settlement webhook processing rejected: GatewayPaymentRepo is nil (audit log unavailable)")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit log service unavailable"})
+		return
+	}
+	if aerr := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
+		Provider:         "cashfree",
+		Signature:        &signature,
+		TimestampHeader:  &timestamp,
+		RawPayload:       raw,
+		ProcessingStatus: "received",
+	}); aerr != nil {
+		slog.Error("failed to persist settlement webhook audit event", "error", aerr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
+		return
 	}
 
 	// 5. Parse payload with sanitized error

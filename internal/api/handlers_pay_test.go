@@ -128,9 +128,10 @@ func TestCashfreeWebhookSettlesSuccess(t *testing.T) {
 	}
 	pay := &stubPay{}
 	h := &Handlers{Deps: Deps{
-		CashfreeSecret: "whsec",
-		IntentStore:    intents,
-		Payments:       pay,
+		CashfreeSecret:     "whsec",
+		IntentStore:        intents,
+		Payments:           pay,
+		GatewayPaymentRepo: &stubGatewayRepo{},
 	}}
 	r := gin.New()
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
@@ -178,13 +179,23 @@ func TestCashfreeWebhookFailsClosedWithoutSecret(t *testing.T) {
 	}
 }
 
+func TestCashfreeWebhookFailsClosedWithoutGatewayPaymentRepo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec"}}
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable when GatewayPaymentRepo is nil, got %d", code)
+	}
+}
+
 func TestCashfreeWebhookUnknownOrderOK(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	pay := &stubPay{}
 	h := &Handlers{Deps: Deps{
-		CashfreeSecret: "whsec",
-		IntentStore:    &stubIntentStore{byOrder: map[string]*domain.PaymentIntent{}, byCF: map[string]*domain.PaymentIntent{}},
-		Payments:       pay,
+		CashfreeSecret:     "whsec",
+		IntentStore:        &stubIntentStore{byOrder: map[string]*domain.PaymentIntent{}, byCF: map[string]*domain.PaymentIntent{}},
+		Payments:           pay,
+		GatewayPaymentRepo: &stubGatewayRepo{},
 	}}
 	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"missing"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || pay.n != 0 {
@@ -195,9 +206,10 @@ func TestCashfreeWebhookUnknownOrderOK(t *testing.T) {
 func TestCashfreeWebhookLookupError500(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{Deps: Deps{
-		CashfreeSecret: "whsec",
-		IntentStore:    &stubIntentStore{lookupErr: errors.New("db down")},
-		Payments:       &stubPay{},
+		CashfreeSecret:     "whsec",
+		IntentStore:        &stubIntentStore{lookupErr: errors.New("db down")},
+		Payments:           &stubPay{},
+		GatewayPaymentRepo: &stubGatewayRepo{},
 	}}
 	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
 	if code != http.StatusInternalServerError {
@@ -214,7 +226,7 @@ func TestCashfreeWebhookAmountMismatchDoesNotMarkPaid(t *testing.T) {
 		byCF:    map[string]*domain.PaymentIntent{},
 	}
 	pay := &stubPay{}
-	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay}}
+	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay, GatewayPaymentRepo: &stubGatewayRepo{}}}
 	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || pay.n != 0 || intents.paid != "" {
 		t.Fatalf("code=%d n=%d paid=%s", code, pay.n, intents.paid)
@@ -230,7 +242,7 @@ func TestCashfreeWebhookDueNotOpenDoesNotMarkPaid(t *testing.T) {
 		byCF:    map[string]*domain.PaymentIntent{},
 	}
 	pay := &stubPay{settleErr: payment.ErrDueNotOpen}
-	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay}}
+	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay, GatewayPaymentRepo: &stubGatewayRepo{}}}
 	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || intents.paid != "" {
 		t.Fatalf("code=%d paid=%s", code, intents.paid)

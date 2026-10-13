@@ -323,29 +323,8 @@ func (s *Service) PayExpense(ctx context.Context, in PayExpenseInput) (*domain.E
 		in.Method = "cash"
 	}
 	at := s.Now()
-	if in.ActorRole == domain.PayerManager {
-		pol, err := s.Store.GetPolicy(ctx, in.PropertyID)
-		if err != nil {
-			return nil, err
-		}
-		dayFrom := dayStart(at)
-		monthFrom, monthTo, err := PeriodBounds(at.Format("2006-01"))
-		if err != nil {
-			return nil, err
-		}
-		daily, err := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, dayFrom, dayFrom.AddDate(0, 0, 1))
-		if err != nil {
-			return nil, err
-		}
-		monthly, err := s.Store.SumManagerSpend(ctx, in.PropertyID, in.ActorID, monthFrom, monthTo)
-		if err != nil {
-			return nil, err
-		}
-		chk := evaluateManagerSpend(pol, in.AmountPaise, daily, monthly, false)
-		if chk.Reject != nil {
-			return nil, chk.Reject
-		}
-	}
+	// Authoritative manager spend policy evaluation is enforced under transaction-scoped
+	// advisory lock inside RecordExpensePaymentAtomic to eliminate TOCTOU race conditions.
 	p := &domain.ExpensePayment{
 		ID:             uuid.New(),
 		ExpenseID:      in.ExpenseID,

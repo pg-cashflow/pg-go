@@ -67,12 +67,15 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		RawPayload:       raw,
 		ProcessingStatus: "received",
 	}
-	if h.GatewayPaymentRepo != nil {
-		if err := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), evtRecord); err != nil {
-			slog.Default().Error("webhook forensic audit persistence failed", "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
-			return
-		}
+	if h.GatewayPaymentRepo == nil {
+		slog.Default().Error("webhook processing rejected: GatewayPaymentRepo is nil (audit log unavailable)")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit log service unavailable"})
+		return
+	}
+	if err := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), evtRecord); err != nil {
+		slog.Default().Error("webhook forensic audit persistence failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
+		return
 	}
 
 	val, evtType, err := cashfree.ParseWebhook(raw)

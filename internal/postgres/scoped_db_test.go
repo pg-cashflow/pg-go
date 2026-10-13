@@ -153,4 +153,46 @@ func TestScopedDB_BatchedPipelining(t *testing.T) {
 			t.Fatalf("expected 'visible-data', got %q", readVal)
 		}
 	})
+
+	t.Run("Query failure mid-batch cleans up pipeline and connection cleanly", func(t *testing.T) {
+		// Attempt a query with invalid SQL syntax to trigger error on br.Query()
+		_, err := scoped.Query(scopedCtx, "SELECT * FROM definitely_non_existent_table_syntax_error WHERE ???")
+		if err == nil {
+			t.Fatalf("expected error from invalid query, got nil")
+		}
+
+		// Verify connection returned to pool cleanly and can execute queries
+		var testVal int
+		if err := pool.QueryRow(ctx, "SELECT 1").Scan(&testVal); err != nil {
+			t.Fatalf("pool query failed after mid-batch failure: %v", err)
+		}
+		if testVal != 1 {
+			t.Fatalf("expected 1, got %d", testVal)
+		}
+
+		// Verify subsequent scoped query works cleanly without leaking GUC or stuck in abort state
+		rows, err := scoped.Query(scopedCtx, "SELECT 42")
+		if err != nil {
+			t.Fatalf("scoped query failed after previous mid-batch error: %v", err)
+		}
+		var scopedVal int
+		if rows.Next() {
+			if err := rows.Scan(&scopedVal); err != nil {
+				t.Fatalf("scan failed: %v", err)
+			}
+		}
+		rows.Close()
+		if scopedVal != 42 {
+			t.Fatalf("expected 42, got %d", scopedVal)
+		}
+
+		// Verify no GUC leaked outside transaction
+		var unscopedGuc string
+		if err := pool.QueryRow(ctx, "SELECT COALESCE(current_setting('app.current_property_id', true), '')").Scan(&unscopedGuc); err != nil {
+			t.Fatalf("unscoped check failed: %v", err)
+		}
+		if unscopedGuc != "" {
+			t.Fatalf("GUC leaked after error recovery: %s", unscopedGuc)
+		}
+	})
 }

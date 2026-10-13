@@ -377,6 +377,25 @@ func (m *MemoryStore) RecordExpensePaymentAtomic(_ context.Context, p *domain.Ex
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if p.PayerRole == domain.PayerManager {
+		pol, ok := m.policies[p.PropertyID]
+		if !ok {
+			pol = DefaultPolicy(p.PropertyID)
+		}
+		dayFrom := DayStart(p.OccurredAt)
+		dayTo := dayFrom.AddDate(0, 0, 1)
+		monthFrom, monthTo, err := PeriodBounds(p.OccurredAt.Format("2006-01"))
+		if err != nil {
+			return nil, err
+		}
+		daily := m.sumManagerSpendLocked(p.PropertyID, p.PayerUserID, dayFrom, dayTo)
+		monthly := m.sumManagerSpendLocked(p.PropertyID, p.PayerUserID, monthFrom, monthTo)
+		chk := EvaluateManagerSpend(pol, p.AmountPaise, daily, monthly, false)
+		if chk.Reject != nil {
+			return nil, chk.Reject
+		}
+	}
+
 	e, ok := m.expenses[p.ExpenseID]
 	if !ok {
 		return nil, ErrNotFound
