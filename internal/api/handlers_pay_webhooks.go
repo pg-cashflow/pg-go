@@ -19,6 +19,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 const maxWebhookBody = 1 << 20
@@ -203,6 +204,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				return err
 			}
 			tenantID := due0.TenantID
+			ctx = requestscope.WithPropertyID(ctx, due0.PropertyID)
+			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", due0.PropertyID.String()); err != nil {
+				return fmt.Errorf("set webhook property scope: %w", err)
+			}
 
 			// Step 4: Acquire locks strictly top-down: tenants -> dues -> payment_intents
 			var dummy uuid.UUID

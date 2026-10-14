@@ -57,6 +57,7 @@ type Deps struct {
 	WebhookToleranceSec int
 	WebhookAPIVersion   string
 	Pool                *pgxpool.Pool
+	AppPool             *pgxpool.Pool
 	DBCluster           *postgres.DBCluster
 	RefundTxRunner      RefundTxRunner
 	CalendarTokenStore  CalendarTokenStore

@@ -805,8 +805,12 @@ func (h *Handlers) getPayoutRepo() *postgres.PayoutRepo {
 	if h.PayoutRepo != nil {
 		return h.PayoutRepo
 	}
-	if h.Pool != nil {
-		return postgres.NewPayoutRepo(h.Pool, h.Finance)
+	pool := h.AppPool
+	if pool == nil {
+		pool = h.Pool
+	}
+	if pool != nil {
+		return postgres.NewPayoutRepo(pool, h.Finance)
 	}
 	return nil
 }
@@ -849,8 +853,12 @@ func (h *Handlers) getPropertySettings(ctx context.Context, pid uuid.UUID) (*dom
 	}); ok {
 		return pss.GetSettings(ctx, pid)
 	}
-	if h.Pool != nil {
-		repo := postgres.NewPropertyRepo(h.Pool)
+	pool := h.AppPool
+	if pool == nil {
+		pool = h.Pool
+	}
+	if pool != nil {
+		repo := postgres.NewPropertyRepo(pool)
 		return repo.GetSettings(ctx, pid)
 	}
 	defaults := domain.DefaultPropertySettings(pid)

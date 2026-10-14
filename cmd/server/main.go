@@ -126,7 +126,6 @@ func main() {
 	maintDueRepo := postgres.NewDueRepo(maintPool)
 	maintPaymentRepo := postgres.NewPaymentRepo(maintPool)
 	maintReportRepo := postgres.NewPaymentReportRepo(maintPool)
-	maintEventRepo := postgres.NewEventRepo(maintPool)
 
 	if cfg.AadhaarQRPublicKeyPEM != "" {
 		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {
@@ -182,11 +181,11 @@ func main() {
 			logger.Info("firebase phone auth enabled", "project", cfg.FirebaseProjectID)
 		}
 	}
-	billingSvc := billing.NewServiceWithPool(maintPool, maintDueRepo, maintTenantRepo, maintEventRepo)
-	paySvc := payment.NewServiceWithPool(maintPool, maintDueRepo, maintPaymentRepo, maintTenantRepo, maintEventRepo, payment.NewSQLSummaryRepository(maintPool))
-	depositSettlementRepo := postgres.NewDepositSettlementRepo(maintPool)
+	billingSvc := billing.NewServiceWithPool(appPool, dueRepo, tenantRepo, eventRepo)
+	paySvc := payment.NewServiceWithPool(appPool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(scopedDB))
+	depositSettlementRepo := postgres.NewDepositSettlementRepo(appPool)
 	paySvc.SetDepositSettler(depositSettlementRepo)
-	tenantSvc := tenant.NewServiceWithPool(maintPool, maintTenantRepo, maintDueRepo, maintEventRepo, pushRepo)
+	tenantSvc := tenant.NewServiceWithPool(appPool, tenantRepo, dueRepo, eventRepo, pushRepo)
 	magicSvc := magiclink.NewService(tokenRepo, maintDueRepo, propertyRepo, maintTenantRepo, cfg.MagicLinkHMACSecret)
 	pushSvc := push.NewService(push.RepoAdapter{Inner: pushRepo}, push.Config{
 		VAPIDPublicKey:  cfg.VAPIDPublicKey,
@@ -194,7 +193,7 @@ func main() {
 		Subject:         cfg.VAPIDSubject,
 	}, logger)
 
-	joinSvc := joinsvc.NewServiceWithPool(maintPool, propertyRepo, joinRepo, userRepo, tenantSvc, maintEventRepo)
+	joinSvc := joinsvc.NewServiceWithPool(appPool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
 
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
@@ -234,7 +233,7 @@ func main() {
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
 	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
 
-	financeRepo := postgres.NewFinanceRepo(maintPool)
+	financeRepo := postgres.NewFinanceRepo(appPool)
 	financeSvc := finance.NewService(financeRepo, pub)
 	roiSvc := roisvc.NewService(financeSvc)
 	intelSvc := intelligence.NewService(financeRepo)
@@ -294,11 +293,11 @@ func main() {
 	// ADR-012: vector/hybrid search permanently disabled.
 	searchSvc := &search.Service{Repo: searchRepo, Cache: search.NewCache(5*time.Second, 2000)}
 
-	payoutRepo := postgres.NewPayoutRepo(maintPool, financeSvc)
-	attendanceRepo := postgres.NewAttendanceRepo(maintPool)
-	attendanceSvc := attendance.NewService(maintPool, attendanceRepo, payoutRepo)
-	bankTxnRepo := postgres.NewBankTransactionRepo(maintPool)
-	bankAccountRepo := postgres.NewBankAccountRepo(maintPool)
+	payoutRepo := postgres.NewPayoutRepo(appPool, financeSvc)
+	attendanceRepo := postgres.NewAttendanceRepo(appPool)
+	attendanceSvc := attendance.NewService(appPool, attendanceRepo, payoutRepo)
+	bankTxnRepo := postgres.NewBankTransactionRepo(appPool)
+	bankAccountRepo := postgres.NewBankAccountRepo(appPool)
 	settlementRepo := postgres.NewSettlementRepo(maintPool)
 	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, maintDueRepo, maintPaymentRepo, financeSvc)
 	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(maintPool)
@@ -359,6 +358,7 @@ func main() {
 		WebhookToleranceSec:         cfg.WebhookTimestampToleranceSec,
 		WebhookAPIVersion:           cfg.WebhookAPIVersion,
 		Pool:                        maintPool,
+		AppPool:                     appPool,
 		Collector:                   collectorSvc,
 		KYCSvc:                      kycSvc,
 		CashfreeSecret:              cfg.CashfreeWebhookSecret,

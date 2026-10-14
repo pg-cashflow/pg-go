@@ -263,8 +263,12 @@ func (h *Handlers) ConfirmPaymentReport(c *gin.Context) {
 		return store.UpdateReview(ctx, rep)
 	}
 
-	if h.Pool != nil {
-		err := postgres.WithinTx(c.Request.Context(), h.Pool, func(tx pgx.Tx) error {
+	targetPool := h.AppPool
+	if targetPool == nil {
+		targetPool = h.Pool
+	}
+	if targetPool != nil {
+		err := postgres.WithinTx(c.Request.Context(), targetPool, func(tx pgx.Tx) error {
 			txStore := postgres.NewPaymentReportRepo(tx)
 			return confirmOp(postgres.ContextWithTx(c.Request.Context(), tx), txStore)
 		})

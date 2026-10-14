@@ -298,6 +298,9 @@ func (h *Handlers) getRefundTxRunner() RefundTxRunner {
 	if h.RefundTxRunner != nil {
 		return h.RefundTxRunner
 	}
+	if h.AppPool != nil {
+		return &postgresRefundTxRunner{pool: h.AppPool}
+	}
 	if h.Pool != nil {
 		return &postgresRefundTxRunner{pool: h.Pool}
 	}
