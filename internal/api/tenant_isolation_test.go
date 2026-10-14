@@ -126,6 +126,15 @@ func (s *isolationPaymentStore) ListByTenant(_ context.Context, tenantID uuid.UU
 	return list, nil
 }
 
+func (s *isolationPaymentStore) GetByID(_ context.Context, id uuid.UUID) (*domain.Payment, error) {
+	for _, p := range s.payments {
+		if p.ID == id {
+			return &p, nil
+		}
+	}
+	return nil, nil
+}
+
 type isolationPropertyStore struct {
 	props map[uuid.UUID]*domain.Property
 }

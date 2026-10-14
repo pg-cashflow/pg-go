@@ -60,9 +60,8 @@ Out of scope: new product features, UI, and the narrowing of worker grants (foll
 
 ## R3 — Finish dead-job removal (F7)
 
-**Files:** delete `deploy/systemd/pg-search-reindex.service` and `.timer`; decide `cmd/search-reindex`.
-**Do:** `grep -rn search-reindex` across repo, CI, docs, Makefile. If no live reference except ADR-012 notes, delete `cmd/search-reindex` (default). If kept, add a build tag and say why in its `main.go`.
-**Acceptance:** `go build ./...` clean; `grep -rn "pg-search-reindex" deploy` empty; README job table matches `install.sh` `JOBS` array (assert in a shell test or CI step).
+**Status:** Resolved. Legacy search reindex binary and systemd units removed. Doc references updated to ADR-012 in-database search.
+**Acceptance:** `go build ./...` clean; deploy tree has no reindex timer; README job table matches `install.sh` `JOBS` array.
 
 ## R4 — Command validation ratchet (F3)
 

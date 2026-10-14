@@ -42,3 +42,38 @@ func (r *CapabilityRepo) ListActive(ctx context.Context, propertyID, userID uuid
 	}
 	return out, rows.Err()
 }
+
+// Grant creates or reactivates a capability grant.
+func (r *CapabilityRepo) Grant(ctx context.Context, propertyID, userID uuid.UUID, capability string, grantedBy uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO manager_capabilities (property_id, user_id, capability, granted_by, granted_at, revoked_at)
+		VALUES ($1, $2, $3, $4, NOW(), NULL)
+		ON CONFLICT (property_id, user_id, capability) DO UPDATE
+		SET granted_by = EXCLUDED.granted_by, granted_at = NOW(), revoked_at = NULL`,
+		propertyID, userID, capability, grantedBy)
+	return err
+}
+
+// Revoke marks a single capability grant as revoked.
+func (r *CapabilityRepo) Revoke(ctx context.Context, propertyID, userID uuid.UUID, capability string) error {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE manager_capabilities SET revoked_at = NOW()
+		WHERE property_id = $1 AND user_id = $2 AND capability = $3 AND revoked_at IS NULL`,
+		propertyID, userID, capability)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil
+	}
+	return nil
+}
+
+// RevokeAll revokes every active grant for the manager on the property.
+func (r *CapabilityRepo) RevokeAll(ctx context.Context, propertyID, userID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE manager_capabilities SET revoked_at = NOW()
+		WHERE property_id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+		propertyID, userID)
+	return err
+}

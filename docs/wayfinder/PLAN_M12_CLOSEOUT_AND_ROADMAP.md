@@ -12,11 +12,11 @@
 |---|---|---|---|
 | F1 | Payout key must not fall back to `JWT_SECRET` | `cmd/server/main.go:307-326` fatal when production or `CF_PAYOUT_CLIENT_ID` set; `validate.go:94-97` requires payout secrets whenever payout credentials exist | **Verified** |
 | F2 | "Fixed" | Fallback `config.go:141-143` still there. Required-check `config.go:183` and `validate.go:110` only fire when the PG secret is missing, with a misleading message. The L1 warning (`validate.go:144`) now reads both env names but still fires on every normal setup | **Not a defect; needs cleanup.** See ADR-031 |
-| F3 | 9 job binaries validate | 9 of 9 recurring jobs call `ValidateForRealDeployment`. `migrate`, `sandbox-smoke`, `search-reindex` do not. The audit's "11" was a miscount: there are 12 non-server binaries | **Verified**, exceptions need a documented rule (R4) |
+| F3 | 9 job binaries validate | 9 of 9 recurring jobs call `ValidateForRealDeployment`. `migrate` and `sandbox-smoke` are exempt integration CLIs. There are 12 non-server binaries | **Verified**, exceptions documented in Gate 12 |
 | F4 | Constant-time metrics token | `router.go:143` uses `subtle.ConstantTimeCompare`; `Config.MetricsSecret` (`config.go:117`); `.env.example:120` | **Verified** |
 | F5 | 32-char minimum and key separation | Present in `validate.go`. **Risk:** the 32-char rule also covers `CF_PAYOUT_WEBHOOK_SECRET`, which Cashfree issues. A valid vendor secret could block boot | **Partial. Amend (R2)** |
 | F6 | Fatal on key-ring errors | `main.go:317-326` | **Verified** |
-| F7 | Dead job removed | `install.sh` and README updated. `pg-search-reindex.service` and `.timer` **still ship**; `cmd/search-reindex` still builds. `RoleManager` comment fixed | **Partial (R3)** |
+| F7 | Dead job removed | Legacy search reindex binary and systemd units removed; doc grep clean | **Resolved** |
 | — | `git diff --stat` / `git status` output | The zip has **no `.git`**. Not verifiable here | **Unverified** |
 
 ### New findings from this pass
@@ -129,6 +129,6 @@ R7 deploy-neutral runbook (after R5) ──────────────�
 1. **ADR-030:** wire jobs to `pgapp_worker` (default) or delete the role.
 2. **ADR-032 granularity:** per manager, with a per-property default template (default).
 3. **Tenant toggles from the owner per property** via `active_modules` (default yes).
-4. **Search reindex command:** delete `cmd/search-reindex` (default) or keep it behind a build tag.
+4. **Legacy search reindex CLI:** removed; search maintenance is in-database (ADR-012).
 5. **Tenant magic-link:** keep only as a gateway-downtime fallback (default).
 6. **Weekly hours**, so sprints can get dates.

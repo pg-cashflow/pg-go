@@ -13,7 +13,7 @@ PG Cashflow backend is built as a **hardened modular monolith** with single-tena
 
 1. **Topology**: Single Go module (`github.com/pg-cashflow/pg-go`), single Postgres database, and 11 distinct binary entrypoints in `cmd/`:
    - `server`: Core HTTP REST API serving `/api/*` and embedding the static React PWA SPA via `embed.FS` from `internal/web/dist/`.
-   - 10 single-purpose cron workers: `billing-cycle`, `reminder`, `cashfree-poll`, `digilocker-reconcile`, `kyc-expiry`, `financial-summary`, `kpi-snapshot`, `gamification-cycle`, `search-reindex`, and `migrate`.
+   - Nine single-purpose cron workers: `billing-cycle`, `reminder`, `cashfree-poll`, `digilocker-reconcile`, `kyc-expiry`, `financial-summary`, `kpi-snapshot`, `gamification-cycle`, and `daily-rollup`, plus `migrate` and `sandbox-smoke` CLIs.
 2. **Persistence & Concurrency**:
    - Zero microservice network hops or distributed two-phase commits.
    - All state mutations (rent generation, collections, maker-checker approvals, departures) execute inside ACID PostgreSQL transactions using row-level locking (`SELECT ... FOR UPDATE`).

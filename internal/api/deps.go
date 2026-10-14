@@ -119,6 +119,7 @@ type DueStore interface {
 type PaymentStore interface {
 	ListByProperty(ctx context.Context, propertyID uuid.UUID, matchedBy *domain.MatchedBy) ([]domain.Payment, error)
 	ListByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.Payment, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Payment, error)
 }
 
 // EventStore reads audit events.
@@ -191,10 +192,13 @@ type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 }
 
-// ManagerCapabilityStore reads ADR-032 grants. Nil skips enforcement.
+// ManagerCapabilityStore reads and writes ADR-032 grants. Nil skips enforcement on reads.
 type ManagerCapabilityStore interface {
 	HasActive(ctx context.Context, propertyID, userID uuid.UUID, capability string) (bool, error)
 	ListActive(ctx context.Context, propertyID, userID uuid.UUID) ([]string, error)
+	Grant(ctx context.Context, propertyID, userID uuid.UUID, capability string, grantedBy uuid.UUID) error
+	Revoke(ctx context.Context, propertyID, userID uuid.UUID, capability string) error
+	RevokeAll(ctx context.Context, propertyID, userID uuid.UUID) error
 }
 
 type GatewayPaymentRepo interface {

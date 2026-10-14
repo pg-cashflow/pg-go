@@ -343,7 +343,12 @@ func NewRouter(d Deps) *gin.Engine {
 			owner.POST("/floors", h.OwnerCreateFloor)
 			owner.GET("/rooms", h.OwnerListRooms)
 			owner.POST("/rooms", h.OwnerCreateRoom)
+			owner.GET("/managers", h.OwnerListManagers)
 			owner.POST("/managers", h.OwnerCreateManager)
+			owner.PUT("/managers/:id/capabilities", h.OwnerPutManagerCapabilities)
+			owner.POST("/managers/:id/deactivate", h.OwnerDeactivateManager)
+			owner.POST("/managers/:id/reactivate", h.OwnerReactivateManager)
+			owner.POST("/managers/:id/reset-credentials", h.OwnerResetManagerCredentials)
 			owner.GET("/gamification/redemptions", h.OwnerListRedemptions)
 			owner.POST("/gamification/redemptions/:id/fulfil", h.OwnerFulfilRedemption)
 
@@ -399,6 +404,9 @@ func NewRouter(d Deps) *gin.Engine {
 				return auth.RequireCapability(name, d.CapabilityStore)
 			}
 			manager.GET("/me/capabilities", h.ManagerMyCapabilities)
+			manager.GET("/tenants", capOf("tenants.view"), h.ListTenants)
+			manager.GET("/dues", capOf("dues.view"), h.ListDues)
+			manager.POST("/attendance/daily", capOf("attendance.mark"), h.OwnerMarkDailyAttendance)
 			manager.POST("/inspections", capOf("inspections.write"), h.ManagerSubmitInspection)
 			manager.GET("/inspections", capOf("inspections.write"), h.ManagerListInspections)
 			manager.POST("/inspections/items/:id/resolve", capOf("inspections.write"), h.ManagerResolveInspectionItem)
@@ -419,6 +427,7 @@ func NewRouter(d Deps) *gin.Engine {
 		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
 		{
 			tenant.GET("/me", h.TenantMe)
+			tenant.PATCH("/me", h.TenantPatchMe)
 			tenant.GET("/dues", h.TenantDues)
 			tenant.GET("/dues/options", h.TenantDuesOptions)
 			tenant.POST("/dues/pay-batch", h.TenantDuePayBatch)
@@ -426,6 +435,8 @@ func NewRouter(d Deps) *gin.Engine {
 			tenant.GET("/dues/:id/pay", h.TenantDuePay)
 			tenant.POST("/dues/:id/reports", h.TenantSubmitReport)
 			tenant.GET("/payments", h.TenantPayments)
+			tenant.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
+			tenant.GET("/lifecycle", h.TenantLifecycle)
 			tenant.POST("/push/subscribe", h.TenantPushSubscribe)
 			tenant.POST("/aadhaar", h.TenantAadhaar)
 

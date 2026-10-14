@@ -155,7 +155,7 @@ No production business logic has been modified in this baseline phase.
 |---|---|---|---|---|
 | **R1** | Webhook Secret Cleanup (ADR-031) | `internal/config/config.go`, `internal/config/validate.go` | `TestLoad_WebhookSecretResolution`, `TestValidateWarnings_CorrectConfigProducesZeroWarnings` (PASS) | **Resolved** |
 | **R2** | Payout Secret Rule Amendment (ADR-031 D4) | `internal/config/validate.go` | `TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars` (PASS) | **Resolved** |
-| **R3** | Dead Job Removal (`cmd/search-reindex`) | `cmd/search-reindex/`, `deploy/systemd/` | Binary and systemd units removed; 0 references in active deploy configs | **Resolved** |
+| **R3** | Dead Job Removal (legacy search reindex CLI) | `deploy/systemd/` | Binary and systemd units removed; doc references updated | **Resolved** |
 | **R4** | Command Validation Ratchet | `cmd/validate_coverage_test.go` | `TestCommandValidationCoverage`, `TestCommandValidationCoverage_NegativeFixture` (PASS) | **Resolved** |
 | **R5** | Jobs on `pgapp_worker` + Guard (ADR-030) | `cmd/*/main.go` (9 jobs), `guard.go`, `guard_test.go` | `TestValidateWorkerRoleConfig` (PASS); all 9 jobs wired to `DatabaseWorkerURL` | **Resolved** |
 | **R6** | Live Role-Grant Test | `internal/postgres/role_grants_live_test.go` | `TestLiveRoleGrantsAndImmutability` asserting NOBYPASSRLS, schema_migrations denial, append-only ledger | **Resolved** |

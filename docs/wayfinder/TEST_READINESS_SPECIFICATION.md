@@ -213,7 +213,7 @@ Apply this six-step recipe to each verification gate:
 - **Target Binaries**:
   `cmd/billing-cycle`, `cmd/reminder`, `cmd/cashfree-poll`, `cmd/digilocker-reconcile`,
   `cmd/kyc-expiry`, `cmd/financial-summary`, `cmd/kpi-snapshot`, `cmd/gamification-cycle`,
-  `cmd/search-reindex`, `cmd/migrate`.
+  `cmd/migrate`, `cmd/sandbox-smoke`.
 - **Verification**: Run each binary with `--help`, invalid flags, and mock environments. Assert exit code 0 on success and non-zero on failure.
 
 ### Gate 13: Time and Calendar Tests

@@ -50,7 +50,7 @@
    - `kpi-snapshot`
    - `kyc-expiry`
    - `reminder`
-   - `search-reindex`
+   - `daily-rollup` (replaces removed legacy search reindex CLI; search is in-database per ADR-012)
 2. Add per-property settings table migration (payout auto-dispatch, reminder offsets, active modules).
 3. Fix missed-reminders: Introduce a grace/catch-up window in `internal/jobs/reminder.go`.
 

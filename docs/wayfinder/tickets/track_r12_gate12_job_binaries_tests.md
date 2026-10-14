@@ -24,8 +24,9 @@ Currently, the 10+ binary entry points in `cmd/` have zero direct automated test
 - `cmd/financial-summary`
 - `cmd/kpi-snapshot`
 - `cmd/gamification-cycle`
-- `cmd/search-reindex`
+- `cmd/daily-rollup`
 - `cmd/migrate`
+- `cmd/sandbox-smoke`
 
 ## Karpathy Test Discipline
 

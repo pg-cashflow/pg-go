@@ -66,7 +66,7 @@ Code integrity audit and adversarial analysis identified operational and securit
   - `internal/apierr`: Error code uniqueness, pattern validation, JSON envelope serialization, `Abort` mechanics.
   - `internal/events`: Fail-closed persist semantics, asynchronous subscriber broadcast, panic recovery.
   - `internal/web`: Embedded index existence, client-side route fallback, directory traversal protection.
-  - `cmd/*`: Subprocess execution verifying non-zero exit and absence of panics for twelve fail-closed binaries, and no-op exit for `search-reindex`.
+  - `cmd/*`: Subprocess execution verifying non-zero exit and absence of panics for all operational binaries (see Gate 12 list in `internal/jobs/jobs_cli_test.go`).
 
 ### D6. CI Gate Hardening
 - Enforce `-require-all` in `check-coverage.go`.

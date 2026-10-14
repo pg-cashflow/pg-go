@@ -28,7 +28,6 @@
 | `cmd/migrate` | PASS | 11.524s | 0.0% |
 | `cmd/reminder` | PASS | 11.166s | 0.0% |
 | `cmd/sandbox-smoke` | PASS | 7.015s | 0.0% |
-| `cmd/search-reindex` | PASS | 1.928s | 0.0% |
 | `cmd/server` | PASS | 18.326s | 0.0% |
 | `internal/aadhaar` | PASS | 2.028s | 84.0% |
 | `internal/api` | PASS | 72.895s | 65.8% |

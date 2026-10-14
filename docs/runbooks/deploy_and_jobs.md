@@ -239,3 +239,20 @@ sudo systemctl enable --now cloudflared
    ```bash
    sudo systemctl restart pg-app.service
    ```
+
+---
+
+## 7. VPS provisioning checklist (ADR-035)
+
+Use this checklist when Neon exists but no compute host exists yet. Estimated time: 2–4 hours.
+
+1. Create a small Ubuntu VPS (1 vCPU, 2 GB RAM is enough at current scale).
+2. Create Neon **staging** and **production** branches; enable PITR on production.
+3. Run `cmd/migrate` against each branch with `DATABASE_URL_UNPOOLED` before first app boot.
+4. Create roles `pgapp_app`, `pgapp_maint`, `pgapp_worker` per section 3 of this runbook.
+5. Copy binaries to `/opt/pg-app/` and env file to `/etc/pg-app/env` (no secrets in git).
+6. Run `deploy/systemd/install.sh` and enable `pg-app.service` plus job timers.
+7. Point `DATABASE_URL`, `DATABASE_MAINT_URL`, and `DATABASE_WORKER_URL` at Neon (three distinct roles).
+8. Verify `GET /healthz` returns 200 and one timer job completes with exit code 0.
+
+**Development without VPS:** run `cmd/server` locally against Neon; timers are manual until step 6 completes.

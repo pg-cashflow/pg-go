@@ -34,3 +34,6 @@
 | [ADR-030](file:///c:/Users/divak/Downloads/pg-go/docs/adr/030-job-db-role-and-startup-guard.md) | Background Job DB Role (`pgapp_worker`) & Guard | Accepted | 2026-10-14 |
 | [ADR-031](file:///c:/Users/divak/Downloads/pg-go/docs/adr/031-webhook-signing-secret-policy.md) | Cashfree Webhook Signing Secret Policy & Length Rule | Accepted | 2026-10-14 |
 | [ADR-032](file:///c:/Users/divak/Downloads/pg-go/docs/adr/032-delegated-manager-capabilities.md) | Delegated Manager Property Capabilities & Scoping | Accepted | 2026-10-14 |
+| [ADR-033](file:///c:/Users/divak/Downloads/pg-go/docs/adr/033-reserved.md) | Reserved ADR Number | Reserved | 2026-10-14 |
+| [ADR-034](file:///c:/Users/divak/Downloads/pg-go/docs/adr/034-webhook-payout-parity-and-metrics-failclosed.md) | Payout Webhook Parity and Metrics Fail-Closed | Accepted | 2026-10-14 |
+| [ADR-035](file:///c:/Users/divak/Downloads/pg-go/docs/adr/035-deployment-vps-managed-postgres.md) | Production Deployment (VPS + Managed PostgreSQL) | Accepted | 2026-10-14 |

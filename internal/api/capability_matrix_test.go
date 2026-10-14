@@ -34,11 +34,37 @@ func (m mapCaps) ListActive(context.Context, uuid.UUID, uuid.UUID) ([]string, er
 	return out, m.err
 }
 
+func (m *mapCaps) Grant(_ context.Context, _, _ uuid.UUID, capability string, _ uuid.UUID) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.grants[capability] = true
+	return nil
+}
+
+func (m *mapCaps) Revoke(_ context.Context, _, _ uuid.UUID, capability string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.grants[capability] = false
+	return nil
+}
+
+func (m *mapCaps) RevokeAll(_ context.Context, _, _ uuid.UUID) error {
+	if m.err != nil {
+		return m.err
+	}
+	for k := range m.grants {
+		m.grants[k] = false
+	}
+	return nil
+}
+
 func TestRequireCapabilityMatrix(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	prop := uuid.New()
 	user := uuid.New()
-	checker := mapCaps{grants: map[string]bool{"inspections.write": true}}
+	checker := &mapCaps{grants: map[string]bool{"inspections.write": true}}
 
 	cases := []struct {
 		name string
@@ -78,6 +104,9 @@ func TestManagerRouteCapabilityTags(t *testing.T) {
 		"POST /finance/expenses":          "expenses.post",
 		"POST /finance/expenses/:id/void": "expenses.void",
 		"GET /me/capabilities":            "",
+		"GET /tenants":                    "tenants.view",
+		"GET /dues":                       "dues.view",
+		"POST /attendance/daily":          "attendance.mark",
 	}
 	if tags["POST /finance/expenses/:id/void"] != "expenses.void" {
 		t.Fatal("void route must require expenses.void")

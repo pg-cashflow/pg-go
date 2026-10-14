@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
@@ -9,6 +10,52 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
+
+// TenantPatchMe handles PATCH /tenant/me (limited self-service profile fields).
+func (h *Handlers) TenantPatchMe(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	var body struct {
+		Name          *string `json:"name"`
+		GuardianPhone *string `json:"guardian_phone"`
+		Locale        *string `json:"locale"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if body.Name != nil {
+		t.Name = strings.TrimSpace(*body.Name)
+		if t.Name == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "name cannot be empty"})
+			return
+		}
+	}
+	if body.GuardianPhone != nil {
+		phone := strings.TrimSpace(*body.GuardianPhone)
+		if phone != "" {
+			t.GuardianPhone = &phone
+		}
+	}
+	if body.Locale != nil && h.PreferencesStore != nil {
+		claims, _ := auth.ClaimsFromContext(c)
+		if claims != nil {
+			locale := strings.TrimSpace(*body.Locale)
+			if locale != "" {
+				_, _ = h.PreferencesStore.Upsert(c.Request.Context(), claims.UserID, locale)
+			}
+		}
+	}
+	if h.TenantStore != nil {
+		if err := h.TenantStore.Update(c.Request.Context(), t); err != nil {
+			respondErr(c, err)
+			return
+		}
+	}
+	c.JSON(http.StatusOK, tenantResponse(t))
+}
 
 // TenantMe handles GET /tenant/me.
 func (h *Handlers) TenantMe(c *gin.Context) {
@@ -115,6 +162,57 @@ func (h *Handlers) TenantPayments(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"payments": list})
+}
+
+// TenantPaymentReceipt handles GET /tenant/payments/:id/receipt (read-only receipt payload).
+func (h *Handlers) TenantPaymentReceipt(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	if h.PaymentStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payments unavailable"})
+		return
+	}
+	p, err := h.PaymentStore.GetByID(c.Request.Context(), id)
+	if err != nil || p == nil || p.TenantID != t.ID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"receipt": gin.H{
+			"payment_id":    p.ID,
+			"tenant_id":     p.TenantID,
+			"amount_paise":  p.Amount,
+			"matched_at":    p.MatchedAt,
+			"matched_by":    p.MatchedBy,
+			"upi_txn_id":     p.UPITxnID,
+			"property_id":   p.PropertyID,
+		},
+	})
+}
+
+// TenantLifecycle handles GET /tenant/lifecycle (deposit and departure read-only status).
+func (h *Handlers) TenantLifecycle(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	out := gin.H{
+		"tenant_status": t.Status,
+		"credit_balance_paise": t.CreditBalancePaise,
+	}
+	if h.PayoutRepo != nil {
+		dep, err := h.PayoutRepo.GetActiveDepartureByTenant(c.Request.Context(), t.ID)
+		if err == nil && dep != nil {
+			out["departure"] = dep
+		}
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 // TenantPushSubscribe handles POST /tenant/push/subscribe.
