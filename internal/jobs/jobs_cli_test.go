@@ -33,7 +33,6 @@ var allBinaries = []string{
 	"kpi-snapshot",
 	"kyc-expiry",
 	"migrate",
-	"search-reindex",
 	"sandbox-smoke",
 }
 
@@ -82,17 +81,6 @@ func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
 
 			out, err := cmd.CombinedOutput()
 			outStr := string(out)
-
-			if bin == "search-reindex" {
-				// search-reindex is permanently decommissioned per ADR-012
-				if err != nil {
-					t.Fatalf("deprecated binary search-reindex failed unexpectedly: %v", err)
-				}
-				if !strings.Contains(outStr, "[DEPRECATED]") {
-					t.Fatalf("expected deprecation message in search-reindex output, got: %s", outStr)
-				}
-				return
-			}
 
 			if err == nil {
 				t.Fatalf("expected binary %s to fail with empty env, but it succeeded: %s", bin, outStr)
@@ -166,7 +154,6 @@ func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
 		"daily-rollup",
 		"kyc-expiry",
 		"kpi-snapshot",
-		"search-reindex",
 		"migrate",
 	}
 

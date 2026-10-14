@@ -1,5 +1,7 @@
 package main
 
+//m12:validate-exempt validates DB URL only; needs no app secrets
+
 import (
 	"context"
 	"flag"

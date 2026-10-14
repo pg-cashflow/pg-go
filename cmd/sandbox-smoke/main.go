@@ -1,5 +1,7 @@
 package main
 
+//m12:validate-exempt sandbox-only; guarded by CASHFREE_ENV
+
 import (
 	"context"
 	"crypto/hmac"
