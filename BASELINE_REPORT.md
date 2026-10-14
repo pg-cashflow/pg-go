@@ -159,7 +159,7 @@ No production business logic has been modified in this baseline phase.
 | **R4** | Command Validation Ratchet | `cmd/validate_coverage_test.go` | `TestCommandValidationCoverage`, `TestCommandValidationCoverage_NegativeFixture` (PASS) | **Resolved** |
 | **R5** | Jobs on `pgapp_worker` + Guard (ADR-030) | `cmd/*/main.go` (9 jobs), `guard.go`, `guard_test.go` | `TestValidateWorkerRoleConfig` (PASS); all 9 jobs wired to `DatabaseWorkerURL` | **Resolved** |
 | **R6** | Live Role-Grant Test | `internal/postgres/role_grants_live_test.go` | `TestLiveRoleGrantsAndImmutability` asserting NOBYPASSRLS, schema_migrations denial, append-only ledger | **Resolved** |
-| **R7** | Deploy-Neutral Runbook | `docs/runbooks/deploy_and_jobs.md` | Dual VPS + Cloud Run runbook, copy-paste role creation SQL, full env matrix | **Resolved** |
+| **R7** | Deploy-Neutral Runbook | `docs/runbooks/deploy_and_jobs.md` | VPS (systemd) runbook, copy-paste role creation SQL, full env matrix | **Resolved** |
 | **R8** | Clean-Cache Baseline Gate | `BASELINE_REPORT.md` | Clean cache `go clean -testcache` executed; raw test logs captured | **Resolved** |
 | **R9** | RLS D1 Status Audit (ADR-029) | `docs/wayfinder/RLS_D1_STATUS.md` | Full empirical audit matrix across 7 money tables; 4 follow-up tickets defined | **Resolved** |
 | **R10**| Docs Drift Fix | `track_q_staging_cutover_verification.md`, `map.md` | Inventory counts synchronized to 12 binaries and 69 migrations | **Resolved** |

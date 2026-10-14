@@ -4,7 +4,7 @@
 **Date:** 2026-10-14
 **Deciders:** Sasi
 **Builds on:** ADR-009 (payout approval), ADR-018/029 (RLS), Track C.2/C.3 (maker-checker, step-up)
-**Next migration number:** 070
+**Migration number:** next free number in `migrations/` when the migration is written. ADRs do not reserve numbers.
 
 ## Context
 
@@ -66,7 +66,7 @@ B costs one table, one middleware and an authz matrix. It buys per-manager contr
 
 ## Action Items
 
-1. [ ] Migration 070: tables, RLS, check constraint rejecting non-delegable names; immutability not needed (grants are revoked, not deleted).
+1. [ ] Migration (next free number): tables, RLS, check constraint rejecting non-delegable names; immutability not needed (grants are revoked, not deleted).
 2. [ ] `RequireCapability` plus a route-tag registry. **Authz matrix test:** iterate every registered route and assert a row for owner, manager with grant, manager without grant, tenant, anonymous. CI fails on an untagged route.
 3. [ ] Lifecycle endpoints, audit events, cache invalidation test.
 4. [ ] Owner screen with presets ("Front desk", "Kitchen and maintenance", "Accounts-lite") and a manager "request access" action that creates an owner notification.

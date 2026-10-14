@@ -14,11 +14,9 @@
 
 ## 1. Overview
 
-This runbook defines the deployment process for `pg-app` across two deployment targets:
-1. **Target A: Linux VPS with systemd** (Self-managed virtual private server).
-2. **Target B: Google Cloud Run with Cloud Scheduler** (Containerized serverless).
+This runbook defines the deployment process for `pg-app` on one target: a **Linux VPS with systemd** (self-managed virtual private server). No container image is used. Other deployment targets are not documented.
 
-Both targets execute the same Go binary architecture:
+The VPS runs this Go binary architecture:
 - Single monolith HTTP server (`cmd/server`) serving Gin REST endpoints and embedded PWA assets.
 - Nine scheduled background job binaries (`cmd/*`).
 - Standalone migration runner (`cmd/migrate`) executed during deployment.
@@ -60,7 +58,7 @@ The table below lists all variables supported by `internal/config/validate.go` a
 
 ---
 
-## 3. Database Role Creation (Both Targets)
+## 3. Database Role Creation
 
 Run these SQL statements once on the PostgreSQL cluster before deploying binaries:
 
@@ -94,7 +92,7 @@ GRANT pgapp_app TO pgapp_worker;
 
 ---
 
-## 4. Target A: Linux VPS Deployment (systemd)
+## 4. Linux VPS Deployment (systemd)
 
 ### 4.1 Prerequisites and User Creation
 
@@ -175,73 +173,7 @@ sudo systemctl enable --now cloudflared
 
 ---
 
-## 5. Target B: Google Cloud Run Deployment
-
-### 5.1 Container Build
-
-Build and push the production container image:
-```bash
-gcloud builds submit --tag gcr.io/$PROJECT_ID/pg-app:latest .
-```
-
-### 5.2 Execute Database Migrations
-
-Run database migrations via Cloud Run Job before updating the web service:
-```bash
-gcloud run jobs create pg-migrate \
-  --image gcr.io/$PROJECT_ID/pg-app:latest \
-  --command /opt/pg-app/migrate \
-  --args up \
-  --set-env-vars APP_ENV=production \
-  --set-secrets DATABASE_URL_UNPOOLED=DATABASE_URL_UNPOOLED:latest \
-  --region asia-south1
-
-gcloud run jobs execute pg-migrate --wait --region asia-south1
-```
-
-### 5.3 Deploy Server Service
-
-Deploy the Gin HTTP service:
-```bash
-gcloud run deploy pg-app \
-  --image gcr.io/$PROJECT_ID/pg-app:latest \
-  --platform managed \
-  --region asia-south1 \
-  --allow-unauthenticated \
-  --port 8080 \
-  --set-env-vars APP_ENV=production \
-  --set-secrets DATABASE_URL=DATABASE_URL:latest,DATABASE_MAINT_URL=DATABASE_MAINT_URL:latest,JWT_SECRET=JWT_SECRET:latest,OTP_HMAC_SECRET=OTP_HMAC_SECRET:latest,MAGIC_LINK_HMAC_SECRET=MAGIC_LINK_HMAC_SECRET:latest
-```
-
-### 5.4 Configure Scheduled Background Jobs (Cloud Scheduler)
-
-For each background job binary, deploy a Cloud Run Job and attach a Cloud Scheduler trigger:
-
-Example: `billing-cycle` (Daily at 00:05 IST / 18:35 UTC):
-```bash
-# 1. Create Cloud Run Job
-gcloud run jobs create pg-job-billing-cycle \
-  --image gcr.io/$PROJECT_ID/pg-app:latest \
-  --command /opt/pg-app/billing-cycle \
-  --set-env-vars APP_ENV=production \
-  --set-secrets DATABASE_WORKER_URL=DATABASE_WORKER_URL:latest \
-  --region asia-south1
-
-# 2. Schedule with Cloud Scheduler
-gcloud scheduler jobs create http pg-timer-billing-cycle \
-  --schedule "35 18 * * *" \
-  --uri "https://asia-south1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/pg-job-billing-cycle:run" \
-  --http-method POST \
-  --oauth-service-account-email "$SCHEDULER_SA@$PROJECT_ID.iam.gserviceaccount.com" \
-  --time-zone "UTC" \
-  --location asia-south1
-```
-
-Repeat for the remaining 8 jobs according to the schedule in `deploy/systemd/README.md`.
-
----
-
-## 6. First-Boot Verification Checklist
+## 5. First-Boot Verification Checklist
 
 1. **Verify Startup Role Guards:**
    Inspect service logs to confirm that all three roles connected correctly:
@@ -268,9 +200,9 @@ Repeat for the remaining 8 jobs according to the schedule in `deploy/systemd/REA
 
 ---
 
-## 7. Rollback Procedure
+## 6. Rollback Procedure
 
-### 7.1 VPS Rollback
+### 6.1 VPS Rollback
 1. Stop the application service:
    ```bash
    sudo systemctl stop pg-app.service
@@ -284,7 +216,7 @@ Repeat for the remaining 8 jobs according to the schedule in `deploy/systemd/REA
    sudo systemctl start pg-app.service
    ```
 
-### 7.2 Database Migration Rollback
+### 6.2 Database Migration Rollback
 1. Execute migration down step:
    ```bash
    sudo -u pgapp /opt/pg-app/migrate down 1

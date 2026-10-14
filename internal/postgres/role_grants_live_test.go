@@ -173,6 +173,9 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 				_, _ = tx.Exec(context.Background(), "DELETE FROM daily_financial_rollups WHERE property_id = $1", propID)
 				_, _ = tx.Exec(context.Background(), "DELETE FROM kpi_snapshots WHERE property_id = $1", propID)
 				_, _ = tx.Exec(context.Background(), "DELETE FROM notifications WHERE property_id = $1", propID)
+				_, _ = tx.Exec(context.Background(), "DELETE FROM events WHERE property_id = $1", propID)
+				_, _ = tx.Exec(context.Background(), "DELETE FROM kyc_verification WHERE tenant_id = $1", tenantID)
+				_, _ = tx.Exec(context.Background(), "DELETE FROM kyc_consent WHERE tenant_id = $1", tenantID)
 				_, _ = tx.Exec(context.Background(), "DELETE FROM tenants WHERE property_id = $1", propID)
 				_, _ = tx.Exec(context.Background(), "DELETE FROM properties WHERE id = $1", propID)
 				return nil
@@ -208,10 +211,11 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 				if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propID.String()); err != nil {
 					return err
 				}
+				providerPaymentID := "cf_pay_" + uuid.New().String()[:8]
 				_, err := tx.Exec(ctx, `
-					INSERT INTO payments (id, due_id, tenant_id, property_id, amount, payment_method, status)
-					VALUES ($1, $2, $3, $4, 1000000, 'cashfree', 'pending')
-				`, paymentID, dueID, tenantID, propID)
+					INSERT INTO payments (id, due_id, tenant_id, property_id, amount, matched_by, provider, cf_payment_id, provider_payment_id)
+					VALUES ($1, $2, $3, $4, 1000000, 'cashfree', 'cashfree', $5, $5)
+				`, paymentID, dueID, tenantID, propID, providerPaymentID)
 				return err
 			})
 			if err != nil {
@@ -229,9 +233,9 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 					return err
 				}
 				_, err := tx.Exec(ctx, `
-					INSERT INTO daily_financial_rollups (id, property_id, rollup_date, total_collected_paise, total_due_paise, total_expenses_paise)
+					INSERT INTO daily_financial_rollups (id, property_id, rollup_date, collected_paise, due_paise, expense_paise)
 					VALUES ($1, $2, CURRENT_DATE, 1000000, 1000000, 0)
-					ON CONFLICT (property_id, rollup_date) DO UPDATE SET total_collected_paise = EXCLUDED.total_collected_paise;
+					ON CONFLICT (property_id, rollup_date) DO UPDATE SET collected_paise = EXCLUDED.collected_paise;
 				`, uuid.New(), propID)
 				return err
 			})
@@ -275,9 +279,9 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 					return err
 				}
 				_, err := tx.Exec(ctx, `
-					INSERT INTO events (id, property_id, event_type, payload)
-					VALUES ($1, $2, 'financial.daily_summary.generated', '{"summary": "ok"}')
-				`, uuid.New(), propID)
+					INSERT INTO events (property_id, event_type, occurred_at, payload)
+					VALUES ($1, 'financial.daily_summary.generated', NOW(), '{"summary": "ok"}')
+				`, propID)
 				return err
 			})
 			if err != nil {
@@ -295,9 +299,9 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 					return err
 				}
 				_, err := tx.Exec(ctx, `
-					INSERT INTO points_ledger (tenant_id, property_id, delta, reason, category)
-					VALUES ($1, $2, 50, 'on_time_payment', 'payment')
-				`, tenantID, propID)
+					INSERT INTO points_ledger (tenant_id, property_id, rule_code, delta, ref_type, ref_id)
+					VALUES ($1, $2, 'on_time_payment', 50, 'due', $3)
+				`, tenantID, propID, dueID.String())
 				return err
 			})
 			if err != nil {
@@ -315,8 +319,9 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 					return err
 				}
 				_, err := tx.Exec(ctx, `
-					INSERT INTO kpi_snapshots (id, property_id, snapshot_date, total_tenants, occupied_beds)
-					VALUES ($1, $2, CURRENT_DATE, 1, 1)
+					INSERT INTO kpi_snapshots (id, property_id, period_month, snapshot_date, occupied_beds, capacity_beds)
+					VALUES ($1, $2, TO_CHAR(CURRENT_DATE, 'YYYY-MM'), CURRENT_DATE, 1, 1)
+					ON CONFLICT (property_id, snapshot_date) DO UPDATE SET occupied_beds = EXCLUDED.occupied_beds;
 				`, uuid.New(), propID)
 				return err
 			})
@@ -354,8 +359,8 @@ func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 					return err
 				}
 				_, err := tx.Exec(ctx, `
-					INSERT INTO notifications (id, property_id, user_id, title, body, channel)
-					VALUES ($1, $2, $3, 'Rent Due Reminder', 'Please pay your rent', 'push')
+					INSERT INTO notifications (id, property_id, recipient_id, type, title, deep_link)
+					VALUES ($1, $2, $3, 'rent_due_reminder', 'Rent Due Reminder', '/tenant/dues')
 				`, uuid.New(), propID, tenantID)
 				return err
 			})

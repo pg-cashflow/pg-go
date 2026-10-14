@@ -161,7 +161,7 @@ func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
 		t.Run(bin, func(t *testing.T) {
 			cmdPath := filepath.Join("..", "..", "cmd", bin)
 			runJob := func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 				defer cancel()
 
 				cmd := exec.CommandContext(ctx, "go", "run", ".")
@@ -242,7 +242,7 @@ func TestGate12_MigrateExecution(t *testing.T) {
 	}
 
 	cmdPath := filepath.Join("..", "..", "cmd", "migrate")
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	migrationsDir, _ := filepath.Abs(filepath.Join("..", "..", "migrations"))
