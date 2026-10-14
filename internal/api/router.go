@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"strings"
@@ -139,7 +140,7 @@ func metricsAuth(jwtSecret, metricsSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. Static scraper token path.
 		if metricsSecret != "" {
-			if tok := c.GetHeader("X-Metrics-Token"); tok == metricsSecret {
+			if tok := c.GetHeader("X-Metrics-Token"); subtle.ConstantTimeCompare([]byte(tok), []byte(metricsSecret)) == 1 {
 				c.Next()
 				return
 			}

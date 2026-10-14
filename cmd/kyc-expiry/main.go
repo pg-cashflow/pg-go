@@ -21,6 +21,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("kyc-expiry: config load: %v", err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatalf("kyc-expiry: validation: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

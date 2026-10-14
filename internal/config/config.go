@@ -73,6 +73,8 @@ type Config struct {
 	PayoutEncryptionKeys map[byte]string
 	// CashfreePGBaseURL optionally overrides the gateway endpoint in non-production environments.
 	CashfreePGBaseURL string
+	// MetricsSecret protects /metrics via X-Metrics-Token header.
+	MetricsSecret string
 }
 
 func Load() (*Config, error) {
@@ -129,6 +131,7 @@ func Load() (*Config, error) {
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
 		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
+		MetricsSecret:                     strings.TrimSpace(os.Getenv("METRICS_SECRET")),
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)

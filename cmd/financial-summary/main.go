@@ -29,6 +29,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 

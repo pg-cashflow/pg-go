@@ -15,7 +15,7 @@ This directory contains the production `systemd` service and timer definitions f
 | `pg-kpi-snapshot` | Daily | 02:00 IST | `20:30 UTC` (prev) | Captures daily occupancy, revenue, and collection KPIs |
 | `pg-kyc-expiry` | Daily | 03:00 IST | `21:30 UTC` (prev) | Checks minor-to-major age transitions and expiring KYC records |
 | `pg-reminder` | Daily | 09:00 IST | `03:30 UTC` | Dispatches rent reminders (D-3, D-0, D+1, D+7) with catch-up window |
-| `pg-search-reindex` | Weekly | Sun @ 04:00 IST | `Sat 22:30 UTC` | Trigram / lexical search index maintenance |
+| `pg-search-reindex` | *(Deprecated - ADR-012)* | - | - | Deprecated; trigram indexes maintain automatically via database triggers |
 
 ## Scheduler of record (systemd vs GitHub Actions)
 

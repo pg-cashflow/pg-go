@@ -247,3 +247,70 @@ func TestValidateWarnings_AdminEmailUnset(t *testing.T) {
 		t.Fatalf("expected warning about unset ADMIN_EMAIL, got: %v", warns)
 	}
 }
+
+func TestValidateForRealDeployment_PayoutCredentialsRequirePayoutSecrets(t *testing.T) {
+	cfg := validConfig()
+	cfg.CashfreePayoutClientID = "CF_TEST_PAYOUT_CLIENT_ID"
+	cfg.CashfreePayoutClientSecret = "CF_TEST_PAYOUT_CLIENT_SECRET"
+	cfg.CashfreePayoutFundsourceID = "FUND_SOURCE_123"
+	cfg.CashfreePayoutWebhookSecret = "this-is-a-valid-payout-webhook-secret-32ch"
+
+	// Missing PayoutEncryptionSecret and PayoutExportChecksumSecret
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "PAYOUT_ENCRYPTION_SECRET is required") {
+		t.Fatalf("expected error requiring PAYOUT_ENCRYPTION_SECRET, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "PAYOUT_CHECKSUM_SECRET is required") {
+		t.Fatalf("expected error requiring PAYOUT_CHECKSUM_SECRET, got: %v", err)
+	}
+
+	// Supply valid secrets
+	cfg.PayoutEncryptionSecret = "this-is-a-valid-payout-encryption-secret-32"
+	cfg.PayoutExportChecksumSecret = "this-is-a-valid-payout-checksum-secret-32ch"
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected valid deployment with payout secrets set, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_SecretUniqueness(t *testing.T) {
+	cfg := validConfig()
+	// Reusing same secret for JWT and OTP
+	cfg.OTPHMACSecret = cfg.JWTSecret
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET and OTP_HMAC_SECRET must be distinct") {
+		t.Fatalf("expected error about secret reuse between JWT and OTP, got: %v", err)
+	}
+
+	cfg = validConfig()
+	cfg.MagicLinkHMACSecret = cfg.JWTSecret
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct") {
+		t.Fatalf("expected error about secret reuse between JWT and MagicLink, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_MetricsSecret(t *testing.T) {
+	cfg := validConfig()
+	cfg.MetricsSecret = "short"
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "METRICS_SECRET must be at least 16 characters") {
+		t.Fatalf("expected error for short METRICS_SECRET, got: %v", err)
+	}
+
+	cfg.MetricsSecret = "change-me-metrics-secret"
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "METRICS_SECRET must not be a placeholder") {
+		t.Fatalf("expected error for placeholder METRICS_SECRET, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_VersionedPayoutEncryptionKeys(t *testing.T) {
+	cfg := validConfig()
+	cfg.PayoutEncryptionKeys = map[byte]string{
+		1: "short",
+	}
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "PAYOUT_ENCRYPTION_KEYS[1] must be at least 32 characters") {
+		t.Fatalf("expected error for short versioned payout key, got: %v", err)
+	}
+}

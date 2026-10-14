@@ -22,7 +22,6 @@ JOBS=(
     "pg-kpi-snapshot"
     "pg-kyc-expiry"
     "pg-reminder"
-    "pg-search-reindex"
 )
 
 for job in "${JOBS[@]}"; do
@@ -44,4 +43,4 @@ done
 echo "==> Timer status summary:"
 systemctl list-timers --all | grep pg- || true
 
-echo "==> All 10 background job timers installed and activated successfully!"
+echo "==> All 9 background job timers installed and activated successfully!"

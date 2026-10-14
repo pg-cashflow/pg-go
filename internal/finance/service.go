@@ -442,6 +442,9 @@ func (s *Service) DecideApproval(ctx context.Context, propertyID, ownerID, appro
 			if err != nil {
 				return err
 			}
+			if e.PropertyID != propertyID {
+				return ErrForbidden
+			}
 			lines, err = MakeLines(e.PropertyID, e.ID, "expense", e.OccurredAt, []LineSpec{
 				{Account: domain.AcctOperatingExpense, Debit: e.AmountPaise, LineKind: "expense_dr"},
 				{Account: domain.AcctAccountsPayable, Credit: e.AmountPaise, LineKind: "payable_cr"},

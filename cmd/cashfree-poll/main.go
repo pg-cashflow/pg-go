@@ -25,6 +25,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatal(err)
+	}
 	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
 	if !cfCfg.Enabled() {
 		slog.Default().Info("cashfree poll skipped: not configured")

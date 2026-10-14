@@ -11,7 +11,7 @@ type Role string
 const (
 	RoleOwner  Role = "owner"
 	RoleTenant Role = "tenant"
-	// RoleManager reserved for Phase 3; schema already allows the string.
+	// RoleManager operates daily property management and operational flows.
 	RoleManager Role = "manager"
 )
 

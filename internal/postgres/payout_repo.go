@@ -321,7 +321,19 @@ func (r *PayoutRepo) GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*doma
 }
 
 func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutItem, error) {
-	rows, err := r.pool.Query(ctx, `
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	if propertyID != uuid.Nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propertyID.String()); err != nil {
+			return nil, fmt.Errorf("set local app.current_property_id: %w", err)
+		}
+	}
+
+	rows, err := tx.Query(ctx, `
 		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
 		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
 		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at
@@ -342,7 +354,13 @@ func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, proper
 		}
 		out = append(out, *it)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {
@@ -413,6 +431,12 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
+
+	if propertyID != uuid.Nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propertyID.String()); err != nil {
+			return nil, nil, fmt.Errorf("set local app.current_property_id: %w", err)
+		}
+	}
 
 	// Lock all pending unbatched items for this property
 	rows, err := tx.Query(ctx, `

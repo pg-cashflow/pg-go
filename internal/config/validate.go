@@ -31,12 +31,37 @@ func (c *Config) ValidateForRealDeployment() error {
 	if strings.TrimSpace(c.PayoutEncryptionSecret) != "" {
 		secrets = append(secrets, secretCheck{"PAYOUT_ENCRYPTION_SECRET", c.PayoutEncryptionSecret})
 	}
+	if strings.TrimSpace(c.PayoutExportChecksumSecret) != "" {
+		secrets = append(secrets, secretCheck{"PAYOUT_CHECKSUM_SECRET", c.PayoutExportChecksumSecret})
+	}
+	if strings.TrimSpace(c.CashfreePayoutWebhookSecret) != "" {
+		secrets = append(secrets, secretCheck{"CF_PAYOUT_WEBHOOK_SECRET", c.CashfreePayoutWebhookSecret})
+	}
+	if strings.TrimSpace(c.MetricsSecret) != "" {
+		secrets = append(secrets, secretCheck{"METRICS_SECRET", c.MetricsSecret})
+	}
+	for ver, sec := range c.PayoutEncryptionKeys {
+		secrets = append(secrets, secretCheck{fmt.Sprintf("PAYOUT_ENCRYPTION_KEYS[%d]", ver), sec})
+	}
 	for _, s := range secrets {
 		if strings.HasPrefix(s.val, "change-me") {
 			errs = append(errs, fmt.Sprintf("%s must not be a placeholder value (starts with 'change-me')", s.name))
-		} else if len(s.val) < 32 {
+		} else if len(s.val) < 32 && s.name != "METRICS_SECRET" {
 			errs = append(errs, fmt.Sprintf("%s must be at least 32 characters (got %d)", s.name, len(s.val)))
+		} else if len(s.val) < 16 && s.name == "METRICS_SECRET" {
+			errs = append(errs, fmt.Sprintf("%s must be at least 16 characters (got %d)", s.name, len(s.val)))
 		}
+	}
+
+	// Invariant: key separation — distinct components must not share HMAC keys
+	if c.JWTSecret != "" && c.OTPHMACSecret != "" && c.JWTSecret == c.OTPHMACSecret {
+		errs = append(errs, "JWT_SECRET and OTP_HMAC_SECRET must be distinct secrets")
+	}
+	if c.JWTSecret != "" && c.MagicLinkHMACSecret != "" && c.JWTSecret == c.MagicLinkHMACSecret {
+		errs = append(errs, "JWT_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct secrets")
+	}
+	if c.OTPHMACSecret != "" && c.MagicLinkHMACSecret != "" && c.OTPHMACSecret == c.MagicLinkHMACSecret {
+		errs = append(errs, "OTP_HMAC_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct secrets")
 	}
 
 	// --- Cashfree PG and KYC key pairs must be fully provided if either is set ---
@@ -64,6 +89,12 @@ func (c *Config) ValidateForRealDeployment() error {
 		errs = append(errs, "both CF_PAYOUT_CLIENT_ID and CF_PAYOUT_CLIENT_SECRET must be provided")
 	}
 	if payoutClientID != "" {
+		if strings.TrimSpace(c.PayoutEncryptionSecret) == "" {
+			errs = append(errs, "PAYOUT_ENCRYPTION_SECRET is required whenever CF_PAYOUT_CLIENT_ID is set (must not fall back to JWT_SECRET)")
+		}
+		if strings.TrimSpace(c.PayoutExportChecksumSecret) == "" {
+			errs = append(errs, "PAYOUT_CHECKSUM_SECRET is required whenever CF_PAYOUT_CLIENT_ID is set (must not fall back to JWT_SECRET)")
+		}
 		if strings.TrimSpace(c.CashfreePayoutWebhookSecret) == "" {
 			errs = append(errs, "CF_PAYOUT_WEBHOOK_SECRET is required whenever CF_PAYOUT_CLIENT_ID is set (any environment)")
 		} else if strings.HasPrefix(c.CashfreePayoutWebhookSecret, "change-me") {
@@ -109,7 +140,8 @@ func (c *Config) ValidateWarnings() []string {
 	cashfreeEnabled := strings.TrimSpace(c.CashfreeAppID) != "" || strings.TrimSpace(c.CashfreeSecretKey) != ""
 
 	// L1: webhook secret fell back to API secret key
-	if cashfreeEnabled && os.Getenv("CASHFREE_WEBHOOK_SECRET") == "" && c.CashfreeWebhookSecret != "" {
+	explicitWebhookSec := envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET")
+	if cashfreeEnabled && explicitWebhookSec == "" && c.CashfreeWebhookSecret != "" {
 		warns = append(warns, "CASHFREE_WEBHOOK_SECRET not set; falling back to CASHFREE_SECRET_KEY — update if Cashfree webhook and API secrets differ")
 	}
 

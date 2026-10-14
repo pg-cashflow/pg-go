@@ -23,6 +23,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("digilocker-reconcile: config load: %v", err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatalf("digilocker-reconcile: validation: %v", err)
+	}
 
 	cfCfg := cashfree.Config{
 		AppID:     cfg.CashfreeAppID,

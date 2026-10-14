@@ -22,6 +22,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatal(err)
+	}
 
 	ctx := context.Background()
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)

@@ -306,15 +306,23 @@ func main() {
 
 	payoutSecret := cfg.PayoutEncryptionSecret
 	if payoutSecret == "" {
+		if cfg.AppEnv == "production" || cfg.CashfreePayoutClientID != "" {
+			log.Fatal("PAYOUT_ENCRYPTION_SECRET is required when in production or when CF_PAYOUT_CLIENT_ID is set (must not fall back to JWT_SECRET)")
+		}
 		payoutSecret = cfg.PayoutExportChecksumSecret
 		if payoutSecret == "" {
 			payoutSecret = cfg.JWTSecret
 		}
 	}
 	payoutEncryptionKey := crypto.DeriveKey(payoutSecret)
-	payoutKeyRing, _ := crypto.NewKeyRing(crypto.CurrentKeyVersion, payoutEncryptionKey)
+	payoutKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, payoutEncryptionKey)
+	if err != nil {
+		log.Fatalf("failed to initialize payout key ring: %v", err)
+	}
 	for ver, sec := range cfg.PayoutEncryptionKeys {
-		_ = payoutKeyRing.AddKey(ver, crypto.DeriveKey(sec))
+		if err := payoutKeyRing.AddKey(ver, crypto.DeriveKey(sec)); err != nil {
+			log.Fatalf("failed to add versioned payout key %d: %v", ver, err)
+		}
 	}
 
 	var payoutDispatcher *finance.PayoutDispatcher
@@ -396,8 +404,8 @@ func main() {
 		SettlementBalancerRepo:      settlementBalancerRepo,
 		SettlementBalancer:          settlementBalancer,
 		LedgerOutboxRepo:            ledgerOutboxRepo,
-		// REQ-SEC-003: set METRICS_SECRET env var for Prometheus scraper access.
-		MetricsSecret: os.Getenv("METRICS_SECRET"),
+		// REQ-SEC-003: MetricsSecret protects Prometheus scraper endpoint.
+		MetricsSecret: cfg.MetricsSecret,
 	})
 
 
