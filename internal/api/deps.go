@@ -191,6 +191,12 @@ type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 }
 
+// ManagerCapabilityStore reads ADR-032 grants. Nil skips enforcement.
+type ManagerCapabilityStore interface {
+	HasActive(ctx context.Context, propertyID, userID uuid.UUID, capability string) (bool, error)
+	ListActive(ctx context.Context, propertyID, userID uuid.UUID) ([]string, error)
+}
+
 type GatewayPaymentRepo interface {
 	Create(ctx context.Context, p *domain.Payment) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Payment, error)

@@ -203,6 +203,23 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		if wReplay.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK on replay, got %d", wReplay.Code)
 		}
+
+		var eventCount, processedCount int
+		if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_events WHERE raw_payload = $1`, rawBody).Scan(&eventCount); err != nil {
+			t.Fatalf("count webhook_events: %v", err)
+		}
+		if eventCount != 2 {
+			t.Fatalf("expected 2 webhook_events rows for delivery plus replay, got %d", eventCount)
+		}
+		if err := pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM processed_webhook_events
+			WHERE provider = 'cashfree' AND event_type = 'TRANSFER_SUCCESS' AND provider_reference_id = 'cf_tr_111'
+		`).Scan(&processedCount); err != nil {
+			t.Fatalf("count processed_webhook_events: %v", err)
+		}
+		if processedCount != 1 {
+			t.Fatalf("expected 1 processed payout event, got %d", processedCount)
+		}
 	})
 
 	t.Run("Mixed_Outcomes_Partially_Failed_Batch", func(t *testing.T) {
@@ -641,6 +658,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           nil,
 				PayoutRepo:                  nil,
 				Pool:                        nil,
@@ -665,6 +683,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 			},
 		}
@@ -687,6 +706,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 			},
 		}
@@ -712,6 +732,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 			},
 		}
@@ -737,6 +758,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 			},
 		}
@@ -765,6 +787,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 			},
@@ -797,6 +820,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 			},
@@ -829,6 +853,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 			},
@@ -861,6 +886,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 			},
@@ -896,6 +922,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 				LedgerOutboxRepo:            nil, // forces outbox failure
@@ -914,4 +941,64 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			t.Fatal("expected status update NOT to be called when outbox fallback fails")
 		}
 	})
+}
+
+type seqPayoutAudit struct {
+	*stubGatewayRepo
+	seen   map[string]int
+	events int
+}
+
+func (s *seqPayoutAudit) CreateWebhookEvent(ctx context.Context, evt *domain.WebhookEvent) error {
+	s.events++
+	return s.stubGatewayRepo.CreateWebhookEvent(ctx, evt)
+}
+
+func (s *seqPayoutAudit) RecordProcessedEvent(_ context.Context, _, eventType, providerRefID, _ string) (bool, error) {
+	if s.seen == nil {
+		s.seen = map[string]int{}
+	}
+	key := eventType + "|" + providerRefID
+	s.seen[key]++
+	return s.seen[key] == 1, nil
+}
+
+func TestPayoutWebhook_AuditAndDuplicate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "unit_test_webhook_secret_32_bytes_long"
+	itemID := uuid.New()
+	updates := 0
+	mock := &mockPayoutWebhookStore{
+		getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+			return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+		},
+		updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+			updates++
+			return nil
+		},
+	}
+	audit := &seqPayoutAudit{stubGatewayRepo: &stubGatewayRepo{}}
+	h := &Handlers{Deps: Deps{
+		CashfreePayoutWebhookSecret: secret,
+		GatewayPaymentRepo:          audit,
+		PayoutWebhookRepo:           mock,
+		WebhookToleranceSec:         300,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+	env := PayoutWebhookEnvelope{Event: "TRANSFER_FAILED", EventTime: time.Now().UTC().Format(time.RFC3339)}
+	env.Data, _ = json.Marshal(PayoutWebhookData{TransferID: "pgo_" + itemID.String(), CFTransferID: "cf_dup_1", Status: "FAILED", StatusDescription: "no"})
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
+		if w.Code != http.StatusOK {
+			t.Fatalf("delivery %d: expected 200, got %d %s", i+1, w.Code, w.Body.String())
+		}
+	}
+	if audit.events != 2 {
+		t.Fatalf("expected 2 audit rows, got %d", audit.events)
+	}
+	if updates != 1 {
+		t.Fatalf("expected 1 status update, got %d", updates)
+	}
 }

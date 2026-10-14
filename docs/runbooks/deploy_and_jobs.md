@@ -3,7 +3,7 @@
 **Date:** 2026-10-14  
 **Specification:** Ticket R7, Track R (`track_r_m12_closeout.md`)  
 **Standard:** ASD-STE100 (Simplified Technical English)  
-**Status:** Ready for initial deployment.  
+**Status:** Ready for initial deployment.
 
 > [!IMPORTANT]
 > **Verification Status:**  
@@ -17,6 +17,7 @@
 This runbook defines the deployment process for `pg-app` on one target: a **Linux VPS with systemd** (self-managed virtual private server). No container image is used. Other deployment targets are not documented.
 
 The VPS runs this Go binary architecture:
+
 - Single monolith HTTP server (`cmd/server`) serving Gin REST endpoints and embedded PWA assets.
 - Nine scheduled background job binaries (`cmd/*`).
 - Standalone migration runner (`cmd/migrate`) executed during deployment.
@@ -27,34 +28,34 @@ The VPS runs this Go binary architecture:
 
 The table below lists all variables supported by `internal/config/validate.go` and `.env.example`.
 
-| Variable Name | Required in Production | Default Value | Security Invariant / Purpose |
-|---|---|---|---|
-| `APP_ENV` | **Yes** | `development` | Set to `production` to activate production guards. |
-| `DATABASE_URL` | **Yes** | None | Application pool connection string (`pgapp_app` role). |
-| `DATABASE_URL_UNPOOLED` | **Yes** | None | Direct connection for `cmd/migrate` (no PgBouncer). |
-| `DATABASE_MAINT_URL` | **Yes** | `DATABASE_URL` | Maintenance pool (`pgapp_maint`). Must differ from `DATABASE_URL`. |
-| `DATABASE_WORKER_URL` | **Yes** | `DATABASE_MAINT_URL` | Background job pool (`pgapp_worker`). Must differ from both pools. |
-| `JWT_SECRET` | **Yes** | None | Session token signing. Minimum 32 characters, no placeholder. |
-| `OTP_HMAC_SECRET` | **Yes** | None | Phone OTP HMAC signing. Minimum 32 characters, distinct from JWT. |
-| `MAGIC_LINK_HMAC_SECRET` | **Yes** | None | Payment link signing. Minimum 32 characters, distinct from JWT. |
-| `MAGIC_LINK_BASE_URL` | **Yes** | None | Base URL for tenant payment links (e.g. `https://pay.example.com`). |
-| `ADMIN_EMAIL` | **Yes** | None | Destination for critical dead-letter and outbox failure alerts. |
-| `PAYOUT_ENCRYPTION_SECRET` | **Yes** (if payouts enabled) | None | AES-GCM bank detail encryption. Minimum 32 chars. |
-| `PAYOUT_CHECKSUM_SECRET` | **Yes** (if payouts enabled) | None | HMAC checksum for CSV exports. Minimum 32 chars. |
-| `CF_PAYOUT_CLIENT_ID` | Conditional | None | Cashfree Payout client credential. |
-| `CF_PAYOUT_CLIENT_SECRET` | Conditional | None | Cashfree Payout secret credential. |
-| `CF_PAYOUT_FUNDSOURCE_ID` | Conditional | None | Cashfree debit account identifier. |
-| `CF_PAYOUT_WEBHOOK_SECRET` | Conditional | None | Cashfree payout webhook signature key (exempt from 32 chars). |
-| `CASHFREE_PG_APP_ID` | Conditional | None | Payment gateway application identifier. |
-| `CASHFREE_PG_SECRET_KEY` | Conditional | None | Payment gateway secret key. |
-| `CASHFREE_ENV` | Conditional | `sandbox` | Set to `production` for live payment settlement. |
-| `CASHFREE_PG_WEBHOOK_SECRET`| No | None | Webhook override. Falls back to `CASHFREE_PG_SECRET_KEY` (ADR-031). |
-| `KYC_IDENTITY_SECRET` | Conditional | None | Aadhaar identity hashing secret. Minimum 32 characters. |
-| `KYC_DIGILOCKER_REDIRECT_URL`| Conditional | None | OAuth callback URL for DigiLocker flow. |
-| `METRICS_SECRET` | No | None | Secret token protecting `/metrics` endpoint. Minimum 16 chars. |
-| `HTTP_ADDR` | No | `:8080` | Port and interface binding for the HTTP server. |
-| `DATABASE_STATEMENT_TIMEOUT`| No | `10m` | Database connection statement timeout. |
-| `WEBHOOK_TIMESTAMP_TOLERANCE_SEC` | No | `300` | Gateway webhook replay protection window (seconds). |
+| Variable Name                     | Required in Production       | Default Value        | Security Invariant / Purpose                                                    |
+| --------------------------------- | ---------------------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `APP_ENV`                         | **Yes**                      | `development`        | Set to `production` to activate production guards.                              |
+| `DATABASE_URL`                    | **Yes**                      | None                 | Application pool connection string (`pgapp_app` role).                          |
+| `DATABASE_URL_UNPOOLED`           | **Yes**                      | None                 | Direct connection for `cmd/migrate` (no PgBouncer).                             |
+| `DATABASE_MAINT_URL`              | **Yes**                      | `DATABASE_URL`       | Maintenance pool (`pgapp_maint`). Must differ from `DATABASE_URL`.              |
+| `DATABASE_WORKER_URL`             | **Yes**                      | `DATABASE_MAINT_URL` | Background job pool (`pgapp_worker`). Must differ from both pools.              |
+| `JWT_SECRET`                      | **Yes**                      | None                 | Session token signing. Minimum 32 characters, no placeholder.                   |
+| `OTP_HMAC_SECRET`                 | **Yes**                      | None                 | Phone OTP HMAC signing. Minimum 32 characters, distinct from JWT.               |
+| `MAGIC_LINK_HMAC_SECRET`          | **Yes**                      | None                 | Payment link signing. Minimum 32 characters, distinct from JWT.                 |
+| `MAGIC_LINK_BASE_URL`             | **Yes**                      | None                 | Base URL for tenant payment links (e.g. `https://pay.example.com`).             |
+| `ADMIN_EMAIL`                     | **Yes**                      | None                 | Destination for critical dead-letter and outbox failure alerts.                 |
+| `PAYOUT_ENCRYPTION_SECRET`        | **Yes** (if payouts enabled) | None                 | AES-GCM bank detail encryption. Minimum 32 chars.                               |
+| `PAYOUT_CHECKSUM_SECRET`          | **Yes** (if payouts enabled) | None                 | HMAC checksum for CSV exports. Minimum 32 chars.                                |
+| `CF_PAYOUT_CLIENT_ID`             | Conditional                  | None                 | Cashfree Payout client credential.                                              |
+| `CF_PAYOUT_CLIENT_SECRET`         | Conditional                  | None                 | Cashfree Payout secret credential.                                              |
+| `CF_PAYOUT_FUNDSOURCE_ID`         | Conditional                  | None                 | Cashfree debit account identifier.                                              |
+| `CF_PAYOUT_WEBHOOK_SECRET`        | Conditional                  | None                 | Cashfree payout webhook signature key (exempt from 32 chars).                   |
+| `CASHFREE_PG_APP_ID`              | Conditional                  | None                 | Payment gateway application identifier.                                         |
+| `CASHFREE_PG_SECRET_KEY`          | Conditional                  | None                 | Payment gateway secret key.                                                     |
+| `CASHFREE_ENV`                    | Conditional                  | `sandbox`            | Set to `production` for live payment settlement.                                |
+| `CASHFREE_PG_WEBHOOK_SECRET`      | No                           | None                 | Webhook override. Falls back to `CASHFREE_PG_SECRET_KEY` (ADR-031).             |
+| `KYC_IDENTITY_SECRET`             | Conditional                  | None                 | Aadhaar identity hashing secret. Minimum 32 characters.                         |
+| `KYC_DIGILOCKER_REDIRECT_URL`     | Conditional                  | None                 | OAuth callback URL for DigiLocker flow.                                         |
+| `METRICS_SECRET`                  | **Yes** in production        | None                 | `X-Metrics-Token` for `/metrics`. Minimum 16 chars. `METRICS_TOKEN` is ignored. |
+| `HTTP_ADDR`                       | No                           | `:8080`              | Port and interface binding for the HTTP server.                                 |
+| `DATABASE_STATEMENT_TIMEOUT`      | No                           | `10m`                | Database connection statement timeout.                                          |
+| `WEBHOOK_TIMESTAMP_TOLERANCE_SEC` | No                           | `300`                | Gateway webhook replay protection window (seconds).                             |
 
 ---
 
@@ -97,6 +98,7 @@ GRANT pgapp_app TO pgapp_worker;
 ### 4.1 Prerequisites and User Creation
 
 Create the dedicated system user `pgapp`:
+
 ```bash
 sudo useradd -r -s /bin/false -d /opt/pg-app -m pgapp
 sudo mkdir -p /opt/pg-app
@@ -106,16 +108,19 @@ sudo chown pgapp:pgapp /opt/pg-app
 ### 4.2 Environment File Installation
 
 Create `/opt/pg-app/.env` and restrict permissions immediately:
+
 ```bash
 sudo touch /opt/pg-app/.env
 sudo chmod 0600 /opt/pg-app/.env
 sudo chown root:root /opt/pg-app/.env
 ```
+
 Populate `/opt/pg-app/.env` with the values defined in the Environment Variables Matrix.
 
 ### 4.3 Database Migration Execution
 
 Execute schema migration before starting the web server. Use the direct unpooled database URL:
+
 ```bash
 sudo -u pgapp /opt/pg-app/migrate up
 ```
@@ -123,6 +128,7 @@ sudo -u pgapp /opt/pg-app/migrate up
 ### 4.4 Sudoers Configuration
 
 Install the restricted sudoers rule for zero-downtime deployment:
+
 ```bash
 sudo cp deploy/pg-app-deploy-sudoers /etc/sudoers.d/pg-app-deploy
 sudo chmod 0440 /etc/sudoers.d/pg-app-deploy
@@ -132,6 +138,7 @@ sudo visudo -c -f /etc/sudoers.d/pg-app-deploy
 ### 4.5 systemd Unit Installation
 
 Install the main service and the 9 background timers:
+
 ```bash
 # 1. Install main HTTP service
 sudo cp deploy/pg-app.service /etc/systemd/system/pg-app.service
@@ -152,6 +159,7 @@ systemctl list-timers 'pg-*'
 ### 4.6 Cloudflare Tunnel Setup (`cloudflared`)
 
 Install and configure Cloudflare Tunnel to expose the PWA securely without open inbound firewall ports:
+
 ```bash
 # 1. Authenticate tunnel
 cloudflared tunnel login
@@ -177,19 +185,23 @@ sudo systemctl enable --now cloudflared
 
 1. **Verify Startup Role Guards:**
    Inspect service logs to confirm that all three roles connected correctly:
+
    ```bash
    journalctl -u pg-app.service -n 50 --no-pager
    ```
+
    Confirm absence of role errors:
    - `production maintenance pool requires 'pgapp_maint'`
    - `production app pool requires 'pgapp_app'`
 
 2. **Verify Background Job Execution:**
    Trigger one job manually and inspect the exit code:
+
    ```bash
    sudo systemctl start pg-reminder.service
    journalctl -u pg-reminder.service -n 30 --no-pager
    ```
+
    Confirm log entry contains no `workerPool` or role validation errors.
 
 3. **Verify Health Endpoint:**
@@ -203,6 +215,7 @@ sudo systemctl enable --now cloudflared
 ## 6. Rollback Procedure
 
 ### 6.1 VPS Rollback
+
 1. Stop the application service:
    ```bash
    sudo systemctl stop pg-app.service
@@ -217,6 +230,7 @@ sudo systemctl enable --now cloudflared
    ```
 
 ### 6.2 Database Migration Rollback
+
 1. Execute migration down step:
    ```bash
    sudo -u pgapp /opt/pg-app/migrate down 1

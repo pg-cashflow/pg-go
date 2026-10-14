@@ -1,15 +1,24 @@
 package api
 
 import (
-	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
+
+var metricsTokenWarnOnce sync.Once
+
+func slogMetricsTokenOnce() {
+	metricsTokenWarnOnce.Do(func() {
+		slog.Warn("METRICS_TOKEN is ignored; set METRICS_SECRET and send X-Metrics-Token")
+	})
+}
 
 // MetricsResponse holds operational database, runtime, and performance telemetry.
 type MetricsResponse struct {
@@ -57,20 +66,9 @@ type QueryPerfSummary struct {
 // Metrics handles GET /metrics and GET /api/metrics.
 // Supports application/json format or Prometheus text format based on Accept header.
 func (h *Handlers) Metrics(c *gin.Context) {
-	expectedToken := os.Getenv("METRICS_TOKEN")
-	allowOpen := strings.ToLower(os.Getenv("METRICS_ALLOW_OPEN")) == "true"
-
-	if expectedToken == "" {
-		if !allowOpen {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication"})
-			return
-		}
-	} else {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
-		}
+	// REQ-SEC-003b: metricsAuth is the only authentication gate.
+	if tok := strings.TrimSpace(os.Getenv("METRICS_TOKEN")); tok != "" {
+		slogMetricsTokenOnce()
 	}
 
 	var m runtime.MemStats

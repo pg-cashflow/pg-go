@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/app"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
-	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
-	"github.com/pg-cashflow/pg-go/internal/sms"
 )
 
 func main() {
@@ -53,27 +52,9 @@ func main() {
 
 	magicSvc := magiclink.NewService(tokenRepo, dueRepo, propertyRepo, tenantRepo, cfg.MagicLinkHMACSecret)
 
-	var mail mailer.Mailer = mailer.NoopMailer{}
-	if cfg.SMTPHost != "" {
-		mail = &mailer.SMTPMailer{
-			Host:     cfg.SMTPHost,
-			Port:     cfg.SMTPPort,
-			Username: cfg.SMTPUsername,
-			Password: cfg.SMTPPassword,
-			From:     cfg.SMTPFrom,
-		}
-	}
-
-	var gateway sms.SMSGateway = sms.NoopGateway{}
-	if cfg.SMSPrimaryURL != "" {
-		gateway = &sms.AndroidGateway{
-			PrimaryURL:     cfg.SMSPrimaryURL,
-			PrimaryAPIKey:  cfg.SMSPrimaryAPIKey,
-			FallbackURL:    cfg.SMSFallbackURL,
-			FallbackAPIKey: cfg.SMSFallbackAPIKey,
-			Alert:          sms.MailAlert(mail, cfg.SMTPFrom),
-		}
-	}
+	channels := app.OpenChannels(cfg)
+	mail := channels.Mail
+	gateway := channels.Gateway
 
 	pushSvc := push.NewService(push.RepoAdapter{Inner: pushRepo}, push.Config{
 		VAPIDPublicKey:  cfg.VAPIDPublicKey,

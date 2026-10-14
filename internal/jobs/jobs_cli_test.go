@@ -36,7 +36,9 @@ var allBinaries = []string{
 	"sandbox-smoke",
 }
 
-// TestGate12_BinariesMissingEnvFailFast validates that all cmd/ binaries
+// TestGate12_BinariesMissingEnvFailFast is the canonical CLI contract.
+// cmd/*/main_test.go only points here.
+// It validates that all cmd/ binaries
 // fail fast with non-zero POSIX exit codes when executed without required environment variables,
 // while deprecated binaries emit their notice cleanly.
 func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {

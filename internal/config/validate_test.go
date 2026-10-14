@@ -147,11 +147,8 @@ func TestValidateForRealDeployment_CashfreeWebhookSecretMissing(t *testing.T) {
 	cfg.CashfreeWebhookSecret = ""
 
 	err := cfg.ValidateForRealDeployment()
-	if err == nil {
-		t.Fatalf("expected error when Cashfree is enabled but webhook secret missing")
-	}
-	if !strings.Contains(err.Error(), "CASHFREE_PG_SECRET_KEY is required") {
-		t.Fatalf("expected error containing 'CASHFREE_PG_SECRET_KEY is required', got: %v", err)
+	if err != nil {
+		t.Fatalf("PG secret is present; Validate must not require a separate webhook secret (ADR-031), got: %v", err)
 	}
 }
 
@@ -322,6 +319,17 @@ func TestValidateForRealDeployment_MetricsSecret(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "METRICS_SECRET must not be a placeholder") {
 		t.Fatalf("expected error for placeholder METRICS_SECRET, got: %v", err)
 	}
+
+	cfg = validConfig()
+	cfg.AppEnv = "production"
+	cfg.MetricsSecret = ""
+	cfg.DatabaseWorkerURL = "postgres://worker@localhost/db"
+	cfg.DatabaseURL = "postgres://app@localhost/db"
+	cfg.DatabaseMaintURL = "postgres://maint@localhost/db"
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "METRICS_SECRET is required in production") {
+		t.Fatalf("expected production METRICS_SECRET error, got: %v", err)
+	}
 }
 
 func TestValidateForRealDeployment_VersionedPayoutEncryptionKeys(t *testing.T) {
@@ -375,6 +383,7 @@ func TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars(t *test
 func TestValidateForRealDeployment_DatabaseWorkerURL_Production(t *testing.T) {
 	cfg := validConfig()
 	cfg.AppEnv = "production"
+	cfg.MetricsSecret = "metrics-secret-16b"
 
 	// Missing DATABASE_WORKER_URL
 	cfg.DatabaseWorkerURL = ""

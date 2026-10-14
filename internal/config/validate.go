@@ -105,10 +105,15 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 	}
 
-	// --- Cashfree webhook secret required whenever Cashfree keys are set ---
+	// PG app id and secret pairing is checked above.
+	// Load() copies CASHFREE_PG_SECRET_KEY into CashfreeWebhookSecret when no override is set.
+	// Do not require a separate webhook secret here (ADR-031).
 	cashfreeEnabled := pgAppID != "" || pgSecret != "" || payoutClientID != ""
-	if (pgAppID != "" || pgSecret != "") && strings.TrimSpace(c.CashfreeWebhookSecret) == "" {
-		errs = append(errs, "CASHFREE_PG_SECRET_KEY is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
+
+	if c.AppEnv == "production" {
+		if strings.TrimSpace(c.MetricsSecret) == "" {
+			errs = append(errs, "METRICS_SECRET is required in production")
+		}
 	}
 
 	// --- Admin email required for critical operator alerts (outbox dead-letters, financial desynchronization) ---

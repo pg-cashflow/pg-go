@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/app"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
-	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/roi"
@@ -53,16 +53,7 @@ func main() {
 
 	paySvc := payment.NewService(dueRepo, paymentRepo, tenantRepo, payment.NewSQLSummaryRepository(pool), pub)
 
-	var mail mailer.Mailer = mailer.NoopMailer{}
-	if cfg.SMTPHost != "" {
-		mail = &mailer.SMTPMailer{
-			Host:     cfg.SMTPHost,
-			Port:     cfg.SMTPPort,
-			Username: cfg.SMTPUsername,
-			Password: cfg.SMTPPassword,
-			From:     cfg.SMTPFrom,
-		}
-	}
+	mail := app.OpenChannels(cfg).Mail
 
 	tmplDir := filepath.Join("internal", "mailer", "templates")
 	if _, err := os.Stat(tmplDir); err != nil {

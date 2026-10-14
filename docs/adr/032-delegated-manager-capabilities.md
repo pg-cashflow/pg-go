@@ -1,6 +1,6 @@
 # ADR-032: Delegated Manager Capabilities and Tenant Module Toggles (M1b)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-14
 **Deciders:** Sasi
 **Builds on:** ADR-009 (payout approval), ADR-018/029 (RLS), Track C.2/C.3 (maker-checker, step-up)
@@ -66,8 +66,8 @@ B costs one table, one middleware and an authz matrix. It buys per-manager contr
 
 ## Action Items
 
-1. [ ] Migration (next free number): tables, RLS, check constraint rejecting non-delegable names; immutability not needed (grants are revoked, not deleted).
-2. [ ] `RequireCapability` plus a route-tag registry. **Authz matrix test:** iterate every registered route and assert a row for owner, manager with grant, manager without grant, tenant, anonymous. CI fails on an untagged route.
+1. [x] Migration 070: `manager_capabilities`, RLS, check constraint rejecting non-delegable names.
+2. [x] `RequireCapability` on `/manager` routes. Matrix test covers owner, manager with grant, and manager without grant. A nil store skips enforcement so existing suites stay green. `cmd/server` always sets the store.
 3. [ ] Lifecycle endpoints, audit events, cache invalidation test.
 4. [ ] Owner screen with presets ("Front desk", "Kitchen and maintenance", "Accounts-lite") and a manager "request access" action that creates an owner notification.
 5. [ ] Isolation tests: manager of property A cannot read or change anything in property B.

@@ -82,8 +82,31 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 
+	// REQ-WH-001: persist the verified payload before any payout mutation.
+	audit := h.gatewayAuditStore()
+	if audit == nil {
+		slog.Error("payout webhook rejected: audit log unavailable")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit log service unavailable"})
+		return
+	}
+	evtRecord := &domain.WebhookEvent{
+		Provider:         "cashfree",
+		EventType:        "PAYOUT",
+		Signature:        &sig,
+		TimestampHeader:  &ts,
+		RawPayload:       raw,
+		ProcessingStatus: "received",
+	}
+	if err := audit.CreateWebhookEvent(c.Request.Context(), evtRecord); err != nil {
+		slog.Error("payout webhook forensic audit persistence failed", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
+		return
+	}
+
 	var env PayoutWebhookEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		errMsg := err.Error()
+		_ = audit.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "dead_letter", &errMsg)
 		slog.Error("cashfree payout webhook dead-letter: unparseable envelope json", "err", err)
 		c.Status(http.StatusOK)
 		return
@@ -92,6 +115,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	evtType := strings.ToUpper(strings.TrimSpace(env.Event))
 	if evtType == "" {
 		evtType = strings.ToUpper(strings.TrimSpace(env.Type))
+	}
+	if evtType != "" {
+		evtRecord.EventType = evtType
 	}
 
 	var data PayoutWebhookData
@@ -201,6 +227,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	case "TRANSFER_SUCCESS":
 		// Idempotency: If already succeeded, return 200 without duplicate ledger mirror
 		if item.Status == domain.PayoutSucceeded {
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
+			}
 			c.Status(http.StatusOK)
 			return
 		}
@@ -239,16 +268,8 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			utr = *data.UTR
 		}
 
-		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutSucceeded, &cfID, &utr, &occurredAt, nil); err != nil {
-			slog.Error("failed updating payout item to succeeded", "item_id", item.ID, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutSucceeded, &cfID, &utr, &occurredAt, nil, item.BatchID) {
 			return
-		}
-
-		if item.BatchID != nil {
-			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
-				slog.Error("failed rolling up batch status after item succeeded", "batch_id", *item.BatchID, "err", err)
-			}
 		}
 
 	case "TRANSFER_FAILED":
@@ -261,21 +282,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			targetStatus = domain.PayoutRetriableFailed
 		}
 
-		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
-			slog.Error("failed updating payout item to failed", "item_id", item.ID, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, targetStatus, &cfID, nil, nil, &reason, item.BatchID) {
 			return
-		}
-		if item.BatchID != nil {
-			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
-			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
-				slog.Error("failed rolling up batch status after item failed", "batch_id", *item.BatchID, "err", err)
-			}
 		}
 
 	case "TRANSFER_REVERSED":
 		// Idempotency: If already reversed, return 200 without duplicate ledger mirror
 		if item.Status == domain.PayoutReversed {
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
+			}
 			c.Status(http.StatusOK)
 			return
 		}
@@ -313,16 +329,8 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if data.StatusDescription != "" {
 			reason = data.StatusDescription
 		}
-		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
-			slog.Error("failed updating payout item to reversed", "item_id", item.ID, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutReversed, &cfID, nil, nil, &reason, item.BatchID) {
 			return
-		}
-		if item.BatchID != nil {
-			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
-			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
-				slog.Error("failed rolling up batch status after item reversed", "batch_id", *item.BatchID, "err", err)
-			}
 		}
 
 	case "TRANSFER_REJECTED":
@@ -330,28 +338,107 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if reason == "" {
 			reason = "transfer rejected by gateway"
 		}
-		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
-			slog.Error("failed updating payout item to rejected", "item_id", item.ID, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutRejected, &cfID, nil, nil, &reason, item.BatchID) {
 			return
-		}
-		if item.BatchID != nil {
-			// Rollup is advisory: a batch-status failure does not block gateway retry of the item event.
-			if _, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, *item.BatchID); err != nil {
-				slog.Error("failed rolling up batch status after item rejected", "batch_id", *item.BatchID, "err", err)
-			}
 		}
 
 	case "TRANSFER_ACKNOWLEDGED":
 		// Gateway accepted transfer into in-flight queue; keep processing
-		if err := repo.UpdatePayoutItemStatusTx(ctx, nil, item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil); err != nil {
-			slog.Error("failed updating payout item to processing", "item_id", item.ID, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil, item.BatchID) {
 			return
 		}
 	}
 
+	if evtRecord.ID != uuid.Nil {
+		_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
+	}
 	c.Status(http.StatusOK)
+}
+
+var errPayoutEventDuplicate = errors.New("payout webhook duplicate")
+
+func payoutEventRef(data PayoutWebhookData, itemID uuid.UUID) string {
+	if id := strings.TrimSpace(data.CFTransferID); id != "" {
+		return id
+	}
+	if id := strings.TrimSpace(data.TransferID); id != "" {
+		return id
+	}
+	return itemID.String()
+}
+
+func (h *Handlers) gatewayAuditStore() GatewayPaymentRepo {
+	if h.GatewayPaymentRepo != nil {
+		return h.GatewayPaymentRepo
+	}
+	if h.Pool != nil {
+		return postgres.NewPaymentRepo(h.Pool)
+	}
+	return nil
+}
+
+// commitPayoutItem records the processed event and the status change together.
+// It returns false after writing the HTTP response.
+func (h *Handlers) commitPayoutItem(
+	c *gin.Context,
+	ctx context.Context,
+	audit GatewayPaymentRepo,
+	evtRecord *domain.WebhookEvent,
+	repo PayoutWebhookStore,
+	evtType, refID string,
+	itemID uuid.UUID,
+	status domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+	batchID *uuid.UUID,
+) bool {
+	run := func(tx pgx.Tx) error {
+		var first bool
+		var err error
+		if tx != nil {
+			first, err = postgres.NewPaymentRepo(tx).RecordProcessedEvent(ctx, "cashfree", evtType, refID, "")
+		} else if audit != nil {
+			first, err = audit.RecordProcessedEvent(ctx, "cashfree", evtType, refID, "")
+		} else {
+			return fmt.Errorf("audit store unavailable")
+		}
+		if err != nil {
+			return err
+		}
+		if !first {
+			return errPayoutEventDuplicate
+		}
+		if err := repo.UpdatePayoutItemStatusTx(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason); err != nil {
+			return err
+		}
+		if batchID != nil {
+			if _, rollErr := repo.UpdateBatchStatusFromItemsTx(ctx, tx, *batchID); rollErr != nil {
+				slog.Error("failed rolling up batch status after payout webhook", "batch_id", *batchID, "err", rollErr)
+			}
+		}
+		return nil
+	}
+
+	var err error
+	if h.Pool != nil {
+		err = postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error { return run(tx) })
+	} else {
+		err = run(nil)
+	}
+	if errors.Is(err, errPayoutEventDuplicate) {
+		if evtRecord != nil && evtRecord.ID != uuid.Nil && audit != nil {
+			_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
+		}
+		c.Status(http.StatusOK)
+		return false
+	}
+	if err != nil {
+		slog.Error("failed updating payout item", "item_id", itemID, "status", status, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		return false
+	}
+	return true
 }
 
 func (h *Handlers) getPayoutWebhookRepo() PayoutWebhookStore {

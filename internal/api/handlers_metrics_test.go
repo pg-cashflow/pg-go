@@ -70,61 +70,43 @@ func TestMetricsEndpoint_Prometheus(t *testing.T) {
 func TestMetricsEndpoint_AuthClosedByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{}
+	const secret = "metrics-secret-16"
 
-	r := gin.New()
-	r.GET("/metrics", h.Metrics)
+	mount := func(metricsSecret string) *gin.Engine {
+		r := gin.New()
+		r.GET("/metrics", metricsAuth("jwt-secret-not-used-for-metrics", metricsSecret), h.Metrics)
+		return r
+	}
 
-	// 1. By default with no token and no METRICS_ALLOW_OPEN, must fail closed with 401
-	t.Setenv("METRICS_TOKEN", "")
 	t.Setenv("METRICS_ALLOW_OPEN", "")
+	t.Setenv("METRICS_TOKEN", "ignored-legacy-token")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
+	mount("").ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected status 401 Unauthorized by default without token, got %d", w.Code)
+		t.Fatalf("expected 401 without secret and without METRICS_ALLOW_OPEN, got %d", w.Code)
 	}
 
-	// 2. With token configured, valid token succeeds
-	t.Setenv("METRICS_TOKEN", "secret-test-token")
-	reqAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	reqAuth.Header.Set("Authorization", "Bearer secret-test-token")
-	wAuth := httptest.NewRecorder()
-	r.ServeHTTP(wAuth, reqAuth)
-
-	if wAuth.Code != http.StatusOK {
-		t.Fatalf("expected status 200 OK with valid bearer token, got %d", wAuth.Code)
+	wTok := httptest.NewRecorder()
+	reqTok := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqTok.Header.Set("X-Metrics-Token", secret)
+	mount(secret).ServeHTTP(wTok, reqTok)
+	if wTok.Code != http.StatusOK {
+		t.Fatalf("expected 200 with X-Metrics-Token, got %d", wTok.Code)
 	}
 
-	// 3. With token configured, invalid token fails with 401
-	reqBadAuth := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	reqBadAuth.Header.Set("Authorization", "Bearer wrong-token")
-	wBadAuth := httptest.NewRecorder()
-	r.ServeHTTP(wBadAuth, reqBadAuth)
-
-	if wBadAuth.Code != http.StatusUnauthorized {
-		t.Fatalf("expected status 401 Unauthorized with invalid bearer token, got %d", wBadAuth.Code)
+	wJWT := httptest.NewRecorder()
+	reqJWT := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	reqJWT.Header.Set("Authorization", "Bearer owner-jwt")
+	mount("").ServeHTTP(wJWT, reqJWT)
+	if wJWT.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for JWT without metrics secret, got %d", wJWT.Code)
 	}
 
-	// 4. With METRICS_ALLOW_OPEN=true and no token, succeeds without auth
-	t.Setenv("METRICS_TOKEN", "")
 	t.Setenv("METRICS_ALLOW_OPEN", "true")
-	reqOpen := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	wOpen := httptest.NewRecorder()
-	r.ServeHTTP(wOpen, reqOpen)
-
+	mount("").ServeHTTP(wOpen, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if wOpen.Code != http.StatusOK {
-		t.Fatalf("expected status 200 OK when METRICS_ALLOW_OPEN=true, got %d", wOpen.Code)
-	}
-
-	// 5. Query parameter token must be rejected (Authorization header required)
-	t.Setenv("METRICS_TOKEN", "secret-test-token")
-	t.Setenv("METRICS_ALLOW_OPEN", "")
-	reqQuery := httptest.NewRequest(http.MethodGet, "/metrics?token=secret-test-token", nil)
-	wQuery := httptest.NewRecorder()
-	r.ServeHTTP(wQuery, reqQuery)
-	if wQuery.Code != http.StatusUnauthorized {
-		t.Fatalf("expected status 401 Unauthorized for query-string token, got %d", wQuery.Code)
+		t.Fatalf("expected 200 when METRICS_ALLOW_OPEN=true, got %d", wOpen.Code)
 	}
 }

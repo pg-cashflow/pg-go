@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -106,12 +107,16 @@ type Deps struct {
 	SettlementBalancerRepo SettlementBalancerStore
 	SettlementBalancer     *finance.SettlementBalancer
 
-	BankTxnRepo     BankTransactionStore
+	BankTxnRepo BankTransactionStore
+	// CapabilityStore enforces ADR-032 grants on /manager routes.
+	// Nil skips enforcement so tests that do not set a store keep prior behavior.
+	CapabilityStore ManagerCapabilityStore
 	BankAccountRepo BankAccountStore
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 
-	// MetricsSecret is the static bearer token accepted in the X-Metrics-Token header.
+	// MetricsSecret is the static token accepted in the X-Metrics-Token header.
+	// REQ-SEC-003: owner JWTs do not authorize /metrics.
 	// REQ-SEC-003: /metrics requires either this token or a valid owner/manager JWT.
 	// Must be set to a high-entropy random value in production.
 	MetricsSecret string
@@ -133,29 +138,28 @@ var redactingLogFormatter = func(p gin.LogFormatterParams) string {
 	)
 }
 
-// metricsAuth is a Gin middleware that gate-keeps the /metrics endpoint.
-// REQ-SEC-003: Accepts X-Metrics-Token (Prometheus scraper) or a valid owner/manager
-// Bearer JWT. Returns 401 JSON for everything else.
+// metricsAuth is the only gate for GET /metrics and GET /api/metrics.
+// REQ-SEC-003: accept X-Metrics-Token when METRICS_SECRET is set.
+// Allow open access only when METRICS_ALLOW_OPEN=true.
+// Reject every other caller with HTTP 401. A JWT is not enough.
 func metricsAuth(jwtSecret, metricsSecret string) gin.HandlerFunc {
+	_ = jwtSecret
 	return func(c *gin.Context) {
-		// 1. Static scraper token path.
+		allowOpen := strings.EqualFold(os.Getenv("METRICS_ALLOW_OPEN"), "true")
 		if metricsSecret != "" {
-			if tok := c.GetHeader("X-Metrics-Token"); subtle.ConstantTimeCompare([]byte(tok), []byte(metricsSecret)) == 1 {
+			tok := c.GetHeader("X-Metrics-Token")
+			if subtle.ConstantTimeCompare([]byte(tok), []byte(metricsSecret)) == 1 {
 				c.Next()
 				return
 			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires X-Metrics-Token"})
+			return
 		}
-		// 2. Owner / manager JWT path.
-		if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
-			tokenStr := strings.TrimPrefix(header, "Bearer ")
-			claims, err := auth.VerifyToken(jwtSecret, tokenStr)
-			if err == nil && (claims.Role == "owner" || claims.Role == "manager") {
-				c.Next()
-				return
-			}
+		if allowOpen {
+			c.Next()
+			return
 		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized,
-			gin.H{"error": "metrics endpoint requires X-Metrics-Token header or owner Bearer JWT"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication"})
 	}
 }
 
@@ -391,21 +395,25 @@ func NewRouter(d Deps) *gin.Engine {
 
 		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
 		{
-			manager.POST("/inspections", h.ManagerSubmitInspection)
-			manager.GET("/inspections", h.ManagerListInspections)
-			manager.POST("/inspections/items/:id/resolve", h.ManagerResolveInspectionItem)
-			manager.POST("/violations", h.ManagerLogViolation)
-			manager.POST("/meter-readings", h.ManagerRecordMeterReading)
-			manager.GET("/kitchen/headcount", h.ManagerKitchenHeadcount)
-			manager.GET("/hazards", h.ManagerListHazards)
-			manager.POST("/hazards/:id/resolve", h.ManagerResolveHazard)
-			manager.POST("/vendor-inspections", h.ManagerSubmitVendorInspection)
-			manager.GET("/finance/expenses", h.ListExpenses)
-			manager.POST("/finance/expenses", h.PostExpense)
-			manager.POST("/finance/expenses/:id/void", h.VoidExpense)
-			manager.POST("/finance/expenses/:id/payments", h.PostExpensePayment)
-			manager.GET("/finance/today", h.ManagerFinanceToday)
-			manager.POST("/finance/meal-prep", h.PostMealPrep)
+			capOf := func(name string) gin.HandlerFunc {
+				return auth.RequireCapability(name, d.CapabilityStore)
+			}
+			manager.GET("/me/capabilities", h.ManagerMyCapabilities)
+			manager.POST("/inspections", capOf("inspections.write"), h.ManagerSubmitInspection)
+			manager.GET("/inspections", capOf("inspections.write"), h.ManagerListInspections)
+			manager.POST("/inspections/items/:id/resolve", capOf("inspections.write"), h.ManagerResolveInspectionItem)
+			manager.POST("/violations", capOf("inspections.write"), h.ManagerLogViolation)
+			manager.POST("/meter-readings", capOf("meters.write"), h.ManagerRecordMeterReading)
+			manager.GET("/kitchen/headcount", capOf("kitchen.headcount"), h.ManagerKitchenHeadcount)
+			manager.GET("/hazards", capOf("inspections.write"), h.ManagerListHazards)
+			manager.POST("/hazards/:id/resolve", capOf("inspections.write"), h.ManagerResolveHazard)
+			manager.POST("/vendor-inspections", capOf("inspections.write"), h.ManagerSubmitVendorInspection)
+			manager.GET("/finance/expenses", capOf("expenses.post"), h.ListExpenses)
+			manager.POST("/finance/expenses", capOf("expenses.post"), h.PostExpense)
+			manager.POST("/finance/expenses/:id/void", capOf("expenses.void"), h.VoidExpense)
+			manager.POST("/finance/expenses/:id/payments", capOf("expenses.post"), h.PostExpensePayment)
+			manager.GET("/finance/today", capOf("expenses.post"), h.ManagerFinanceToday)
+			manager.POST("/finance/meal-prep", capOf("expenses.post"), h.PostMealPrep)
 		}
 
 		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))

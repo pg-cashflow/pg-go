@@ -20,6 +20,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/api"
+	"github.com/pg-cashflow/pg-go/internal/app"
 	"github.com/pg-cashflow/pg-go/internal/attendance"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/billing"
@@ -36,14 +37,12 @@ import (
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
-	"github.com/pg-cashflow/pg-go/internal/mailer"
 	notificationsvc "github.com/pg-cashflow/pg-go/internal/notification"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
 	roisvc "github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
-	"github.com/pg-cashflow/pg-go/internal/sms"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
 )
 
@@ -142,27 +141,9 @@ func main() {
 	dispatchPub := events.NewDispatchPublisher(innerPub)
 	pub := dispatchPub
 
-	var mail mailer.Mailer = mailer.NoopMailer{}
-	if cfg.SMTPHost != "" {
-		mail = &mailer.SMTPMailer{
-			Host:     cfg.SMTPHost,
-			Port:     cfg.SMTPPort,
-			Username: cfg.SMTPUsername,
-			Password: cfg.SMTPPassword,
-			From:     cfg.SMTPFrom,
-		}
-	}
-
-	var gateway sms.SMSGateway = sms.NoopGateway{}
-	if cfg.SMSPrimaryURL != "" {
-		gateway = &sms.AndroidGateway{
-			PrimaryURL:     cfg.SMSPrimaryURL,
-			PrimaryAPIKey:  cfg.SMSPrimaryAPIKey,
-			FallbackURL:    cfg.SMSFallbackURL,
-			FallbackAPIKey: cfg.SMSFallbackAPIKey,
-			Alert:          sms.MailAlert(mail, cfg.SMTPFrom),
-		}
-	}
+	channels := app.OpenChannels(cfg)
+	mail := channels.Mail
+	gateway := channels.Gateway
 
 	refreshRepo := postgres.NewRefreshTokenRepo(maintPool)
 	authSvc := auth.NewService(otpRepo, userRepo, tenantRepo, propertyRepo, gateway, cfg.OTPHMACSecret, cfg.JWTSecret)
@@ -408,9 +389,9 @@ func main() {
 		SettlementBalancer:          settlementBalancer,
 		LedgerOutboxRepo:            ledgerOutboxRepo,
 		// REQ-SEC-003: MetricsSecret protects Prometheus scraper endpoint.
-		MetricsSecret: cfg.MetricsSecret,
+		MetricsSecret:   cfg.MetricsSecret,
+		CapabilityStore: postgres.NewCapabilityRepo(maintPool),
 	})
-
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

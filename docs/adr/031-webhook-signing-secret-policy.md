@@ -1,6 +1,6 @@
 # ADR-031: Webhook Signing Secret Policy (Cashfree PG and Payouts)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-14
 **Deciders:** Sasi
 **Builds on:** Track B (gateway ingress), ADR-028
@@ -39,5 +39,5 @@
 
 ## Action Items
 
-1. [ ] R1: edit messages, remove L1, add tests: fallback resolves to PG secret; override wins; both empty with PG keys set is impossible; both empty with no PG keys is allowed.
-2. [ ] R2: payout secret placeholder-only test; the other secrets keep the 32-char test.
+1. [x] R1: edit messages, remove L1, add tests: fallback resolves to PG secret; override wins; both empty with PG keys set is impossible; both empty with no PG keys is allowed.
+2. [x] R2: payout secret placeholder-only test; the other secrets keep the 32-char test.
