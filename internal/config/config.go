@@ -75,6 +75,8 @@ type Config struct {
 	CashfreePGBaseURL string
 	// MetricsSecret protects /metrics via X-Metrics-Token header.
 	MetricsSecret string
+	// WebhookSecretSource indicates the source of CashfreeWebhookSecret ("pg_secret_key" or "override").
+	WebhookSecretSource string
 }
 
 func Load() (*Config, error) {
@@ -138,8 +140,11 @@ func Load() (*Config, error) {
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
-	if cfg.CashfreeWebhookSecret == "" {
+	if cfg.CashfreeWebhookSecret != "" {
+		cfg.WebhookSecretSource = "override"
+	} else if cfg.CashfreePGSecretKey != "" {
 		cfg.CashfreeWebhookSecret = cfg.CashfreePGSecretKey
+		cfg.WebhookSecretSource = "pg_secret_key"
 	}
 	if cfg.KYCDigiLockerRedirectURL == "" {
 		if cfg.FrontendURL != "" {
@@ -181,7 +186,7 @@ func Load() (*Config, error) {
 		cfSecret = strings.TrimSpace(cfg.CashfreeSecretKey)
 	}
 	if (cfAppID != "" || cfSecret != "") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
-		return nil, fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required whenever Cashfree PG is enabled (any environment)")
+		return nil, fmt.Errorf("CASHFREE_PG_SECRET_KEY is required whenever Cashfree PG is enabled (any environment)")
 	}
 	if cfg.WebhookTimestampToleranceSec <= 0 {
 		return nil, fmt.Errorf("WEBHOOK_TIMESTAMP_TOLERANCE_SEC must be greater than 0 (got %d)", cfg.WebhookTimestampToleranceSec)

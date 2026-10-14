@@ -147,8 +147,8 @@ func TestValidateForRealDeployment_CashfreeWebhookSecretMissing(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when Cashfree is enabled but webhook secret missing")
 	}
-	if !strings.Contains(err.Error(), "CASHFREE_WEBHOOK_SECRET is required") {
-		t.Fatalf("expected error containing 'CASHFREE_WEBHOOK_SECRET is required', got: %v", err)
+	if !strings.Contains(err.Error(), "CASHFREE_PG_SECRET_KEY is required") {
+		t.Fatalf("expected error containing 'CASHFREE_PG_SECRET_KEY is required', got: %v", err)
 	}
 }
 
@@ -187,8 +187,25 @@ func TestValidateWarnings(t *testing.T) {
 	cfg.CashfreeEnv = "sandbox"
 
 	warns := cfg.ValidateWarnings()
-	if len(warns) != 2 {
-		t.Fatalf("expected 2 warnings (fallback + sandbox), got %d: %v", len(warns), warns)
+	if len(warns) != 1 {
+		t.Fatalf("expected 1 warning (sandbox only, L1 fallback removed), got %d: %v", len(warns), warns)
+	}
+	if !strings.Contains(warns[0], "sandbox mode") {
+		t.Fatalf("expected sandbox mode warning, got: %v", warns[0])
+	}
+}
+
+func TestValidateWarnings_CorrectConfigProducesZeroWarnings(t *testing.T) {
+	cfg := validConfig()
+	cfg.CashfreeAppID = "app_123"
+	cfg.CashfreeSecretKey = "sec_123"
+	cfg.CashfreeWebhookSecret = "sec_123"
+	cfg.CashfreeEnv = "production"
+	cfg.AdminEmail = "admin@example.com"
+
+	warns := cfg.ValidateWarnings()
+	if len(warns) != 0 {
+		t.Fatalf("expected 0 warnings for correct config, got %d: %v", len(warns), warns)
 	}
 }
 
@@ -312,5 +329,42 @@ func TestValidateForRealDeployment_VersionedPayoutEncryptionKeys(t *testing.T) {
 	err := cfg.ValidateForRealDeployment()
 	if err == nil || !strings.Contains(err.Error(), "PAYOUT_ENCRYPTION_KEYS[1] must be at least 32 characters") {
 		t.Fatalf("expected error for short versioned payout key, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars(t *testing.T) {
+	// A 20-character payout webhook secret passes (ADR-031 D4 / Ticket R2)
+	cfg := validConfig()
+	cfg.CashfreePayoutClientID = "CF_TEST_PAYOUT_CLIENT_ID"
+	cfg.CashfreePayoutClientSecret = "CF_TEST_PAYOUT_CLIENT_SECRET"
+	cfg.CashfreePayoutFundsourceID = "FUND_SOURCE_123"
+	cfg.PayoutEncryptionSecret = "this-is-a-valid-payout-encryption-secret-32"
+	cfg.PayoutExportChecksumSecret = "this-is-a-valid-payout-checksum-secret-32ch"
+	cfg.CashfreePayoutWebhookSecret = "twenty-char-secret!!" // exactly 20 characters
+
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected 20-character payout webhook secret to pass, got: %v", err)
+	}
+
+	// change-me-x fails
+	cfg.CashfreePayoutWebhookSecret = "change-me-vendor-secret"
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_WEBHOOK_SECRET must not be a placeholder") {
+		t.Fatalf("expected error for change-me placeholder, got: %v", err)
+	}
+
+	// empty with CF_PAYOUT_CLIENT_ID set fails
+	cfg.CashfreePayoutWebhookSecret = ""
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_WEBHOOK_SECRET is required") {
+		t.Fatalf("expected error for empty CF_PAYOUT_WEBHOOK_SECRET, got: %v", err)
+	}
+
+	// 31-character JWT_SECRET still fails
+	cfg.CashfreePayoutWebhookSecret = "twenty-char-secret!!"
+	cfg.JWTSecret = "1234567890123456789012345678901" // 31 chars
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 characters") {
+		t.Fatalf("expected error for 31-character JWT_SECRET, got: %v", err)
 	}
 }

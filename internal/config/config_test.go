@@ -370,3 +370,107 @@ func TestLoadRejectsNonPositiveWebhookTimestampTolerance(t *testing.T) {
 		t.Fatalf("expected tolerance 300, got %d", cfg.WebhookTimestampToleranceSec)
 	}
 }
+
+func TestLoad_WebhookSecretResolution(t *testing.T) {
+	cases := []struct {
+		name          string
+		pgAppID       string
+		pgSecretKey   string
+		webhookSecret string
+		wantErrSub    string
+		wantSecret    string
+		wantSource    string
+	}{
+		{
+			name:          "override set -> used",
+			pgAppID:       "app_1",
+			pgSecretKey:   "sec_key_1",
+			webhookSecret: "custom_override_secret",
+			wantSecret:    "custom_override_secret",
+			wantSource:    "override",
+		},
+		{
+			name:          "override empty, PG secret set -> PG secret used",
+			pgAppID:       "app_1",
+			pgSecretKey:   "sec_key_1",
+			webhookSecret: "",
+			wantSecret:    "sec_key_1",
+			wantSource:    "pg_secret_key",
+		},
+		{
+			name:          "PG app id set, PG secret empty -> error naming CASHFREE_PG_SECRET_KEY",
+			pgAppID:       "app_1",
+			pgSecretKey:   "",
+			webhookSecret: "",
+			wantErrSub:    "CASHFREE_PG_SECRET_KEY is required",
+		},
+		{
+			name:          "No PG keys -> no error, no warning",
+			pgAppID:       "",
+			pgSecretKey:   "",
+			webhookSecret: "",
+			wantSecret:    "",
+			wantSource:    "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			keys := []string{
+				"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+				"CASHFREE_PG_APP_ID", "CASHFREE_APP_ID",
+				"CASHFREE_PG_SECRET_KEY", "CASHFREE_SECRET_KEY",
+				"CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET",
+			}
+			prev := map[string]string{}
+			for _, k := range keys {
+				prev[k] = os.Getenv(k)
+				_ = os.Unsetenv(k)
+			}
+			defer func() {
+				for k, v := range prev {
+					if v != "" {
+						_ = os.Setenv(k, v)
+					} else {
+						_ = os.Unsetenv(k)
+					}
+				}
+			}()
+
+			_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+			_ = os.Setenv("JWT_SECRET", "jwt-secret-over-32-characters-minimum")
+			_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-over-32-characters-minimum")
+			_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-link-over-32-characters-minimum")
+
+			if tc.pgAppID != "" {
+				_ = os.Setenv("CASHFREE_PG_APP_ID", tc.pgAppID)
+			}
+			if tc.pgSecretKey != "" {
+				_ = os.Setenv("CASHFREE_PG_SECRET_KEY", tc.pgSecretKey)
+			}
+			if tc.webhookSecret != "" {
+				_ = os.Setenv("CASHFREE_PG_WEBHOOK_SECRET", tc.webhookSecret)
+			}
+
+			cfg, err := Load()
+			if tc.wantErrSub != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErrSub)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrSub) {
+					t.Fatalf("expected error containing %q, got: %v", tc.wantErrSub, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.CashfreeWebhookSecret != tc.wantSecret {
+				t.Fatalf("expected CashfreeWebhookSecret %q, got %q", tc.wantSecret, cfg.CashfreeWebhookSecret)
+			}
+			if cfg.WebhookSecretSource != tc.wantSource {
+				t.Fatalf("expected WebhookSecretSource %q, got %q", tc.wantSource, cfg.WebhookSecretSource)
+			}
+		})
+	}
+}

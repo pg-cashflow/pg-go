@@ -61,6 +61,9 @@ func main() {
 	for _, w := range cfg.ValidateWarnings() {
 		slog.Warn(w)
 	}
+	if cfg.WebhookSecretSource != "" {
+		slog.Info("cashfree pg webhook secret configured", "webhook_secret_source", cfg.WebhookSecretSource)
+	}
 	// ADR-2 M4: suppress header logging in production.
 	if cfg.AppEnv == "production" {
 		gin.SetMode(gin.ReleaseMode)

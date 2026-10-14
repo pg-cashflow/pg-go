@@ -46,7 +46,7 @@ func (c *Config) ValidateForRealDeployment() error {
 	for _, s := range secrets {
 		if strings.HasPrefix(s.val, "change-me") {
 			errs = append(errs, fmt.Sprintf("%s must not be a placeholder value (starts with 'change-me')", s.name))
-		} else if len(s.val) < 32 && s.name != "METRICS_SECRET" {
+		} else if len(s.val) < 32 && s.name != "METRICS_SECRET" && s.name != "CF_PAYOUT_WEBHOOK_SECRET" {
 			errs = append(errs, fmt.Sprintf("%s must be at least 32 characters (got %d)", s.name, len(s.val)))
 		} else if len(s.val) < 16 && s.name == "METRICS_SECRET" {
 			errs = append(errs, fmt.Sprintf("%s must be at least 16 characters (got %d)", s.name, len(s.val)))
@@ -108,7 +108,7 @@ func (c *Config) ValidateForRealDeployment() error {
 	// --- Cashfree webhook secret required whenever Cashfree keys are set ---
 	cashfreeEnabled := pgAppID != "" || pgSecret != "" || payoutClientID != ""
 	if (pgAppID != "" || pgSecret != "") && strings.TrimSpace(c.CashfreeWebhookSecret) == "" {
-		errs = append(errs, "CASHFREE_WEBHOOK_SECRET is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
+		errs = append(errs, "CASHFREE_PG_SECRET_KEY is required whenever CASHFREE_APP_ID or CASHFREE_SECRET_KEY is set (any environment)")
 	}
 
 	// --- Admin email required for critical operator alerts (outbox dead-letters, financial desynchronization) ---
@@ -126,7 +126,6 @@ func (c *Config) ValidateForRealDeployment() error {
 	}
 
 	// --- Non-fatal operational warnings (logged by caller) ---
-	// L1: CASHFREE_WEBHOOK_SECRET fallback
 	// L3: sandbox mode with live keys
 	// These are returned via WarnStrings() for the caller to log.
 	return nil
@@ -138,12 +137,6 @@ func (c *Config) ValidateWarnings() []string {
 	var warns []string
 
 	cashfreeEnabled := strings.TrimSpace(c.CashfreeAppID) != "" || strings.TrimSpace(c.CashfreeSecretKey) != ""
-
-	// L1: webhook secret fell back to API secret key
-	explicitWebhookSec := envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET")
-	if cashfreeEnabled && explicitWebhookSec == "" && c.CashfreeWebhookSecret != "" {
-		warns = append(warns, "CASHFREE_WEBHOOK_SECRET not set; falling back to CASHFREE_SECRET_KEY — update if Cashfree webhook and API secrets differ")
-	}
 
 	// L3: sandbox mode with Cashfree keys active
 	if cashfreeEnabled && !strings.EqualFold(c.CashfreeEnv, "production") {
