@@ -10,8 +10,9 @@ import (
 
 const exemptMarker = "//m12:validate-exempt"
 
-// checkCmdDirectory validates that all binaries in cmdDir (except server)
-// either call ValidateForRealDeployment or declare //m12:validate-exempt <reason>.
+// checkCmdDirectory validates that all binaries in cmdDir (except server):
+// 1. Either declare //m12:validate-exempt <reason> OR call ValidateForRealDeployment.
+// 2. Non-exempt recurring jobs connect via DatabaseWorkerURL and call ValidateWorkerRole (ADR-030 / R5).
 func checkCmdDirectory(cmdDir string) ([]string, error) {
 	entries, err := os.ReadDir(cmdDir)
 	if err != nil {
@@ -58,6 +59,14 @@ func checkCmdDirectory(cmdDir string) ([]string, error) {
 			reason := strings.TrimSpace(line)
 			if reason == "" {
 				violations = append(violations, fmt.Sprintf("%s: %s marker requires a documented reason", binName, exemptMarker))
+			}
+		} else {
+			// Recurring jobs must connect via DatabaseWorkerURL and call ValidateWorkerRole (ADR-030)
+			if !strings.Contains(content, "DatabaseWorkerURL") {
+				violations = append(violations, fmt.Sprintf("%s: non-exempt job must connect via DatabaseWorkerURL", binName))
+			}
+			if !strings.Contains(content, "ValidateWorkerRole") {
+				violations = append(violations, fmt.Sprintf("%s: non-exempt job must call postgres.ValidateWorkerRole", binName))
 			}
 		}
 	}
@@ -126,9 +135,36 @@ func TestCommandValidationCoverage_NegativeFixture(t *testing.T) {
 		t.Fatalf("expected violation for marker without reason, got: %v", violations)
 	}
 
-	// 3. Binary with valid exempt marker and reason must pass
+	// 3. Binary with validation but missing worker guard must fail
+	noGuardDir := filepath.Join(tmpDir, "no-guard-binary")
+	if err := os.MkdirAll(noGuardDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	noGuardMain := filepath.Join(noGuardDir, "main.go")
+	noGuardCode := "package main\n\nfunc main() {\n\t_ = cfg.ValidateForRealDeployment()\n}\n"
+	if err := os.WriteFile(noGuardMain, []byte(noGuardCode), 0644); err != nil {
+		t.Fatalf("write no-guard main failed: %v", err)
+	}
+
+	violations, err = checkCmdDirectory(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	foundNoGuard := false
+	for _, v := range violations {
+		if strings.Contains(v, "no-guard-binary") && strings.Contains(v, "ValidateWorkerRole") {
+			foundNoGuard = true
+			break
+		}
+	}
+	if !foundNoGuard {
+		t.Fatalf("expected violation for missing worker role guard, got: %v", violations)
+	}
+
+	// 4. Binary with valid exempt marker and reason must pass
 	_ = os.RemoveAll(badDir)
 	_ = os.RemoveAll(noReasonDir)
+	_ = os.RemoveAll(noGuardDir)
 	validExemptDir := filepath.Join(tmpDir, "valid-exempt")
 	if err := os.MkdirAll(validExemptDir, 0755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)

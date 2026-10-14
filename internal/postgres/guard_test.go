@@ -128,3 +128,109 @@ func TestValidateRolesConfig_Development(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateWorkerRoleConfig(t *testing.T) {
+	validWorker := RoleInfo{
+		RoleName:     "pgapp_worker",
+		IsSuperuser:  false,
+		BypassRLS:    false,
+		IsTableOwner: false,
+	}
+
+	tests := []struct {
+		name       string
+		info       RoleInfo
+		appEnv     string
+		wantErr    bool
+		wantErrSub string
+	}{
+		{
+			name:    "valid pgapp_worker in production passes",
+			info:    validWorker,
+			appEnv:  "production",
+			wantErr: false,
+		},
+		{
+			name: "rejects wrong role name in production",
+			info: RoleInfo{
+				RoleName: "postgres",
+			},
+			appEnv:     "production",
+			wantErr:    true,
+			wantErrSub: "requires 'pgapp_worker'",
+		},
+		{
+			name: "rejects pgapp_maint as worker in production",
+			info: RoleInfo{
+				RoleName: "pgapp_maint",
+			},
+			appEnv:     "production",
+			wantErr:    true,
+			wantErrSub: "requires 'pgapp_worker'",
+		},
+		{
+			name: "rejects superuser in production",
+			info: RoleInfo{
+				RoleName:    "pgapp_worker",
+				IsSuperuser: true,
+			},
+			appEnv:     "production",
+			wantErr:    true,
+			wantErrSub: "superuser",
+		},
+		{
+			name: "rejects BYPASSRLS in production",
+			info: RoleInfo{
+				RoleName:  "pgapp_worker",
+				BypassRLS: true,
+			},
+			appEnv:     "production",
+			wantErr:    true,
+			wantErrSub: "BYPASSRLS",
+		},
+		{
+			name: "rejects table owner in production",
+			info: RoleInfo{
+				RoleName:     "pgapp_worker",
+				IsTableOwner: true,
+			},
+			appEnv:     "production",
+			wantErr:    true,
+			wantErrSub: "table owner",
+		},
+		{
+			name: "rejects pgapp_app in non-production",
+			info: RoleInfo{
+				RoleName: "pgapp_app",
+			},
+			appEnv:     "development",
+			wantErr:    true,
+			wantErrSub: "restricted role 'pgapp_app'",
+		},
+		{
+			name: "allows postgres/pgapp_maint in development",
+			info: RoleInfo{
+				RoleName:    "postgres",
+				IsSuperuser: true,
+			},
+			appEnv:  "development",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateWorkerRoleConfig(tt.info, tt.appEnv)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Fatalf("expected error containing %q, got: %v", tt.wantErrSub, err)
+				}
+			} else if err != nil {
+				t.Fatalf("expected nil error, got: %v", err)
+			}
+		})
+	}
+}

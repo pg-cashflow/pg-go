@@ -48,3 +48,17 @@ To run any job manually on-demand:
 sudo systemctl start pg-reminder.service
 journalctl -u pg-reminder.service -n 50 -f
 ```
+
+## Worker Database Role (ADR-030)
+
+All 9 background job binaries connect with `DATABASE_WORKER_URL`.
+In production (`APP_ENV=production`), `DATABASE_WORKER_URL` is mandatory.
+It must differ from both `DATABASE_URL` and `DATABASE_MAINT_URL`.
+The startup guard `postgres.ValidateWorkerRole` enforces:
+- The role name must be `pgapp_worker`.
+- The role must not be a superuser (`NOSUPERUSER`).
+- The role must not bypass row-level security (`NOBYPASSRLS`).
+- The role must not own tables in the `public` schema.
+
+Set `DATABASE_WORKER_URL` in `/opt/pg-app/.env`.
+

@@ -121,6 +121,20 @@ func (c *Config) ValidateForRealDeployment() error {
 		errs = append(errs, "AUTO_MIGRATE=1 is disallowed in production (APP_ENV=production); use cmd/migrate instead")
 	}
 
+	// In production, background jobs require dedicated DATABASE_WORKER_URL (ADR-030).
+	if c.AppEnv == "production" {
+		if strings.TrimSpace(c.DatabaseWorkerURL) == "" {
+			errs = append(errs, "DATABASE_WORKER_URL is required in production")
+		} else {
+			if c.DatabaseWorkerURL == c.DatabaseURL {
+				errs = append(errs, "DATABASE_WORKER_URL must differ from DATABASE_URL in production")
+			}
+			if c.DatabaseWorkerURL == c.DatabaseMaintURL {
+				errs = append(errs, "DATABASE_WORKER_URL must differ from DATABASE_MAINT_URL in production")
+			}
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("startup validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}
@@ -151,6 +165,11 @@ func (c *Config) ValidateWarnings() []string {
 	// Admin email unset warning in non-production
 	if strings.TrimSpace(c.AdminEmail) == "" {
 		warns = append(warns, "ADMIN_EMAIL is not configured — outbox dead-letter alerts and operator failure notices will only be logged locally")
+	}
+
+	// Non-production worker URL fallback warning (ADR-030)
+	if c.AppEnv != "production" && strings.TrimSpace(os.Getenv("DATABASE_WORKER_URL")) == "" && c.DatabaseWorkerURL != "" && c.DatabaseWorkerURL == c.DatabaseMaintURL {
+		warns = append(warns, "DATABASE_WORKER_URL not set; falling back to DATABASE_MAINT_URL in non-production")
 	}
 
 	return warns

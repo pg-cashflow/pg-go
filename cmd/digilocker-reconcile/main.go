@@ -40,11 +40,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseWorkerURL)
 	if err != nil {
 		log.Fatalf("digilocker-reconcile: postgres connection: %v", err)
 	}
 	defer pool.Close()
+	if err := postgres.ValidateWorkerRole(ctx, pool, cfg.AppEnv); err != nil {
+		log.Fatalf("digilocker-reconcile: worker role validation: %v", err)
+	}
 
 	// 64-bit advisory lock key allocated to DigiLocker reconciliation cron: ASCII 'DLKRECON' (0x444C4B5245434F4E).
 	// Distinct from other application advisory locks in pg-go:

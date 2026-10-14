@@ -27,11 +27,14 @@ func main() {
 	}
 
 	ctx := context.Background()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseWorkerURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	if err := postgres.ValidateWorkerRole(ctx, pool, cfg.AppEnv); err != nil {
+		log.Fatal(err)
+	}
 
 	logger := slog.Default()
 	propertyRepo := postgres.NewPropertyRepo(pool)

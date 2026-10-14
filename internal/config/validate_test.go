@@ -8,6 +8,9 @@ import (
 
 func validConfig() *Config {
 	return &Config{
+		DatabaseURL:           "postgres://pgapp_app:secret@localhost:5432/pgapp",
+		DatabaseMaintURL:      "postgres://pgapp_maint:secret@localhost:5432/pgapp",
+		DatabaseWorkerURL:     "postgres://pgapp_worker:secret@localhost:5432/pgapp",
 		JWTSecret:             "this-is-a-valid-jwt-secret-that-is-over-32-chars-long",
 		OTPHMACSecret:         "this-is-a-valid-otp-hmac-secret-over-32-chars",
 		MagicLinkHMACSecret:   "this-is-a-valid-magic-link-hmac-secret-over-32",
@@ -366,5 +369,66 @@ func TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars(t *test
 	err = cfg.ValidateForRealDeployment()
 	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 characters") {
 		t.Fatalf("expected error for 31-character JWT_SECRET, got: %v", err)
+	}
+}
+
+func TestValidateForRealDeployment_DatabaseWorkerURL_Production(t *testing.T) {
+	cfg := validConfig()
+	cfg.AppEnv = "production"
+
+	// Missing DATABASE_WORKER_URL
+	cfg.DatabaseWorkerURL = ""
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_WORKER_URL is required in production") {
+		t.Fatalf("expected error requiring DATABASE_WORKER_URL in production, got: %v", err)
+	}
+
+	// DATABASE_WORKER_URL equals DATABASE_URL
+	cfg.DatabaseWorkerURL = cfg.DatabaseURL
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_WORKER_URL must differ from DATABASE_URL in production") {
+		t.Fatalf("expected error for worker URL == app URL, got: %v", err)
+	}
+
+	// DATABASE_WORKER_URL equals DATABASE_MAINT_URL
+	cfg.DatabaseWorkerURL = cfg.DatabaseMaintURL
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_WORKER_URL must differ from DATABASE_MAINT_URL in production") {
+		t.Fatalf("expected error for worker URL == maint URL, got: %v", err)
+	}
+
+	// Valid separate worker URL passes
+	cfg.DatabaseWorkerURL = "postgres://pgapp_worker:secret@localhost:5432/pgapp"
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected valid production config to pass, got: %v", err)
+	}
+}
+
+func TestValidateWarnings_DatabaseWorkerURL_Fallback(t *testing.T) {
+	prev := os.Getenv("DATABASE_WORKER_URL")
+	defer func() {
+		if prev != "" {
+			_ = os.Setenv("DATABASE_WORKER_URL", prev)
+		} else {
+			_ = os.Unsetenv("DATABASE_WORKER_URL")
+		}
+	}()
+	_ = os.Unsetenv("DATABASE_WORKER_URL")
+
+	cfg := validConfig()
+	cfg.AppEnv = "development"
+	cfg.DatabaseMaintURL = "postgres://pgapp_maint:secret@localhost:5432/pgapp"
+	cfg.DatabaseWorkerURL = cfg.DatabaseMaintURL
+
+	warns := cfg.ValidateWarnings()
+	found := false
+	for _, w := range warns {
+		if strings.Contains(w, "DATABASE_WORKER_URL not set; falling back to DATABASE_MAINT_URL") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected warning for worker URL falling back to maint URL, got: %v", warns)
 	}
 }

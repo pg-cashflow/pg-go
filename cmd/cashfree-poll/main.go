@@ -36,11 +36,14 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseWorkerURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	if err := postgres.ValidateWorkerRole(ctx, pool, cfg.AppEnv); err != nil {
+		log.Fatal(err)
+	}
 
 	intentRepo := postgres.NewPaymentIntentRepo(pool)
 	dueRepo := postgres.NewDueRepo(pool)

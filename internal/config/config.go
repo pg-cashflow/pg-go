@@ -13,6 +13,7 @@ import (
 type Config struct {
 	DatabaseURL                       string
 	DatabaseMaintURL                  string
+	DatabaseWorkerURL                 string
 	JWTSecret                         string
 	OTPHMACSecret                     string
 	MagicLinkHMACSecret               string
@@ -85,6 +86,7 @@ func Load() (*Config, error) {
 		AdminPhone:                        envFirst("ADMIN_PHONE", "ALERT_PHONE"),
 		DatabaseURL:                       os.Getenv("DATABASE_URL"),
 		DatabaseMaintURL:                  envFirst("DATABASE_MAINT_URL", "DATABASE_URL"),
+		DatabaseWorkerURL:                 envFirst("DATABASE_WORKER_URL", "DATABASE_MAINT_URL", "DATABASE_URL"),
 		JWTSecret:                         os.Getenv("JWT_SECRET"),
 		OTPHMACSecret:                     os.Getenv("OTP_HMAC_SECRET"),
 		MagicLinkHMACSecret:               os.Getenv("MAGIC_LINK_HMAC_SECRET"),

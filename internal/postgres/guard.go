@@ -106,3 +106,42 @@ func ValidateRolesConfig(maintInfo, appInfo RoleInfo, maintURL, appURL, appEnv s
 
 	return nil
 }
+
+// ValidateWorkerRole enforces security boundaries for background worker connection pools (ADR-030).
+// In production:
+// - workerPool role must be 'pgapp_worker', NOSUPERUSER, NOBYPASSRLS, and not table owner.
+// In non-production:
+// - workerPool role cannot be 'pgapp_app' (to avoid 0-row silently failing background tasks under forced RLS).
+func ValidateWorkerRole(ctx context.Context, pool *pgxpool.Pool, appEnv string) error {
+	info, err := QueryRoleInfo(ctx, pool)
+	if err != nil {
+		return fmt.Errorf("check worker db role: %w", err)
+	}
+	return ValidateWorkerRoleConfig(info, appEnv)
+}
+
+// ValidateWorkerRoleConfig validates inspected worker role against security requirements.
+func ValidateWorkerRoleConfig(workerInfo RoleInfo, appEnv string) error {
+	if appEnv == "production" {
+		if workerInfo.RoleName != "pgapp_worker" {
+			return fmt.Errorf("workerPool connected as '%s'; production worker pool requires 'pgapp_worker'", workerInfo.RoleName)
+		}
+		if workerInfo.IsSuperuser {
+			return errors.New("workerPool role has superuser privileges")
+		}
+		if workerInfo.BypassRLS {
+			return errors.New("workerPool role has BYPASSRLS privilege")
+		}
+		if workerInfo.IsTableOwner {
+			return errors.New("workerPool role owns tables in public schema; table owner sees zero rows under forced RLS")
+		}
+		return nil
+	}
+
+	// Non-production checks
+	if workerInfo.RoleName == "pgapp_app" {
+		return errors.New("workerPool connected as restricted role 'pgapp_app'; worker operations require unscoped role")
+	}
+
+	return nil
+}

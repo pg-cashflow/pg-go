@@ -28,11 +28,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseWorkerURL)
 	if err != nil {
 		log.Fatalf("kyc-expiry: postgres connection: %v", err)
 	}
 	defer pool.Close()
+	if err := postgres.ValidateWorkerRole(ctx, pool, cfg.AppEnv); err != nil {
+		log.Fatalf("kyc-expiry: worker role validation: %v", err)
+	}
 
 	// Overlap guard: acquire session-level advisory lock to prevent concurrent executions
 	const kycExpiryLockKey = 0x4B5943455850 // "KYCEXP" in hex
