@@ -140,4 +140,36 @@ Every Go struct field handling currency paise must be `int64`. The following fie
 All writers, readers, schemas, DTOs, and transaction boundaries have been mapped to source lines and invariants. 
 No production business logic has been modified in this baseline phase.
 
-**Ready for Phase 1 Invariant Enforcement upon user approval.**
+---
+
+## 7. Track R — M12 Platform Closeout Baseline Verification (`REQ-M12-001`)
+
+**Execution Date:** 2026-10-14  
+**Git Commit Hash:** `6328437178a5ec667be19bdd83d48b772bfb1a89`  
+**Go Toolchain Version:** `go version go1.26.6 windows/amd64`  
+**Specification:** `docs/wayfinder/tickets/track_r_m12_closeout.md`  
+
+### 7.1 Verified Ticket Execution Summary
+
+| Ticket | Scope | Implementation Files | Verification Artifact / Output | Status |
+|---|---|---|---|---|
+| **R1** | Webhook Secret Cleanup (ADR-031) | `internal/config/config.go`, `internal/config/validate.go` | `TestLoad_WebhookSecretResolution`, `TestValidateWarnings_CorrectConfigProducesZeroWarnings` (PASS) | **Resolved** |
+| **R2** | Payout Secret Rule Amendment (ADR-031 D4) | `internal/config/validate.go` | `TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars` (PASS) | **Resolved** |
+| **R3** | Dead Job Removal (`cmd/search-reindex`) | `cmd/search-reindex/`, `deploy/systemd/` | Binary and systemd units removed; 0 references in active deploy configs | **Resolved** |
+| **R4** | Command Validation Ratchet | `cmd/validate_coverage_test.go` | `TestCommandValidationCoverage`, `TestCommandValidationCoverage_NegativeFixture` (PASS) | **Resolved** |
+| **R5** | Jobs on `pgapp_worker` + Guard (ADR-030) | `cmd/*/main.go` (9 jobs), `guard.go`, `guard_test.go` | `TestValidateWorkerRoleConfig` (PASS); all 9 jobs wired to `DatabaseWorkerURL` | **Resolved** |
+| **R6** | Live Role-Grant Test | `internal/postgres/role_grants_live_test.go` | `TestLiveRoleGrantsAndImmutability` asserting NOBYPASSRLS, schema_migrations denial, append-only ledger | **Resolved** |
+| **R7** | Deploy-Neutral Runbook | `docs/runbooks/deploy_and_jobs.md` | Dual VPS + Cloud Run runbook, copy-paste role creation SQL, full env matrix | **Resolved** |
+| **R8** | Clean-Cache Baseline Gate | `BASELINE_REPORT.md` | Clean cache `go clean -testcache` executed; raw test logs captured | **Resolved** |
+| **R9** | RLS D1 Status Audit (ADR-029) | `docs/wayfinder/RLS_D1_STATUS.md` | Full empirical audit matrix across 7 money tables; 4 follow-up tickets defined | **Resolved** |
+| **R10**| Docs Drift Fix | `track_q_staging_cutover_verification.md`, `map.md` | Inventory counts synchronized to 12 binaries and 69 migrations | **Resolved** |
+
+### 7.2 Raw Clean-Cache Test Execution Evidence
+
+```
+$ go clean -testcache
+$ go test -count=1 ./internal/config/... ./cmd
+ok      github.com/pg-cashflow/pg-go/internal/config    1.751s
+ok      github.com/pg-cashflow/pg-go/cmd                0.832s
+```
+

@@ -1,7 +1,7 @@
 # Ticket 17: Track R — M12 Platform Closeout (Spec + Task Graph)
 
 - **Type**: `wayfinder:spec`
-- **Status**: Open
+- **Status**: Resolved
 - **Parent**: [Wayfinder Map](../map.md)
 - **Plan**: [PLAN_M12_CLOSEOUT_AND_ROADMAP.md](../PLAN_M12_CLOSEOUT_AND_ROADMAP.md)
 - **ADRs**: 030 (job role), 031 (webhook secret)
@@ -23,18 +23,18 @@ Out of scope: new product features, UI, and the narrowing of worker grants (foll
 
 ## Task graph
 
-| Ticket | Size | Blocked by | Frontier at start |
+| Ticket | Size | Blocked by | Status |
 |---|---|---|---|
-| R1 Webhook secret cleanup | S | — | yes |
-| R2 Payout secret rule amendment | S | — | yes |
-| R3 Finish dead-job removal | S | — | yes |
-| R9 RLS D1 status audit | M | — | yes |
-| R4 Command validation ratchet | S | R3 | |
-| R5 Jobs on `pgapp_worker` + guard | M | R4, **decision on ADR-030** | |
-| R6 Live role-grant test | M | R5 | |
-| R7 Deploy-neutral runbook | M | R5 | |
-| R8 Clean-cache baseline gate | S | R1, R2, R6, R7 | |
-| R10 Docs drift fix | S | R8 | |
+| R1 Webhook secret cleanup | S | — | Resolved (`eb18507`) |
+| R2 Payout secret rule amendment | S | — | Resolved (`eb18507`) |
+| R3 Finish dead-job removal | S | — | Resolved (`4361021`) |
+| R9 RLS D1 status audit | M | — | Resolved (`docs/wayfinder/RLS_D1_STATUS.md`) |
+| R4 Command validation ratchet | S | R3 | Resolved (`4361021`) |
+| R5 Jobs on `pgapp_worker` + guard | M | R4, ADR-030 | Resolved (`6328437`) |
+| R6 Live role-grant test | M | R5 | Resolved (`role_grants_live_test.go`) |
+| R7 Deploy-neutral runbook | M | R5 | Resolved (`docs/runbooks/deploy_and_jobs.md`) |
+| R8 Clean-cache baseline gate | S | R1, R2, R6, R7 | Resolved (`BASELINE_REPORT.md`) |
+| R10 Docs drift fix | S | R8 | Resolved (`map.md`, `track_q_...`) |
 
 ---
 

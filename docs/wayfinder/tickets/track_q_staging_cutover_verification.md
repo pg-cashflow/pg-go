@@ -3,7 +3,7 @@
 - **Type**: `wayfinder:task`
 - **Status**: Blocked
 - **Parent**: [Wayfinder Map](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/map.md)
-- **Blocked By**: Staging server and database not yet provisioned. Binary build (all 12 `cmd/...` executables) and local migration run (001–064) verified. End-to-end staging deployment blocked until remote infrastructure is available.
+- **Blocked By**: Staging server and database not yet provisioned. Binary build (all 12 `cmd/...` executables) and local migration run (001–069) verified. End-to-end staging deployment blocked until remote infrastructure is available.
 - **Prerequisite**: Track P (End-of-Day Multi-Way Settlement Balancer) resolved.
 
 ---
@@ -14,9 +14,9 @@ Complete final pre-deployment audit, binary compilation verification, database m
 
 ## 2. Key Verifications
 
-1. **Database Migrations Integrity (001–044)**:
-   - All 44 SQL migrations in `migrations/` verified idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
-   - Clean linear dependency chain from `001_initial.sql` up to `044_ledger_period_lock_and_reporting.sql`.
+1. **Database Migrations Integrity (001–069)**:
+   - All 69 SQL migrations in `migrations/` verified idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+   - Clean linear dependency chain from `001_initial.sql` up to `069_restrict_maint_rls_and_split_roles.sql`.
    - `cmd/migrate` builds and executes cleanly with PgBouncer-compatible advisory locking (verified via `go run cmd/migrate/main.go`).
 
 2. **Binary Buildability**:
@@ -24,6 +24,7 @@ Complete final pre-deployment audit, binary compilation verification, database m
      - `cmd/server` (Core HTTP API with embedded SPA & static assets)
      - `cmd/billing-cycle`
      - `cmd/cashfree-poll`
+     - `cmd/daily-rollup`
      - `cmd/digilocker-reconcile`
      - `cmd/financial-summary`
      - `cmd/gamification-cycle`
@@ -32,7 +33,6 @@ Complete final pre-deployment audit, binary compilation verification, database m
      - `cmd/migrate`
      - `cmd/reminder`
      - `cmd/sandbox-smoke`
-     - `cmd/search-reindex`
 
 3. **Backend Test Suite Parity**:
    - 100% green test suite across all 31 internal packages in `pg-go`.
