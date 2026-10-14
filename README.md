@@ -4,6 +4,8 @@ Automated rent-due tracking and UPI payment matching for a PG/hostel — per-ten
 
 Phase 1 is a standalone Go API + Neon Postgres service (React PWA is Phase 2).
 
+**Documentation:** Start at [docs/README.md](docs/README.md) for architecture ([ARCHITECTURE.md](docs/ARCHITECTURE.md)), codebase map ([CODEBASE.md](docs/CODEBASE.md)), and debugging ([DEBUGGING.md](docs/DEBUGGING.md)). Prose follows ASD-STE100; use the Karpathy order in DEBUGGING when investigating failures.
+
 ## Quick start
 
 ```bash
@@ -15,18 +17,24 @@ go run ./cmd/migrate/
 go run ./cmd/server/
 ```
 
+Or use `make migrate` / `make server` (see [Makefile](Makefile)).
+
 ## Commands
 
-| Cmd                     | Purpose                                              |
-| ----------------------- | ---------------------------------------------------- |
-| `cmd/server`            | HTTP API                                             |
-| `cmd/migrate`           | Apply `migrations/*.sql`                             |
-| `cmd/billing-cycle`     | Daily anniversary rent dues (00:05 IST)              |
-| `cmd/reminder`          | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST)          |
-| `cmd/cashfree-poll`     | Missed Cashfree webhook settle (no-op if keys unset) |
-| `cmd/financial-summary` | `--cadence=monthly\|yearly` collections & finance digest email (extended with OCF/TBE; not replaced) |
-| `cmd/kpi-snapshot`      | Daily KPI and ROI snapshot calculation and persist   |
-| `cmd/kyc-expiry`        | Hourly KYC expiry sweep (stale pending TTL & lapsed verified PII scrub) |
+| Cmd | Purpose |
+| --- | --- |
+| `cmd/server` | HTTP API and background workers (notification outbox, ledger outbox) |
+| `cmd/migrate` | Apply `migrations/*.sql` |
+| `cmd/billing-cycle` | Daily anniversary rent dues (00:05 IST) |
+| `cmd/reminder` | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST) |
+| `cmd/cashfree-poll` | Missed Cashfree webhook settle (no-op if keys unset) |
+| `cmd/daily-rollup` | Daily rollup job |
+| `cmd/digilocker-reconcile` | DigiLocker reconciliation sweep |
+| `cmd/financial-summary` | `--cadence=monthly\|yearly` collections and finance digest email |
+| `cmd/gamification-cycle` | Gamification periodic job |
+| `cmd/kpi-snapshot` | Daily KPI and ROI snapshot |
+| `cmd/kyc-expiry` | Hourly KYC expiry sweep |
+| `cmd/sandbox-smoke` | Cashfree sandbox smoke harness |
 
 ## Locked Phase 1 decisions
 
@@ -39,6 +47,8 @@ go run ./cmd/server/
 go test ./...
 ```
 
+With database: `make test-db` or `REQUIRE_DB=1 go test -count=1 ./...`. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
+
 ## Frontend integration (pg-react)
 
 Phase 2 PWA lives in a separate repo. To connect locally:
@@ -47,7 +57,7 @@ Phase 2 PWA lives in a separate repo. To connect locally:
 2. Run `go run ./cmd/server/`
 3. In pg-react, set `VITE_API_BASE_URL=http://localhost:8080/api` and `VITE_CASHFREE_ENV` to match `CASHFREE_ENV`
 
-The in-repo `/app/` PWA is a frozen fallback for local `APP_ENV=development`. Production should set `FRONTEND_URL` to the Cloudflare Pages origin so `/` and `/app/` redirect to pg-react.
+The in-repo `/app/` PWA is a frozen fallback when `APP_ENV` is not `production` or `FRONTEND_URL` is empty. Production should set `FRONTEND_URL` to the Cloudflare Pages origin. Embedded pg-react assets live in `internal/web/dist/` (SPA catch-all).
 
 Login: Firebase Phone (test numbers on Spark) or Google + linked phone → `POST /auth/firebase` → app JWT.
 

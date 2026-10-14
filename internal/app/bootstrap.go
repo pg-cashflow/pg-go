@@ -1,0 +1,520 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/aadhaar"
+	"github.com/pg-cashflow/pg-go/internal/api"
+	"github.com/pg-cashflow/pg-go/internal/attendance"
+	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/billing"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
+	"github.com/pg-cashflow/pg-go/internal/collector"
+	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
+	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/finance"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
+	"github.com/pg-cashflow/pg-go/internal/intelligence"
+	"github.com/pg-cashflow/pg-go/internal/jobs"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
+	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
+	"github.com/pg-cashflow/pg-go/internal/magiclink"
+	"github.com/pg-cashflow/pg-go/internal/mailer"
+	notificationsvc "github.com/pg-cashflow/pg-go/internal/notification"
+	"github.com/pg-cashflow/pg-go/internal/payment"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/push"
+	roisvc "github.com/pg-cashflow/pg-go/internal/roi"
+	"github.com/pg-cashflow/pg-go/internal/search"
+	"github.com/pg-cashflow/pg-go/internal/sms"
+	"github.com/pg-cashflow/pg-go/internal/tenant"
+)
+
+// Server is the wired HTTP application returned by Build.
+type Server struct {
+	HTTPAddr      string
+	Handler       http.Handler
+	RunBackground func(context.Context)
+	Cleanup       func()
+}
+
+// Build constructs pools, services, and the Gin router for cmd/server.
+func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
+	logger := slog.Default()
+
+	maintPool, err := postgres.NewPool(ctx, cfg.DatabaseMaintURL)
+	if err != nil {
+		return nil, fmt.Errorf("maint db: %w", err)
+	}
+
+	var appPool *pgxpool.Pool
+	appPoolSameAsMaint := cfg.DatabaseURL == cfg.DatabaseMaintURL
+	if appPoolSameAsMaint {
+		appPool = maintPool
+	} else {
+		p, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+		if err != nil {
+			maintPool.Close()
+			return nil, fmt.Errorf("app db: %w", err)
+		}
+		appPool = p
+	}
+
+	if err := postgres.ValidateStartupRoles(ctx, maintPool, appPool, cfg.DatabaseMaintURL, cfg.DatabaseURL, cfg.AppEnv); err != nil {
+		if !appPoolSameAsMaint {
+			appPool.Close()
+		}
+		maintPool.Close()
+		return nil, fmt.Errorf("startup refused: %w", err)
+	}
+
+	if os.Getenv("AUTO_MIGRATE") == "1" || os.Getenv("AUTO_MIGRATE") == "true" {
+		dir := os.Getenv("MIGRATIONS_DIR")
+		if dir == "" {
+			dir = "migrations"
+			if _, err := os.Stat(dir); err != nil {
+				dir = filepath.Join("..", "..", "migrations")
+			}
+		}
+		if err := postgres.Migrate(ctx, maintPool, dir); err != nil {
+			if !appPoolSameAsMaint {
+				appPool.Close()
+			}
+			maintPool.Close()
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
+	}
+
+	scopedDB := postgres.NewScopedDB(appPool)
+
+	propertyRepo := postgres.NewPropertyRepo(maintPool)
+	tenantRepo := postgres.NewTenantRepo(scopedDB)
+	dueRepo := postgres.NewDueRepo(scopedDB)
+	paymentRepo := postgres.NewPaymentRepo(scopedDB)
+	eventRepo := postgres.NewEventRepo(scopedDB)
+	userRepo := postgres.NewUserRepo(maintPool)
+	otpRepo := postgres.NewOTPRepo(maintPool)
+	tokenRepo := postgres.NewTokenRepo(maintPool)
+	pushRepo := postgres.NewPushRepo(maintPool)
+	importRepo := postgres.NewImportRepo(scopedDB)
+	joinRepo := postgres.NewJoinRepo(maintPool)
+	reportRepo := postgres.NewPaymentReportRepo(scopedDB)
+	intentRepo := postgres.NewPaymentIntentRepo(scopedDB)
+	preferencesRepo := postgres.NewPreferencesRepo(scopedDB)
+
+	maintTenantRepo := postgres.NewTenantRepo(maintPool)
+	maintDueRepo := postgres.NewDueRepo(maintPool)
+	maintPaymentRepo := postgres.NewPaymentRepo(maintPool)
+	maintReportRepo := postgres.NewPaymentReportRepo(maintPool)
+
+	if cfg.AadhaarQRPublicKeyPEM != "" {
+		if err := aadhaar.SetSecureQRPublicKeyPEM(cfg.AadhaarQRPublicKeyPEM); err != nil {
+			return nil, fmt.Errorf("aadhaar public key: %w", err)
+		}
+	}
+
+	gamificationRepo := postgres.NewGamificationRepo(maintPool)
+
+	innerPub := events.NewPostgresPublisher(eventRepo)
+	dispatchPub := events.NewDispatchPublisher(innerPub)
+	pub := dispatchPub
+
+	channels := OpenChannels(cfg)
+	mail := channels.Mail
+	gateway := channels.Gateway
+
+	refreshRepo := postgres.NewRefreshTokenRepo(maintPool)
+	authSvc := auth.NewService(otpRepo, userRepo, tenantRepo, propertyRepo, gateway, cfg.OTPHMACSecret, cfg.JWTSecret)
+	authSvc.SetRefreshTokenRepo(refreshRepo)
+	if cfg.FirebaseProjectID != "" {
+		if cfg.FirebaseCredentials != "" {
+			if _, err := os.Stat(cfg.FirebaseCredentials); err != nil {
+				logger.Error("firebase credentials file missing", "path", cfg.FirebaseCredentials, "err", err)
+			}
+		}
+		fbVerifier, err := auth.NewFirebaseVerifier(ctx, cfg.FirebaseProjectID, cfg.FirebaseCredentials)
+		if err != nil {
+			if cfg.AppEnv == "production" {
+				return nil, fmt.Errorf("firebase: %w", err)
+			}
+			logger.Error("firebase auth disabled", "err", err, "credentials", cfg.FirebaseCredentials)
+		} else {
+			authSvc.SetFirebaseVerifier(fbVerifier)
+			logger.Info("firebase phone auth enabled", "project", cfg.FirebaseProjectID)
+		}
+	}
+	billingSvc := billing.NewServiceWithPool(appPool, dueRepo, tenantRepo, eventRepo)
+	paySvc := payment.NewServiceWithPool(appPool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(scopedDB))
+	depositSettlementRepo := postgres.NewDepositSettlementRepo(appPool)
+	paySvc.SetDepositSettler(depositSettlementRepo)
+	tenantSvc := tenant.NewServiceWithPool(appPool, tenantRepo, dueRepo, eventRepo, pushRepo)
+	magicSvc := magiclink.NewService(tokenRepo, maintDueRepo, propertyRepo, maintTenantRepo, cfg.MagicLinkHMACSecret)
+	pushSvc := push.NewService(push.RepoAdapter{Inner: pushRepo}, push.Config{
+		VAPIDPublicKey:  cfg.VAPIDPublicKey,
+		VAPIDPrivateKey: cfg.VAPIDPrivateKey,
+		Subject:         cfg.VAPIDSubject,
+	}, logger)
+
+	joinSvc := joinsvc.NewServiceWithPool(appPool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
+
+	var cfOrders collector.CashfreeOrders
+	var cfClient *cashfree.Client
+	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
+	if cfCfg.Enabled() {
+		cfClient = cashfree.NewClient(cfCfg)
+		if cfg.CashfreePGBaseURL != "" {
+			cfClient.WithBaseURL(cfg.CashfreePGBaseURL)
+			logger.Warn("cashfree pg base url overridden", "url", cfg.CashfreePGBaseURL)
+		}
+		cfOrders = cfClient
+		logger.Info("cashfree orders enabled", "env", cfg.CashfreeEnv)
+	}
+	collectorSvc := collector.New(intentRepo, cfOrders)
+
+	var kycSvc api.KYCService
+	if cfg.KYCIdentitySecret != "" {
+		kycRepo := postgres.NewKYCRepo(maintPool)
+		var cfKYCAdapter kycsvc.CashfreeKYCClient
+		if cfClient != nil {
+			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
+			logger.Info("kyc service enabled", "digilocker", true)
+		} else {
+			logger.Warn("kyc service enabled in QR-only mode (Cashfree credentials not configured; DigiLocker unavailable)")
+		}
+		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
+			IdentitySecret:           cfg.KYCIdentitySecret,
+			HashKeyVersion:           1,
+			VerificationValidityDays: 365,
+			DigiLockerRedirectURL:    cfg.KYCDigiLockerRedirectURL,
+		})
+	} else {
+		logger.Info("kyc service dormant (KYC_IDENTITY_SECRET not set)")
+	}
+
+	gamificationSvc := gamification.NewService(gamificationRepo, tenantRepo, dueRepo, dispatchPub, gamification.NewBlobStore())
+	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
+	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
+
+	financeRepo := postgres.NewFinanceRepo(appPool)
+	financeSvc := finance.NewService(financeRepo, pub)
+	roiSvc := roisvc.NewService(financeSvc)
+	intelSvc := intelligence.NewService(financeRepo)
+	if cfg.FinanceEnabled {
+		paySvc.SetSettlementHook(func(ctx context.Context, p *domain.Payment, due *domain.Due) {
+			if err := financeSvc.MirrorPayment(ctx, p, due); err != nil {
+				logger.Error("LEDGER GAP: settlement hook MirrorPayment failed", "payment_id", p.ID, "due_id", due.ID, "err", err)
+			}
+		})
+		billingSvc.SetProrateHook(func(ctx context.Context, due *domain.Due, original, prorated int64) {
+			if err := financeSvc.MirrorProration(ctx, due, original, prorated); err != nil {
+				logger.Error("LEDGER GAP: MirrorProration failed", "due_id", due.ID, "err", err)
+			}
+		})
+		billingSvc.SetApplyCreditHook(func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time) {
+			if err := financeSvc.MirrorApplyCredit(ctx, propertyID, dueID, amountPaise, dueKind, at); err != nil {
+				logger.Error("LEDGER GAP: MirrorApplyCredit failed", "due_id", dueID, "err", err)
+			}
+		})
+		gamificationSvc.SetFinanceHooks(
+			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("pts:%d", entry.ID)))
+				amt := int64(entry.Delta) * pointValuePaise
+				if err := financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt); err != nil {
+					logger.Error("LEDGER GAP: MirrorPointsIssued failed", "tenant_id", tenant.ID, "err", err)
+				}
+			},
+			func(ctx context.Context, tenant *domain.Tenant, red *domain.Redemption, amountPaise int64) {
+				if err := financeSvc.MirrorRewardRedeem(ctx, tenant.PropertyID, tenant.ID, red.ID, red.PointsSpent, amountPaise); err != nil {
+					logger.Error("LEDGER GAP: MirrorRewardRedeem failed", "redemption_id", red.ID, "err", err)
+				}
+			},
+		)
+	}
+
+	outboxRepo := postgres.NewOutboxRepo(maintPool)
+	notifRepo := postgres.NewNotificationRepo(maintPool)
+	notifSvc := notificationsvc.NewService(notifRepo)
+	resolver := notificationsvc.NewResolver(userRepo)
+	dispatcher := notificationsvc.NewDispatcher(
+		maintPool,
+		&notificationsvc.CompositeRepo{OutboxRepo: outboxRepo, NotifRepo: notifRepo},
+		resolver,
+		notificationsvc.DefaultConfig(),
+		logger,
+	)
+
+	searchPool, err := postgres.NewSearchPool(ctx, cfg.DatabaseMaintURL)
+	searchPoolOwned := err == nil && searchPool != maintPool
+	if err != nil {
+		logger.Warn("failed to initialize dedicated search pool, falling back to maint pool", "err", err)
+		searchPool = maintPool
+	}
+	searchRepo := postgres.NewSearchRepo(searchPool)
+	searchSvc := &search.Service{Repo: searchRepo, Cache: search.NewCache(5*time.Second, 2000)}
+
+	payoutRepo := postgres.NewPayoutRepo(appPool, financeSvc)
+	attendanceRepo := postgres.NewAttendanceRepo(appPool)
+	attendanceSvc := attendance.NewService(appPool, attendanceRepo, payoutRepo)
+	bankTxnRepo := postgres.NewBankTransactionRepo(appPool)
+	bankAccountRepo := postgres.NewBankAccountRepo(appPool)
+	settlementRepo := postgres.NewSettlementRepo(maintPool)
+	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, maintDueRepo, maintPaymentRepo, financeSvc)
+	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(maintPool)
+	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
+	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(maintPool)
+
+	payoutSecret := cfg.PayoutEncryptionSecret
+	if payoutSecret == "" {
+		if cfg.AppEnv == "production" || cfg.CashfreePayoutClientID != "" {
+			if !appPoolSameAsMaint {
+				appPool.Close()
+			}
+			maintPool.Close()
+			if searchPoolOwned {
+				searchPool.Close()
+			}
+			return nil, errors.New("PAYOUT_ENCRYPTION_SECRET is required when in production or when CF_PAYOUT_CLIENT_ID is set (must not fall back to JWT_SECRET)")
+		}
+		payoutSecret = cfg.PayoutExportChecksumSecret
+		if payoutSecret == "" {
+			payoutSecret = cfg.JWTSecret
+		}
+	}
+	payoutEncryptionKey := crypto.DeriveKey(payoutSecret)
+	payoutKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, payoutEncryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize payout key ring: %w", err)
+	}
+	for ver, sec := range cfg.PayoutEncryptionKeys {
+		if err := payoutKeyRing.AddKey(ver, crypto.DeriveKey(sec)); err != nil {
+			return nil, fmt.Errorf("failed to add versioned payout key %d: %w", ver, err)
+		}
+	}
+
+	var payoutDispatcher *finance.PayoutDispatcher
+	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
+		payoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID:     cfg.CashfreePayoutClientID,
+			ClientSecret: cfg.CashfreePayoutClientSecret,
+			APIVersion:   cfg.CashfreePayoutAPIVersion,
+			Env:          cfg.CashfreePayoutEnv,
+		})
+		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
+		payoutDispatcher.SetKeyRing(payoutKeyRing)
+		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
+	} else if cfg.CashfreePayoutAutoDispatchEnabled {
+		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
+	}
+
+	router := api.NewRouter(api.Deps{
+		JWTSecret:                   cfg.JWTSecret,
+		Auth:                        authSvc,
+		MagicLink:                   magicSvc,
+		Push:                        pushSvc,
+		Tenants:                     tenantSvc,
+		Billing:                     billingSvc,
+		Payments:                    paySvc,
+		Gamification:                gamificationSvc,
+		GamificationStore:           gamificationRepo,
+		UserStore:                   userRepo,
+		PreferencesStore:            preferencesRepo,
+		PropertyStore:               propertyRepo,
+		TenantStore:                 tenantRepo,
+		DueStore:                    dueRepo,
+		PaymentStore:                paymentRepo,
+		EventStore:                  eventRepo,
+		ImportStore:                 importRepo,
+		Joins:                       joinSvc,
+		ReportStore:                 reportRepo,
+		IntentStore:                 intentRepo,
+		PaymentLookup:               maintPaymentRepo,
+		GatewayPaymentRepo:          maintPaymentRepo,
+		WebhookToleranceSec:         cfg.WebhookTimestampToleranceSec,
+		WebhookAPIVersion:           cfg.WebhookAPIVersion,
+		Pool:                        maintPool,
+		AppPool:                     appPool,
+		Collector:                   collectorSvc,
+		KYCSvc:                      kycSvc,
+		CashfreeSecret:              cfg.CashfreeWebhookSecret,
+		CashfreeEnv:                 cfg.CashfreeEnv,
+		CashfreeClient:              cfClient,
+		AuthTenantRepo:              maintTenantRepo,
+		AuthUserRepo:                userRepo,
+		OutboxEvents:                outboxRepo,
+		NotificationSvc:             notifSvc,
+		Events:                      pub,
+		MagicLinkBaseURL:            cfg.MagicLinkBaseURL,
+		VAPIDPublicKey:              cfg.VAPIDPublicKey,
+		CORSAllowedOrigins:          cfg.CORSAllowedOrigins,
+		TrustedProxies:              cfg.TrustedProxies,
+		FrontendURL:                 cfg.FrontendURL,
+		AppEnv:                      cfg.AppEnv,
+		SearchSvc:                   searchSvc,
+		Finance:                     financeSvc,
+		ROI:                         roiSvc,
+		Intelligence:                intelSvc,
+		FinanceEnabled:              cfg.FinanceEnabled,
+		IntelligenceEnabled:         cfg.IntelligenceEnabled,
+		PayoutRepo:                  payoutRepo,
+		PayoutDispatcher:            payoutDispatcher,
+		PayoutChecksumSecret:        cfg.PayoutExportChecksumSecret,
+		PayoutEncryptionKey:         payoutEncryptionKey,
+		PayoutKeyRing:               payoutKeyRing,
+		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,
+		AttendanceRepo:              attendanceRepo,
+		AttendanceSvc:               attendanceSvc,
+		BankTxnRepo:                 bankTxnRepo,
+		BankAccountRepo:             bankAccountRepo,
+		SettlementRepo:              settlementRepo,
+		SettlementReconciler:        settlementReconciler,
+		SettlementBalancerRepo:      settlementBalancerRepo,
+		SettlementBalancer:          settlementBalancer,
+		LedgerOutboxRepo:            ledgerOutboxRepo,
+		MetricsSecret:               cfg.MetricsSecret,
+		CapabilityStore:             postgres.NewCapabilityRepo(maintPool),
+	})
+
+	bg := backgroundConfig{
+		logger:          logger,
+		maintPool:       maintPool,
+		outboxRepo:      outboxRepo,
+		refreshRepo:     refreshRepo,
+		maintReportRepo: maintReportRepo,
+		dispatcher:      dispatcher,
+		financeEnabled:  cfg.FinanceEnabled,
+		ledgerOutbox:    ledgerOutboxRepo,
+		financeSvc:      financeSvc,
+		payoutDispatch:  payoutDispatcher,
+		mail:            mail,
+		adminEmail:      cfg.AdminEmail,
+		adminPhone:      cfg.AdminPhone,
+		smsGateway:      gateway,
+	}
+
+	cleanup := func() {
+		if searchPoolOwned {
+			searchPool.Close()
+		}
+		if !appPoolSameAsMaint {
+			appPool.Close()
+		}
+		maintPool.Close()
+	}
+
+	return &Server{
+		HTTPAddr:      cfg.HTTPAddr,
+		Handler:       router,
+		RunBackground: func(ctx context.Context) { runBackgroundWorkers(ctx, bg) },
+		Cleanup:       cleanup,
+	}, nil
+}
+
+type backgroundConfig struct {
+	logger          *slog.Logger
+	maintPool       *pgxpool.Pool
+	outboxRepo      *postgres.OutboxRepo
+	refreshRepo     *postgres.RefreshTokenRepo
+	maintReportRepo *postgres.PaymentReportRepo
+	dispatcher      *notificationsvc.Dispatcher
+	financeEnabled  bool
+	ledgerOutbox    *postgres.LedgerOutboxRepo
+	financeSvc      *finance.Service
+	payoutDispatch  *finance.PayoutDispatcher
+	mail            mailer.Mailer
+	adminEmail      string
+	adminPhone      string
+	smsGateway      sms.SMSGateway
+}
+
+func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
+	go bg.dispatcher.Run(ctx)
+
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "daily_cleanup")
+				if err != nil {
+					bg.logger.Error("daily cleanup lock failed", "err", err)
+					continue
+				}
+				if !acquired {
+					bg.logger.Debug("daily cleanup lock held by another instance, skipping")
+					continue
+				}
+				n, err := bg.outboxRepo.CleanupEvents(ctx, 30*24*time.Hour, 90*24*time.Hour)
+				if err != nil {
+					bg.logger.Error("outbox cleanup failed", "err", err)
+				} else {
+					bg.logger.Info("outbox cleanup complete", "deleted", n)
+				}
+				if pn, err := bg.refreshRepo.PurgeExpiredTokens(ctx, 24*time.Hour); err != nil {
+					bg.logger.Error("refresh token purge failed", "err", err)
+				} else if pn > 0 {
+					bg.logger.Info("refresh token purge complete", "deleted", pn)
+				}
+				if in, err := bg.maintReportRepo.PurgeExpiredImages(ctx, 30*24*time.Hour); err != nil {
+					bg.logger.Error("report image purge failed", "err", err)
+				} else if in > 0 {
+					bg.logger.Info("report image purge complete", "deleted", in)
+				}
+				_ = release(ctx)
+			}
+		}
+	}()
+
+	if !bg.financeEnabled {
+		return
+	}
+
+	deadLetterAlerter := finance.NewEmailDeadLetterNotifier(bg.mail, bg.adminEmail)
+	if bg.adminPhone != "" && bg.smsGateway != nil {
+		deadLetterAlerter.WithSMSBackstop(bg.smsGateway, bg.adminPhone)
+	}
+	ledgerWorker := finance.NewLedgerOutboxWorker(bg.maintPool, bg.ledgerOutbox, bg.financeSvc, deadLetterAlerter)
+	if bg.payoutDispatch != nil {
+		ledgerWorker.SetPayoutDispatcher(bg.payoutDispatch)
+	}
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "ledger_outbox_worker")
+				if err != nil {
+					bg.logger.Error("ledger outbox worker lock failed", "err", err)
+					continue
+				}
+				if !acquired {
+					continue
+				}
+				processed, err := ledgerWorker.ProcessBatch(ctx, 50)
+				_ = release(ctx)
+				if err != nil && !errors.Is(err, context.Canceled) {
+					bg.logger.Error("ledger outbox worker batch failed", "err", err)
+				} else if processed > 0 {
+					bg.logger.Info("ledger outbox worker processed events", "count", processed)
+				}
+			}
+		}
+	}()
+}

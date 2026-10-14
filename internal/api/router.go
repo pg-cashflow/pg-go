@@ -1,11 +1,6 @@
 package api
 
 import (
-	"crypto/subtle"
-	"fmt"
-	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -23,7 +18,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
-	"github.com/pg-cashflow/pg-go/internal/web"
+	legacypwa "github.com/pg-cashflow/pg-go/web"
+
+	spaweb "github.com/pg-cashflow/pg-go/internal/web"
 )
 
 // Deps aggregates services and stores for HTTP handlers.
@@ -122,54 +119,12 @@ type Deps struct {
 	MetricsSecret string
 }
 
-// redactingLogFormatter is a gin log formatter that replaces /p/<token> paths
-// with /p/[REDACTED] to prevent 72-hour magic-link credentials appearing in
-// server logs or any downstream log aggregator. (ADR-2, M3)
-var redactingLogFormatter = func(p gin.LogFormatterParams) string {
-	path := p.Path
-	if len(path) > 3 && path[:3] == "/p/" {
-		path = "/p/[REDACTED]"
-	}
-	return fmt.Sprintf("[GIN] %s | %3d | %13v | %s\n",
-		p.TimeStamp.Format("2006/01/02 - 15:04:05"),
-		p.StatusCode,
-		p.Latency,
-		path,
-	)
-}
-
-// metricsAuth is the only gate for GET /metrics and GET /api/metrics.
-// REQ-SEC-003: accept X-Metrics-Token when METRICS_SECRET is set.
-// Allow open access only when METRICS_ALLOW_OPEN=true.
-// Reject every other caller with HTTP 401. A JWT is not enough.
-func metricsAuth(jwtSecret, metricsSecret string) gin.HandlerFunc {
-	_ = jwtSecret
-	return func(c *gin.Context) {
-		allowOpen := strings.EqualFold(os.Getenv("METRICS_ALLOW_OPEN"), "true")
-		if metricsSecret != "" {
-			tok := c.GetHeader("X-Metrics-Token")
-			if subtle.ConstantTimeCompare([]byte(tok), []byte(metricsSecret)) == 1 {
-				c.Next()
-				return
-			}
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires X-Metrics-Token"})
-			return
-		}
-		if allowOpen {
-			c.Next()
-			return
-		}
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "metrics endpoint requires authentication"})
-	}
-}
-
 // NewRouter wires all Rev 6 routes.
 func NewRouter(d Deps) *gin.Engine {
 	r := gin.New()
 	if len(d.TrustedProxies) > 0 {
 		_ = r.SetTrustedProxies(d.TrustedProxies)
 	} else {
-		// By default, trust no upstream proxies unless explicitly configured via TRUSTED_PROXIES
 		_ = r.SetTrustedProxies(nil)
 	}
 
@@ -180,7 +135,7 @@ func NewRouter(d Deps) *gin.Engine {
 			Formatter: redactingLogFormatter,
 		}),
 		SecurityHeaders(d.AppEnv),
-		MaxBodyBytes(10<<20), // 10MB global body limit (protects against DoS / memory exhaustion)
+		MaxBodyBytes(10<<20),
 		localization.Middleware(),
 	)
 	if len(d.CORSAllowedOrigins) > 0 {
@@ -193,343 +148,21 @@ func NewRouter(d Deps) *gin.Engine {
 		}))
 	}
 
+	if legacyAppShellEnabled(d) {
+		r.Use(legacypwa.Handler())
+	}
+
 	h := &Handlers{Deps: d}
+	health := healthHandler()
+	registerPublicRoutes(r, d, h, health)
+	registerAPIRoutes(r, d, h, health)
 
-	// Root / Unauthenticated / Standalone HTML
-	healthHandler := func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	}
-	r.GET("/healthz", healthHandler)
-	r.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)
-	r.GET("/p/:token", h.PaymentPage)
-	r.POST("/p/:token/push/subscribe", h.PaymentPushSubscribe)
-	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
-	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
-	r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
-
-	// Data API routes (Namespaced under /api to avoid SPA collisions)
-	api := r.Group("/api")
-	{
-		api.GET("/healthz", healthHandler)
-		api.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)
-		api.GET("/push/vapid-public-key", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
-		})
-		api.GET("/join/invite/:code", ipRateLimit(10.0/60, 20), h.LookupInvite)
-		api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
-
-		// Per-IP rate limits (ADR-2, M2): 3/min OTP request, 10/min OTP verify, 10/min Firebase, 30/min Refresh
-		api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
-		api.POST("/auth/otp/verify", ipRateLimit(10.0/60, 20), h.OTPVerify)
-		api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
-		api.POST("/auth/refresh", ipRateLimit(30.0/60, 60), h.AuthRefresh)
-		api.POST("/auth/logout", h.AuthLogout)
-		api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
-
-		pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret, d.AuthUserRepo))
-		{
-			pending.GET("/me", h.JoinMe)
-			pending.POST("", h.JoinProfile)
-		}
-
-		owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
-		{
-			owner.GET("/properties", h.ListProperties)
-			owner.POST("/properties", h.CreateProperty)
-			owner.POST("/properties/:id/switch", h.OwnerSwitchProperty)
-			owner.GET("/invite", h.OwnerInvite)
-			owner.POST("/invite/rotate", h.OwnerRotateInvite)
-			owner.GET("/join-requests", h.ListJoinRequests)
-			owner.POST("/join-requests/:id/activate", h.ActivateJoin)
-			owner.POST("/join-requests/:id/reject", h.RejectJoin)
-
-			owner.POST("/tenants", h.CreateTenant)
-			owner.GET("/tenants", h.ListTenants)
-			owner.PATCH("/tenants/:id", h.UpdateTenant)
-			owner.POST("/tenants/:id/notice", h.TenantNotice)
-			owner.POST("/tenants/:id/vacate", h.TenantVacate)
-			owner.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
-			owner.POST("/tenants/:id/prorate", h.TenantProrate)
-			owner.POST("/tenants/:id/deposit/settle", h.TenantDepositSettle)
-			owner.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
-
-			owner.GET("/dues", h.ListDues)
-			owner.POST("/dues/:id/waive", h.WaiveDue)
-			owner.POST("/dues/:id/match", h.ManualMatch)
-			owner.POST("/dues/:id/mark-cash-paid", h.MarkCashPaid)
-			owner.POST("/dues/bulk-mark-paid/preview", h.BulkMarkCashPaidPreview)
-			owner.POST("/dues/bulk-mark-paid/confirm", h.BulkMarkCashPaidConfirm)
-			owner.GET("/dues/:id/qr", h.DueQR)
-			owner.GET("/dues/:id/pay", h.OwnerDuePay)
-			owner.POST("/dues/:id/token", h.DueToken)
-			owner.GET("/occupancy", h.OwnerOccupancy)
-			owner.GET("/dashboard/summary", h.OwnerDashboardSummary)
-			owner.GET("/dashboard/monthly-cashflow", h.OwnerMonthlyCashFlow)
-			owner.GET("/calendar/token", h.OwnerGetCalendarToken)
-			owner.POST("/calendar/revoke", h.OwnerRevokeCalendarToken)
-			owner.GET("/settings", h.OwnerGetPropertySettings)
-			owner.PATCH("/settings", h.OwnerUpdatePropertySettings)
-
-			owner.GET("/payment-reports", h.ListPaymentReports)
-			owner.POST("/payment-reports/:id/confirm", h.ConfirmPaymentReport)
-			owner.POST("/payment-reports/:id/reject", h.RejectPaymentReport)
-
-			owner.POST("/statements/import", h.ImportStatements)
-			owner.GET("/statements/transactions", h.ListBankTransactions)
-			owner.POST("/statements/transactions/:id/confirm", h.ConfirmBankTransactionMatch)
-			owner.POST("/statements/transactions/:id/refund", h.RefundBankTransaction)
-			owner.POST("/statements/transactions/:id/classify", h.ClassifyBankTransaction)
-
-			owner.GET("/bank-accounts", h.ListBankAccounts)
-			owner.POST("/bank-accounts", h.CreateBankAccount)
-			owner.DELETE("/bank-accounts/:id", h.DeactivateBankAccount)
-			owner.GET("/payments", h.ListPayments)
-			owner.POST("/payments/verify", h.OwnerVerifyPayment)
-			owner.POST("/payments/:id/correct", h.OwnerCorrectPayment)
-			owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
-			owner.GET("/events", h.ListEvents)
-			owner.GET("/reconciliation", h.Reconciliation)
-
-			owner.GET("/finance/summary", h.FinanceSummary)
-			owner.GET("/finance/ledger", h.FinanceLedger)
-			owner.POST("/finance/capital", h.PostCapital)
-			owner.GET("/finance/capital", h.ListCapital)
-			owner.POST("/finance/expenses", h.PostExpense)
-			owner.GET("/finance/expenses", h.ListExpenses)
-			owner.POST("/finance/expenses/:id/void", h.VoidExpense)
-			owner.POST("/finance/expenses/:id/payments", h.PostExpensePayment)
-			owner.GET("/finance/advances", h.ListAdvances)
-			owner.POST("/finance/reimbursements", h.PostReimbursement)
-			owner.GET("/finance/budgets", h.ListBudgets)
-			owner.POST("/finance/budgets", h.PostBudget)
-			owner.PATCH("/finance/budgets/:id", h.PatchBudget)
-			owner.GET("/finance/settings", h.GetFinanceSettings)
-			owner.PATCH("/finance/settings", h.PatchFinanceSettings)
-			owner.GET("/finance/policies", h.GetFinanceSettings)
-			owner.PATCH("/finance/policies", h.PatchFinanceSettings)
-			owner.GET("/finance/approvals", h.ListFinanceApprovals)
-			owner.POST("/finance/approvals/:id/:action", h.DecideFinanceApproval)
-			owner.GET("/finance/tie-out", h.FinanceTieOut)
-			owner.POST("/finance/tie-out/close", h.CloseFinanceTieOut)
-			owner.POST("/finance/tie-out/reopen", h.ReopenFinanceTieOut)
-			owner.GET("/finance/statements/income-statement", h.OwnerStatementIncome)
-			owner.GET("/finance/statements/balance-sheet", h.OwnerStatementBalanceSheet)
-			owner.GET("/finance/statements/cash-flow", h.OwnerStatementCashFlow)
-			owner.GET("/finance/statements/trial-balance", h.OwnerStatementTrialBalance)
-			owner.GET("/finance/reports/clearing-drift", h.OwnerClearingDriftReport)
-			owner.GET("/finance/reports/deposit-reserve", h.OwnerDepositReserveReport)
-			owner.GET("/finance/reports/capital-payback", h.OwnerCapitalPaybackReport)
-			owner.GET("/finance/reconciling-items", h.OwnerReconcilingItems)
-			owner.GET("/finance/variance-bridge", h.FinanceVarianceBridge)
-			owner.GET("/finance/imports", h.ListExpenseImports)
-
-			owner.GET("/roi", h.OwnerROI)
-			owner.GET("/roi/recovery", h.OwnerROIRecovery)
-			owner.GET("/roi/break-even", h.OwnerROIBreakEven)
-			owner.POST("/roi/scenario", h.OwnerROIScenario)
-
-			owner.GET("/insights", h.InsightsSummary)
-			owner.GET("/leakage", h.ListLeakage)
-			owner.GET("/leakage/:id", h.GetLeakage)
-			owner.GET("/recommendations", h.ListRecommendations)
-			owner.POST("/recommendations/:id/:action", h.RecommendationAction)
-			owner.GET("/coi", h.OwnerCOI)
-			owner.GET("/forecast", h.OwnerForecast)
-
-			// Gamification settings & management
-			owner.GET("/gamification/settings", h.OwnerGetGamificationSettings)
-			owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
-			owner.GET("/floors", h.OwnerListFloors)
-			owner.POST("/floors", h.OwnerCreateFloor)
-			owner.GET("/rooms", h.OwnerListRooms)
-			owner.POST("/rooms", h.OwnerCreateRoom)
-			owner.GET("/managers", h.OwnerListManagers)
-			owner.POST("/managers", h.OwnerCreateManager)
-			owner.PUT("/managers/:id/capabilities", h.OwnerPutManagerCapabilities)
-			owner.POST("/managers/:id/deactivate", h.OwnerDeactivateManager)
-			owner.POST("/managers/:id/reactivate", h.OwnerReactivateManager)
-			owner.POST("/managers/:id/reset-credentials", h.OwnerResetManagerCredentials)
-			owner.GET("/gamification/redemptions", h.OwnerListRedemptions)
-			owner.POST("/gamification/redemptions/:id/fulfil", h.OwnerFulfilRedemption)
-
-			// KYC owner review endpoints (ADR-004)
-			owner.GET("/tenants/:id/kyc", h.OwnerGetTenantKYC)
-			owner.GET("/tenants/:id/kyc/photo", h.OwnerTenantKYCPhoto)
-			owner.POST("/tenants/:id/kyc/clear-duplicate", h.OwnerClearDuplicateKYC)
-
-			// Tenant Departures (ADR-009)
-			owner.POST("/tenants/:id/departures", h.OwnerCreateDeparture)
-			owner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
-			owner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
-			owner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
-
-			// Operational Payouts Subsystem (ADR-009)
-			owner.POST("/payouts/payees", h.OwnerCreatePayee)
-			owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
-			owner.GET("/payouts/payees", h.OwnerListPayees)
-			owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
-			owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
-			owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
-			owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
-			owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
-			owner.POST("/payouts/batches/:id/dispatch", h.OwnerDispatchPayoutBatch)
-
-			// Gateway Settlement Ingress & Reconciliation (Track N / Ticket 13)
-			owner.GET("/settlements", h.OwnerListSettlements)
-			owner.GET("/settlements/:id", h.OwnerGetSettlement)
-			owner.POST("/settlements/:id/resolve", h.OwnerResolveSettlementDiscrepancy)
-
-			// Multi-Way EOD Settlement Balancer (Track P / Ticket 15)
-			owner.GET("/settlements/eod-balance", h.OwnerGetEODBalance)
-			owner.POST("/settlements/eod-balance/run", h.OwnerRunEODBalance)
-			owner.GET("/settlements/eod-balance/history", h.OwnerListEODBalances)
-
-			// Staff Attendance & Wage-Calculation Engine (Track M)
-			owner.POST("/staff", h.OwnerCreateStaffProfile)
-			owner.GET("/staff", h.OwnerListStaffProfiles)
-			owner.PUT("/staff/:id/status", h.OwnerUpdateStaffProfileStatus)
-
-			owner.GET("/attendance/leave-policy", h.OwnerGetLeavePolicy)
-			owner.PUT("/attendance/leave-policy", h.OwnerUpdateLeavePolicy)
-			owner.POST("/attendance/daily", h.OwnerMarkDailyAttendance)
-			owner.GET("/attendance/monthly", h.OwnerListMonthlyAttendance)
-
-			owner.POST("/payroll/calculate", h.OwnerPreviewPayroll)
-			owner.POST("/payroll/finalize", h.OwnerFinalizePayroll)
-		}
-
-		manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
-		{
-			capOf := func(name string) gin.HandlerFunc {
-				return auth.RequireCapability(name, d.CapabilityStore)
-			}
-			manager.GET("/me/capabilities", h.ManagerMyCapabilities)
-			manager.GET("/tenants", capOf("tenants.view"), h.ListTenants)
-			manager.GET("/dues", capOf("dues.view"), h.ListDues)
-			manager.POST("/attendance/daily", capOf("attendance.mark"), h.OwnerMarkDailyAttendance)
-			manager.POST("/inspections", capOf("inspections.write"), h.ManagerSubmitInspection)
-			manager.GET("/inspections", capOf("inspections.write"), h.ManagerListInspections)
-			manager.POST("/inspections/items/:id/resolve", capOf("inspections.write"), h.ManagerResolveInspectionItem)
-			manager.POST("/violations", capOf("inspections.write"), h.ManagerLogViolation)
-			manager.POST("/meter-readings", capOf("meters.write"), h.ManagerRecordMeterReading)
-			manager.GET("/kitchen/headcount", capOf("kitchen.headcount"), h.ManagerKitchenHeadcount)
-			manager.GET("/hazards", capOf("inspections.write"), h.ManagerListHazards)
-			manager.POST("/hazards/:id/resolve", capOf("inspections.write"), h.ManagerResolveHazard)
-			manager.POST("/vendor-inspections", capOf("inspections.write"), h.ManagerSubmitVendorInspection)
-			manager.GET("/finance/expenses", capOf("expenses.post"), h.ListExpenses)
-			manager.POST("/finance/expenses", capOf("expenses.post"), h.PostExpense)
-			manager.POST("/finance/expenses/:id/void", capOf("expenses.void"), h.VoidExpense)
-			manager.POST("/finance/expenses/:id/payments", capOf("expenses.post"), h.PostExpensePayment)
-			manager.GET("/finance/today", capOf("expenses.post"), h.ManagerFinanceToday)
-			manager.POST("/finance/meal-prep", capOf("expenses.post"), h.PostMealPrep)
-		}
-
-		tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
-		{
-			tenant.GET("/me", h.TenantMe)
-			tenant.PATCH("/me", h.TenantPatchMe)
-			tenant.GET("/dues", h.TenantDues)
-			tenant.GET("/dues/options", h.TenantDuesOptions)
-			tenant.POST("/dues/pay-batch", h.TenantDuePayBatch)
-			tenant.GET("/dues/:id/qr", h.TenantDueQR)
-			tenant.GET("/dues/:id/pay", h.TenantDuePay)
-			tenant.POST("/dues/:id/reports", h.TenantSubmitReport)
-			tenant.GET("/payments", h.TenantPayments)
-			tenant.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
-			tenant.GET("/lifecycle", h.TenantLifecycle)
-			tenant.POST("/push/subscribe", h.TenantPushSubscribe)
-			tenant.POST("/aadhaar", h.TenantAadhaar)
-
-			// KYC / Aadhaar identity verification (ADR-004)
-			tenant.POST("/kyc/consent", h.TenantKYCConsent)
-			tenant.POST("/kyc/initiate", tenantIDRateLimit(10.0/60, 2), h.TenantKYCInitiate)
-			tenant.GET("/kyc/return", tenantIDRateLimit(10.0/60, 3), h.TenantKYCReturn)
-			tenant.POST("/kyc/upload", tenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
-			tenant.POST("/kyc/qr", h.TenantKYCSubmitQR)
-			tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
-			tenant.GET("/kyc/status", h.TenantKYCStatus)
-
-			// Gamification routes
-			tenant.GET("/points", h.TenantPoints)
-			tenant.GET("/rewards", h.TenantRewards)
-			tenant.POST("/rewards/:id/redeem", h.TenantRedeem)
-			tenant.GET("/inspections", h.TenantInspections)
-			tenant.POST("/inspections/items/:id/dispute", h.TenantDisputeInspectionItem)
-			tenant.GET("/meal-rsvp", h.TenantGetMealRSVP)
-			tenant.POST("/meal-rsvp", h.TenantSubmitMealRSVP)
-			tenant.GET("/menu-poll", h.TenantGetMenuPoll)
-			tenant.POST("/menu-poll/vote", h.TenantVoteMenuPoll)
-			tenant.POST("/hazards", h.TenantReportHazard)
-			tenant.GET("/violations", h.TenantViolations)
-			tenant.GET("/leaderboard", h.TenantLeaderboard)
-			tenant.GET("/referrals", h.TenantReferrals)
-			tenant.POST("/referrals", h.TenantReferrals)
-		}
-
-		api.GET("/search", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), userOrIPRateLimit(120.0/60, 20), h.Search)
-
-		// Public locale registry
-		api.GET("/locales", h.ListLocales)
-
-		// User preferences — scoped to claims.UserID
-		prefs := api.Group("/me/preferences", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
-		{
-			prefs.GET("", h.GetPreferences)
-			prefs.PATCH("", h.PatchPreferences)
-		}
-
-		// Notifications — scoped to claims.UserID at the repo layer.
-		// All roles (owner, manager, tenant) share the same endpoints.
-		notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
-		{
-			notifs.GET("", h.ListNotifications)
-			notifs.PATCH("/:id/read", h.MarkNotificationRead)
-			notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
-		}
-
-		// Public unauthenticated endpoints (Cashfree webhooks, etc.)
-		pub := api.Group("/public")
-		{
-			// Cashfree Secure ID completion webhook — no auth, HMAC-verified inside handler.
-			pub.POST("/cashfree/kyc/webhook", h.CashfreeKYCWebhook)
-		}
-
-	}
-
-	// SPA Catch-All
-	r.NoRoute(web.Handler())
+	r.NoRoute(spaweb.Handler())
 
 	return r
-
 }
 
 // Handlers holds Deps for thin HTTP adapters.
 type Handlers struct {
 	Deps
-}
-
-// SecurityHeaders adds baseline HTTP security headers (nosniff, frame denial, referrer policy, CSP Report-Only, HSTS).
-func SecurityHeaders(appEnv string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
-		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		c.Header("Content-Security-Policy-Report-Only", "default-src 'self'; script-src 'self' 'unsafe-inline' https://sdk.cashfree.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://sandbox.cashfree.com https://api.cashfree.com; frame-src 'self' https://sdk.cashfree.com https://api.cashfree.com;")
-
-		if strings.EqualFold(appEnv, "production") {
-			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		c.Next()
-	}
-}
-
-// MaxBodyBytes limits the incoming request body size to prevent memory exhaustion / DoS attacks.
-func MaxBodyBytes(maxBytes int64) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.Body != nil {
-			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
-		}
-		c.Next()
-	}
 }
