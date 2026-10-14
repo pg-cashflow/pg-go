@@ -167,9 +167,37 @@ No production business logic has been modified in this baseline phase.
 ### 7.2 Raw Clean-Cache Test Execution Evidence
 
 ```
+$ go version
+go version go1.26.6 windows/amd64
+
+$ git rev-parse HEAD
+6328437178a5ec667be19bdd83d48b772bfb1a89
+
 $ go clean -testcache
-$ go test -count=1 ./internal/config/... ./cmd
-ok      github.com/pg-cashflow/pg-go/internal/config    1.751s
-ok      github.com/pg-cashflow/pg-go/cmd                0.832s
+$ go test -count=1 ./internal/config
+ok      github.com/pg-cashflow/pg-go/internal/config    0.937s
+
+$ go test -count=1 ./cmd
+ok      github.com/pg-cashflow/pg-go/cmd                0.566s
+
+$ go test -count=1 ./internal/domain
+ok      github.com/pg-cashflow/pg-go/internal/domain    1.902s
+
+$ go test -v -count=1 ./internal/postgres -run "TestValidateWorkerRoleConfig|TestLiveRoleGrantsAndImmutability"
+=== RUN   TestValidateWorkerRoleConfig
+=== RUN   TestValidateWorkerRoleConfig/valid_pgapp_worker_in_production_passes
+=== RUN   TestValidateWorkerRoleConfig/rejects_wrong_role_name_in_production
+=== RUN   TestValidateWorkerRoleConfig/rejects_pgapp_maint_as_worker_in_production
+=== RUN   TestValidateWorkerRoleConfig/rejects_superuser_in_production
+=== RUN   TestValidateWorkerRoleConfig/rejects_BYPASSRLS_in_production
+=== RUN   TestValidateWorkerRoleConfig/rejects_table_owner_in_production
+=== RUN   TestValidateWorkerRoleConfig/rejects_pgapp_app_in_non-production
+=== RUN   TestValidateWorkerRoleConfig/allows_postgres/pgapp_maint_in_development
+--- PASS: TestValidateWorkerRoleConfig (0.00s)
+=== RUN   TestLiveRoleGrantsAndImmutability
+    role_grants_live_test.go:26: DATABASE_URL not set, skipping live database test
+--- SKIP: TestLiveRoleGrantsAndImmutability (0.00s)
+PASS
+ok      github.com/pg-cashflow/pg-go/internal/postgres  3.426s
 ```
 
