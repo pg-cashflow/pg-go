@@ -208,6 +208,16 @@ func TestOwnerOccupancy_ComputesCorrectMetrics(t *testing.T) {
 	if res.OccupiedBeds != 2 {
 		t.Errorf("expected 2 active occupied beds, got %d", res.OccupiedBeds)
 	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"reserved_beds", "over_capacity_beds", "available_normal_beds", "occupancy_revision"} {
+		if raw[key] == nil {
+			t.Fatalf("response missing admission field %q", key)
+		}
+	}
 }
 
 type errorGamificationStore struct {

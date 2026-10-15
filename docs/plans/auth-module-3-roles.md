@@ -1,6 +1,6 @@
 ---
 name: Auth Module 3-Roles
-overview: "Ground-truth SDLC plan: P0-A session fix (verified bug), P0-B slot invites + occupancy state machine + frozen terms, P0-C typed onboarding + KYC tier router + auto-activate, P1 waitlist commands + referral payout. HEAD migration 070."
+overview: "Ground-truth SDLC plan: P0-A session fix (verified bug), P0-B slot invites + occupancy state machine + frozen terms, P0-C typed onboarding + KYC tier router + auto-activate, P1 waitlist commands + referral payout. HEAD migration 074."
 todos:
   - id: p0-a-session
     content: "finishLogin allow pending_allocation; JoinProfile IssueSession + token/user; table-driven tests; CONTRACT message"
@@ -60,7 +60,7 @@ isProject: true
 | Manager capabilities                       | **Real:** migration `070_manager_capabilities.sql`.                                                                                                                                      |
 | KYC                                        | **Partially built** — DigiLocker via Cashfree in [`internal/kyc`](internal/kyc); upload/QR per [CONTRACT.md](../CONTRACT.md); jobs `digilocker_reconcile`, `kyc_expiry`. Not greenfield. |
 | Referral                                   | **Implemented (P1)** — migration `073`, bind at join, first-rent discount/credit via billing hooks + event consumer; owner `GET/POST /owner/referrals`.                                  |
-| Student/working fields                     | **Not in** domain/join handlers → **P0-C** new.                                                                                                                                          |
+| Student/working fields                     | **Implemented** — `occupation_type` + `occupation_details` on join profile ([`domain/occupation.go`](../../internal/domain/occupation.go)).                                              |
 | `/areas/aadhaar-kyc.md`                    | **Not in this repo**; treat [CONTRACT.md](../CONTRACT.md) + `internal/kyc` as source of truth for KYC.                                                                                   |
 
 This is **build slot-invites + frozen terms + occupancy states + session fix + typed onboarding** on top of flat property invite + manual `ActivateJoin`, not “enhance existing slot flow.”
@@ -323,19 +323,19 @@ Walk-in: keep [`POST /owner/tenants`](internal/api/router_owner.go) + [`attach-p
 
 ---
 
-## 11. Next action
+## 11. Product decisions (locked — admission closeout)
 
-**Ship checklist (admission module):**
+| Decision                    | Resolution                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| Q1 Referral holdback        | **None** — referrer credit on first rent payment                                                 |
+| Q2 `GET /me/onboarding`     | **403 for non-tenant** — owners use owner UI + `GET /api/owner/onboarding-settings`              |
+| Q3 Release tag              | **`admission-rc1`** when migrations 071–074 are deployed and overfit journey tests are green     |
+| Tenant referrals            | **Dual paths** — `ReferralAdmission` when `referral_enabled`; legacy gamification when disabled ([CONTRACT.md](../CONTRACT.md)) |
+| Manager onboarding-settings | **GET only**; **PATCH** owner-only (initial)                                                     |
+
+**Ship checklist:**
 
 1. Run migrations **071–074** in staging.
-2. Smoke: Firebase → slot code → `POST /join` → `GET /me/onboarding` (no re-exchange); optional `referral_code` on join; waitlist when room full.
-3. Schedule jobs: `cmd/slot-invite-expiry`, `cmd/waitlist-offer-expiry`.
-4. Full `go test ./...` on CI (Windows may OOM on entire `internal/api` — run matrix + package slices locally).
-
-**Open product questions (need your call):**
-
-| #   | Question                               | Options / default                                                                                    |
-| --- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Q1  | Referral holdback                      | **Closed: none** — settle on first rent payment                                                      |
-| Q2  | `GET /me/onboarding` for owner/manager | Return 403 for non-tenant, or a no-op stage payload for dogfooding? (Today: any authenticated role.) |
-| Q3  | Module close naming                    | Tag release `admission-p0` vs fold into next app release train?                                      |
+2. Smoke: see [deploy_and_jobs.md §8](../runbooks/deploy_and_jobs.md#8-admission-staging-smoke-asd-ste100).
+3. Schedule jobs: `cmd/slot-invite-expiry`, `cmd/waitlist-offer-expiry`, `cmd/join-pending-expiry`.
+4. CI slice: `make test-admission` (Windows may OOM on full `go test ./internal/api`).

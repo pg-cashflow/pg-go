@@ -40,6 +40,7 @@ const (
 
 	CodeSlotRoomFull                Code = "slot.room_full"
 	CodeOnboardingRoomMasterMissing Code = "onboarding.room_master_missing"
+	CodeOnboardingSettingsInvalid   Code = "onboarding.settingsInvalid"
 	CodeSlotInviteNotOpen           Code = "slot.inviteNotOpen"
 	CodeWaitlistDisabled            Code = "waitlist.disabled"
 	CodeWaitlistRoomOpen            Code = "waitlist.roomOpen"
@@ -127,6 +128,7 @@ var AllCodes = []Code{
 
 	CodeSlotRoomFull,
 	CodeOnboardingRoomMasterMissing,
+	CodeOnboardingSettingsInvalid,
 	CodeSlotInviteNotOpen,
 	CodeWaitlistDisabled,
 	CodeWaitlistRoomOpen,

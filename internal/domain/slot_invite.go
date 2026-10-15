@@ -52,6 +52,9 @@ type PropertyOnboardingSettings struct {
 	ProfileSchemaVersion        int       `json:"profile_schema_version"`
 	RequireKYCBeforePay         bool      `json:"require_kyc_before_pay"`
 	JoinPendingTTLDays          int       `json:"join_pending_ttl_days"`
+	ReferralEnabled             bool      `json:"referral_enabled"`
+	JoinerDiscountBps           int       `json:"joiner_discount_bps"`
+	ReferrerRewardBps           int       `json:"referrer_reward_bps"`
 }
 
 type InviteResolution struct {

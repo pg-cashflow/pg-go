@@ -59,9 +59,13 @@ type OccupancyMetrics struct {
 	TotalRooms       int              `json:"total_rooms"`
 	OccupiedRooms    int              `json:"occupied_rooms"`
 	VacantRooms      int              `json:"vacant_rooms"`
-	OccupancyRateBps int              `json:"occupancy_rate_bps"`
-	OccupancyRatePct float64          `json:"occupancy_rate_pct"`
-	Floors           []FloorOccupancy `json:"floors"`
+	OccupancyRateBps      int              `json:"occupancy_rate_bps"`
+	OccupancyRatePct      float64          `json:"occupancy_rate_pct"`
+	ReservedBeds          int              `json:"reserved_beds"`
+	OverCapacityBeds      int              `json:"over_capacity_beds"`
+	AvailableNormalBeds   int              `json:"available_normal_beds"`
+	OccupancyRevision     int64            `json:"occupancy_revision"`
+	Floors                []FloorOccupancy `json:"floors"`
 }
 
 type PropertyOccupancySummary struct {
@@ -309,7 +313,7 @@ func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (Occup
 		occRateBps = int(occRatePct * 100.0)
 	}
 
-	return OccupancyMetrics{
+	metrics := OccupancyMetrics{
 		CapacityBeds:     capacityBeds,
 		OccupiedBeds:     occupiedBeds,
 		VacantBeds:       vacantBeds,
@@ -320,7 +324,17 @@ func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (Occup
 		OccupancyRateBps: occRateBps,
 		OccupancyRatePct: occRatePct,
 		Floors:           resultFloors,
-	}, nil
+	}
+	if pool := h.appOrMaintPool(); pool != nil {
+		snap, err := postgres.PropertyAdmissionSnapshot(ctx, pool, pid)
+		if err == nil {
+			metrics.ReservedBeds = snap.ReservedBeds
+			metrics.OverCapacityBeds = snap.OverCapacityBeds
+			metrics.AvailableNormalBeds = snap.AvailableNormalBeds
+			metrics.OccupancyRevision = snap.OccupancyRevision
+		}
+	}
+	return metrics, nil
 }
 
 // OwnerOccupancy handles GET /owner/occupancy.
@@ -340,18 +354,22 @@ func (h *Handlers) OwnerOccupancy(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"property_id":        pid,
-		"capacity_beds":      occ.CapacityBeds,
-		"occupied_beds":      occ.OccupiedBeds,
-		"vacant_beds":        occ.VacantBeds,
-		"beds_at_risk":       occ.BedsAtRisk,
-		"total_rooms":        occ.TotalRooms,
-		"occupied_rooms":     occ.OccupiedRooms,
-		"vacant_rooms":       occ.VacantRooms,
-		"occupancy_rate_bps": occ.OccupancyRateBps,
-		"occupancy_rate_pct": occ.OccupancyRatePct,
-		"floors":             occ.Floors,
-		"as_of":              time.Now().UTC(),
+		"property_id":             pid,
+		"capacity_beds":           occ.CapacityBeds,
+		"occupied_beds":           occ.OccupiedBeds,
+		"vacant_beds":             occ.VacantBeds,
+		"beds_at_risk":            occ.BedsAtRisk,
+		"reserved_beds":           occ.ReservedBeds,
+		"over_capacity_beds":      occ.OverCapacityBeds,
+		"available_normal_beds":   occ.AvailableNormalBeds,
+		"occupancy_revision":      occ.OccupancyRevision,
+		"total_rooms":             occ.TotalRooms,
+		"occupied_rooms":          occ.OccupiedRooms,
+		"vacant_rooms":            occ.VacantRooms,
+		"occupancy_rate_bps":      occ.OccupancyRateBps,
+		"occupancy_rate_pct":      occ.OccupancyRatePct,
+		"floors":                  occ.Floors,
+		"as_of":                   time.Now().UTC(),
 	})
 }
 

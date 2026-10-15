@@ -256,3 +256,20 @@ Use this checklist when Neon exists but no compute host exists yet. Estimated ti
 8. Verify `GET /healthz` returns 200 and one timer job completes with exit code 0.
 
 **Development without VPS:** run `cmd/server` locally against Neon; timers are manual until step 6 completes.
+
+---
+
+## 8. Admission staging smoke (ASD-STE100)
+
+Run these steps after migrations **071–074** on staging.
+
+1. Apply migrations through `074_room_waitlist.sql`.
+2. Enable timers: `slot-invite-expiry`, `waitlist-offer-expiry`, `join-pending-expiry`.
+3. Set `waitlist_enabled` and default rent via `PATCH /api/owner/onboarding-settings`.
+4. Execute one overfit path: one property, one floor, one room, one slot invite, `POST /join`, then `GET /api/me/onboarding` with the join response token.
+5. Fill the room; call `POST /api/join/waitlist`; owner `POST /api/owner/waitlist/:room_id/offer`; tenant `POST /api/join/waitlist/accept`.
+6. Enable `referral_enabled`; create owner referral; join with `referral_code`; pay first rent; assert referrer credit balance.
+
+**CI slice (local):** `make test-admission`
+
+**Load (Gate 09):** `k6 run scripts/loadtest/scenarios/admission_burst.js` with `PENDING_JOIN_TOKEN` and `BASE_URL`.

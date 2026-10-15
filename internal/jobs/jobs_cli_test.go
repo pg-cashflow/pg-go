@@ -20,7 +20,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
-// allBinaries lists all 12 operational and background entrypoints in cmd/
+// allBinaries lists operational and background entrypoints in cmd/
 var allBinaries = []string{
 	"server",
 	"billing-cycle",
@@ -32,8 +32,11 @@ var allBinaries = []string{
 	"gamification-cycle",
 	"kpi-snapshot",
 	"kyc-expiry",
+	"join-pending-expiry",
 	"migrate",
 	"sandbox-smoke",
+	"slot-invite-expiry",
+	"waitlist-offer-expiry",
 }
 
 // TestGate12_BinariesMissingEnvFailFast is the canonical CLI contract.
@@ -154,9 +157,12 @@ func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
 
 	cronBinaries := []string{
 		"daily-rollup",
+		"join-pending-expiry",
 		"kyc-expiry",
 		"kpi-snapshot",
 		"migrate",
+		"slot-invite-expiry",
+		"waitlist-offer-expiry",
 	}
 
 	for _, bin := range cronBinaries {

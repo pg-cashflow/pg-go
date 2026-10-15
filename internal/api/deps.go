@@ -183,9 +183,10 @@ type WaitlistAdmissionService interface {
 	AcceptOffer(ctx context.Context, userID uuid.UUID, phone, inviteCode string, updateJoin func(ctx context.Context, slotInviteID uuid.UUID) error) (*domain.SlotInvite, error)
 }
 
-// OnboardingSettingsStore reads property onboarding settings.
+// OnboardingSettingsStore reads and updates property onboarding settings.
 type OnboardingSettingsStore interface {
 	Get(ctx context.Context, propertyID uuid.UUID) (*domain.PropertyOnboardingSettings, error)
+	Update(ctx context.Context, propertyID uuid.UUID, patch postgres.OnboardingSettingsPatch) (*domain.PropertyOnboardingSettings, error)
 }
 
 // JoinIdempotencyStore stores POST /join replay responses.
@@ -226,6 +227,7 @@ type ReferralAdmissionService interface {
 	CreateOffline(ctx context.Context, propertyID uuid.UUID, joinerPhone, joinerName, externalPhone, externalName string, dest domain.ReferralRewardDestination) (*domain.ReferralAdmission, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.ReferralAdmission, error)
 	ListByReferrerTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.ReferralAdmission, error)
+	ReverseFirstRentPayment(ctx context.Context, dueID, paymentID uuid.UUID) error
 }
 
 // SlotInviteService manages per-room admission invites (P0-B).

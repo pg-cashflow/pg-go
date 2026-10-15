@@ -222,6 +222,41 @@ func (s *Service) SettleFirstRentPayment(ctx context.Context, dueID uuid.UUID) e
 	return s.repo.MarkRewarded(ctx, referralID, nil)
 }
 
+// ReverseFirstRentPayment claws back referrer credit when a rewarded first rent is refunded.
+func (s *Service) ReverseFirstRentPayment(ctx context.Context, dueID, paymentID uuid.UUID) error {
+	referralID, _, _, _, err := s.repo.GetAdjustmentByDueID(ctx, dueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	ref, err := s.repo.GetByID(ctx, referralID)
+	if err != nil || ref.Status != "rewarded" {
+		return nil
+	}
+	amount, tenantID, err := s.repo.GetEarnForReferral(ctx, referralID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return s.repo.ResetRewarded(ctx, referralID)
+		}
+		return err
+	}
+	if amount <= 0 {
+		return s.repo.ResetRewarded(ctx, referralID)
+	}
+	idem := fmt.Sprintf("referral:reversal:%s", paymentID.String())
+	if err := s.repo.InsertCreditEntry(ctx, ref.PropertyID, tenantID, nil, referralID, "reversal", amount, idem, &dueID, &paymentID); err != nil {
+		return err
+	}
+	if tenantID != nil {
+		if err := s.repo.SubtractTenantCreditBalance(ctx, *tenantID, amount); err != nil {
+			return err
+		}
+	}
+	return s.repo.ResetRewarded(ctx, referralID)
+}
+
 func (s *Service) ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.ReferralAdmission, error) {
 	return s.repo.ListByProperty(ctx, propertyID)
 }

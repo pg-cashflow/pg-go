@@ -11,6 +11,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
+	"github.com/pg-cashflow/pg-go/internal/waitlist"
 )
 
 func (h *Handlers) JoinWaitlist(c *gin.Context) {
@@ -48,6 +49,8 @@ func (h *Handlers) JoinWaitlist(c *gin.Context) {
 			apierr.RespondClientErr(c, http.StatusConflict, "room has capacity", apierr.CodeWaitlistRoomOpen)
 		case errors.Is(err, postgres.ErrWaitlistDuplicate):
 			apierr.RespondClientErr(c, http.StatusConflict, "already on waitlist", apierr.CodeWaitlistDuplicate)
+		case errors.Is(err, postgres.ErrSlotCrossProperty), errors.Is(err, waitlist.ErrRoomNotFound):
+			apierr.RespondClientErr(c, http.StatusNotFound, "not found", apierr.CodeJoinNotFound)
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "waitlist join failed"})
 		}

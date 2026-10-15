@@ -67,6 +67,7 @@ thresholds: {
 1. Expand `scripts/loadtest/` with dedicated k6 test files:
    - `scripts/loadtest/scenarios/read_dashboard.js`
    - `scripts/loadtest/scenarios/checkout_webhook.js`
+   - `scripts/loadtest/scenarios/admission_burst.js` (pending-join `GET /api/join/me`; set `PENDING_JOIN_TOKEN` + `BASE_URL`)
    - `scripts/loadtest/soak_test.js`
    - `scripts/loadtest/fake_gateway.go`
    - `scripts/loadtest/post_run_invariants.sql`

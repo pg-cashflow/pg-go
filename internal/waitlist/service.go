@@ -16,6 +16,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
+// ErrRoomNotFound is returned when room_id does not exist on the property scope.
+var ErrRoomNotFound = errors.New("waitlist: room not found")
+
 type Service struct {
 	pool     *pgxpool.Pool
 	waitlist *postgres.WaitlistRepo
@@ -45,7 +48,7 @@ func (s *Service) Join(ctx context.Context, propertyID, roomID, userID uuid.UUID
 	roomProperty, _, err := s.waitlist.RoomFloor(ctx, roomID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("room not found")
+			return nil, ErrRoomNotFound
 		}
 		return nil, err
 	}

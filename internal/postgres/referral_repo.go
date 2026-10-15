@@ -213,6 +213,27 @@ func (r *ReferralRepo) AddTenantCreditBalance(ctx context.Context, tenantID uuid
 	return err
 }
 
+func (r *ReferralRepo) SubtractTenantCreditBalance(ctx context.Context, tenantID uuid.UUID, amountPaise int64) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE tenants SET credit_balance_paise = GREATEST(0, credit_balance_paise - $2) WHERE id=$1`, tenantID, amountPaise)
+	return err
+}
+
+func (r *ReferralRepo) GetEarnForReferral(ctx context.Context, referralID uuid.UUID) (amount int64, tenantID *uuid.UUID, err error) {
+	err = r.db.QueryRow(ctx, `
+		SELECT amount_paise, tenant_id FROM referral_credit_entries
+		WHERE referral_id=$1 AND entry_type='earn' ORDER BY created_at DESC LIMIT 1`, referralID,
+	).Scan(&amount, &tenantID)
+	return amount, tenantID, err
+}
+
+func (r *ReferralRepo) ResetRewarded(ctx context.Context, referralID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE referrals SET status='bound', rewarded_at=NULL, rewarded_payment_id=NULL
+		WHERE id=$1 AND status='rewarded'`, referralID)
+	return err
+}
+
 func (r *ReferralRepo) ListByReferrerTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.ReferralAdmission, error) {
 	rows, err := r.db.Query(ctx, `SELECT `+referralCols+` FROM referrals WHERE referrer_tenant_id=$1 ORDER BY created_at DESC`, tenantID)
 	if err != nil {

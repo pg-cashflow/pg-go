@@ -527,6 +527,14 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
+	if rfRow.Status == "succeeded" && h.Referrals != nil {
+		for _, item := range allocationsToCreate {
+			if err := h.Referrals.ReverseFirstRentPayment(c.Request.Context(), item.dueID, p.ID); err != nil {
+				slog.Warn("referral reverse on refund failed", "due_id", item.dueID, "payment_id", p.ID, "err", err)
+			}
+		}
+	}
+
 	// Post financial ledger reversal outside row locks
 	if rfRow.Status == "succeeded" && h.Finance != nil {
 		finTime := time.Now().UTC()
