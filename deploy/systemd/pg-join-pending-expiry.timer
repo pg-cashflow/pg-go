@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pg-app join pending expiry daily at 03:30 IST
+
+[Timer]
+# 03:30 IST = 22:00 UTC previous day
+OnCalendar=*-*-* 22:00:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

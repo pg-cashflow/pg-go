@@ -108,10 +108,12 @@ func TestLiveReferralFirstRent_DiscountEarnAndReverse(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM referral_credit_entries WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM due_referral_adjustments WHERE due_id=$1`, dueID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM dues WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM referrals WHERE property_id=$1`, propID)
-		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE property_id=$1`, propID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM payment_allocations WHERE payment_id=$1`, paymentID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM payments WHERE due_id=$1`, dueID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM dues WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE property_id=$1`, propID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM property_onboarding_settings WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM rooms WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM floors WHERE property_id=$1`, propID)
@@ -138,10 +140,18 @@ func TestLiveReferralFirstRent_DiscountEarnAndReverse(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
+	dueCode := "D" + uuid.NewString()[:7]
 	_, err = pool.Exec(ctx, `
 		INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
-		VALUES ($1,$2,$3,'R1','rent','open',$4,$5,$6,$6,$6)`,
-		dueID, propID, joinerTenant, due.Amount, rentBase, now)
+		VALUES ($1,$2,$3,$7,'rent','open',$4,$5,$6,$6,$6)`,
+		dueID, propID, joinerTenant, due.Amount, rentBase, now, dueCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payments (id, property_id, due_id, tenant_id, amount, matched_by, provider)
+		VALUES ($1, $2, $3, $4, $5, 'cash', 'offline')`,
+		paymentID, propID, dueID, joinerTenant, due.Amount)
 	if err != nil {
 		t.Fatal(err)
 	}

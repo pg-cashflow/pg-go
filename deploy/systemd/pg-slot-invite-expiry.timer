@@ -1,0 +1,10 @@
+[Unit]
+Description=Run pg-app slot invite expiry every 15 minutes
+
+[Timer]
+OnCalendar=*:05,20,35,50
+Persistent=true
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

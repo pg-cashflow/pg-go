@@ -49,6 +49,20 @@ func TestLiveSlotInvite_ConsumeOpenConcurrency(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO tenants (id, property_id, room_id, name, phone, status, rent_amount, due_day, credit_balance_paise)
+			VALUES ($1,$2,$3,'TA',$4,'active',500000,5,0), ($5,$2,$3,'TB',$6,'active',500000,5,0)`,
+			tenantA, propID, roomID, phone+"1", tenantB, phone+"2")
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO users (id, phone, role, property_id, tenant_id)
+			VALUES ($1,$2,'tenant',$3,$4), ($5,$6,'tenant',$3,$7)`,
+			userA, phone+"1", propID, tenantA, userB, phone+"2", tenantB)
+		if err != nil {
+			return err
+		}
 		expires := time.Now().UTC().Add(24 * time.Hour)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO slot_invites (
@@ -63,6 +77,8 @@ func TestLiveSlotInvite_ConsumeOpenConcurrency(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM slot_invites WHERE property_id=$1`, propID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE property_id=$1`, propID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM rooms WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM floors WHERE property_id=$1`, propID)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id=$1`, propID)

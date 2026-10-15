@@ -1,0 +1,10 @@
+[Unit]
+Description=Run pg-app waitlist offer expiry every 15 minutes
+
+[Timer]
+OnCalendar=*:10,25,40,55
+Persistent=true
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

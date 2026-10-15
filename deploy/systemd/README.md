@@ -1,6 +1,6 @@
 # pg-app Background Job Scheduling (Linux systemd Timers)
 
-This directory contains the production `systemd` service and timer definitions for all 9 background jobs running on the self-managed PG-LIVE host.
+This directory contains the production `systemd` service and timer definitions for all 12 background jobs running on the self-managed PG-LIVE host.
 
 ## Job Schedule Overview
 
@@ -15,6 +15,9 @@ This directory contains the production `systemd` service and timer definitions f
 | `pg-kpi-snapshot` | Daily | 02:00 IST | `20:30 UTC` (prev) | Captures daily occupancy, revenue, and collection KPIs |
 | `pg-kyc-expiry` | Daily | 03:00 IST | `21:30 UTC` (prev) | Checks minor-to-major age transitions and expiring KYC records |
 | `pg-reminder` | Daily | 09:00 IST | `03:30 UTC` | Dispatches rent reminders (D-3, D-0, D+1, D+7) with catch-up window |
+| `pg-slot-invite-expiry` | Every 15 min | `*:05,20,35,50` | `*:05,20,35,50` | Marks open expired slot invites and releases reserved bed occupancy |
+| `pg-waitlist-offer-expiry` | Every 15 min | `*:10,25,40,55` | `*:10,25,40,55` | Expires pending waitlist offers past deadline and advances to next waiter |
+| `pg-join-pending-expiry` | Daily | 03:30 IST | `22:00 UTC` (prev) | Rejects stale pending join requests exceeding TTL |
 
 ## Scheduler of record (systemd vs GitHub Actions)
 

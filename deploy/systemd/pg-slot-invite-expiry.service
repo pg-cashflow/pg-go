@@ -1,0 +1,19 @@
+[Unit]
+Description=pg-app slot invite expiry job (marks open expired slot invites and releases reservations)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pgapp
+Group=pgapp
+WorkingDirectory=/opt/pg-app
+EnvironmentFile=/opt/pg-app/.env
+ExecStart=/opt/pg-app/slot-invite-expiry
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pg-app
+PrivateTmp=true

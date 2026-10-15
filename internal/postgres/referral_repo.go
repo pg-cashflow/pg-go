@@ -33,15 +33,22 @@ func scanReferral(row pgx.Row) (*domain.ReferralAdmission, error) {
 	var destAt, boundAt, rewardedAt *time.Time
 	var firstDue, rewardedPay *uuid.UUID
 	var code *string
+	var extPhone, extName *string
 	err := row.Scan(
 		&ref.ID, &ref.PropertyID, &referrerID, &referredID, &ref.Phone, &ref.Name, &ref.Status,
 		&ref.PointsAwarded, &ref.CreatedAt, &rewardedAt,
 		&code, &ref.JoinerDiscountBps, &ref.ReferrerRewardBps, &dest, &setBy, &destAt,
-		&ref.ReferrerExternalPhone, &ref.ReferrerExternalName,
+		&extPhone, &extName,
 		&boundAt, &firstDue, &rewardedPay,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if extPhone != nil {
+		ref.ReferrerExternalPhone = *extPhone
+	}
+	if extName != nil {
+		ref.ReferrerExternalName = *extName
 	}
 	ref.ReferrerTenantID = referrerID
 	ref.ReferredTenantID = referredID

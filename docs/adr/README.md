@@ -34,6 +34,6 @@
 | [ADR-030](030-job-db-role-and-startup-guard.md) | Background Job DB Role (`pgapp_worker`) & Guard | Accepted | 2026-10-14 |
 | [ADR-031](031-webhook-signing-secret-policy.md) | Cashfree Webhook Signing Secret Policy & Length Rule | Accepted | 2026-10-14 |
 | [ADR-032](032-delegated-manager-capabilities.md) | Delegated Manager Property Capabilities & Scoping | Accepted | 2026-10-14 |
-| [ADR-033](033-reserved.md) | Reserved ADR Number | Reserved | 2026-10-14 |
+| [ADR-033](033-slot-invites-and-occupancy.md) | Slot Invites and Room Occupancy Reservations | Accepted | 2026-10-15 |
 | [ADR-034](034-webhook-payout-parity-and-metrics-failclosed.md) | Payout Webhook Parity and Metrics Fail-Closed | Accepted | 2026-10-14 |
 | [ADR-035](035-deployment-vps-managed-postgres.md) | Production Deployment (VPS + Managed PostgreSQL) | Accepted | 2026-10-14 |

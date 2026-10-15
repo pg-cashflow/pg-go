@@ -109,7 +109,6 @@ func seedWaitlistRoom(t *testing.T, capacity int, activeTenants int, waitlistOn 
 			return err
 		}
 		for i := 0; i < activeTenants; i++ {
-			uid := uuid.New()
 			tid := uuid.New()
 			p := "+91" + strconv.FormatInt(time.Now().UnixNano()%1e9+int64(i), 10)
 			if _, err = tx.Exec(ctx, `
