@@ -42,6 +42,11 @@ type FirebaseTokenVerifier interface {
 	IdentityFromIDToken(ctx context.Context, idToken string) (FirebaseIdentity, error)
 }
 
+// PhoneLimiter checks rate limits per phone number before expensive provisioning operations.
+type PhoneLimiter interface {
+	Allow(phone string) bool
+}
+
 // Service handles OTP request/verify and JWT issuance.
 // Rate limits live here (not in HTTP middleware).
 type Service struct {
@@ -53,6 +58,7 @@ type Service struct {
 	firebase       FirebaseTokenVerifier
 	refreshRepo    RefreshTokenRepository
 	inviteResolver InviteCodeResolver
+	phoneLimiter   PhoneLimiter
 	otpSecret      string
 	jwtSecret      string
 }
@@ -96,6 +102,11 @@ func (s *Service) SetFirebaseVerifier(v FirebaseTokenVerifier) {
 	s.firebase = v
 }
 
+// SetPhoneLimiter sets the per-phone rate limiter.
+func (s *Service) SetPhoneLimiter(l PhoneLimiter) {
+	s.phoneLimiter = l
+}
+
 // RequestOTP generates, stores (hashed), and SMS-sends an OTP with login copy.
 // Max 3 requests per phone per 10 minutes.
 func (s *Service) RequestOTP(ctx context.Context, phone string) error {
@@ -104,8 +115,22 @@ func (s *Service) RequestOTP(ctx context.Context, phone string) error {
 
 // RequestStepUpOTP generates, stores, and sends an OTP bound to purpose and optional batchID.
 func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
+	normPhone := NormalizePhone(phone)
+	if normPhone != "" {
+		phone = normPhone
+	}
+	if purpose == "" {
+		purpose = "login"
+	}
+
+	// Prevent SMS cost abuse: for login OTP, verify account exists before sending SMS.
+	if purpose == "login" && !s.hasAccount(ctx, phone) {
+		// Return nil for anti-enumeration, but skip DB insert and SMS send.
+		return nil
+	}
+
 	since := time.Now().UTC().Add(-OTPRateWindow)
-	n, err := s.otp.CountRecent(ctx, phone, since)
+	n, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, since)
 	if err != nil {
 		return fmt.Errorf("count recent otp: %w", err)
 	}
@@ -159,6 +184,10 @@ func (s *Service) VerifyStepUpOTP(ctx context.Context, phone, otp string) error 
 
 // VerifyStepUpOTPSpecific validates an OTP bound to purpose and optional batchID.
 func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error {
+	normPhone := NormalizePhone(phone)
+	if normPhone != "" {
+		phone = normPhone
+	}
 	req, err := s.otp.LatestUnusedByPurpose(ctx, phone, purpose, batchID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -187,6 +216,34 @@ func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpo
 	}
 
 	return nil
+}
+
+func (s *Service) hasAccount(ctx context.Context, phone string) bool {
+	if s.users == nil && s.tenants == nil && s.properties == nil {
+		return true
+	}
+	norm := NormalizePhone(phone)
+	if norm == "" {
+		norm = phone
+	}
+	if s.users != nil {
+		if _, err := s.users.GetByPhone(ctx, norm); err == nil {
+			return true
+		}
+	}
+	if s.properties != nil {
+		if _, err := s.properties.GetByOwnerPhone(ctx, norm); err == nil {
+			return true
+		}
+	}
+	if s.tenants != nil {
+		if t, err := s.tenants.GetByPhone(ctx, norm); err == nil && t != nil {
+			if t.Status == domain.TenantStatusActive || t.Status == domain.TenantStatusPendingAllocation {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // VerifyOTPAndIssueToken validates the OTP and returns a JWT.
@@ -237,6 +294,10 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 
 	if ident.UID == "" || (ident.Phone == "" && ident.Email == "") {
 		return "", nil, ErrInvalidFirebaseToken
+	}
+
+	if ident.Phone != "" && s.phoneLimiter != nil && !s.phoneLimiter.Allow(ident.Phone) {
+		return "", nil, ErrRateLimited
 	}
 
 	// 1. Matched existing user by Firebase UID?
@@ -346,7 +407,7 @@ func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *
 	now := time.Now().UTC()
 	user.LastLoginAt = &now
 
-	token, err := IssueToken(s.jwtSecret, user)
+	token, err := IssueAccessToken(s.jwtSecret, user)
 	if err != nil {
 		return "", nil, err
 	}
@@ -400,7 +461,7 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 		// C. Tenant match by phone
 		tenant, err := s.tenants.GetByPhone(ctx, ident.Phone)
 		if err == nil {
-			if tenant.Status != domain.TenantStatusActive {
+			if tenant.Status != domain.TenantStatusActive && tenant.Status != domain.TenantStatusPendingAllocation {
 				return nil, ErrTenantVacated
 			}
 			tid := tenant.ID

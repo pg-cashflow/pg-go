@@ -87,9 +87,16 @@ func (r *OTPRepo) MarkUsed(ctx context.Context, id uuid.UUID) error {
 }
 
 func (r *OTPRepo) CountRecent(ctx context.Context, phone string, since time.Time) (int, error) {
+	return r.CountRecentByPurpose(ctx, phone, "", since)
+}
+
+func (r *OTPRepo) CountRecentByPurpose(ctx context.Context, phone string, purpose string, since time.Time) (int, error) {
 	var n int
 	err := r.pool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM otp_requests WHERE phone=$1 AND created_at >= $2`, phone, since).Scan(&n)
+		SELECT COUNT(*) FROM otp_requests
+		WHERE phone=$1
+		  AND ($2 = '' OR purpose=$2)
+		  AND created_at >= $3`, phone, purpose, since).Scan(&n)
 	return n, err
 }
 

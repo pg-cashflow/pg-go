@@ -141,6 +141,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	refreshRepo := postgres.NewRefreshTokenRepo(maintPool)
 	authSvc := auth.NewService(otpRepo, userRepo, tenantRepo, propertyRepo, gateway, cfg.OTPHMACSecret, cfg.JWTSecret)
 	authSvc.SetRefreshTokenRepo(refreshRepo)
+	authSvc.SetPhoneLimiter(api.DefaultFirebasePhoneLimiter)
 	if cfg.FirebaseProjectID != "" {
 		if cfg.FirebaseCredentials != "" {
 			if _, err := os.Stat(cfg.FirebaseCredentials); err != nil {

@@ -48,6 +48,7 @@ type OTPRepository interface {
 	IncrementAttempts(ctx context.Context, id uuid.UUID) error
 	MarkUsed(ctx context.Context, id uuid.UUID) error
 	CountRecent(ctx context.Context, phone string, since time.Time) (int, error)
+	CountRecentByPurpose(ctx context.Context, phone string, purpose string, since time.Time) (int, error)
 }
 
 // PropertyRepository looks up properties by owner phone or email for first-login user creation.

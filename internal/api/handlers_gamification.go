@@ -1015,8 +1015,14 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 		}
 	}
 
+	normPhone := auth.NormalizePhone(body.Phone)
+	if normPhone == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid phone number format"})
+		return
+	}
+
 	u := &domain.User{
-		Phone:      body.Phone,
+		Phone:      normPhone,
 		Role:       domain.RoleManager,
 		PropertyID: &pid,
 	}

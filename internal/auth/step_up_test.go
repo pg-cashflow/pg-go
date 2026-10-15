@@ -79,11 +79,15 @@ func (m *mockOTPRepo) MarkUsed(_ context.Context, id uuid.UUID) error {
 }
 
 func (m *mockOTPRepo) CountRecent(_ context.Context, phone string, since time.Time) (int, error) {
+	return m.CountRecentByPurpose(context.Background(), phone, "", since)
+}
+
+func (m *mockOTPRepo) CountRecentByPurpose(_ context.Context, phone string, purpose string, since time.Time) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	count := 0
 	for _, r := range m.requests {
-		if r.Phone == phone && r.ExpiresAt.After(since) {
+		if r.Phone == phone && (purpose == "" || r.Purpose == purpose) && r.ExpiresAt.After(since) {
 			count++
 		}
 	}
@@ -377,3 +381,63 @@ func TestVerifyStepUpOTP_ConcurrentRaceExactlyOneWins(t *testing.T) {
 		t.Errorf("expected 0 other errors, got %d", otherErrors)
 	}
 }
+
+func TestRequestOTP_SeparatedRateLimitsByPurpose(t *testing.T) {
+	ctx := context.Background()
+	otpRepo := &mockOTPRepo{}
+	smsGateway := &mockSMSGateway{}
+	secret := "test-secret-at-least-32-bytes-long"
+
+	svc := NewService(otpRepo, nil, nil, nil, smsGateway, secret, "jwt-secret")
+	phone := "+919876543210"
+
+	// Exhaust 3 login OTPs
+	for i := 0; i < 3; i++ {
+		if err := svc.RequestOTPWithPurpose(ctx, phone, "login"); err != nil {
+			t.Fatalf("expected login OTP request %d to succeed, got %v", i+1, err)
+		}
+	}
+
+	// 4th login OTP must be rate limited
+	if err := svc.RequestOTPWithPurpose(ctx, phone, "login"); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited for 4th login OTP, got %v", err)
+	}
+
+	// Payout approval OTP must NOT be blocked by exhausted login limit
+	if err := svc.RequestOTPWithPurpose(ctx, phone, "payout_approval"); err != nil {
+		t.Fatalf("expected payout approval OTP to succeed despite login limit, got %v", err)
+	}
+}
+
+func TestRequestOTP_NoAccountAntiEnumeration(t *testing.T) {
+	ctx := context.Background()
+	otpRepo := &mockOTPRepo{}
+	smsGateway := &mockSMSGateway{}
+	secret := "test-secret-at-least-32-bytes-long"
+
+	registeredPhone := "+919876543210"
+	unknownPhone := "+919111111111"
+
+	users := &stubUsers{byPhone: map[string]*domain.User{
+		registeredPhone: {ID: uuid.New(), Phone: registeredPhone},
+	}}
+
+	svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, smsGateway, secret, "jwt-secret")
+
+	// Unknown phone must return nil (anti-enumeration) but NOT send any SMS
+	if err := svc.RequestOTP(ctx, unknownPhone); err != nil {
+		t.Fatalf("expected nil error for unknown phone anti-enumeration, got %v", err)
+	}
+	if len(smsGateway.sentMessages) != 0 {
+		t.Fatalf("expected 0 SMS sent for unknown phone, got %d", len(smsGateway.sentMessages))
+	}
+
+	// Registered phone must send SMS
+	if err := svc.RequestOTP(ctx, registeredPhone); err != nil {
+		t.Fatalf("expected nil error for registered phone, got %v", err)
+	}
+	if len(smsGateway.sentMessages) != 1 {
+		t.Fatalf("expected 1 SMS sent for registered phone, got %d", len(smsGateway.sentMessages))
+	}
+}
+

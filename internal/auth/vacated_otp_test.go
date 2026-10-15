@@ -36,6 +36,9 @@ func (s *stubOTP) MarkUsed(context.Context, uuid.UUID) error          { return n
 func (s *stubOTP) CountRecent(context.Context, string, time.Time) (int, error) {
 	return 0, nil
 }
+func (s *stubOTP) CountRecentByPurpose(context.Context, string, string, time.Time) (int, error) {
+	return 0, nil
+}
 
 type stubUsers struct {
 	byPhone    map[string]*domain.User
@@ -155,18 +158,26 @@ func (s *stubUsers) SetPropertyID(_ context.Context, userID, propertyID uuid.UUI
 }
 
 type stubTenantsAuth struct {
-	byID map[uuid.UUID]*domain.Tenant
+	byID    map[uuid.UUID]*domain.Tenant
+	byPhone map[string]*domain.Tenant
 }
 
 func (s *stubTenantsAuth) GetByID(_ context.Context, id uuid.UUID) (*domain.Tenant, error) {
-	t, ok := s.byID[id]
-	if !ok {
-		return nil, pgx.ErrNoRows
+	if s.byID != nil {
+		if t, ok := s.byID[id]; ok {
+			cp := *t
+			return &cp, nil
+		}
 	}
-	cp := *t
-	return &cp, nil
+	return nil, pgx.ErrNoRows
 }
-func (s *stubTenantsAuth) GetByPhone(context.Context, string) (*domain.Tenant, error) {
+func (s *stubTenantsAuth) GetByPhone(_ context.Context, phone string) (*domain.Tenant, error) {
+	if s.byPhone != nil {
+		if t, ok := s.byPhone[phone]; ok {
+			cp := *t
+			return &cp, nil
+		}
+	}
 	return nil, pgx.ErrNoRows
 }
 

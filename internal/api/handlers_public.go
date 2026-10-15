@@ -359,6 +359,10 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		msg := "authentication failed"
 		code := apierr.CodeAuthInvalidFirebaseToken
 		switch {
+		case errors.Is(err, auth.ErrRateLimited):
+			status = http.StatusTooManyRequests
+			msg = "too many requests"
+			code = apierr.CodeAuthRateLimited
 		case errors.Is(err, auth.ErrFirebaseNotConfigured):
 			status = http.StatusServiceUnavailable
 			msg = "firebase auth not configured"
