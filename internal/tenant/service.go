@@ -278,6 +278,11 @@ func (s *Service) CreatePendingFromOnboarding(ctx context.Context, in domain.New
 	return create(s.tenants, s.pub, s.now())
 }
 
+// GetByID loads a tenant row.
+func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (*domain.Tenant, error) {
+	return s.tenants.GetByID(ctx, id)
+}
+
 // CreatePendingFromOnboardingTx creates pending_allocation tenant on an open transaction.
 func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, in domain.NewTenantInput) (*domain.Tenant, error) {
 	if strings.TrimSpace(in.Name) == "" {
@@ -295,20 +300,34 @@ func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, 
 		return nil, fmt.Errorf("tenant: tx create requires pool wiring")
 	}
 	t := &domain.Tenant{
-		PropertyID:       in.PropertyID,
-		Name:             strings.TrimSpace(in.Name),
-		Phone:            in.Phone,
-		RentAmount:       0,
-		DueDay:           nil,
-		NoticePeriodDays: in.NoticePeriodDays,
-		Status:           domain.TenantStatusPendingAllocation,
-		PermanentAddress: strings.TrimSpace(in.PermanentAddress),
-		CurrentAddress:   strings.TrimSpace(in.CurrentAddress),
-		ParentName:       strings.TrimSpace(in.ParentName),
-		EmergencyPhone:   strings.TrimSpace(in.EmergencyPhone),
-		JoinedOn:         in.JoinedOn,
-		IDPhotoBytes:     in.IDPhotoBytes,
-		HasIDPhoto:       len(in.IDPhotoBytes) > 0,
+		PropertyID:           in.PropertyID,
+		Name:                 strings.TrimSpace(in.Name),
+		Phone:                in.Phone,
+		RoomID:               in.RoomID,
+		RentAmount:           0,
+		DueDay:               nil,
+		NoticePeriodDays:     in.NoticePeriodDays,
+		Status:               domain.TenantStatusPendingAllocation,
+		PermanentAddress:     strings.TrimSpace(in.PermanentAddress),
+		CurrentAddress:       strings.TrimSpace(in.CurrentAddress),
+		ParentName:           strings.TrimSpace(in.ParentName),
+		EmergencyPhone:       strings.TrimSpace(in.EmergencyPhone),
+		EmergencyContactName: strings.TrimSpace(in.EmergencyContactName),
+		OccupationType:       in.OccupationType,
+		DateOfBirth:          in.DateOfBirth,
+		OccupationDetails:    in.OccupationDetails,
+		JoinedOn:             in.JoinedOn,
+		IDPhotoBytes:         in.IDPhotoBytes,
+		HasIDPhoto:           len(in.IDPhotoBytes) > 0,
+		GuardianName:         in.GuardianName,
+		GuardianPhone:        in.GuardianPhone,
+	}
+	if in.DateOfBirth != nil {
+		majority := in.DateOfBirth.AddDate(18, 0, 0)
+		t.MajorityDate = &majority
+		if majority.After(s.now()) {
+			t.IsGamificationDisabled = true
+		}
 	}
 	tenants := s.tenantDB.WithTx(tx)
 	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))

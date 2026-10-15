@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/invite"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
 )
@@ -105,12 +106,15 @@ type Service struct {
 	pub     events.Publisher
 	now     func() time.Time
 
-	pool      *pgxpool.Pool
-	joinDB    *postgres.JoinRepo
-	userDB    *postgres.UserRepo
-	eventDB   *postgres.EventRepo
-	tenantTx  TenantTxCreator
-	tenantSvc *tenant.Service
+	pool         *pgxpool.Pool
+	joinDB       *postgres.JoinRepo
+	userDB       *postgres.UserRepo
+	eventDB      *postgres.EventRepo
+	tenantTx     TenantTxCreator
+	tenantSvc    *tenant.Service
+	resolver     *invite.Resolver
+	slotDB       *postgres.SlotInviteRepo
+	onboardingDB *postgres.OnboardingSettingsRepo
 }
 
 func NewService(props PropertyStore, joins JoinStore, users UserLinker, tenants TenantCreator, pub events.Publisher) *Service {
@@ -125,6 +129,9 @@ func NewServiceWithPool(
 	users *postgres.UserRepo,
 	tenants *tenant.Service,
 	eventsRepo *postgres.EventRepo,
+	resolver *invite.Resolver,
+	slotInvites *postgres.SlotInviteRepo,
+	onboarding *postgres.OnboardingSettingsRepo,
 ) *Service {
 	pub := events.NewPostgresPublisher(eventsRepo)
 	s := NewService(props, joins, users, tenants, pub)
@@ -134,6 +141,9 @@ func NewServiceWithPool(
 	s.eventDB = eventsRepo
 	s.tenantTx = tenants
 	s.tenantSvc = tenants
+	s.resolver = resolver
+	s.slotDB = slotInvites
+	s.onboardingDB = onboarding
 	return s
 }
 
@@ -141,6 +151,16 @@ func (s *Service) LookupInvite(ctx context.Context, code string) (*domain.Proper
 	code = NormalizeInvite(code)
 	if code == "" {
 		return nil, ErrInvalidInvite
+	}
+	if s.resolver != nil {
+		res, err := s.resolver.Resolve(ctx, code)
+		if err != nil {
+			if errors.Is(err, invite.ErrInvalidInvite) {
+				return nil, ErrInvalidInvite
+			}
+			return nil, err
+		}
+		return s.props.GetByID(ctx, res.PropertyID)
 	}
 	p, err := s.props.GetByInviteCode(ctx, code)
 	if err != nil {
@@ -164,7 +184,7 @@ func (s *Service) RotateInvite(ctx context.Context, propertyID uuid.UUID) (strin
 }
 
 // EnsurePending creates a pending join row for a newly authenticated invite user.
-func (s *Service) EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID) (*domain.JoinRequest, error) {
+func (s *Service) EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID, slotInviteID *uuid.UUID) (*domain.JoinRequest, error) {
 	if user.TenantID != nil {
 		return nil, ErrAlreadyActive
 	}
@@ -175,12 +195,19 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
+	if slotInviteID != nil && s.slotDB != nil {
+		slot, err := s.slotDB.GetByID(ctx, *slotInviteID)
+		if err != nil || slot.PropertyID != propertyID || slot.Status != domain.SlotInviteOpen {
+			return nil, ErrInvalidInvite
+		}
+	}
 	j := &domain.JoinRequest{
-		PropertyID: propertyID,
-		UserID:     user.ID,
-		Phone:      user.Phone,
-		Name:       "",
-		Status:     domain.JoinPending,
+		PropertyID:   propertyID,
+		UserID:       user.ID,
+		Phone:        user.Phone,
+		Name:         "",
+		Status:       domain.JoinPending,
+		SlotInviteID: slotInviteID,
 	}
 	if err := s.joins.Create(ctx, j); err != nil {
 		return nil, err
@@ -197,13 +224,19 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 }
 
 type ProfileInput struct {
-	Name             string
-	PermanentAddress string
-	CurrentAddress   string
-	ParentName       string
-	EmergencyPhone   string
-	Consent          bool
-	IDPhotoBytes     []byte
+	Name                 string
+	PermanentAddress     string
+	CurrentAddress       string
+	ParentName           string
+	EmergencyContactName string
+	EmergencyPhone       string
+	OccupationType       domain.OccupationType
+	DateOfBirth          *time.Time
+	Details              domain.OccupationDetails
+	GuardianName         string
+	GuardianPhone        string
+	Consent              bool
+	IDPhotoBytes         []byte
 }
 
 // SetProfile is kept for tests; prefer CompleteOnboarding for the invite-in flow.
@@ -234,12 +267,16 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	in.PermanentAddress = strings.TrimSpace(in.PermanentAddress)
 	in.CurrentAddress = strings.TrimSpace(in.CurrentAddress)
 	in.ParentName = strings.TrimSpace(in.ParentName)
+	in.EmergencyContactName = strings.TrimSpace(in.EmergencyContactName)
+	if in.EmergencyContactName == "" {
+		in.EmergencyContactName = in.ParentName
+	}
 	in.EmergencyPhone = strings.TrimSpace(in.EmergencyPhone)
 
 	if !in.Consent {
 		return nil, nil, ErrConsentRequired
 	}
-	if in.Name == "" || in.PermanentAddress == "" || in.CurrentAddress == "" || in.ParentName == "" || in.EmergencyPhone == "" {
+	if in.Name == "" || in.PermanentAddress == "" || in.CurrentAddress == "" || in.EmergencyPhone == "" {
 		return nil, nil, ErrProfileIncomplete
 	}
 	if len(in.IDPhotoBytes) == 0 {
@@ -260,26 +297,73 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 		return nil, nil, ErrAlreadyOnboarded
 	}
 
+	slot, settings, err := s.loadOnboardingContext(ctx, j)
+	if err != nil {
+		return nil, nil, ErrInvalidInvite
+	}
+	if j.SlotInviteID != nil {
+		if slot == nil || slot.PropertyID != j.PropertyID || slot.Status != domain.SlotInviteOpen || !slot.ExpiresAt.After(s.now()) {
+			return nil, nil, ErrInvalidInvite
+		}
+	}
+	schemaVer := profileSchemaVersion(j, slot, settings)
+	if err := ValidateProfileV1(in, j.Phone, schemaVer); err != nil {
+		return nil, nil, err
+	}
+
+	var slotRoomID *uuid.UUID
+	if slot != nil {
+		slotRoomID = &slot.RoomID
+	}
+	roomNumber := ""
+	if slotRoomID != nil {
+		roomNumber, _ = s.roomNumber(ctx, *slotRoomID)
+	}
+	activate := resolveAutoActivateTerms(slot, settings, roomNumber)
+
 	joinedOn := s.now().UTC().Truncate(24 * time.Hour)
 	j.Name = in.Name
 	j.PermanentAddress = in.PermanentAddress
 	j.CurrentAddress = in.CurrentAddress
-	j.ParentName = in.ParentName
+	j.ParentName = in.EmergencyContactName
 	j.EmergencyPhone = in.EmergencyPhone
+	j.EmergencyContactName = in.EmergencyContactName
+	j.OccupationType = in.OccupationType
+	j.DateOfBirth = in.DateOfBirth
+	j.ProfileSchemaVersion = schemaVer
+	j.OccupationDetails = in.Details.JSON()
 	j.JoinedOn = &joinedOn
 
 	phone := j.Phone
+	var guardianName, guardianPhone *string
+	if strings.TrimSpace(in.GuardianName) != "" {
+		guardianName = &in.GuardianName
+	}
+	if strings.TrimSpace(in.GuardianPhone) != "" {
+		guardianPhone = &in.GuardianPhone
+	}
 	tenantIn := domain.NewTenantInput{
-		PropertyID:       j.PropertyID,
-		Name:             in.Name,
-		Phone:            &phone,
-		PermanentAddress: in.PermanentAddress,
-		CurrentAddress:   in.CurrentAddress,
-		ParentName:       in.ParentName,
-		EmergencyPhone:   in.EmergencyPhone,
-		JoinedOn:         &joinedOn,
-		IDPhotoBytes:     in.IDPhotoBytes,
-		NoticePeriodDays: 30,
+		PropertyID:           j.PropertyID,
+		Name:                 in.Name,
+		Phone:                &phone,
+		RoomID:               slotRoomID,
+		PermanentAddress:     in.PermanentAddress,
+		CurrentAddress:       in.CurrentAddress,
+		ParentName:           in.EmergencyContactName,
+		EmergencyPhone:       in.EmergencyPhone,
+		EmergencyContactName: in.EmergencyContactName,
+		OccupationType:       in.OccupationType,
+		DateOfBirth:          in.DateOfBirth,
+		OccupationDetails:    in.Details.JSON(),
+		GuardianName:         guardianName,
+		GuardianPhone:        guardianPhone,
+		JoinedOn:             &joinedOn,
+		IDPhotoBytes:         in.IDPhotoBytes,
+		NoticePeriodDays:     30,
+	}
+	if in.DateOfBirth != nil && ageYears(*in.DateOfBirth, s.now()) < 18 {
+		tenantIn.GuardianName = guardianName
+		tenantIn.GuardianPhone = guardianPhone
 	}
 
 	finish := func(joins JoinStore, users UserLinker, pub events.Publisher, t *domain.Tenant) error {
@@ -316,6 +400,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 			if err != nil {
 				return err
 			}
+			if j.SlotInviteID != nil && s.slotDB != nil {
+				if _, err := s.slotDB.WithTx(tx).ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID); err != nil {
+					return err
+				}
+			}
+			if activate.Should {
+				t, err = s.tenantSvc.AssignTermsTx(ctx, tx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
+				if err != nil {
+					return err
+				}
+			}
 			if err := finish(s.joinDB.WithTx(tx), s.userDB.WithTx(tx), events.NewPostgresPublisher(s.eventDB.WithTx(tx)), t); err != nil {
 				return err
 			}
@@ -334,6 +429,17 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	t, err := s.tenantSvc.CreatePendingFromOnboarding(ctx, tenantIn)
 	if err != nil {
 		return nil, nil, err
+	}
+	if j.SlotInviteID != nil && s.slotDB != nil {
+		if _, err := s.slotDB.ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if activate.Should {
+		t, err = s.tenantSvc.AssignTerms(ctx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := finish(s.joins, s.users, s.pub, t); err != nil {
 		return nil, nil, err

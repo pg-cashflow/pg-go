@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/payment"
@@ -49,6 +50,10 @@ func (outcomeJoinStub) Me(_ context.Context, _ uuid.UUID) (*domain.JoinRequest, 
 
 func (outcomeJoinStub) Reject(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
 	return nil
+}
+
+func (outcomeJoinStub) BuildOnboardingState(_ context.Context, _ *domain.User, _ bool) (*joinsvc.OnboardingState, error) {
+	return &joinsvc.OnboardingState{Stage: "profile"}, nil
 }
 
 type outcomeEventStore struct{}

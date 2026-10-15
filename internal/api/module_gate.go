@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -17,4 +18,13 @@ func requireActiveModule(c *gin.Context, settings *domain.PropertySettings, modu
 		return false
 	}
 	return true
+}
+
+func (h *Handlers) requirePropertyActiveModule(c *gin.Context, propertyID uuid.UUID, module string) bool {
+	st, err := h.getPropertySettings(c.Request.Context(), propertyID)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "settings unavailable"})
+		return false
+	}
+	return requireActiveModule(c, st, module)
 }

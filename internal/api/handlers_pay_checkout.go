@@ -72,7 +72,7 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	if !t.IsPayable() {
+	if !h.tenantPayable(c.Request.Context(), t) {
 		c.JSON(http.StatusOK, domain.PayIntent{
 			Mode:    domain.PaymentModeManual,
 			Payable: false,
@@ -102,7 +102,7 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	if !t.IsPayable() {
+	if !h.tenantPayable(c.Request.Context(), t) {
 		c.JSON(http.StatusOK, domain.PayIntent{
 			Mode:    domain.PaymentModeManual,
 			Payable: false,

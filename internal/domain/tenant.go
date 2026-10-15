@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,8 +42,12 @@ type Tenant struct {
 	GuardianRelation          *string      `json:"guardian_relation,omitempty"`
 	GuardianKYCReferenceID    *string      `json:"guardian_kyc_reference_id,omitempty"`
 	GuardianConsentVerifiedAt *time.Time   `json:"guardian_consent_verified_at,omitempty"`
-	IsGamificationDisabled    bool         `json:"is_gamification_disabled"`
-	CreatedAt                 time.Time    `json:"created_at"`
+	IsGamificationDisabled    bool             `json:"is_gamification_disabled"`
+	OccupationType            OccupationType   `json:"occupation_type,omitempty"`
+	DateOfBirth               *time.Time       `json:"date_of_birth,omitempty"`
+	OccupationDetails         json.RawMessage  `json:"occupation_details,omitempty"`
+	EmergencyContactName      string           `json:"emergency_contact_name,omitempty"`
+	CreatedAt                 time.Time        `json:"created_at"`
 	UpdatedAt                 time.Time    `json:"updated_at"`
 }
 
@@ -76,6 +81,17 @@ func (t Tenant) IsPayable() bool {
 	return t.Status == TenantStatusActive
 }
 
+// Payable returns whether the tenant may initiate rent payment (status + optional KYC gate).
+func (t Tenant) Payable(requireKYCBeforePay bool, kycVerified bool) bool {
+	if !t.IsPayable() {
+		return false
+	}
+	if requireKYCBeforePay && !kycVerified {
+		return false
+	}
+	return true
+}
+
 type NewTenantInput struct {
 	PropertyID       uuid.UUID
 	Name             string
@@ -91,5 +107,11 @@ type NewTenantInput struct {
 	ParentName       string
 	EmergencyPhone   string
 	JoinedOn         *time.Time
-	IDPhotoBytes     []byte
+	IDPhotoBytes         []byte
+	OccupationType       OccupationType
+	DateOfBirth          *time.Time
+	OccupationDetails    json.RawMessage
+	EmergencyContactName string
+	GuardianName         *string
+	GuardianPhone        *string
 }

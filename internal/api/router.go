@@ -44,6 +44,10 @@ type Deps struct {
 	PreferencesStore PreferencesStore
 
 	Joins          JoinService
+	InviteResolver InviteResolver
+	SlotInvites          SlotInviteService
+	OnboardingSettings   OnboardingSettingsStore
+	JoinIdempotency      JoinIdempotencyStore
 	ReportStore    ReportStore
 	IntentStore    IntentStore
 	PaymentLookup  PaymentLookup

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/invite"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 )
@@ -44,15 +45,21 @@ type FirebaseTokenVerifier interface {
 // Service handles OTP request/verify and JWT issuance.
 // Rate limits live here (not in HTTP middleware).
 type Service struct {
-	otp         OTPRepository
-	users       UserRepository
-	tenants     TenantRepository
-	properties  PropertyRepository
-	gateway     sms.SMSGateway
-	firebase    FirebaseTokenVerifier
-	refreshRepo RefreshTokenRepository
-	otpSecret   string
-	jwtSecret   string
+	otp            OTPRepository
+	users          UserRepository
+	tenants        TenantRepository
+	properties     PropertyRepository
+	gateway        sms.SMSGateway
+	firebase       FirebaseTokenVerifier
+	refreshRepo    RefreshTokenRepository
+	inviteResolver InviteCodeResolver
+	otpSecret      string
+	jwtSecret      string
+}
+
+// InviteCodeResolver resolves property vs slot invite codes (P0-B).
+type InviteCodeResolver interface {
+	Resolve(ctx context.Context, code string) (*domain.InviteResolution, error)
 }
 
 func NewService(
@@ -80,6 +87,11 @@ func (s *Service) SetRefreshTokenRepo(r RefreshTokenRepository) {
 }
 
 // SetFirebaseVerifier enables POST /auth/firebase token exchange.
+// SetInviteResolver enables slot invite code resolution during tenant provisioning.
+func (s *Service) SetInviteResolver(r InviteCodeResolver) {
+	s.inviteResolver = r
+}
+
 func (s *Service) SetFirebaseVerifier(v FirebaseTokenVerifier) {
 	s.firebase = v
 }
@@ -321,7 +333,9 @@ func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *
 		if terr != nil {
 			return "", nil, fmt.Errorf("get tenant for user: %w", terr)
 		}
-		if tenant.Status != domain.TenantStatusActive {
+		switch tenant.Status {
+		case domain.TenantStatusActive, domain.TenantStatusPendingAllocation:
+		default:
 			return "", nil, ErrTenantVacated
 		}
 	}
@@ -414,14 +428,26 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 	if code == "" {
 		return nil, ErrNoAccount
 	}
-	invited, err := s.properties.GetByInviteCode(ctx, code)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrInvalidInvite
+	var pid uuid.UUID
+	if s.inviteResolver != nil {
+		res, err := s.inviteResolver.Resolve(ctx, code)
+		if err != nil {
+			if errors.Is(err, invite.ErrInvalidInvite) {
+				return nil, ErrInvalidInvite
+			}
+			return nil, err
 		}
-		return nil, fmt.Errorf("get property by invite: %w", err)
+		pid = res.PropertyID
+	} else {
+		invited, err := s.properties.GetByInviteCode(ctx, code)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrInvalidInvite
+			}
+			return nil, fmt.Errorf("get property by invite: %w", err)
+		}
+		pid = invited.ID
 	}
-	pid := invited.ID
 	u := &domain.User{
 		Phone:      ident.Phone,
 		Email:      ident.Email,

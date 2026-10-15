@@ -234,21 +234,35 @@ const tenantCols = `id, property_id, name, phone, room_number, room_id, aadhaar_
 	notice_period_days, notice_given_at, credit_balance_paise, status,
 	permanent_address, current_address, parent_name, emergency_phone, joined_on, has_id_photo,
 	majority_date, guardian_name, guardian_phone, guardian_relation, guardian_kyc_reference_id, guardian_consent_verified_at, is_gamification_disabled,
+	occupation_type, date_of_birth, occupation_details, emergency_contact_name,
 	created_at, updated_at`
 
 func scanTenant(row pgx.Row) (*domain.Tenant, error) {
 	var t domain.Tenant
+	var occType *string
 	err := row.Scan(
 		&t.ID, &t.PropertyID, &t.Name, &t.Phone, &t.RoomNumber, &t.RoomID, &t.AadhaarLast4, &t.RentAmount, &t.DueDay,
 		&t.NoticePeriodDays, &t.NoticeGivenAt, &t.CreditBalancePaise, &t.Status,
 		&t.PermanentAddress, &t.CurrentAddress, &t.ParentName, &t.EmergencyPhone, &t.JoinedOn, &t.HasIDPhoto,
 		&t.MajorityDate, &t.GuardianName, &t.GuardianPhone, &t.GuardianRelation, &t.GuardianKYCReferenceID, &t.GuardianConsentVerifiedAt, &t.IsGamificationDisabled,
+		&occType, &t.DateOfBirth, &t.OccupationDetails, &t.EmergencyContactName,
 		&t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if occType != nil {
+		t.OccupationType = domain.OccupationType(*occType)
+	}
 	return &t, nil
+}
+
+func nullableOccupationType(t domain.OccupationType) *string {
+	if t == "" {
+		return nil
+	}
+	s := string(t)
+	return &s
 }
 
 func nullIfEmptyBytes(b []byte) []byte {
@@ -266,6 +280,11 @@ func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
 		t.Status = domain.TenantStatusActive
 	}
 	t.HasIDPhoto = len(t.IDPhotoBytes) > 0
+	var occType *string
+	if t.OccupationType != "" {
+		s := string(t.OccupationType)
+		occType = &s
+	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO tenants (
 			property_id, name, phone, room_number, room_id, aadhaar_last4, rent_amount, due_day,
@@ -273,14 +292,16 @@ func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
 			permanent_address, current_address, parent_name, emergency_phone, joined_on,
 			id_photo_bytes, has_id_photo,
 			majority_date, guardian_name, guardian_phone, guardian_relation, guardian_kyc_reference_id, guardian_consent_verified_at, is_gamification_disabled,
+			occupation_type, date_of_birth, occupation_details, emergency_contact_name,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
 		RETURNING id`,
 		t.PropertyID, t.Name, t.Phone, t.RoomNumber, t.RoomID, t.AadhaarLast4, t.RentAmount, t.DueDay,
 		t.NoticePeriodDays, t.NoticeGivenAt, t.CreditBalancePaise, t.Status,
 		t.PermanentAddress, t.CurrentAddress, t.ParentName, t.EmergencyPhone, t.JoinedOn,
 		nullIfEmptyBytes(t.IDPhotoBytes), t.HasIDPhoto,
 		t.MajorityDate, t.GuardianName, t.GuardianPhone, t.GuardianRelation, t.GuardianKYCReferenceID, t.GuardianConsentVerifiedAt, t.IsGamificationDisabled,
+		occType, t.DateOfBirth, t.OccupationDetails, t.EmergencyContactName,
 		t.CreatedAt, t.UpdatedAt,
 	).Scan(&t.ID)
 }
@@ -380,7 +401,8 @@ func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 			emergency_phone=$15, joined_on=$16,
 			majority_date=$17, guardian_name=$18, guardian_phone=$19, guardian_relation=$20,
 			guardian_kyc_reference_id=$21, guardian_consent_verified_at=$22, is_gamification_disabled=$23,
-			updated_at=$24
+			occupation_type=$24, date_of_birth=$25, occupation_details=$26, emergency_contact_name=$27,
+			updated_at=$28
 		WHERE id=$1`,
 		t.ID, t.Name, t.Phone, t.RoomNumber, t.RoomID, t.AadhaarLast4, t.RentAmount,
 		t.DueDay, t.NoticePeriodDays, t.NoticeGivenAt,
@@ -388,6 +410,7 @@ func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 		t.EmergencyPhone, t.JoinedOn,
 		t.MajorityDate, t.GuardianName, t.GuardianPhone, t.GuardianRelation,
 		t.GuardianKYCReferenceID, t.GuardianConsentVerifiedAt, t.IsGamificationDisabled,
+		nullableOccupationType(t.OccupationType), t.DateOfBirth, t.OccupationDetails, t.EmergencyContactName,
 		t.UpdatedAt,
 	)
 	return err

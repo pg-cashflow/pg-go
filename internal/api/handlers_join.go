@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -66,9 +67,22 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	if !ok {
 		return
 	}
+	idemKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if idemKey == "" {
+		idemKey = strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
+	}
+	if idemKey != "" && h.JoinIdempotency != nil {
+		if cached, err := h.JoinIdempotency.Get(c.Request.Context(), claims.UserID, idemKey); err == nil && len(cached) > 0 {
+			c.Data(http.StatusOK, "application/json", cached)
+			return
+		}
+	}
 
 	ct := c.GetHeader("Content-Type")
 	var name, permanent, current, parent, emergency string
+	var emergencyName string
+	var occupation domain.OccupationType
+	var details domain.OccupationDetails
 	var consent bool
 	var photo []byte
 
@@ -81,7 +95,21 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		permanent = c.PostForm("permanent_address")
 		current = c.PostForm("current_address")
 		parent = c.PostForm("parent_name")
+		emergencyName = c.PostForm("emergency_contact_name")
+		if emergencyName == "" {
+			emergencyName = parent
+		}
 		emergency = c.PostForm("emergency_phone")
+		occupation = domain.OccupationType(c.PostForm("occupation_type"))
+		details = domain.OccupationDetails{
+			CollegeName:         c.PostForm("college_name"),
+			Course:              c.PostForm("course"),
+			Year:                c.PostForm("year"),
+			EmployerName:        c.PostForm("employer_name"),
+			ParentGuardianName:  c.PostForm("parent_guardian_name"),
+			ParentGuardianPhone: c.PostForm("parent_guardian_phone"),
+			OccupationNote:      c.PostForm("occupation_note"),
+		}
 		consent = c.PostForm("consent") == "true" || c.PostForm("consent") == "1"
 		if f, err := c.FormFile("image"); err == nil && f != nil {
 			if f.Size > maxJoinIDPhoto {
@@ -106,12 +134,15 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		}
 	} else {
 		var body struct {
-			Name             string `json:"name"`
-			PermanentAddress string `json:"permanent_address"`
-			CurrentAddress   string `json:"current_address"`
-			ParentName       string `json:"parent_name"`
-			EmergencyPhone   string `json:"emergency_phone"`
-			Consent          bool   `json:"consent"`
+			Name                 string                   `json:"name"`
+			PermanentAddress     string                   `json:"permanent_address"`
+			CurrentAddress       string                   `json:"current_address"`
+			ParentName           string                   `json:"parent_name"`
+			EmergencyContactName string                   `json:"emergency_contact_name"`
+			EmergencyPhone       string                   `json:"emergency_phone"`
+			OccupationType       domain.OccupationType    `json:"occupation_type"`
+			OccupationDetails    domain.OccupationDetails `json:"occupation_details"`
+			Consent              bool                     `json:"consent"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -121,18 +152,27 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		permanent = body.PermanentAddress
 		current = body.CurrentAddress
 		parent = body.ParentName
+		emergencyName = body.EmergencyContactName
+		if emergencyName == "" {
+			emergencyName = parent
+		}
 		emergency = body.EmergencyPhone
+		occupation = body.OccupationType
+		details = body.OccupationDetails
 		consent = body.Consent
 	}
 
 	j, t, err := h.Joins.CompleteOnboarding(c.Request.Context(), claims.UserID, joinsvc.ProfileInput{
-		Name:             name,
-		PermanentAddress: permanent,
-		CurrentAddress:   current,
-		ParentName:       parent,
-		EmergencyPhone:   emergency,
-		Consent:          consent,
-		IDPhotoBytes:     photo,
+		Name:                 name,
+		PermanentAddress:     permanent,
+		CurrentAddress:       current,
+		ParentName:           parent,
+		EmergencyContactName: emergencyName,
+		EmergencyPhone:       emergency,
+		OccupationType:       occupation,
+		Details:              details,
+		Consent:              consent,
+		IDPhotoBytes:         photo,
 	})
 	if err != nil {
 		respondErr(c, joinHTTPError(err))
@@ -155,11 +195,48 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			Payload:    payload,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{
+	if h.AuthUserRepo == nil || h.Auth == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "session refresh failed"})
+		return
+	}
+	freshUser, err := h.AuthUserRepo.GetByID(c.Request.Context(), claims.UserID)
+	if err != nil || freshUser == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "session refresh failed"})
+		return
+	}
+	accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), freshUser)
+	if err != nil || refToken == "" {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "session creation failed"})
+		return
+	}
+	h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
+	resp := gin.H{
 		"join":    j,
 		"tenant":  tenantResponse(t),
-		"message": "Profile saved. Re-exchange your Firebase token to enter the tenant portal.",
-	})
+		"token":   accToken,
+		"user":    freshUser,
+		"message": "Profile saved.",
+	}
+	if h.OutboxEvents != nil && j != nil {
+		notifyPayload, _ := json.Marshal(map[string]string{
+			"join_request_id": j.ID.String(),
+			"tenant_name":     j.Name,
+			"channel":         "owner_join_notify_stub",
+		})
+		_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+			EventType:  "owner.join_notify_stub",
+			PropertyID: j.PropertyID,
+			TenantID:   j.TenantID,
+			ActorRole:  string(domain.RoleTenant),
+			Payload:    notifyPayload,
+		})
+	}
+	if idemKey != "" && h.JoinIdempotency != nil {
+		if b, err := json.Marshal(resp); err == nil {
+			_ = h.JoinIdempotency.Put(c.Request.Context(), claims.UserID, idemKey, b)
+		}
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // OwnerInvite handles GET /owner/invite.

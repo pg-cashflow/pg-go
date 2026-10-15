@@ -47,11 +47,12 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 		}
 		p.CreatedAt = now
 		if p.Provider == "" {
-			if p.MatchedBy == domain.MatchedByCash {
+			switch p.MatchedBy {
+case domain.MatchedByCash:
 				p.Provider = "cash"
-			} else if p.MatchedBy == domain.MatchedByManual {
+			case domain.MatchedByManual:
 				p.Provider = "manual"
-			} else {
+			default:
 				p.Provider = "cashfree"
 			}
 		}

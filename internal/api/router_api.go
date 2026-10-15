@@ -47,6 +47,7 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 		prefs.GET("", h.GetPreferences)
 		prefs.PATCH("", h.PatchPreferences)
 	}
+	api.GET("/me/onboarding", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.MeOnboarding)
 
 	notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
 	{

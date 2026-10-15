@@ -383,8 +383,18 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		respondErr(c, clientErrWithCode(status, msg, code))
 		return
 	}
+	if user != nil && user.Phone != "" && !defaultFirebasePhoneLimiter.allow(user.Phone) {
+		respondErr(c, clientErrWithCode(http.StatusTooManyRequests, "too many requests", apierr.CodeAuthRateLimited))
+		return
+	}
 	if user != nil && user.Role == domain.RoleTenant && user.TenantID == nil && user.PropertyID != nil && h.Joins != nil {
-		if _, err := h.Joins.EnsurePending(c.Request.Context(), user, *user.PropertyID); err != nil {
+		var slotInviteID *uuid.UUID
+		if h.InviteResolver != nil && body.InviteCode != "" {
+			if res, err := h.InviteResolver.Resolve(c.Request.Context(), body.InviteCode); err == nil {
+				slotInviteID = res.SlotInviteID
+			}
+		}
+		if _, err := h.Joins.EnsurePending(c.Request.Context(), user, *user.PropertyID, slotInviteID); err != nil {
 			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "join queue failed"})
 			return
 		}

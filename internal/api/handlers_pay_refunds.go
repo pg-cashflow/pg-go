@@ -243,7 +243,8 @@ func (r *postgresRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID
 		}
 
 		// If succeeded, recompute dues and enqueue outbox
-		if rfRow.Status == "succeeded" {
+		switch rfRow.Status {
+case "succeeded":
 			for _, item := range allocationsToCreate {
 				d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
 				if err == nil && d != nil {
@@ -285,7 +286,7 @@ func (r *postgresRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID
 			if err != nil {
 				return fmt.Errorf("enqueue refund ledger outbox: %w", err)
 			}
-		} else if rfRow.Status == "failed" || rfRow.Status == "cancelled" {
+		case "failed", "cancelled":
 			if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
 				return err
 			}

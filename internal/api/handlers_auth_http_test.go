@@ -55,7 +55,7 @@ func (s *fakeAuthJoinService) RotateInvite(_ context.Context, _ uuid.UUID) (stri
 	return "", nil
 }
 
-func (s *fakeAuthJoinService) EnsurePending(_ context.Context, _ *domain.User, _ uuid.UUID) (*domain.JoinRequest, error) {
+func (s *fakeAuthJoinService) EnsurePending(_ context.Context, _ *domain.User, _ uuid.UUID, _ *uuid.UUID) (*domain.JoinRequest, error) {
 	return nil, nil
 }
 
@@ -84,6 +84,10 @@ func (s *fakeAuthJoinService) Activate(_ context.Context, _, _ uuid.UUID, _ join
 
 func (s *fakeAuthJoinService) Reject(_ context.Context, _, _ uuid.UUID) error {
 	return nil
+}
+
+func (s *fakeAuthJoinService) BuildOnboardingState(_ context.Context, _ *domain.User, _ bool) (*joinsvc.OnboardingState, error) {
+	return &joinsvc.OnboardingState{Stage: "profile"}, nil
 }
 
 // TestAuthHandlers_T4d tests AuthRefresh, OTPRequest, LookupInvite, and JoinMe (Ticket T4d)

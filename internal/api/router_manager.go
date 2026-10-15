@@ -10,6 +10,9 @@ func registerManagerRoutes(manager *gin.RouterGroup, d Deps, h *Handlers) {
 		return auth.RequireCapability(name, d.CapabilityStore)
 	}
 	manager.GET("/me/capabilities", h.ManagerMyCapabilities)
+	manager.POST("/slot-invites", capOf("slot_invites.create"), h.OwnerCreateSlotInvite)
+	manager.GET("/slot-invites", capOf("slot_invites.create"), h.OwnerListSlotInvites)
+	manager.POST("/slot-invites/:id/revoke", capOf("slot_invites.create"), h.OwnerRevokeSlotInvite)
 	manager.GET("/tenants", capOf("tenants.view"), h.ListTenants)
 	manager.GET("/dues", capOf("dues.view"), h.ListDues)
 	manager.POST("/attendance/daily", capOf("attendance.mark"), h.OwnerMarkDailyAttendance)

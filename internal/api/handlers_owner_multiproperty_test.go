@@ -132,7 +132,7 @@ func (m *multiPropUserStore) IncrementTokenVersion(_ context.Context, id uuid.UU
 	return nil
 }
 
-func setupMultiPropRouter(t *testing.T) (*gin.Engine, *Handlers, *domain.User, uuid.UUID, uuid.UUID, uuid.UUID) {
+func setupMultiPropRouter() (*gin.Engine, *Handlers, *domain.User, uuid.UUID, uuid.UUID, uuid.UUID) {
 	gin.SetMode(gin.TestMode)
 	propStore := newMultiPropMemStore()
 	userStore := newMultiPropUserStore()
@@ -211,7 +211,7 @@ func setupMultiPropRouter(t *testing.T) (*gin.Engine, *Handlers, *domain.User, u
 
 func TestOwner_ListMultipleProperties(t *testing.T) {
 	jwtSecret := "test-secret-key-multi-property-test-32bytes"
-	r, _, user, p1ID, p2ID, p3ID := setupMultiPropRouter(t)
+	r, _, user, p1ID, p2ID, p3ID := setupMultiPropRouter()
 
 	token, err := auth.IssueToken(jwtSecret, user)
 	if err != nil {
@@ -252,7 +252,7 @@ func TestOwner_ListMultipleProperties(t *testing.T) {
 
 func TestOwner_PropertyScoping_XPropertyIDHeader(t *testing.T) {
 	jwtSecret := "test-secret-key-multi-property-test-32bytes"
-	r, _, user, p1ID, p2ID, p3ID := setupMultiPropRouter(t)
+	r, _, user, p1ID, p2ID, p3ID := setupMultiPropRouter()
 
 	token, err := auth.IssueToken(jwtSecret, user)
 	if err != nil {
@@ -308,7 +308,7 @@ func TestOwner_PropertyScoping_XPropertyIDHeader(t *testing.T) {
 
 func TestOwner_SwitchPropertyEndpoint(t *testing.T) {
 	jwtSecret := "test-secret-key-multi-property-test-32bytes"
-	r, _, user, _, p2ID, p3ID := setupMultiPropRouter(t)
+	r, _, user, _, p2ID, p3ID := setupMultiPropRouter()
 
 	token, err := auth.IssueToken(jwtSecret, user)
 	if err != nil {
@@ -349,7 +349,7 @@ func TestOwner_SwitchPropertyEndpoint(t *testing.T) {
 
 func TestOwner_CreateProperty(t *testing.T) {
 	jwtSecret := "test-secret-key-multi-property-test-32bytes"
-	r, _, user, _, _, _ := setupMultiPropRouter(t)
+	r, _, user, _, _, _ := setupMultiPropRouter()
 
 	token, err := auth.IssueToken(jwtSecret, user)
 	if err != nil {

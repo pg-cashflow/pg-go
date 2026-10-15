@@ -14,6 +14,7 @@ var delegableCapabilities = []string{
 	"expenses.post", "expenses.void", "attendance.mark",
 	"inspections.write", "meters.write", "kitchen.headcount",
 	"complaints.respond", "notifications.send",
+	"slot_invites.create", "slot_invites.allow_over_capacity",
 }
 
 func isDelegableCapability(cap string) bool {

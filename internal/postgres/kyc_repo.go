@@ -211,7 +211,8 @@ func (r *KYCRepo) InitiateVerificationTx(
 		}
 
 		if existing != nil {
-			if existing.Status == domain.KYCStatusVerified {
+			switch existing.Status {
+case domain.KYCStatusVerified:
 				// Check if verified record has expired
 				if existing.ExpiresAt != nil && !now.Before(*existing.ExpiresAt) {
 					// Record has expired; transition to 'expired', clear active tenant profile last4, and audit
@@ -239,7 +240,7 @@ func (r *KYCRepo) InitiateVerificationTx(
 				} else {
 					return domain.ErrAlreadyVerified
 				}
-			} else if existing.Status == domain.KYCStatusPending {
+			case domain.KYCStatusPending:
 				// Pending verification superseded by fresh attempt
 				reason := "superseded by new attempt"
 				_, err = tx.Exec(ctx, `

@@ -16,6 +16,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/slotinvite"
 )
 
 // KYCService orchestrates Aadhaar identity verification (ADR-004).
@@ -162,13 +163,25 @@ type CSVParser func(r io.Reader) ([]csv.Row, error)
 type JoinService interface {
 	LookupInvite(ctx context.Context, code string) (*domain.Property, error)
 	RotateInvite(ctx context.Context, propertyID uuid.UUID) (string, error)
-	EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID) (*domain.JoinRequest, error)
+	EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID, slotInviteID *uuid.UUID) (*domain.JoinRequest, error)
 	SetProfile(ctx context.Context, userID uuid.UUID, name string, aadhaarLast4 *string) (*domain.JoinRequest, error)
 	CompleteOnboarding(ctx context.Context, userID uuid.UUID, in joinsvc.ProfileInput) (*domain.JoinRequest, *domain.Tenant, error)
 	Me(ctx context.Context, userID uuid.UUID) (*domain.JoinRequest, error)
 	List(ctx context.Context, propertyID uuid.UUID, status *domain.JoinStatus) ([]domain.JoinRequest, error)
 	Activate(ctx context.Context, propertyID, joinID uuid.UUID, in joinsvc.ActivateInput) (*domain.Tenant, error)
 	Reject(ctx context.Context, propertyID, joinID uuid.UUID) error
+	BuildOnboardingState(ctx context.Context, user *domain.User, kycVerified bool) (*joinsvc.OnboardingState, error)
+}
+
+// OnboardingSettingsStore reads property onboarding settings.
+type OnboardingSettingsStore interface {
+	Get(ctx context.Context, propertyID uuid.UUID) (*domain.PropertyOnboardingSettings, error)
+}
+
+// JoinIdempotencyStore stores POST /join replay responses.
+type JoinIdempotencyStore interface {
+	Get(ctx context.Context, userID uuid.UUID, key string) ([]byte, error)
+	Put(ctx context.Context, userID uuid.UUID, key string, body []byte) error
 }
 
 type ReportStore interface {
@@ -190,6 +203,18 @@ type IntentStore interface {
 
 type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
+}
+
+// InviteResolver maps invite codes to properties and optional slot invites.
+type InviteResolver interface {
+	Resolve(ctx context.Context, code string) (*domain.InviteResolution, error)
+}
+
+// SlotInviteService manages per-room admission invites (P0-B).
+type SlotInviteService interface {
+	Create(ctx context.Context, in slotinvite.CreateInput) (*domain.SlotInvite, error)
+	List(ctx context.Context, propertyID uuid.UUID, status *domain.SlotInviteStatus) ([]domain.SlotInvite, error)
+	Revoke(ctx context.Context, propertyID, inviteID, actor uuid.UUID) (*domain.SlotInvite, error)
 }
 
 // ManagerCapabilityStore reads and writes ADR-032 grants. Nil skips enforcement on reads.

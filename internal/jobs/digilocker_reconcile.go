@@ -90,14 +90,15 @@ func (j *DigiLockerReconcileJob) Run(ctx context.Context) error {
 			}
 
 			activeChecked++
-			if st.Status == "COMPLETED" {
+			switch st.Status {
+case "COMPLETED":
 				if err := j.Completer.ProcessDigiLockerCompletion(ctx, v.VendorReferenceID, "", "digilocker_reconcile"); err != nil {
 					log.Error("digilocker reconcile: complete session",
 						"vendor_ref_id", v.VendorReferenceID,
 						"err", err,
 					)
 				}
-			} else if st.Status == "FAILED" {
+			case "FAILED":
 				reason := st.Message
 				if reason == "" {
 					reason = "digilocker verification failed"

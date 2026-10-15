@@ -26,7 +26,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
+	"github.com/pg-cashflow/pg-go/internal/slotinvite"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
+	"github.com/pg-cashflow/pg-go/internal/invite"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
@@ -166,7 +168,14 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		Subject:         cfg.VAPIDSubject,
 	}, logger)
 
-	joinSvc := joinsvc.NewServiceWithPool(appPool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo)
+	slotInviteRepo := postgres.NewSlotInviteRepo(maintPool)
+	onboardingSettingsRepo := postgres.NewOnboardingSettingsRepo(maintPool)
+	inviteResolver := invite.NewResolver(propertyRepo, slotInviteRepo)
+	authSvc.SetInviteResolver(inviteResolver)
+	slotInviteSvc := slotinvite.NewService(maintPool, slotInviteRepo, onboardingSettingsRepo)
+
+	joinIdempotencyRepo := postgres.NewJoinIdempotencyRepo(maintPool)
+	joinSvc := joinsvc.NewServiceWithPool(appPool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo, inviteResolver, slotInviteRepo, onboardingSettingsRepo)
 
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
@@ -228,7 +237,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		})
 		gamificationSvc.SetFinanceHooks(
 			func(ctx context.Context, tenant *domain.Tenant, entry *domain.PointsLedgerEntry, pointValuePaise int64) {
-				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("pts:%d", entry.ID)))
+				id := uuid.NewSHA1(uuid.NameSpaceOID, fmt.Appendf(nil, "pts:%d", entry.ID))
 				amt := int64(entry.Delta) * pointValuePaise
 				if err := financeSvc.MirrorPointsIssued(ctx, tenant.PropertyID, tenant.ID, id, entry.Delta, amt); err != nil {
 					logger.Error("LEDGER GAP: MirrorPointsIssued failed", "tenant_id", tenant.ID, "err", err)
@@ -336,6 +345,10 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		EventStore:                  eventRepo,
 		ImportStore:                 importRepo,
 		Joins:                       joinSvc,
+		InviteResolver:              inviteResolver,
+		SlotInvites:                 slotInviteSvc,
+		OnboardingSettings:          onboardingSettingsRepo,
+		JoinIdempotency:             joinIdempotencyRepo,
 		ReportStore:                 reportRepo,
 		IntentStore:                 intentRepo,
 		PaymentLookup:               maintPaymentRepo,

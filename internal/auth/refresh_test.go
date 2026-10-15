@@ -478,3 +478,53 @@ func TestRefreshTokenSessionCeilingWithPurge(t *testing.T) {
 		t.Fatalf("expected ErrRefreshTokenExpired when exceeding 90-day ceiling, got %v", err)
 	}
 }
+
+func TestRotateRefreshToken_TenantStatus(t *testing.T) {
+	ctx := context.Background()
+	jwtSecret := "jwt-secret-very-secure-1234567890"
+
+	for _, tc := range []struct {
+		name    string
+		status  domain.TenantStatus
+		wantErr error
+	}{
+		{"pending_allocation allowed", domain.TenantStatusPendingAllocation, nil},
+		{"vacated denied", domain.TenantStatusVacated, ErrTenantVacated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refreshRepo := newMemoryRefreshTokenRepo()
+			userRepo := &memoryUserRepo{users: make(map[uuid.UUID]*domain.User)}
+			tenantID := uuid.New()
+			propID := uuid.New()
+			user := &domain.User{
+				ID:           uuid.New(),
+				Phone:        "+919876543210",
+				Role:         domain.RoleTenant,
+				PropertyID:   &propID,
+				TenantID:     &tenantID,
+				TokenVersion: 1,
+			}
+			_ = userRepo.Create(ctx, user)
+			tenants := &stubTenantsAuth{byID: map[uuid.UUID]*domain.Tenant{
+				tenantID: {ID: tenantID, PropertyID: propID, Status: tc.status},
+			}}
+			svc := NewService(nil, userRepo, tenants, nil, nil, "otp-secret", jwtSecret)
+			svc.SetRefreshTokenRepo(refreshRepo)
+
+			_, refToken, err := svc.IssueSession(ctx, user)
+			if err != nil {
+				t.Fatalf("IssueSession: %v", err)
+			}
+			_, _, _, err = svc.RotateRefreshToken(ctx, refToken)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("want %v, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

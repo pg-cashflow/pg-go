@@ -168,6 +168,9 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
 
 	var body kycConsentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -204,6 +207,9 @@ func (h *Handlers) TenantKYCInitiate(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
 	actor := fmt.Sprintf("tenant:%s", t.ID)
 
 	url, err := svc.InitiateDigiLocker(c.Request.Context(), t.ID, actor)
@@ -228,6 +234,9 @@ func (h *Handlers) TenantKYCSubmitQR(c *gin.Context) {
 	}
 	t := tenantFromContext(c)
 	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
 
@@ -258,6 +267,9 @@ func (h *Handlers) TenantKYCRevoke(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
 	actor := fmt.Sprintf("tenant:%s", t.ID)
 
 	if err := svc.RevokeConsent(c.Request.Context(), t.ID, actor); err != nil {
@@ -277,6 +289,9 @@ func (h *Handlers) TenantKYCStatus(c *gin.Context) {
 	}
 	t := tenantFromContext(c)
 	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
 
@@ -310,6 +325,9 @@ func (h *Handlers) TenantKYCReturn(c *gin.Context) {
 	}
 	t := tenantFromContext(c)
 	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
 
@@ -349,6 +367,9 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 	t := tenantFromContext(c)
 	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
 

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,7 +29,13 @@ type JoinRequest struct {
 	JoinedOn         *time.Time `json:"joined_on,omitempty"`
 	Status           JoinStatus `json:"status"`
 	TenantID         *uuid.UUID `json:"tenant_id,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
+	SlotInviteID           *uuid.UUID      `json:"slot_invite_id,omitempty"`
+	OccupationType         OccupationType  `json:"occupation_type,omitempty"`
+	DateOfBirth            *time.Time      `json:"date_of_birth,omitempty"`
+	ProfileSchemaVersion   int             `json:"profile_schema_version"`
+	OccupationDetails      json.RawMessage `json:"occupation_details,omitempty"`
+	EmergencyContactName   string          `json:"emergency_contact_name,omitempty"`
+	CreatedAt              time.Time       `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 

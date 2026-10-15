@@ -38,6 +38,10 @@ const (
 	CodeJoinRequestNotPending     Code = "join.requestNotPending"
 	CodeJoinNotAwaitingAssignment Code = "join.notAwaitingAssignment"
 
+	CodeSlotRoomFull                Code = "slot.room_full"
+	CodeOnboardingRoomMasterMissing Code = "onboarding.room_master_missing"
+	CodeSlotInviteNotOpen           Code = "slot.inviteNotOpen"
+
 	// Payment
 	CodePaymentDuplicateTxn          Code = "payment.duplicateTxn"
 	CodePaymentCashPartialNotAllowed Code = "payment.cashPartialNotAllowed"
@@ -116,6 +120,10 @@ var AllCodes = []Code{
 	CodeJoinProfileIncomplete,
 	CodeJoinRequestNotPending,
 	CodeJoinNotAwaitingAssignment,
+
+	CodeSlotRoomFull,
+	CodeOnboardingRoomMasterMissing,
+	CodeSlotInviteNotOpen,
 
 	CodePaymentDuplicateTxn,
 	CodePaymentCashPartialNotAllowed,

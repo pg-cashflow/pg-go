@@ -183,15 +183,16 @@ func TestCompleteOnboardingAndActivate(t *testing.T) {
 	svc.tenantSvc = tenantSvc
 
 	user := &domain.User{ID: uid, Phone: "+919999000002", Role: domain.RoleTenant, PropertyID: &pid}
-	j, err := svc.EnsurePending(context.Background(), user, pid)
+	j, err := svc.EnsurePending(context.Background(), user, pid, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	jOut, ten, err := svc.CompleteOnboarding(context.Background(), uid, ProfileInput{
 		Name: "Ram", PermanentAddress: "Home St", CurrentAddress: "PG Block A",
-		ParentName: "Suresh", EmergencyPhone: "+919888777666", Consent: true,
-		IDPhotoBytes: []byte{0xff, 0xd8, 0xff},
+		EmergencyContactName: "Suresh", EmergencyPhone: "+919888777666",
+		OccupationType: domain.OccupationOther, Details: domain.OccupationDetails{OccupationNote: "intern"},
+		Consent: true, IDPhotoBytes: []byte{0xff, 0xd8, 0xff},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +237,7 @@ func TestCompleteOnboardingRequiresPhotoAndFields(t *testing.T) {
 	svc.tenantSvc = tenantSvc
 
 	user := &domain.User{ID: uid, Phone: "+919999000002", Role: domain.RoleTenant, PropertyID: &pid}
-	if _, err := svc.EnsurePending(context.Background(), user, pid); err != nil {
+	if _, err := svc.EnsurePending(context.Background(), user, pid, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := svc.CompleteOnboarding(context.Background(), uid, ProfileInput{
@@ -245,8 +246,9 @@ func TestCompleteOnboardingRequiresPhotoAndFields(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	if _, _, err := svc.CompleteOnboarding(context.Background(), uid, ProfileInput{
-		Name: "Ram", PermanentAddress: "a", CurrentAddress: "b", ParentName: "c", EmergencyPhone: "d",
-		Consent: true,
+		Name: "Ram", PermanentAddress: "a", CurrentAddress: "b",
+		EmergencyContactName: "c", EmergencyPhone: "+919888777666",
+		OccupationType: domain.OccupationOther, Consent: true,
 	}); err != ErrPhotoRequired {
 		t.Fatalf("got %v", err)
 	}
