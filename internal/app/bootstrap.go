@@ -37,6 +37,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
+	"github.com/pg-cashflow/pg-go/internal/referral"
+	"github.com/pg-cashflow/pg-go/internal/waitlist"
 	roisvc "github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
 	"github.com/pg-cashflow/pg-go/internal/sms"
@@ -176,6 +178,18 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	joinIdempotencyRepo := postgres.NewJoinIdempotencyRepo(maintPool)
 	joinSvc := joinsvc.NewServiceWithPool(appPool, propertyRepo, joinRepo, userRepo, tenantSvc, eventRepo, inviteResolver, slotInviteRepo, onboardingSettingsRepo)
+
+	referralRepo := postgres.NewReferralRepo(maintPool)
+	referralSvc := referral.NewService(referralRepo)
+	joinSvc.SetReferralBinder(referralSvc)
+	billingSvc.SetFirstRentReferralHooks(referralSvc.ApplyFirstRentDiscount, referralSvc.RecordFirstRentAdjustment)
+	referralConsumer := referral.NewEventConsumer(referralSvc, logger)
+	dispatchPub.Subscribe(referralConsumer.ProcessEventAsync)
+
+	waitlistRepo := postgres.NewWaitlistRepo(maintPool)
+	waitlistSvc := waitlist.NewService(maintPool, waitlistRepo, slotInviteRepo, onboardingSettingsRepo)
+	waitlistConsumer := waitlist.NewEventConsumer(waitlistSvc, maintTenantRepo, logger)
+	dispatchPub.Subscribe(waitlistConsumer.ProcessEventAsync)
 
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
@@ -347,6 +361,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		Joins:                       joinSvc,
 		InviteResolver:              inviteResolver,
 		SlotInvites:                 slotInviteSvc,
+		Referrals:                   referralSvc,
+		Waitlist:                    waitlistSvc,
 		OnboardingSettings:          onboardingSettingsRepo,
 		JoinIdempotency:             joinIdempotencyRepo,
 		ReportStore:                 reportRepo,

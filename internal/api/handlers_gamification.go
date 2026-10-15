@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -375,11 +376,25 @@ func (h *Handlers) TenantReferrals(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
 	if c.Request.Method == http.MethodPost {
 		var body struct {
-			Phone string `json:"phone"`
-			Name  string `json:"name"`
+			Phone             string `json:"phone"`
+			Name              string `json:"name"`
+			RewardDestination string `json:"reward_destination"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil || body.Phone == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "phone is required"})
+			return
+		}
+		if h.Referrals != nil {
+			dest := domain.ReferralDestReferrerCredit
+			if strings.TrimSpace(body.RewardDestination) == "pass_to_joiner" {
+				dest = domain.ReferralDestPassToJoiner
+			}
+			ref, err := h.Referrals.CreateForTenant(c.Request.Context(), tenant.PropertyID, tenant.ID, body.Phone, body.Name, dest)
+			if err != nil {
+				respondErr(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"referral": ref})
 			return
 		}
 		ref := &domain.Referral{
@@ -396,6 +411,15 @@ func (h *Handlers) TenantReferrals(c *gin.Context) {
 		return
 	}
 
+	if h.Referrals != nil {
+		list, err := h.Referrals.ListByReferrerTenant(c.Request.Context(), tenant.ID)
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"referrals": list})
+		return
+	}
 	list, err := h.GamificationStore.ListReferralsByTenant(c.Request.Context(), tenant.ID)
 	if err != nil {
 		respondErr(c, err)

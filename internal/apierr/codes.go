@@ -41,6 +41,10 @@ const (
 	CodeSlotRoomFull                Code = "slot.room_full"
 	CodeOnboardingRoomMasterMissing Code = "onboarding.room_master_missing"
 	CodeSlotInviteNotOpen           Code = "slot.inviteNotOpen"
+	CodeWaitlistDisabled            Code = "waitlist.disabled"
+	CodeWaitlistRoomOpen            Code = "waitlist.roomOpen"
+	CodeWaitlistDuplicate           Code = "waitlist.duplicate"
+	CodeSlotBoundPhone              Code = "slot.boundPhoneMismatch"
 
 	// Payment
 	CodePaymentDuplicateTxn          Code = "payment.duplicateTxn"
@@ -124,6 +128,10 @@ var AllCodes = []Code{
 	CodeSlotRoomFull,
 	CodeOnboardingRoomMasterMissing,
 	CodeSlotInviteNotOpen,
+	CodeWaitlistDisabled,
+	CodeWaitlistRoomOpen,
+	CodeWaitlistDuplicate,
+	CodeSlotBoundPhone,
 
 	CodePaymentDuplicateTxn,
 	CodePaymentCashPartialNotAllowed,

@@ -36,6 +36,8 @@ type Service struct {
 	now           func() time.Time
 	onProrate     func(ctx context.Context, due *domain.Due, original, prorated int64)
 	onApplyCredit func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)
+	onFirstRentDiscount func(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error
+	onFirstRentRecorded func(ctx context.Context, tenantID, dueID uuid.UUID, originalAmount int64) error
 }
 
 func NewService(dues DueRepository, tenants TenantRepository, pub events.Publisher) *Service {
@@ -111,8 +113,19 @@ func (s *Service) CreateRentDue(ctx context.Context, tenant *domain.Tenant) (*do
 			return err
 		}
 
+		if s.onFirstRentDiscount != nil {
+			if err := s.onFirstRentDiscount(ctx, lockedTenant, due); err != nil {
+				return err
+			}
+		}
+		origAmount := due.OriginalAmount
 		if err := insertDueWithCodeRetry(ctx, txDues, due); err != nil {
 			return err
+		}
+		if s.onFirstRentRecorded != nil {
+			if err := s.onFirstRentRecorded(ctx, lockedTenant.ID, due.ID, origAmount); err != nil {
+				return err
+			}
 		}
 
 		if err := publishDueCreated(ctx, txPub, s.now(), due); err != nil {
@@ -242,6 +255,15 @@ func (s *Service) SetProrateHook(fn func(ctx context.Context, due *domain.Due, o
 
 func (s *Service) SetApplyCreditHook(fn func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)) {
 	s.onApplyCredit = fn
+}
+
+// SetFirstRentReferralHooks applies referral discounts on the first rent due for new joiners.
+func (s *Service) SetFirstRentReferralHooks(
+	discount func(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error,
+	record func(ctx context.Context, tenantID, dueID uuid.UUID, originalAmount int64) error,
+) {
+	s.onFirstRentDiscount = discount
+	s.onFirstRentRecorded = record
 }
 
 func applyCreditToDue(

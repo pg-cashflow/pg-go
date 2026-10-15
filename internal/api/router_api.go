@@ -28,6 +28,8 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	{
 		pending.GET("/me", h.JoinMe)
 		pending.POST("", h.JoinProfile)
+		pending.POST("/waitlist", h.JoinWaitlist)
+		pending.POST("/waitlist/accept", h.JoinWaitlistAccept)
 	}
 
 	owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
@@ -47,7 +49,7 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 		prefs.GET("", h.GetPreferences)
 		prefs.PATCH("", h.PatchPreferences)
 	}
-	api.GET("/me/onboarding", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.MeOnboarding)
+	api.GET("/me/onboarding", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo), h.MeOnboarding)
 
 	notifs := api.Group("/notifications", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo))
 	{

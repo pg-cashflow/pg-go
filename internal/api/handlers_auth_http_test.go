@@ -86,6 +86,10 @@ func (s *fakeAuthJoinService) Reject(_ context.Context, _, _ uuid.UUID) error {
 	return nil
 }
 
+func (s *fakeAuthJoinService) BindSlotInvite(_ context.Context, _ uuid.UUID, _ uuid.UUID) error {
+	return nil
+}
+
 func (s *fakeAuthJoinService) BuildOnboardingState(_ context.Context, _ *domain.User, _ bool) (*joinsvc.OnboardingState, error) {
 	return &joinsvc.OnboardingState{Stage: "profile"}, nil
 }

@@ -28,6 +28,8 @@ type SlotInvite struct {
 	TermsFrozenAt        time.Time        `json:"terms_frozen_at"`
 	ProfileSchemaVersion int              `json:"profile_schema_version"`
 	AllowOverCapacity    bool             `json:"allow_over_capacity"`
+	BoundPhone           string           `json:"bound_phone,omitempty"`
+	WaitlistEntryID      *uuid.UUID       `json:"waitlist_entry_id,omitempty"`
 	ExpiresAt            time.Time        `json:"expires_at"`
 	ConsumedAt           *time.Time       `json:"consumed_at,omitempty"`
 	ConsumedByUserID     *uuid.UUID       `json:"consumed_by_user_id,omitempty"`
@@ -46,6 +48,7 @@ type PropertyOnboardingSettings struct {
 	MaxExtraBedsPerRoom         int       `json:"max_extra_beds_per_room"`
 	SlotInviteDefaultTTLDays    int       `json:"slot_invite_default_ttl_days"`
 	WaitlistEnabled             bool      `json:"waitlist_enabled"`
+	WaitlistOfferTTLHours       int       `json:"waitlist_offer_ttl_hours"`
 	ProfileSchemaVersion        int       `json:"profile_schema_version"`
 	RequireKYCBeforePay         bool      `json:"require_kyc_before_pay"`
 	JoinPendingTTLDays          int       `json:"join_pending_ttl_days"`

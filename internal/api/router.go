@@ -46,6 +46,8 @@ type Deps struct {
 	Joins          JoinService
 	InviteResolver InviteResolver
 	SlotInvites          SlotInviteService
+	Referrals            ReferralAdmissionService
+	Waitlist             WaitlistAdmissionService
 	OnboardingSettings   OnboardingSettingsStore
 	JoinIdempotency      JoinIdempotencyStore
 	ReportStore    ReportStore

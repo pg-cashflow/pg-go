@@ -17,6 +17,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/slotinvite"
+	"github.com/pg-cashflow/pg-go/internal/waitlist"
 )
 
 // KYCService orchestrates Aadhaar identity verification (ADR-004).
@@ -170,7 +171,16 @@ type JoinService interface {
 	List(ctx context.Context, propertyID uuid.UUID, status *domain.JoinStatus) ([]domain.JoinRequest, error)
 	Activate(ctx context.Context, propertyID, joinID uuid.UUID, in joinsvc.ActivateInput) (*domain.Tenant, error)
 	Reject(ctx context.Context, propertyID, joinID uuid.UUID) error
+	BindSlotInvite(ctx context.Context, userID uuid.UUID, slotInviteID uuid.UUID) error
 	BuildOnboardingState(ctx context.Context, user *domain.User, kycVerified bool) (*joinsvc.OnboardingState, error)
+}
+
+// WaitlistAdmissionService manages room waitlists and bound slot offers (P1).
+type WaitlistAdmissionService interface {
+	Join(ctx context.Context, propertyID, roomID, userID uuid.UUID, phone string) (*domain.RoomWaitlistEntry, error)
+	List(ctx context.Context, propertyID, roomID uuid.UUID) ([]domain.RoomWaitlistEntry, error)
+	OfferNext(ctx context.Context, propertyID, roomID uuid.UUID, actorID uuid.UUID) (*waitlist.OfferResult, error)
+	AcceptOffer(ctx context.Context, userID uuid.UUID, phone, inviteCode string, updateJoin func(ctx context.Context, slotInviteID uuid.UUID) error) (*domain.SlotInvite, error)
 }
 
 // OnboardingSettingsStore reads property onboarding settings.
@@ -208,6 +218,14 @@ type PaymentLookup interface {
 // InviteResolver maps invite codes to properties and optional slot invites.
 type InviteResolver interface {
 	Resolve(ctx context.Context, code string) (*domain.InviteResolution, error)
+}
+
+// ReferralAdmissionService manages first-rent referral bind and settlement (P1).
+type ReferralAdmissionService interface {
+	CreateForTenant(ctx context.Context, propertyID, referrerTenantID uuid.UUID, phone, name string, dest domain.ReferralRewardDestination) (*domain.ReferralAdmission, error)
+	CreateOffline(ctx context.Context, propertyID uuid.UUID, joinerPhone, joinerName, externalPhone, externalName string, dest domain.ReferralRewardDestination) (*domain.ReferralAdmission, error)
+	ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.ReferralAdmission, error)
+	ListByReferrerTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.ReferralAdmission, error)
 }
 
 // SlotInviteService manages per-room admission invites (P0-B).

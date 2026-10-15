@@ -391,6 +391,11 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		var slotInviteID *uuid.UUID
 		if h.InviteResolver != nil && body.InviteCode != "" {
 			if res, err := h.InviteResolver.Resolve(c.Request.Context(), body.InviteCode); err == nil {
+				if res.SlotInvite != nil && res.SlotInvite.BoundPhone != "" &&
+					auth.NormalizePhone(user.Phone) != auth.NormalizePhone(res.SlotInvite.BoundPhone) {
+					respondErr(c, clientErrWithCode(http.StatusNotFound, "get the PG invite code from your owner", apierr.CodeAuthInvalidInvite))
+					return
+				}
 				slotInviteID = res.SlotInviteID
 			}
 		}

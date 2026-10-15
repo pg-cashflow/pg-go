@@ -94,7 +94,8 @@ func classifyRoute(path string) (routeClass, bool) {
 	// CONTRACT.md grants these to "any authenticated role", so it is included.
 	case path == "/api/auth/revoke-sessions":
 		return routeClass{allowed: allow(callerOwner, callerManager, callerTenant, callerPendingJoin)}, true
-	case path == "/api/join/me", path == "/api/join":
+	case path == "/api/join/me", path == "/api/join",
+		path == "/api/join/waitlist", path == "/api/join/waitlist/accept":
 		return routeClass{allowed: allow(callerPendingJoin)}, true
 	case exactPublicPaths[path]:
 		// Exact reviewed public routes. Prefix matching prohibited to prevent unreviewed open routes.
@@ -105,6 +106,8 @@ func classifyRoute(path string) (routeClass, bool) {
 	case strings.HasPrefix(path, "/api/manager/"):
 		return routeClass{allowed: allow(callerOwner, callerManager)}, true
 	case strings.HasPrefix(path, "/api/tenant/"):
+		return routeClass{allowed: allow(callerTenant)}, true
+	case path == "/api/me/onboarding":
 		return routeClass{allowed: allow(callerTenant)}, true
 	case path == "/api/search", path == "/api/notifications",
 		strings.HasPrefix(path, "/api/notifications/"), strings.HasPrefix(path, "/api/me/preferences"):

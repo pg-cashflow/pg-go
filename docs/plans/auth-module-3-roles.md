@@ -25,21 +25,21 @@ todos:
     status: completed
   - id: p0-authz-tests
     content: "Gate 06 matrix + concurrency/IDOR tests per exit criteria"
-    status: pending
+    status: completed
   - id: p1-waitlist
     content: "join_waitlist, offer_waitlist_slot, accept_waitlist_offer, offer expiry; vacate prefers waitlist over over-cap slot"
-    status: pending
+    status: completed
   - id: p1-referral
-    content: "Payment-triggered referral credit, holdback window, ledger idempotency, self-referral block — extends domain.Referral"
-    status: pending
+    content: "New joiner; owner % of rent (bps); pass_to_joiner OR referrer_credit; offline owner-attested; no holdback — see auth_close+referral plan"
+    status: completed
 isProject: true
 ---
 
 # Auth & admission module — ground-truth plan
 
-**Last verified:** repo state with `migrations/070_manager_capabilities.sql` as HEAD; no `slot_invites` / waitlist / `occupancy_revision` in code.
+**Last verified:** repo state with `migrations/074_room_waitlist.sql` as HEAD; P0-A/B/C + hygiene + Gate 06; P1 waitlist + first-rent referral wired in bootstrap; live concurrency test `slot_invite_consume_live_test.go`.
 
-**User decisions locked:** referral financial payout → **P1**; holdback window → **decide in P1**. Manager `slot_invites.create` in **P0-B**; `slot_invites.allow_over_capacity` **separate** capability (owner-grantable, not bundled).
+**User decisions locked:** referral → **P1**, **new joiner only**, **first rent only**; **owner configures % of rent** (joiner discount bps + referrer reward bps, frozen per referral row; paise computed at first due from tenant rent); instant settlement (no holdback); no referrer application; offline choice owner-attested. Manager `slot_invites.create` in **P0-B**; `slot_invites.allow_over_capacity` **separate** capability.
 
 ---
 
@@ -47,19 +47,19 @@ isProject: true
 
 | Claim                                      | Reality in repo                                                                                                                                                                          |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `slot_invites` (property+floor+room+terms) | **Does not exist.** Only `properties.invite_code` ([`property_repo.go`](internal/postgres/property_repo.go)).                                                                            |
-| Live occupancy / `occupancy_revision`      | **Does not exist.** [`computeOccupancyMetrics`](internal/api/handlers_owner_dashboard.go) recomputes on read.                                                                            |
-| Waitlist                                   | **Does not exist.**                                                                                                                                                                      |
-| `finishLogin` blocks `pending_allocation`  | **Confirmed bug** [`service.go:318-326`](internal/auth/service.go) — non-`active` → `ErrTenantVacated`.                                                                                  |
-| `POST /join` session                       | **No re-issue**; message tells client to re-exchange Firebase ([`handlers_join.go:161`](internal/api/handlers_join.go)).                                                                 |
-| Happy path broken by design                | `CompleteOnboarding` sets `pending_allocation` + links `tenant_id` → re-exchange hits `finishLogin` → vacated error.                                                                     |
+| `slot_invites` (property+floor+room+terms) | **Implemented** — migration `071`, [`slot_invite_repo.go`](internal/postgres/slot_invite_repo.go), owner/manager routes, ADR-033. Master path still uses `properties.invite_code`.       |
+| Live occupancy / `occupancy_revision`      | **Implemented** — `room_occupancy` counters + `properties.occupancy_revision`; dashboard should read counters (verify parity).                                                           |
+| Waitlist                                   | **Implemented** — migration `074`, `POST /api/join/waitlist`, `POST /api/join/waitlist/accept`, `GET/POST /api/owner/waitlist`, vacate consumer + `cmd/waitlist-offer-expiry`.           |
+| `finishLogin` blocks `pending_allocation`  | **Fixed** — `active` and `pending_allocation` allowed ([`finish_login_test.go`](internal/auth/finish_login_test.go)).                                                                    |
+| `POST /join` session                       | **Issues JWT + refresh** — [`handlers_join_session_test.go`](internal/api/handlers_join_session_test.go); CONTRACT updated.                                                              |
+| Happy path broken by design                | **Fixed** with P0-A session continuity.                                                                                                                                                  |
 | `RotateRefreshToken`                       | **Correct today** — blocks only `vacated`, not `pending_allocation` ([`service.go:548-554`](internal/auth/service.go)).                                                                  |
 | Rent at invite time                        | **Not today.** Rent/room on [`ActivateJoin`](internal/api/handlers_join.go) after tenant profile.                                                                                        |
 | Floors/rooms                               | **Real:** `POST /owner/floors`, `POST /owner/rooms` ([`router_owner.go`](internal/api/router_owner.go)).                                                                                 |
 | Manager create                             | **Real:** `OwnerCreateManager` ([`handlers_gamification.go`](internal/api/handlers_gamification.go)).                                                                                    |
 | Manager capabilities                       | **Real:** migration `070_manager_capabilities.sql`.                                                                                                                                      |
 | KYC                                        | **Partially built** — DigiLocker via Cashfree in [`internal/kyc`](internal/kyc); upload/QR per [CONTRACT.md](../CONTRACT.md); jobs `digilocker_reconcile`, `kyc_expiry`. Not greenfield. |
-| Referral                                   | **Partial** — [`domain.Referral`](internal/domain/gamification.go), `POST/GET /tenant/referrals` (points-oriented); **not** payment-triggered ledger yet → **P1**.                       |
+| Referral                                   | **Implemented (P1)** — migration `073`, bind at join, first-rent discount/credit via billing hooks + event consumer; owner `GET/POST /owner/referrals`.                                  |
 | Student/working fields                     | **Not in** domain/join handlers → **P0-C** new.                                                                                                                                          |
 | `/areas/aadhaar-kyc.md`                    | **Not in this repo**; treat [CONTRACT.md](../CONTRACT.md) + `internal/kyc` as source of truth for KYC.                                                                                   |
 
@@ -78,7 +78,7 @@ This is **build slot-invites + frozen terms + occupancy states + session fix + t
 | 5   | Invites             | Owner + manager (`slot_invites.create`); `slot_invites.allow_over_capacity` separate.                                                                                                                                                                                                                                                                                                 |
 | 6   | Session             | P0-A first: `finishLogin` + inline `IssueSession` on join.                                                                                                                                                                                                                                                                                                                            |
 | 7   | Scale               | Per-room `FOR UPDATE` on `slot_invites` row; single-property 100+ tenants; no multi-owner sharding.                                                                                                                                                                                                                                                                                   |
-| 8   | Referral            | **P1** — optional code on join may be stubbed or omitted in P0-C; payout on first rent + holdback + ledger idempotency in P1.                                                                                                                                                                                                                                                         |
+| 8   | Referral            | **P1** — first rent only; owner-attested offline choice (Mechanism A); `POST /join` never sets destination; no holdback (deposit/advance); ledger idempotency.                                                                                                                                                                                                                        |
 | 9   | Idempotency         | `Idempotency-Key` on `POST /join`; separate boundaries for join vs payment vs referral (P1).                                                                                                                                                                                                                                                                                          |
 
 ---
@@ -282,10 +282,14 @@ Store on `join_requests` + `tenants`; validate against `profile_schema_version` 
 
 ### 7.2 Referral (P1)
 
-- Payment-triggered (not signup); holdback days **TBD in P1 spec**
-- Self-referral block via KYC `identity_hash` / phone
-- Immutable reward amounts at referral record creation
-- Idempotent payment webhook handler + ledger + reversal on refund
+- **New joiner only** — bind at `POST /join` / admission; no referral discounts for existing tenants or rent cycles after the first
+- **First rent payment only** (not deposit); owner **% of rent** (bps) on property settings, copied to referral row; paise derived at first due from joiner rent (₹250-style examples = illustration at a given rent)
+- **No referrer application**; **joiner-as-referrer allowed** (same PG tenant refers next joiner; chain referrals OK)
+- **In-PG referrer:** on referred joiner first rent paid → **`referrer_credit` instant** → discount **next rent due** for referrer
+- **Offline referrer:** owner attribution; **instant** reward or optional **`pass_to_joiner`** on joiner first rent (no holdback)
+- **Amounts:** owner sets **joiner_discount_bps** + **referrer_reward_bps** on property; copied to referral row; tenants do not set % or paise
+- **`reward_destination`:** in-app referrer until bind; offline via owner at desk; `pass_to_joiner` = automatic first-rent discount for joiner (no joiner “claim” step)
+- Self-referral block only; idempotent webhook + ledger + refund reversal
 
 ---
 
@@ -321,4 +325,17 @@ Walk-in: keep [`POST /owner/tenants`](internal/api/router_owner.go) + [`attach-p
 
 ## 11. Next action
 
-**Implement P0-A** (patches in §4) before any migration. Then P0-B ADR + `071` migration review.
+**Ship checklist (admission module):**
+
+1. Run migrations **071–074** in staging.
+2. Smoke: Firebase → slot code → `POST /join` → `GET /me/onboarding` (no re-exchange); optional `referral_code` on join; waitlist when room full.
+3. Schedule jobs: `cmd/slot-invite-expiry`, `cmd/waitlist-offer-expiry`.
+4. Full `go test ./...` on CI (Windows may OOM on entire `internal/api` — run matrix + package slices locally).
+
+**Open product questions (need your call):**
+
+| #   | Question                               | Options / default                                                                                    |
+| --- | -------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Q1  | Referral holdback                      | **Closed: none** — settle on first rent payment                                                      |
+| Q2  | `GET /me/onboarding` for owner/manager | Return 403 for non-tenant, or a no-op stage payload for dogfooding? (Today: any authenticated role.) |
+| Q3  | Module close naming                    | Tag release `admission-p0` vs fold into next app release train?                                      |

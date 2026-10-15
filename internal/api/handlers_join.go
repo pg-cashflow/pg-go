@@ -85,6 +85,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	var details domain.OccupationDetails
 	var consent bool
 	var photo []byte
+	var referralCode string
 
 	if strings.HasPrefix(ct, "multipart/") {
 		if err := c.Request.ParseMultipartForm(maxJoinIDPhoto + (1 << 20)); err != nil {
@@ -100,6 +101,10 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			emergencyName = parent
 		}
 		emergency = c.PostForm("emergency_phone")
+		if c.PostForm("reward_destination") != "" {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "reward_destination not allowed on join", apierr.CodeRequestInvalidBody)
+			return
+		}
 		occupation = domain.OccupationType(c.PostForm("occupation_type"))
 		details = domain.OccupationDetails{
 			CollegeName:         c.PostForm("college_name"),
@@ -111,6 +116,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			OccupationNote:      c.PostForm("occupation_note"),
 		}
 		consent = c.PostForm("consent") == "true" || c.PostForm("consent") == "1"
+		referralCode = c.PostForm("referral_code")
 		if f, err := c.FormFile("image"); err == nil && f != nil {
 			if f.Size > maxJoinIDPhoto {
 				apierr.RespondClientErr(c, http.StatusBadRequest, "image too large (max 2MB)", apierr.CodeRequestImageTooLarge)
@@ -143,9 +149,15 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			OccupationType       domain.OccupationType    `json:"occupation_type"`
 			OccupationDetails    domain.OccupationDetails `json:"occupation_details"`
 			Consent              bool                     `json:"consent"`
+			ReferralCode         string                   `json:"referral_code"`
+			RewardDestination    string                   `json:"reward_destination"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+			return
+		}
+		if strings.TrimSpace(body.RewardDestination) != "" {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "reward_destination not allowed on join", apierr.CodeRequestInvalidBody)
 			return
 		}
 		name = body.Name
@@ -160,6 +172,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		occupation = body.OccupationType
 		details = body.OccupationDetails
 		consent = body.Consent
+		referralCode = body.ReferralCode
 	}
 
 	j, t, err := h.Joins.CompleteOnboarding(c.Request.Context(), claims.UserID, joinsvc.ProfileInput{
@@ -173,6 +186,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		Details:              details,
 		Consent:              consent,
 		IDPhotoBytes:         photo,
+		ReferralCode:         referralCode,
 	})
 	if err != nil {
 		respondErr(c, joinHTTPError(err))
@@ -383,4 +397,20 @@ func joinHTTPError(err error) error {
 	default:
 		return err
 	}
+}
+
+func (h *Handlers) joinerPhone(c *gin.Context, userID uuid.UUID) (string, bool) {
+	if h.AuthUserRepo != nil {
+		u, err := h.AuthUserRepo.GetByID(c.Request.Context(), userID)
+		if err == nil && strings.TrimSpace(u.Phone) != "" {
+			return u.Phone, true
+		}
+	}
+	if h.Joins != nil {
+		j, err := h.Joins.Me(c.Request.Context(), userID)
+		if err == nil && strings.TrimSpace(j.Phone) != "" {
+			return j.Phone, true
+		}
+	}
+	return "", false
 }

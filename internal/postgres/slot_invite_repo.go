@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,17 +19,21 @@ func NewSlotInviteRepo(db DBTX) *SlotInviteRepo { return &SlotInviteRepo{db: db}
 func (r *SlotInviteRepo) WithTx(tx pgx.Tx) *SlotInviteRepo { return &SlotInviteRepo{db: tx} }
 
 const slotInviteCols = `id, property_id, floor_id, room_id, code, rent_paise, deposit_paise, due_day,
-	status, terms_frozen_at, profile_schema_version, allow_over_capacity, expires_at,
+	status, terms_frozen_at, profile_schema_version, allow_over_capacity, bound_phone, waitlist_entry_id, expires_at,
 	consumed_at, consumed_by_user_id, consumed_tenant_id, created_by_user_id, created_at`
 
 func scanSlotInvite(row pgx.Row) (*domain.SlotInvite, error) {
 	var s domain.SlotInvite
 	var status string
+	var boundPhone *string
 	err := row.Scan(
 		&s.ID, &s.PropertyID, &s.FloorID, &s.RoomID, &s.Code, &s.RentPaise, &s.DepositPaise, &s.DueDay,
-		&status, &s.TermsFrozenAt, &s.ProfileSchemaVersion, &s.AllowOverCapacity, &s.ExpiresAt,
+		&status, &s.TermsFrozenAt, &s.ProfileSchemaVersion, &s.AllowOverCapacity, &boundPhone, &s.WaitlistEntryID, &s.ExpiresAt,
 		&s.ConsumedAt, &s.ConsumedByUserID, &s.ConsumedTenantID, &s.CreatedByUserID, &s.CreatedAt,
 	)
+	if boundPhone != nil {
+		s.BoundPhone = *boundPhone
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +97,15 @@ type RoomBedSnapshot struct {
 	OverCapacityAllocated int
 }
 
+// AvailableNormalBeds returns physical capacity minus tenants and open-invite reservations.
+func (r *SlotInviteRepo) AvailableNormalBeds(ctx context.Context, roomID uuid.UUID) (int, error) {
+	snap, _, err := r.roomSnapshot(ctx, roomID)
+	if err != nil {
+		return 0, err
+	}
+	return snap.Capacity - snap.TenantBeds - snap.OpenInviteReserved, nil
+}
+
 func (r *SlotInviteRepo) roomSnapshot(ctx context.Context, roomID uuid.UUID) (RoomBedSnapshot, uuid.UUID, error) {
 	var cap int
 	var propertyID uuid.UUID
@@ -130,6 +144,7 @@ var (
 	ErrSlotInviteNotOpen     = errors.New("slot: invite not open")
 	ErrSlotInviteExpired     = errors.New("slot: invite expired")
 	ErrSlotCrossProperty     = errors.New("slot: invite property mismatch")
+	ErrSlotBoundPhone        = errors.New("slot: bound phone mismatch")
 )
 
 type CreateSlotInviteInput struct {
@@ -146,6 +161,8 @@ type CreateSlotInviteInput struct {
 	CreatedByUserID      uuid.UUID
 	ReserveBed           bool
 	MaxExtraBeds         int
+	BoundPhone           string
+	WaitlistEntryID      *uuid.UUID
 }
 
 func (r *SlotInviteRepo) CreateOpen(ctx context.Context, in CreateSlotInviteInput) (*domain.SlotInvite, error) {
@@ -182,14 +199,19 @@ func (r *SlotInviteRepo) CreateOpen(ctx context.Context, in CreateSlotInviteInpu
 	}
 
 	now := time.Now().UTC()
+	var boundPhone *string
+	if strings.TrimSpace(in.BoundPhone) != "" {
+		boundPhone = &in.BoundPhone
+	}
 	s, err := scanSlotInvite(r.db.QueryRow(ctx, `
 		INSERT INTO slot_invites (
 			property_id, floor_id, room_id, code, rent_paise, deposit_paise, due_day,
-			status, terms_frozen_at, profile_schema_version, allow_over_capacity, expires_at, created_by_user_id, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9,$10,$11,$12,$13)
+			status, terms_frozen_at, profile_schema_version, allow_over_capacity, bound_phone, waitlist_entry_id,
+			expires_at, created_by_user_id, created_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING `+slotInviteCols,
 		in.PropertyID, in.FloorID, in.RoomID, in.Code, in.RentPaise, in.DepositPaise, in.DueDay,
-		now, in.ProfileSchemaVersion, in.AllowOverCapacity, in.ExpiresAt, in.CreatedByUserID, now,
+		now, in.ProfileSchemaVersion, in.AllowOverCapacity, boundPhone, in.WaitlistEntryID, in.ExpiresAt, in.CreatedByUserID, now,
 	))
 	if err != nil {
 		return nil, err
@@ -275,7 +297,7 @@ func (r *SlotInviteRepo) releaseReservation(ctx context.Context, s *domain.SlotI
 }
 
 // ConsumeOpenForJoin marks an open invite consumed after onboarding. Caller must run inside a transaction.
-func (r *SlotInviteRepo) ConsumeOpenForJoin(ctx context.Context, inviteID, propertyID, userID, tenantID uuid.UUID) (*domain.SlotInvite, error) {
+func (r *SlotInviteRepo) ConsumeOpenForJoin(ctx context.Context, inviteID, propertyID, userID, tenantID uuid.UUID, joinerPhone string) (*domain.SlotInvite, error) {
 	row := r.db.QueryRow(ctx, `
 		SELECT `+slotInviteCols+` FROM slot_invites WHERE id=$1 FOR UPDATE`, inviteID)
 	s, err := scanSlotInvite(row)
@@ -291,6 +313,9 @@ func (r *SlotInviteRepo) ConsumeOpenForJoin(ctx context.Context, inviteID, prope
 	now := time.Now().UTC()
 	if !s.ExpiresAt.After(now) {
 		return nil, ErrSlotInviteExpired
+	}
+	if strings.TrimSpace(s.BoundPhone) != "" && !phonesMatch(joinerPhone, s.BoundPhone) {
+		return nil, ErrSlotBoundPhone
 	}
 	_, err = r.db.Exec(ctx, `
 		UPDATE slot_invites SET status='consumed', consumed_at=$2, consumed_by_user_id=$3, consumed_tenant_id=$4
@@ -308,6 +333,11 @@ func (r *SlotInviteRepo) ConsumeOpenForJoin(ctx context.Context, inviteID, prope
 	s.ConsumedAt = &now
 	s.ConsumedByUserID = &userID
 	s.ConsumedTenantID = &tenantID
+	if s.WaitlistEntryID != nil {
+		_, _ = r.db.Exec(ctx, `
+			UPDATE room_waitlist_entries SET status='accepted', updated_at=NOW()
+			WHERE id=$1 AND status='offered'`, *s.WaitlistEntryID)
+	}
 	return s, nil
 }
 

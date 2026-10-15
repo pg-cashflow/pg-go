@@ -20,13 +20,13 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 	err := r.db.QueryRow(ctx, `
 		SELECT property_id, default_rent_paise, default_deposit_paise, default_due_day,
 			auto_activate, reserve_beds_for_open_invites, max_extra_beds_per_room,
-			slot_invite_default_ttl_days, waitlist_enabled, profile_schema_version,
+			slot_invite_default_ttl_days, waitlist_enabled, waitlist_offer_ttl_hours, profile_schema_version,
 			require_kyc_before_pay, join_pending_ttl_days
 		FROM property_onboarding_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.DefaultRentPaise, &s.DefaultDepositPaise, &s.DefaultDueDay,
 		&s.AutoActivate, &s.ReserveBedsForOpenInvites, &s.MaxExtraBedsPerRoom,
-		&s.SlotInviteDefaultTTLDays, &s.WaitlistEnabled, &s.ProfileSchemaVersion,
+		&s.SlotInviteDefaultTTLDays, &s.WaitlistEnabled, &s.WaitlistOfferTTLHours, &s.ProfileSchemaVersion,
 		&s.RequireKYCBeforePay, &s.JoinPendingTTLDays,
 	)
 	if err != nil {

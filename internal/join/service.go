@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/invite"
@@ -115,6 +116,12 @@ type Service struct {
 	resolver     *invite.Resolver
 	slotDB       *postgres.SlotInviteRepo
 	onboardingDB *postgres.OnboardingSettingsRepo
+	referralBind ReferralJoinBinder
+}
+
+// ReferralJoinBinder binds a referral code when a new joiner completes onboarding.
+type ReferralJoinBinder interface {
+	BindAtJoin(ctx context.Context, propertyID, tenantID uuid.UUID, joinerPhone, code string) error
 }
 
 func NewService(props PropertyStore, joins JoinStore, users UserLinker, tenants TenantCreator, pub events.Publisher) *Service {
@@ -145,6 +152,10 @@ func NewServiceWithPool(
 	s.slotDB = slotInvites
 	s.onboardingDB = onboarding
 	return s
+}
+
+func (s *Service) SetReferralBinder(b ReferralJoinBinder) {
+	s.referralBind = b
 }
 
 func (s *Service) LookupInvite(ctx context.Context, code string) (*domain.Property, error) {
@@ -200,6 +211,9 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 		if err != nil || slot.PropertyID != propertyID || slot.Status != domain.SlotInviteOpen {
 			return nil, ErrInvalidInvite
 		}
+		if strings.TrimSpace(slot.BoundPhone) != "" && auth.NormalizePhone(user.Phone) != auth.NormalizePhone(slot.BoundPhone) {
+			return nil, ErrInvalidInvite
+		}
 	}
 	j := &domain.JoinRequest{
 		PropertyID:   propertyID,
@@ -223,6 +237,25 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 	return j, nil
 }
 
+// BindSlotInvite attaches a waitlist offer invite to the caller's pending join row.
+func (s *Service) BindSlotInvite(ctx context.Context, userID uuid.UUID, slotInviteID uuid.UUID) error {
+	j, err := s.joins.GetPendingByUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotPending
+		}
+		return err
+	}
+	if s.slotDB != nil {
+		slot, err := s.slotDB.GetByID(ctx, slotInviteID)
+		if err != nil || slot.PropertyID != j.PropertyID || slot.Status != domain.SlotInviteOpen {
+			return ErrInvalidInvite
+		}
+	}
+	j.SlotInviteID = &slotInviteID
+	return s.joins.Update(ctx, j)
+}
+
 type ProfileInput struct {
 	Name                 string
 	PermanentAddress     string
@@ -237,6 +270,7 @@ type ProfileInput struct {
 	GuardianPhone        string
 	Consent              bool
 	IDPhotoBytes         []byte
+	ReferralCode         string
 }
 
 // SetProfile is kept for tests; prefer CompleteOnboarding for the invite-in flow.
@@ -401,13 +435,18 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 				return err
 			}
 			if j.SlotInviteID != nil && s.slotDB != nil {
-				if _, err := s.slotDB.WithTx(tx).ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID); err != nil {
+				if _, err := s.slotDB.WithTx(tx).ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID, phone); err != nil {
 					return err
 				}
 			}
 			if activate.Should {
 				t, err = s.tenantSvc.AssignTermsTx(ctx, tx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
 				if err != nil {
+					return err
+				}
+			}
+			if s.referralBind != nil && strings.TrimSpace(in.ReferralCode) != "" {
+				if err := s.referralBind.BindAtJoin(ctx, j.PropertyID, t.ID, phone, in.ReferralCode); err != nil {
 					return err
 				}
 			}
@@ -431,13 +470,18 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 		return nil, nil, err
 	}
 	if j.SlotInviteID != nil && s.slotDB != nil {
-		if _, err := s.slotDB.ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID); err != nil {
+		if _, err := s.slotDB.ConsumeOpenForJoin(ctx, *j.SlotInviteID, j.PropertyID, userID, t.ID, phone); err != nil {
 			return nil, nil, err
 		}
 	}
 	if activate.Should {
 		t, err = s.tenantSvc.AssignTerms(ctx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
 		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if s.referralBind != nil && strings.TrimSpace(in.ReferralCode) != "" {
+		if err := s.referralBind.BindAtJoin(ctx, j.PropertyID, t.ID, phone, in.ReferralCode); err != nil {
 			return nil, nil, err
 		}
 	}
