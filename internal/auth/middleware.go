@@ -3,6 +3,8 @@ package auth
 import (
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -167,23 +169,82 @@ func authenticate(c *gin.Context, jwtSecret string, users UserLookup) (*Claims, 
 	return claims, true
 }
 
+type tokenVersionHit struct {
+	version   int
+	expiresAt time.Time
+}
+
+var (
+	tokenVersionMu    sync.RWMutex
+	tokenVersionCache = make(map[uuid.UUID]tokenVersionHit)
+)
+
+const tokenVersionCacheTTL = 30 * time.Second
+
+// InvalidateTokenVersionCache evicts the cached token version for a user so
+// subsequent requests force a fresh DB lookup.
+func InvalidateTokenVersionCache(userID uuid.UUID) {
+	tokenVersionMu.Lock()
+	delete(tokenVersionCache, userID)
+	tokenVersionMu.Unlock()
+}
+
+// ResetTokenVersionCache clears all cached token versions (primarily for testing).
+func ResetTokenVersionCache() {
+	tokenVersionMu.Lock()
+	tokenVersionCache = make(map[uuid.UUID]tokenVersionHit)
+	tokenVersionMu.Unlock()
+}
+
+func getCachedTokenVersion(userID uuid.UUID) (int, bool) {
+	tokenVersionMu.RLock()
+	hit, ok := tokenVersionCache[userID]
+	tokenVersionMu.RUnlock()
+	if ok && time.Now().Before(hit.expiresAt) {
+		return hit.version, true
+	}
+	return 0, false
+}
+
+func setCachedTokenVersion(userID uuid.UUID, version int) {
+	tokenVersionMu.Lock()
+	tokenVersionCache[userID] = tokenVersionHit{
+		version:   version,
+		expiresAt: time.Now().Add(tokenVersionCacheTTL),
+	}
+	tokenVersionMu.Unlock()
+}
+
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 	if users == nil {
 		return true
 	}
+
+	claimTV := claims.TokenVersion
+	if claimTV < DefaultTokenVersion {
+		claimTV = DefaultTokenVersion
+	}
+
+	if live, ok := getCachedTokenVersion(claims.UserID); ok {
+		if claimTV < live {
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return false
+		}
+		return true
+	}
+
 	u, err := users.GetByID(c.Request.Context(), claims.UserID)
 	if err != nil || u == nil {
 		apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 		return false
 	}
 	live := tokenVersionOf(u)
-	claimTV := claims.TokenVersion
-	if claimTV < DefaultTokenVersion {
-		claimTV = DefaultTokenVersion
-	}
+	setCachedTokenVersion(claims.UserID, live)
+
 	if claimTV < live {
 		apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 		return false
 	}
 	return true
 }
+

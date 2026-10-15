@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -167,6 +168,7 @@ func (h *Handlers) OwnerResetManagerCredentials(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	auth.InvalidateTokenVersionCache(managerID)
 	h.publishManagerAudit(c, pid, managerID, "credentials_reset", nil)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -189,6 +191,7 @@ func (h *Handlers) deactivateManager(c *gin.Context, pid, managerID uuid.UUID) b
 		respondErr(c, err)
 		return false
 	}
+	auth.InvalidateTokenVersionCache(managerID)
 	h.publishManagerAudit(c, pid, managerID, "deactivated", nil)
 	return true
 }

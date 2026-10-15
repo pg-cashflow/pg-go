@@ -358,3 +358,137 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 		assertEnvelope(t, w, http.StatusForbidden, "already activated", apierr.CodeAuthAlreadyActivated)
 	})
 }
+
+type countingUserLookup struct {
+	user  *domain.User
+	calls int
+}
+
+func (c *countingUserLookup) GetByID(context.Context, uuid.UUID) (*domain.User, error) {
+	c.calls++
+	return c.user, nil
+}
+
+func TestTokenVersionCache_HitAvoidsDBRoundTrip(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ResetTokenVersionCache()
+	defer ResetTokenVersionCache()
+
+	const secret = "middleware-test-secret"
+	propID := uuid.New()
+	user := &domain.User{
+		ID:           uuid.New(),
+		Role:         domain.RoleOwner,
+		PropertyID:   &propID,
+		TokenVersion: 1,
+	}
+	token, err := IssueToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	lookup := &countingUserLookup{user: user}
+	r := gin.New()
+	r.GET("/owner", RequireOwner(secret, lookup), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	// Request 1: Cache miss -> lookup called
+	req1 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req1.Header.Set("Authorization", "Bearer "+token)
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("req1: expected 200, got %d", w1.Code)
+	}
+	if lookup.calls != 1 {
+		t.Fatalf("req1: expected 1 lookup call, got %d", lookup.calls)
+	}
+
+	// Request 2: Cache hit -> lookup NOT called again
+	req2 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("req2: expected 200, got %d", w2.Code)
+	}
+	if lookup.calls != 1 {
+		t.Fatalf("req2: expected lookup call count to remain 1 (cache hit), got %d", lookup.calls)
+	}
+
+	// Invalidate cache for user
+	InvalidateTokenVersionCache(user.ID)
+
+	// Request 3: Cache miss after invalidation -> lookup called
+	req3 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req3.Header.Set("Authorization", "Bearer "+token)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusOK {
+		t.Fatalf("req3: expected 200, got %d", w3.Code)
+	}
+	if lookup.calls != 2 {
+		t.Fatalf("req3: expected 2 lookup calls after invalidation, got %d", lookup.calls)
+	}
+}
+
+func TestTokenVersionCache_RevocationAfterInvalidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ResetTokenVersionCache()
+	defer ResetTokenVersionCache()
+
+	const secret = "middleware-test-secret"
+	propID := uuid.New()
+	user := &domain.User{
+		ID:           uuid.New(),
+		Role:         domain.RoleOwner,
+		PropertyID:   &propID,
+		TokenVersion: 1,
+	}
+	token, err := IssueToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	lookupUser := *user
+	lookup := &countingUserLookup{user: &lookupUser}
+	r := gin.New()
+	r.GET("/owner", RequireOwner(secret, lookup), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	// Request 1: Valid
+	req1 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req1.Header.Set("Authorization", "Bearer "+token)
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("req1: expected 200, got %d", w1.Code)
+	}
+
+	// Bump token version on the user
+	lookupUser.TokenVersion = 2
+
+	// Request 2 without invalidation: still passes due to cache
+	req2 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("req2: expected 200 from cache, got %d", w2.Code)
+	}
+
+	// Invalidate cache explicitly (as done on revoke)
+	InvalidateTokenVersionCache(user.ID)
+
+	// Request 3 after invalidation: 403 Forbidden
+	req3 := httptest.NewRequest(http.MethodGet, "/owner", nil)
+	req3.Header.Set("Authorization", "Bearer "+token)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusForbidden {
+		t.Fatalf("req3: expected 403 after invalidation, got %d", w3.Code)
+	}
+}
+

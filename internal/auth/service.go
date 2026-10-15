@@ -589,6 +589,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 
 // RevokeUserSessions revokes all stored refresh tokens for a user.
 func (s *Service) RevokeUserSessions(ctx context.Context, userID uuid.UUID) error {
+	InvalidateTokenVersionCache(userID)
 	if s.refreshRepo != nil {
 		return s.refreshRepo.RevokeUserTokens(ctx, userID)
 	}

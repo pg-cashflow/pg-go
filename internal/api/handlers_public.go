@@ -250,8 +250,7 @@ type otpRequestBody struct {
 	Phone string `json:"phone" binding:"required"`
 }
 
-// OTPRequest handles POST /auth/otp/request.
-// Login OTP is retired; the route is no longer registered. Kept for rollback.
+// OTPRequest handles POST /auth/otp/request — requests a login OTP via SMS with rate limiting.
 func (h *Handlers) OTPRequest(c *gin.Context) {
 	var body otpRequestBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -335,6 +334,7 @@ func (h *Handlers) RevokeSessions(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	auth.InvalidateTokenVersionCache(uid)
 	if h.Auth != nil {
 		_ = h.Auth.RevokeUserSessions(c.Request.Context(), uid)
 	}

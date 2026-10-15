@@ -47,7 +47,7 @@ func NewFirebaseVerifier(ctx context.Context, projectID, credentialsPath string)
 
 // IdentityFromIDToken verifies a Firebase ID token and returns UID plus normalized phone and/or email.
 func (v *FirebaseVerifier) IdentityFromIDToken(ctx context.Context, idToken string) (FirebaseIdentity, error) {
-	token, err := v.client.VerifyIDToken(ctx, idToken)
+	token, err := v.client.VerifyIDTokenAndCheckRevoked(ctx, idToken)
 	if err != nil {
 		return FirebaseIdentity{}, fmt.Errorf("%w: %v", ErrInvalidFirebaseToken, err)
 	}
