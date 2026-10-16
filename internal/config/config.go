@@ -18,10 +18,6 @@ type Config struct {
 	OTPHMACSecret                     string
 	MagicLinkHMACSecret               string
 	MagicLinkBaseURL                  string
-	SMSPrimaryURL                     string
-	SMSPrimaryAPIKey                  string
-	SMSFallbackURL                    string
-	SMSFallbackAPIKey                 string
 	SMTPHost                          string
 	SMTPPort                          string
 	SMTPUsername                      string
@@ -91,10 +87,6 @@ func Load() (*Config, error) {
 		OTPHMACSecret:                     os.Getenv("OTP_HMAC_SECRET"),
 		MagicLinkHMACSecret:               os.Getenv("MAGIC_LINK_HMAC_SECRET"),
 		MagicLinkBaseURL:                  os.Getenv("MAGIC_LINK_BASE_URL"),
-		SMSPrimaryURL:                     os.Getenv("SMS_PRIMARY_URL"),
-		SMSPrimaryAPIKey:                  os.Getenv("SMS_PRIMARY_API_KEY"),
-		SMSFallbackURL:                    os.Getenv("SMS_FALLBACK_URL"),
-		SMSFallbackAPIKey:                 os.Getenv("SMS_FALLBACK_API_KEY"),
 		SMTPHost:                          os.Getenv("SMTP_HOST"),
 		SMTPPort:                          envOr("SMTP_PORT", "587"),
 		SMTPUsername:                      os.Getenv("SMTP_USERNAME"),

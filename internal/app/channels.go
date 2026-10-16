@@ -26,14 +26,5 @@ func OpenChannels(cfg *config.Config) Channels {
 		}
 	}
 	var gateway sms.SMSGateway = sms.NoopGateway{}
-	if cfg.SMSPrimaryURL != "" {
-		gateway = &sms.AndroidGateway{
-			PrimaryURL:     cfg.SMSPrimaryURL,
-			PrimaryAPIKey:  cfg.SMSPrimaryAPIKey,
-			FallbackURL:    cfg.SMSFallbackURL,
-			FallbackAPIKey: cfg.SMSFallbackAPIKey,
-			Alert:          sms.MailAlert(mail, cfg.SMTPFrom),
-		}
-	}
 	return Channels{Mail: mail, Gateway: gateway}
 }

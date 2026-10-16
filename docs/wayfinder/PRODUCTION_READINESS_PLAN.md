@@ -170,15 +170,15 @@ In `internal/api/ratelimit.go`:
 * **TTL Sweep**: Inactive entries (>10 minutes) are purged upon capacity saturation.
 * **Oldest-Entry Eviction**: If saturated by a sudden distributed burst of distinct IPs within the TTL window, the oldest active entry is evicted to admit the new IP without unbounded allocation.
 
-### D. Delivery Infrastructure: SMS vs. Push Notifications
-* **Primary Backbone (SMS)**:
-  * [AndroidGateway](file:///c:/Users/divak/Downloads/pg-go/internal/sms/android.go) uses primary relay with automatic failover to secondary relay.
-  * If both legs fail, it immediately fires an email alert to the property owner/admin via [MailAlert](file:///c:/Users/divak/Downloads/pg-go/internal/sms/alert.go).
+### D. Delivery Infrastructure: Authentication & Notifications
+* **Authentication Backbone (Firebase Phone Auth)**:
+  * Phone verification and authentication tokens are federated through Firebase Phone Auth as the single source of truth (`FIREBASE_PROJECT_ID` required in production).
+  * Direct Android SMS relay gateway (`AndroidGateway`) has been decommissioned in favor of Firebase Phone Auth with `sms.NoopGateway` fallback.
 * **Supplementary Push (Web Push RFC 8292 / VAPID)**:
   * **Android**: 100% native Web Push support across modern browsers and installable PWAs.
   * **iOS (16.4+)**: Web Push is supported exclusively when the tenant uses Safari's "Add to Home Screen" to install the PWA.
   * **Hygiene**: Returned HTTP 404/410 (Gone) automatically triggers `DeleteByEndpoint`, preventing dead endpoint database bloat.
-  * **Scope**: Push is strictly supplementary; critical dues and step-up codes rely on SMS and in-app notification feeds.
+  * **Scope**: Push is strictly supplementary; critical dues rely on in-app notification feeds and Firebase-authenticated communication.
 
 ### E. Gateway Dispute & Chargeback Fail-Safe Isolation
 In `internal/cashfree/webhook.go` and `internal/api/handlers_pay.go`:
@@ -219,7 +219,7 @@ Before toggling public traffic on the production server:
   - `JWT_SECRET`, `OTP_HMAC_SECRET`, `MAGIC_LINK_HMAC_SECRET`: 32+ character high-entropy cryptographically random strings.
   - `CASHFREE_PG_APP_ID`, `CASHFREE_PG_SECRET_KEY`, `CASHFREE_PG_WEBHOOK_SECRET`: Production Cashfree credentials.
   - `CASHFREE_ENV`: Set to `production`.
-  - `SMS_PRIMARY_URL`, `SMS_PRIMARY_API_KEY`, `SMS_FALLBACK_URL`, `SMS_FALLBACK_API_KEY`: Android SMS gateway credentials.
+  - `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`: Production Firebase credentials for Phone Auth token verification.
   - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`: Web Push VAPID credentials.
 - [ ] **Run Live Synthetic Load Test**:
   - Execute a baseline k6/vegeta load test targeting 200 req/sec across dues viewing, payment intent generation, and in-app notification feeds to establish baseline latency and connection metrics.
