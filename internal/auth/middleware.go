@@ -110,10 +110,16 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository, users UserLook
 			apierr.Abort(c, http.StatusForbidden, "complete your profile to continue", apierr.CodeAuthProfileIncomplete)
 			return
 		}
-		tenant, err := tenantRepo.GetByID(c.Request.Context(), *claims.TenantID)
-		if err != nil {
-			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
-			return
+		tenantID := *claims.TenantID
+		tenant, ok := getCachedTenant(tenantID)
+		if !ok {
+			var err error
+			tenant, err = tenantRepo.GetByID(c.Request.Context(), tenantID)
+			if err != nil {
+				apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+				return
+			}
+			setCachedTenant(tenantID, tenant)
 		}
 		switch tenant.Status {
 		case domain.TenantStatusActive, domain.TenantStatusPendingAllocation:
@@ -121,6 +127,7 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository, users UserLook
 			c.Set(ContextTenantKey, tenant)
 			c.Next()
 		default:
+			InvalidateTenantCache(tenantID)
 			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 		}
 	}
@@ -213,6 +220,51 @@ func setCachedTokenVersion(userID uuid.UUID, version int) {
 		expiresAt: time.Now().Add(tokenVersionCacheTTL),
 	}
 	tokenVersionMu.Unlock()
+}
+
+type tenantCacheHit struct {
+	tenant    *domain.Tenant
+	expiresAt time.Time
+}
+
+var (
+	tenantCacheMu    sync.RWMutex
+	tenantCache      = make(map[uuid.UUID]tenantCacheHit)
+)
+
+const tenantCacheTTL = 30 * time.Second
+
+// InvalidateTenantCache evicts the cached tenant for an ID so subsequent requests force a fresh DB lookup.
+func InvalidateTenantCache(tenantID uuid.UUID) {
+	tenantCacheMu.Lock()
+	delete(tenantCache, tenantID)
+	tenantCacheMu.Unlock()
+}
+
+// ResetTenantCache clears all cached tenants (primarily for testing).
+func ResetTenantCache() {
+	tenantCacheMu.Lock()
+	tenantCache = make(map[uuid.UUID]tenantCacheHit)
+	tenantCacheMu.Unlock()
+}
+
+func getCachedTenant(tenantID uuid.UUID) (*domain.Tenant, bool) {
+	tenantCacheMu.RLock()
+	hit, ok := tenantCache[tenantID]
+	tenantCacheMu.RUnlock()
+	if ok && time.Now().Before(hit.expiresAt) {
+		return hit.tenant, true
+	}
+	return nil, false
+}
+
+func setCachedTenant(tenantID uuid.UUID, tenant *domain.Tenant) {
+	tenantCacheMu.Lock()
+	tenantCache[tenantID] = tenantCacheHit{
+		tenant:    tenant,
+		expiresAt: time.Now().Add(tenantCacheTTL),
+	}
+	tenantCacheMu.Unlock()
 }
 
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {

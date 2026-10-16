@@ -24,6 +24,9 @@ func (m *mockOTPRepo) Create(_ context.Context, req *postgres.OTPRequest) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	req.ID = uuid.New()
+	if req.CreatedAt.IsZero() {
+		req.CreatedAt = time.Now().UTC()
+	}
 	m.requests = append(m.requests, req)
 	return nil
 }
@@ -88,7 +91,7 @@ func (m *mockOTPRepo) CountRecentByPurpose(_ context.Context, phone string, purp
 	defer m.mu.Unlock()
 	count := 0
 	for _, r := range m.requests {
-		if r.Phone == phone && (purpose == "" || r.Purpose == purpose) && r.ExpiresAt.After(since) {
+		if r.Phone == phone && (purpose == "" || r.Purpose == purpose) && !r.CreatedAt.Before(since) {
 			count++
 		}
 	}
@@ -390,6 +393,7 @@ func TestRequestOTP_SeparatedRateLimitsByPurpose(t *testing.T) {
 	secret := "test-secret-at-least-32-bytes-long"
 
 	svc := NewService(otpRepo, nil, nil, nil, smsGateway, secret, "jwt-secret")
+	svc.SetCooldownWindow(0)
 	phone := "+919876543210"
 
 	// Exhaust 3 login OTPs
@@ -512,6 +516,7 @@ func TestRequestStepUpOTP_DualChannelDeliveryAndMasking(t *testing.T) {
 	}
 
 	// 2. Rate limiting check: rate limits stay bound to canonical phone identity
+	svc.SetCooldownWindow(0)
 	_ = svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchID)
 	_ = svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchID)
 
@@ -530,6 +535,35 @@ func TestRequestStepUpOTP_DualChannelDeliveryAndMasking(t *testing.T) {
 	_, _, err = svcNoMailer.RequestStepUpOTPWithChannel(ctx, freshPhone, "payout_approval", &batchID)
 	if !errors.Is(err, ErrNoDeliveryChannel) {
 		t.Fatalf("expected ErrNoDeliveryChannel when neither channel is available, got %v", err)
+	}
+}
+
+func TestRequestStepUpOTP_CooldownEnforced(t *testing.T) {
+	ctx := context.Background()
+	otpRepo := &mockOTPRepo{}
+	secret := "test-secret-at-least-32-bytes-long"
+	phone := "+919876543210"
+	email := "owner@pgcashflow.com"
+	batchID := uuid.New()
+
+	users := &stubUsers{byPhone: map[string]*domain.User{
+		phone: {ID: uuid.New(), Phone: phone, Email: email, Role: domain.RoleOwner},
+	}}
+
+	mm := &mockMailer{}
+	svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+	svc.SetMailer(mm)
+
+	// First request succeeds
+	_, _, err := svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+	if err != nil {
+		t.Fatalf("expected first OTP request to succeed, got %v", err)
+	}
+
+	// Immediate second request within 30s fails with ErrRateLimited
+	_, _, err = svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited due to cooldown, got %v", err)
 	}
 }
 

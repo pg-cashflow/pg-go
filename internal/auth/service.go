@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	OTPTTL          = 5 * time.Minute
-	OTPRateWindow   = 10 * time.Minute
-	OTPMaxPerWindow = 3
-	OTPMaxAttempts  = 5
+	OTPTTL            = 5 * time.Minute
+	OTPRateWindow     = 10 * time.Minute
+	OTPMaxPerWindow   = 3
+	OTPMaxAttempts    = 5
+	OTPCooldownWindow = 30 * time.Second
 )
 
 var (
@@ -64,6 +65,7 @@ type Service struct {
 	phoneLimiter   PhoneLimiter
 	otpSecret      string
 	jwtSecret      string
+	cooldownWindow time.Duration
 }
 
 // InviteCodeResolver resolves property vs slot invite codes (P0-B).
@@ -80,14 +82,20 @@ func NewService(
 	otpSecret, jwtSecret string,
 ) *Service {
 	return &Service{
-		otp:        otp,
-		users:      users,
-		tenants:    tenants,
-		properties: properties,
-		gateway:    gateway,
-		otpSecret:  otpSecret,
-		jwtSecret:  jwtSecret,
+		otp:            otp,
+		users:          users,
+		tenants:        tenants,
+		properties:     properties,
+		gateway:        gateway,
+		otpSecret:      otpSecret,
+		jwtSecret:      jwtSecret,
+		cooldownWindow: OTPCooldownWindow,
 	}
+}
+
+// SetCooldownWindow overrides the minimum cooldown between OTP requests (useful for testing).
+func (s *Service) SetCooldownWindow(d time.Duration) {
+	s.cooldownWindow = d
 }
 
 // SetMailer sets the HTML email mailer for dual-channel OTP delivery and fallback.
@@ -139,6 +147,17 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 	}
 
 	// Canonical identity rate limit check:
+	if s.cooldownWindow > 0 {
+		cooldownSince := time.Now().UTC().Add(-s.cooldownWindow)
+		recentCooldown, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, cooldownSince)
+		if err != nil {
+			return "", "", fmt.Errorf("count recent otp cooldown: %w", err)
+		}
+		if recentCooldown > 0 {
+			return "", "", ErrRateLimited
+		}
+	}
+
 	since := time.Now().UTC().Add(-OTPRateWindow)
 	n, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, since)
 	if err != nil {
@@ -146,13 +165,6 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 	}
 	if n >= OTPMaxPerWindow {
 		return "", "", ErrRateLimited
-	}
-
-	// Determine active delivery channel:
-	// If a real SMS gateway is configured (not NoopGateway), SMS is supported.
-	smsAvailable := s.gateway != nil
-	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
-		smsAvailable = false
 	}
 
 	// Check if user has an email on file:
@@ -168,10 +180,15 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		}
 	}
 
+	// Determine active delivery channel:
+	smsAvailable := s.gateway != nil
+	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
+		smsAvailable = false
+	}
+
 	channel := "sms"
 	destination := phone
 
-	// Industrial frontier logic:
 	// If SMS is not available, or purpose is payout approval and email is configured, prioritize email.
 	if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && s.mailer != nil {
 		channel = "email"
