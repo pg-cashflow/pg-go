@@ -211,56 +211,31 @@ func TestAuthHandlers_T4d(t *testing.T) {
 		}
 	})
 
-	t.Run("OTPRequest: Malformed body returns 400 Bad Request", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewReader([]byte(`invalid-json`)))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for malformed json, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("OTPRequest: Known and unknown phones return same 200 response (anti-enumeration)", func(t *testing.T) {
-		authSvc.otpErr = nil
-
-		// Known phone
-		reqKnown := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewReader([]byte(`{"phone":"+919876543210"}`)))
-		reqKnown.Header.Set("Content-Type", "application/json")
-		wKnown := httptest.NewRecorder()
-		router.ServeHTTP(wKnown, reqKnown)
-		if wKnown.Code != http.StatusOK {
-			t.Fatalf("expected 200 for known phone, got %d body=%s", wKnown.Code, wKnown.Body.String())
-		}
-
-		// Unknown phone
-		reqUnknown := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewReader([]byte(`{"phone":"+919999999999"}`)))
-		reqUnknown.Header.Set("Content-Type", "application/json")
-		wUnknown := httptest.NewRecorder()
-		router.ServeHTTP(wUnknown, reqUnknown)
-		if wUnknown.Code != http.StatusOK {
-			t.Fatalf("expected 200 for unknown phone, got %d body=%s", wUnknown.Code, wUnknown.Body.String())
-		}
-
-		// Verify identical body structure
-		if wKnown.Body.String() != wUnknown.Body.String() {
-			t.Fatalf("expected identical response bodies for anti-enumeration, got %q vs %q", wKnown.Body.String(), wUnknown.Body.String())
-		}
-	})
-
-	t.Run("OTPRequest: Rate limited phone returns 429", func(t *testing.T) {
-		authSvc.otpErr = auth.ErrRateLimited
-		defer func() { authSvc.otpErr = nil }()
-
-		req := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewReader([]byte(`{"phone":"+919876543210"}`)))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		router.ServeHTTP(w, req)
-		if w.Code != http.StatusTooManyRequests {
-			t.Fatalf("expected 429 for rate limited request, got %d body=%s", w.Code, w.Body.String())
-		}
-		if !strings.Contains(w.Body.String(), string(apierr.CodeAuthRateLimited)) {
-			t.Fatalf("expected CodeAuthRateLimited, got %s", w.Body.String())
+	// OTPRequest is disabled per ticket C.4: Firebase Phone Auth is the single
+	// front door (docs/specs/auth-frontend-backend-contract.md §1.1). The
+	// handler no longer binds the body, calls auth.Service, or applies rate
+	// limiting — it returns 410 for every request, which is the full
+	// contract now. The former "malformed body -> 400", "anti-enumeration ->
+	// identical 200s", and "rate limited -> 429" subtests asserted behavior
+	// of the retired code path and were removed rather than patched, since
+	// none of those mechanisms execute anymore.
+	t.Run("OTPRequest: disabled endpoint returns 410 regardless of body", func(t *testing.T) {
+		for _, body := range [][]byte{
+			[]byte(`{"phone":"+919876543210"}`),
+			[]byte(`{"phone":"+919999999999"}`),
+			[]byte(`invalid-json`),
+			[]byte(``),
+		} {
+			req := httptest.NewRequest(http.MethodPost, "/auth/otp/request", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusGone {
+				t.Fatalf("expected 410 for body %q, got %d body=%s", body, w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), string(apierr.CodeAuthEndpointDisabled)) {
+				t.Fatalf("expected CodeAuthEndpointDisabled in body, got %s", w.Body.String())
+			}
 		}
 	})
 

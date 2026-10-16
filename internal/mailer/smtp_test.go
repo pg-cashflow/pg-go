@@ -22,6 +22,18 @@ func TestNoopMailerImplementsMailer(t *testing.T) {
 	}
 }
 
+func TestIsNoop(t *testing.T) {
+	if !IsNoop(nil) {
+		t.Error("IsNoop(nil) should be true: unset and discarding must be treated the same by callers")
+	}
+	if !IsNoop(NoopMailer{}) {
+		t.Error("IsNoop(NoopMailer{}) should be true")
+	}
+	if IsNoop(&SMTPMailer{Host: "smtp.example.com"}) {
+		t.Error("IsNoop(*SMTPMailer) should be false — a configured mailer must report available")
+	}
+}
+
 func TestBuildMessage(t *testing.T) {
 	msg := string(buildMessage("from@ex.com", "to@ex.com", "Hello", "<b>x</b>"))
 	for _, want := range []string{

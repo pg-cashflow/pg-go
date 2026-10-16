@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 )
@@ -565,5 +566,68 @@ func TestRequestStepUpOTP_CooldownEnforced(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("expected ErrRateLimited due to cooldown, got %v", err)
 	}
+}
+
+// TestRequestStepUpOTP_NoopMailerFailsClosed is the ticket C.5 regression
+// test. It deliberately reproduces the real production wiring
+// (internal/app/bootstrap.go always calls authSvc.SetMailer(mail), and
+// internal/app/channels.go hands it mailer.NoopMailer{} whenever SMTP_HOST
+// is unset) rather than the pre-fix test fixture state, which only ever
+// left s.mailer as Go nil (never calling SetMailer at all). A nil mailer
+// was already caught by the old "s.mailer != nil" check; an explicitly-set
+// NoopMailer was not — that gap is what let delivery fail silently while
+// the API reported 200 OK.
+//
+// It also covers a non-payout_approval purpose, because the original
+// proposed patch gated the fix on `purpose == "payout_approval"` only and
+// would have left every other step-up purpose (see internal/api/handlers_step_up.go,
+// which reads an arbitrary purpose from caller input) with the identical bug.
+func TestRequestStepUpOTP_NoopMailerFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	secret := "test-secret-at-least-32-bytes-long"
+	phone := "+919876543210"
+	email := "owner@pgcashflow.com"
+	batchID := uuid.New()
+
+	users := &stubUsers{byPhone: map[string]*domain.User{
+		phone: {ID: uuid.New(), Phone: phone, Email: email, Role: domain.RoleOwner},
+	}}
+
+	t.Run("payout_approval purpose fails closed, not 200-with-nothing-sent", func(t *testing.T) {
+		otpRepo := &mockOTPRepo{}
+		svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+		svc.SetMailer(mailer.NoopMailer{})
+
+		_, _, err := svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+		if !errors.Is(err, ErrNoDeliveryChannel) {
+			t.Fatalf("expected ErrNoDeliveryChannel with NoopMailer, got %v (nil means the API would have returned 200 while sending nothing)", err)
+		}
+	})
+
+	t.Run("non-payout purpose also fails closed (fix must not be purpose-specific)", func(t *testing.T) {
+		otpRepo := &mockOTPRepo{}
+		svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+		svc.SetMailer(mailer.NoopMailer{})
+
+		_, _, err := svc.RequestStepUpOTPWithChannel(ctx, phone, "sensitive_profile_change", &batchID)
+		if !errors.Is(err, ErrNoDeliveryChannel) {
+			t.Fatalf("expected ErrNoDeliveryChannel for non-payout purpose with NoopMailer, got %v", err)
+		}
+	})
+
+	t.Run("real mailer still delivers (no false-positive fail-closed)", func(t *testing.T) {
+		otpRepo := &mockOTPRepo{}
+		mm := &mockMailer{}
+		svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+		svc.SetMailer(mm)
+
+		ch, _, err := svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+		if err != nil {
+			t.Fatalf("expected success with a real mailer, got %v", err)
+		}
+		if ch != "email" || len(mm.sentTo) != 1 {
+			t.Fatalf("expected one real email send, got channel=%q sent=%v", ch, mm.sentTo)
+		}
+	})
 }
 

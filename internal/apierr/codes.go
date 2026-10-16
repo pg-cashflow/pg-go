@@ -25,6 +25,7 @@ const (
 	CodeAuthUnauthorized          Code = "auth.unauthorized"
 	CodeAuthNoPropertyScope       Code = "auth.noPropertyScope"
 	CodeAuthNoDeliveryChannel     Code = "auth.noDeliveryChannel"
+	CodeAuthEndpointDisabled      Code = "auth.endpointDisabled"
 
 	// Join
 	CodeJoinInvalidInvite         Code = "join.invalidInvite"
@@ -114,6 +115,8 @@ var AllCodes = []Code{
 	CodeAuthInvalidFirebaseToken,
 	CodeAuthUnauthorized,
 	CodeAuthNoPropertyScope,
+	CodeAuthNoDeliveryChannel,
+	CodeAuthEndpointDisabled,
 
 	CodeJoinInvalidInvite,
 	CodeJoinNoPendingRequest,

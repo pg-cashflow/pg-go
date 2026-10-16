@@ -170,6 +170,14 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
+		// Step-up OTP (payout_approval) is email-only by architectural contract
+		// (docs/specs/auth-frontend-backend-contract.md §1.2). Without SMTP,
+		// auth.Service silently falls back to mailer.NoopMailer, which reports
+		// success while sending nothing. Fail at boot, not at an owner's
+		// payout-approval request.
+		if strings.TrimSpace(cfg.SMTPHost) == "" {
+			return nil, fmt.Errorf("SMTP_HOST is required in production for payout step-up OTP delivery")
+		}
 	}
 	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)
 	if cfAppID == "" {

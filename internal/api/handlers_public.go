@@ -246,77 +246,27 @@ func (h *Handlers) PaymentPushSubscribe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-type otpRequestBody struct {
-	Phone string `json:"phone" binding:"required"`
-}
+// otpEndpointDisabledMsg is returned by the deprecated custom phone-OTP login
+// routes. Per docs/specs/auth-frontend-backend-contract.md §1.1, Firebase
+// Phone Auth is the single front door; this path is a Gate C.4 deprecation,
+// not a 404 — 410 Gone signals "this existed and is intentionally retired"
+// to any client/integration still pointed at it.
+const otpEndpointDisabledMsg = "custom phone OTP login is disabled; use Firebase authentication"
 
-// OTPRequest handles POST /auth/otp/request — requests a login OTP via SMS with rate limiting.
+// OTPRequest handled POST /auth/otp/request. Disabled per ticket C.4: the
+// legacy path silently downgraded phone-login verification to email whenever
+// no SMS gateway was configured (always true — see internal/app/channels.go),
+// bypassing Firebase's device attestation and fraud checks entirely. It no
+// longer calls into auth.Service at all, so re-wiring it back on requires a
+// deliberate code change, not a config flip.
 func (h *Handlers) OTPRequest(c *gin.Context) {
-	var body otpRequestBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "phone required", apierr.CodeRequestInvalidBody)
-		return
-	}
-	if err := h.Auth.RequestOTP(c.Request.Context(), body.Phone); err != nil {
-		if errors.Is(err, auth.ErrRateLimited) {
-			apierr.RespondClientErr(c, http.StatusTooManyRequests, "rate limited", apierr.CodeAuthRateLimited)
-			return
-		}
-		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "otp request failed"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	apierr.RespondClientErr(c, http.StatusGone, otpEndpointDisabledMsg, apierr.CodeAuthEndpointDisabled)
 }
 
-type otpVerifyBody struct {
-	Phone string `json:"phone" binding:"required"`
-	OTP   string `json:"otp" binding:"required"`
-}
-
-// OTPVerify handles POST /auth/otp/verify.
+// OTPVerify handled POST /auth/otp/verify. Disabled alongside OTPRequest —
+// see ticket C.4 and the comment on OTPRequest.
 func (h *Handlers) OTPVerify(c *gin.Context) {
-	var body otpVerifyBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "phone and otp required", apierr.CodeRequestInvalidBody)
-		return
-	}
-	_, user, err := h.Auth.VerifyOTPAndIssueToken(c.Request.Context(), body.Phone, body.OTP)
-	if err != nil {
-		status := http.StatusUnauthorized
-		code := apierr.CodeAuthInvalidOtp
-		switch {
-		case errors.Is(err, auth.ErrNoAccount):
-			status = http.StatusNotFound
-			code = apierr.CodeAuthNoAccount
-		case errors.Is(err, auth.ErrTenantVacated):
-			status = http.StatusForbidden
-			code = apierr.CodeAuthAccessRevoked
-		case errors.Is(err, auth.ErrOTPExpired):
-			status = http.StatusUnauthorized
-			code = apierr.CodeAuthOtpExpired
-		case errors.Is(err, auth.ErrOTPLocked):
-			status = http.StatusUnauthorized
-			code = apierr.CodeAuthOtpLocked
-		case errors.Is(err, auth.ErrInvalidOTP):
-			status = http.StatusUnauthorized
-			code = apierr.CodeAuthInvalidOtp
-		default:
-			respondErr(c, err)
-			return
-		}
-		respondErr(c, clientErrWithCode(status, err.Error(), code))
-		return
-	}
-	h.attachUserLocale(c.Request.Context(), c.Request, user)
-	accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user)
-	if err != nil || refToken == "" {
-		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{
-			Error: "session creation failed",
-		})
-		return
-	}
-	h.setRefreshCookie(c, refToken, time.Now().Add(auth.RefreshTokenTTL))
-	c.JSON(http.StatusOK, gin.H{"token": accToken, "user": user})
+	apierr.RespondClientErr(c, http.StatusGone, otpEndpointDisabledMsg, apierr.CodeAuthEndpointDisabled)
 }
 
 // RevokeSessions handles POST /auth/revoke-sessions — bumps users.token_version

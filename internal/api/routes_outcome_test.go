@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
@@ -233,18 +234,25 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		return w
 	}
 
-	// 1. POST /api/auth/otp/request
-	t.Run("POST /api/auth/otp/request with valid phone returns 200", func(t *testing.T) {
+	// 1. POST /api/auth/otp/request — disabled per ticket C.4 (Firebase Phone
+	// Auth is the single front door; see docs/specs/auth-frontend-backend-contract.md §1.1).
+	// The handler returns 410 unconditionally and never reaches body binding,
+	// so both a valid phone and a missing one get the same 410 — there is no
+	// "valid request" shape left for this route.
+	t.Run("POST /api/auth/otp/request is permanently disabled (410)", func(t *testing.T) {
 		w := doReq(http.MethodPost, "/api/auth/otp/request", "", map[string]string{"phone": "+919876543210"}, nil)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusGone {
+			t.Fatalf("expected 410, got %d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), string(apierr.CodeAuthEndpointDisabled)) {
+			t.Fatalf("expected code %s in body, got %s", apierr.CodeAuthEndpointDisabled, w.Body.String())
 		}
 	})
 
-	t.Run("POST /api/auth/otp/request with missing phone returns 400", func(t *testing.T) {
+	t.Run("POST /api/auth/otp/request with missing phone also returns 410 (no bind happens)", func(t *testing.T) {
 		w := doReq(http.MethodPost, "/api/auth/otp/request", "", map[string]string{}, nil)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+		if w.Code != http.StatusGone {
+			t.Fatalf("expected 410, got %d body=%s", w.Code, w.Body.String())
 		}
 	})
 

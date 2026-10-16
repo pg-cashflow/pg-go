@@ -180,23 +180,30 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		}
 	}
 
-	// Determine active delivery channel:
+	// Determine active delivery channel. Both checks follow the same
+	// shape deliberately: an interface holding a Noop* value is non-nil,
+	// so "!= nil" alone cannot distinguish "configured" from "discarding
+	// silently" for either provider. Treating that distinction correctly
+	// for SMS but not for the mailer was the root cause of REQ-SEC note
+	// (silent step-up OTP loss) — keep them symmetric.
 	smsAvailable := s.gateway != nil
 	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
 		smsAvailable = false
 	}
 
+	mailAvailable := !mailer.IsNoop(s.mailer)
+
 	channel := "sms"
 	destination := phone
 
 	// If SMS is not available, or purpose is payout approval and email is configured, prioritize email.
-	if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && s.mailer != nil {
+	if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && mailAvailable {
 		channel = "email"
 		destination = userEmail
 	} else if smsAvailable {
 		channel = "sms"
 		destination = phone
-	} else if userEmail != "" && s.mailer != nil {
+	} else if userEmail != "" && mailAvailable {
 		channel = "email"
 		destination = userEmail
 	} else {

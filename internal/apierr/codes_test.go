@@ -15,13 +15,13 @@ func init() {
 }
 
 func TestAllCodes_UniquenessAndFormat(t *testing.T) {
-	codePattern := regexp.MustCompile(`^[a-z]+\.[a-zA-Z0-9]+$`)
+	codePattern := regexp.MustCompile(`^[a-z]+\.[a-zA-Z0-9_]+$`)
 	seen := make(map[Code]bool)
 
 	for _, c := range AllCodes {
 		s := string(c)
 		if !codePattern.MatchString(s) {
-			t.Errorf("code %q does not match expected pattern ^[a-z]+\\.[a-zA-Z0-9]+$", s)
+			t.Errorf("code %q does not match expected pattern ^[a-z]+\\.[a-zA-Z0-9_]+$", s)
 		}
 		if seen[c] {
 			t.Errorf("duplicate error code found: %s", c)

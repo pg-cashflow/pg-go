@@ -91,7 +91,7 @@ func TestLoadDefaultsWebhookSecretToClientSecret(t *testing.T) {
 }
 
 func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY", "PAYOUT_CHECKSUM_SECRET"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY", "PAYOUT_CHECKSUM_SECRET", "SMTP_HOST"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -114,6 +114,7 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 	_ = os.Setenv("APP_ENV", "production")
 	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+	_ = os.Setenv("SMTP_HOST", "smtp.example.com")
 
 	// In production, when PAYOUT_ENCRYPTION_SECRET is missing, Load must fail closed
 	if _, err := Load(); err == nil {
@@ -128,6 +129,52 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 	}
 	if cfg.PayoutEncryptionSecret != "payout-secret-min-32-chars-long-abc" {
 		t.Fatalf("unexpected PayoutEncryptionSecret: %s", cfg.PayoutEncryptionSecret)
+	}
+}
+
+func TestLoad_ProductionRequiresSMTPHost(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_CHECKSUM_SECRET",
+		"SMTP_HOST",
+	}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+	_ = os.Setenv("APP_ENV", "production")
+	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+	_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
+
+	// Missing SMTP_HOST in production must fail closed
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when SMTP_HOST is missing in production")
+	}
+
+	// Set SMTP_HOST, Load must succeed
+	_ = os.Setenv("SMTP_HOST", "smtp.example.com")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load failed with SMTP_HOST set in production: %v", err)
+	}
+	if cfg.SMTPHost != "smtp.example.com" {
+		t.Fatalf("unexpected SMTPHost: %s", cfg.SMTPHost)
 	}
 }
 
@@ -222,7 +269,7 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 	keys := []string{
 		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
 		"APP_ENV", "CASHFREE_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET",
-		"CASHFREE_PG_BASE_URL",
+		"CASHFREE_PG_BASE_URL", "SMTP_HOST",
 	}
 	prev := map[string]string{}
 	for _, k := range keys {
@@ -247,6 +294,7 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 		_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 		_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
 		_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+		_ = os.Setenv("SMTP_HOST", "smtp.example.com")
 		_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://127.0.0.1:8081")
 	}
 
