@@ -257,6 +257,10 @@ func (s *stubAuthService) RequestStepUpOTP(ctx context.Context, phone, purpose s
 	return s.reqOTPErr
 }
 
+func (s *stubAuthService) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpose string, batchID *uuid.UUID) (string, string, error) {
+	return "email", "admin@example.com", s.reqOTPErr
+}
+
 func (s *stubAuthService) VerifyStepUpOTP(ctx context.Context, phone, otp string) error {
 	return s.verifyOTPErr
 }

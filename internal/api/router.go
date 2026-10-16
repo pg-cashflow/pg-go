@@ -93,6 +93,7 @@ type Deps struct {
 	IntelligenceEnabled bool
 
 	PayoutRepo                  *postgres.PayoutRepo
+	PayoutBatchRepo             PayoutBatchStore
 	PayoutWebhookRepo           PayoutWebhookStore
 	PayoutChecksumSecret        string
 	PayoutEncryptionKey         []byte

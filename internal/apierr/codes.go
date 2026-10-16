@@ -24,6 +24,7 @@ const (
 	CodeAuthInvalidFirebaseToken  Code = "auth.invalidFirebaseToken" // #nosec G101
 	CodeAuthUnauthorized          Code = "auth.unauthorized"
 	CodeAuthNoPropertyScope       Code = "auth.noPropertyScope"
+	CodeAuthNoDeliveryChannel     Code = "auth.noDeliveryChannel"
 
 	// Join
 	CodeJoinInvalidInvite         Code = "join.invalidInvite"

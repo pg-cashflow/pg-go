@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -88,9 +90,14 @@ func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *dom
 
 	// Backstop Leg: Instant SMS
 	if n.smsGateway != nil && n.adminPhone != "" {
-		smsMsg := fmt.Sprintf("🚨 CRITICAL: Ledger outbox event #%d dead-lettered (%s). Financial books desynchronized. Immediate manual reconciliation required.", evt.ID, evt.EventType)
-		if err := n.smsGateway.Send(ctx, n.adminPhone, smsMsg); err != nil {
-			dispatchErrs = append(dispatchErrs, fmt.Errorf("sms backstop send: %w", err))
+		if strings.Contains(fmt.Sprintf("%T", n.smsGateway), "Noop") {
+			slog.Warn("dead-letter alert: SMS backstop gateway is a no-op implementation; SMS alert skipped",
+				"admin_phone", n.adminPhone, "event_id", evt.ID)
+		} else {
+			smsMsg := fmt.Sprintf("🚨 CRITICAL: Ledger outbox event #%d dead-lettered (%s). Financial books desynchronized. Immediate manual reconciliation required.", evt.ID, evt.EventType)
+			if err := n.smsGateway.Send(ctx, n.adminPhone, smsMsg); err != nil {
+				dispatchErrs = append(dispatchErrs, fmt.Errorf("sms backstop send: %w", err))
+			}
 		}
 	}
 

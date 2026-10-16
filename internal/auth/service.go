@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/invite"
+	"github.com/pg-cashflow/pg-go/internal/mailer"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 )
@@ -33,6 +34,7 @@ var (
 	ErrInvalidFirebaseToken  = errors.New("invalid firebase token")
 	ErrFirebaseNotConfigured = errors.New("firebase auth not configured")
 	ErrEmailNotVerified      = errors.New("firebase email not verified")
+	ErrNoDeliveryChannel     = errors.New("no delivery channel configured for otp")
 	ErrStaleAuthToken        = errors.New("auth token is stale: fresh re-authentication required")
 	ErrRefreshTokenExpired   = errors.New("refresh token expired")
 )
@@ -55,6 +57,7 @@ type Service struct {
 	tenants        TenantRepository
 	properties     PropertyRepository
 	gateway        sms.SMSGateway
+	mailer         mailer.Mailer
 	firebase       FirebaseTokenVerifier
 	refreshRepo    RefreshTokenRepository
 	inviteResolver InviteCodeResolver
@@ -87,6 +90,11 @@ func NewService(
 	}
 }
 
+// SetMailer sets the HTML email mailer for dual-channel OTP delivery and fallback.
+func (s *Service) SetMailer(m mailer.Mailer) {
+	s.mailer = m
+}
+
 // SetRefreshTokenRepo enables refresh token family rotation and persistence.
 func (s *Service) SetRefreshTokenRepo(r RefreshTokenRepository) {
 	s.refreshRepo = r
@@ -113,8 +121,9 @@ func (s *Service) RequestOTP(ctx context.Context, phone string) error {
 	return s.RequestOTPWithPurpose(ctx, phone, "login")
 }
 
-// RequestStepUpOTP generates, stores, and sends an OTP bound to purpose and optional batchID.
-func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
+// RequestStepUpOTPWithChannel generates, stores, and delivers an OTP via the appropriate active channel.
+// Rate limiting is strictly bound to the canonical user phone identity, preventing channel-hopping resets.
+func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpose string, batchID *uuid.UUID) (string, string, error) {
 	normPhone := NormalizePhone(phone)
 	if normPhone != "" {
 		phone = normPhone
@@ -123,39 +132,99 @@ func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, b
 		purpose = "login"
 	}
 
-	// Prevent SMS cost abuse: for login OTP, verify account exists before sending SMS.
+	// Prevent cost and enumeration abuse: for login OTP, verify account exists.
 	if purpose == "login" && !s.hasAccount(ctx, phone) {
-		// Return nil for anti-enumeration, but skip DB insert and SMS send.
-		return nil
+		// Return empty for anti-enumeration, skip DB insert and dispatch.
+		return "", "", nil
 	}
 
+	// Canonical identity rate limit check:
 	since := time.Now().UTC().Add(-OTPRateWindow)
 	n, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, since)
 	if err != nil {
-		return fmt.Errorf("count recent otp: %w", err)
+		return "", "", fmt.Errorf("count recent otp: %w", err)
 	}
 	if n >= OTPMaxPerWindow {
-		return ErrRateLimited
+		return "", "", ErrRateLimited
+	}
+
+	// Determine active delivery channel:
+	// If a real SMS gateway is configured (not NoopGateway), SMS is supported.
+	smsAvailable := s.gateway != nil
+	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
+		smsAvailable = false
+	}
+
+	// Check if user has an email on file:
+	var userEmail string
+	if s.users != nil {
+		if u, err := s.users.GetByPhone(ctx, phone); err == nil && u != nil {
+			userEmail = strings.TrimSpace(u.Email)
+		}
+	}
+	if userEmail == "" && s.properties != nil {
+		if p, err := s.properties.GetByOwnerPhone(ctx, phone); err == nil && p != nil {
+			userEmail = strings.TrimSpace(p.OwnerEmail)
+		}
+	}
+
+	channel := "sms"
+	destination := phone
+
+	// Industrial frontier logic:
+	// If SMS is not available, or purpose is payout approval and email is configured, prioritize email.
+	if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && s.mailer != nil {
+		channel = "email"
+		destination = userEmail
+	} else if smsAvailable {
+		channel = "sms"
+		destination = phone
+	} else if userEmail != "" && s.mailer != nil {
+		channel = "email"
+		destination = userEmail
+	} else {
+		// No real delivery channel configured. Fail closed loud.
+		return "", "", ErrNoDeliveryChannel
 	}
 
 	code, err := GenerateOTP()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
 	req := &postgres.OTPRequest{
-		Phone:     phone,
-		OTPHash:   HashOTP(s.otpSecret, code),
-		Attempts:  0,
-		ExpiresAt: time.Now().UTC().Add(OTPTTL),
-		Used:      false,
-		Purpose:   purpose,
-		BatchID:   batchID,
+		Phone:       phone,
+		OTPHash:     HashOTP(s.otpSecret, code),
+		Attempts:    0,
+		ExpiresAt:   time.Now().UTC().Add(OTPTTL),
+		Used:        false,
+		Purpose:     purpose,
+		BatchID:     batchID,
+		Channel:     channel,
+		Destination: destination,
 	}
 	if err := s.otp.Create(ctx, req); err != nil {
-		return fmt.Errorf("store otp: %w", err)
+		return "", "", fmt.Errorf("store otp: %w", err)
 	}
 
+	if channel == "email" {
+		subject := fmt.Sprintf("Your PG Cashflow %s code", strings.ReplaceAll(purpose, "_", " "))
+		if purpose == "payout_approval" {
+			subject = "Your PG Cashflow Payout Approval Code"
+		}
+		body := fmt.Sprintf(
+			"<h2>Verification Code</h2>"+
+				"<p>Your %s verification code is: <b>%s</b></p>"+
+				"<p>This code is valid for %d minutes. Do not share this code with anyone.</p>",
+			strings.ReplaceAll(purpose, "_", " "), code, int(OTPTTL.Minutes()),
+		)
+		if err := s.mailer.Send(ctx, destination, subject, body); err != nil {
+			return "", "", fmt.Errorf("send otp email: %w", err)
+		}
+		return channel, MaskEmail(destination), nil
+	}
+
+	// SMS channel:
 	var msg string
 	switch purpose {
 	case "payout_approval":
@@ -164,10 +233,17 @@ func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, b
 		msg = fmt.Sprintf("Your login OTP is %s. Valid for %d minutes.", code, int(OTPTTL.Minutes()))
 	}
 
-	if err := s.gateway.Send(ctx, phone, msg); err != nil {
-		return fmt.Errorf("send otp sms: %w", err)
+	if err := s.gateway.Send(ctx, destination, msg); err != nil {
+		return "", "", fmt.Errorf("send otp sms: %w", err)
 	}
-	return nil
+
+	return channel, phone, nil
+}
+
+// RequestStepUpOTP generates, stores, and sends an OTP bound to purpose and optional batchID.
+func (s *Service) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
+	_, _, err := s.RequestStepUpOTPWithChannel(ctx, phone, purpose, batchID)
+	return err
 }
 
 // RequestOTPWithPurpose generates, stores (hashed), and SMS-sends an OTP tailored to a specific purpose.
@@ -565,6 +641,7 @@ func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessTo
 	if err != nil {
 		return "", "", fmt.Errorf("issue access token: %w", err)
 	}
+	setCachedTokenVersion(user.ID, user.TokenVersion)
 	if s.refreshRepo == nil {
 		return accessToken, "", nil
 	}
@@ -644,6 +721,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("issue new access token: %w", err)
 	}
+	setCachedTokenVersion(user.ID, user.TokenVersion)
 
 	return newAccessToken, newPlaintext, user, nil
 }

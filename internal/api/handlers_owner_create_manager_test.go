@@ -56,9 +56,11 @@ func TestOwnerCreateManager_PhoneNormalization(t *testing.T) {
 	tests := []struct {
 		name          string
 		inputPhone    string
+		inputEmail    string
 		propertyID    string
 		wantStatus    int
 		wantNormPhone string
+		wantEmail     string
 		wantErrSubstr string
 	}{
 		{
@@ -81,6 +83,23 @@ func TestOwnerCreateManager_PhoneNormalization(t *testing.T) {
 			propertyID:    propID.String(),
 			wantStatus:    http.StatusOK,
 			wantNormPhone: "+919876543210",
+		},
+		{
+			name:          "Valid optional email is stored",
+			inputPhone:    "+919876543210",
+			inputEmail:    "Manager@PGBooks.com",
+			propertyID:    propID.String(),
+			wantStatus:    http.StatusOK,
+			wantNormPhone: "+919876543210",
+			wantEmail:     "manager@pgbooks.com",
+		},
+		{
+			name:          "Invalid email format rejected with 400",
+			inputPhone:    "+919876543210",
+			inputEmail:    "invalid-email",
+			propertyID:    propID.String(),
+			wantStatus:    http.StatusBadRequest,
+			wantErrSubstr: "invalid email format",
 		},
 		{
 			name:          "Malformed short phone rejected with 400",
@@ -111,10 +130,14 @@ func TestOwnerCreateManager_PhoneNormalization(t *testing.T) {
 			owner := router.Group("/api/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
 			owner.POST("/managers", h.OwnerCreateManager)
 
-			body, _ := json.Marshal(map[string]any{
+			payload := map[string]any{
 				"phone":       tt.inputPhone,
 				"property_id": tt.propertyID,
-			})
+			}
+			if tt.inputEmail != "" {
+				payload["email"] = tt.inputEmail
+			}
+			body, _ := json.Marshal(payload)
 			req := httptest.NewRequest(http.MethodPost, "/api/owner/managers", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer "+ownerToken)
 			req.Header.Set("Content-Type", "application/json")
@@ -136,6 +159,9 @@ func TestOwnerCreateManager_PhoneNormalization(t *testing.T) {
 				}
 				if store.createdUsers[0].Phone != tt.wantNormPhone {
 					t.Errorf("expected stored phone %q, got %q", tt.wantNormPhone, store.createdUsers[0].Phone)
+				}
+				if tt.wantEmail != "" && store.createdUsers[0].Email != tt.wantEmail {
+					t.Errorf("expected stored email %q, got %q", tt.wantEmail, store.createdUsers[0].Email)
 				}
 			}
 		})

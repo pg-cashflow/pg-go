@@ -1002,6 +1002,7 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	var body struct {
 		PropertyID string `json:"property_id"`
 		Phone      string `json:"phone" binding:"required"`
+		Email      string `json:"email,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Phone == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "phone is required"})
@@ -1021,8 +1022,15 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 		return
 	}
 
+	cleanEmail := strings.ToLower(strings.TrimSpace(body.Email))
+	if cleanEmail != "" && (!strings.Contains(cleanEmail, "@") || !strings.Contains(cleanEmail, ".")) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+		return
+	}
+
 	u := &domain.User{
 		Phone:      normPhone,
+		Email:      cleanEmail,
 		Role:       domain.RoleManager,
 		PropertyID: &pid,
 	}

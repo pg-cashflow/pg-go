@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/sms"
 )
 
 type mockOTPRepo struct {
@@ -438,6 +439,97 @@ func TestRequestOTP_NoAccountAntiEnumeration(t *testing.T) {
 	}
 	if len(smsGateway.sentMessages) != 1 {
 		t.Fatalf("expected 1 SMS sent for registered phone, got %d", len(smsGateway.sentMessages))
+	}
+}
+
+type mockMailer struct {
+	sentTo   []string
+	subjects []string
+	bodies   []string
+}
+
+func (m *mockMailer) Send(_ context.Context, to, subject, htmlBody string) error {
+	m.sentTo = append(m.sentTo, to)
+	m.subjects = append(m.subjects, subject)
+	m.bodies = append(m.bodies, htmlBody)
+	return nil
+}
+
+func TestMaskEmail(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"john.doe@example.com", "j***e@example.com"},
+		{"a@b.com", "a***@b.com"},
+		{"ab@example.com", "a***@example.com"},
+		{"abc@example.com", "a***c@example.com"},
+		{"invalid", "***"},
+		{"", "***"},
+		{"@domain.com", "***"},
+		{"user@", "***"},
+	}
+	for _, tc := range cases {
+		got := MaskEmail(tc.input)
+		if got != tc.want {
+			t.Errorf("MaskEmail(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestRequestStepUpOTP_DualChannelDeliveryAndMasking(t *testing.T) {
+	ctx := context.Background()
+	otpRepo := &mockOTPRepo{}
+	secret := "test-secret-at-least-32-bytes-long"
+	phone := "+919876543210"
+	email := "owner@pgcashflow.com"
+	batchID := uuid.New()
+
+	users := &stubUsers{byPhone: map[string]*domain.User{
+		phone: {ID: uuid.New(), Phone: phone, Email: email, Role: domain.RoleOwner},
+	}}
+
+	// 1. With NoopGateway and valid mailer -> delivers via Email
+	mm := &mockMailer{}
+	svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+	svc.SetMailer(mm)
+
+	ch, dest, err := svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+	if err != nil {
+		t.Fatalf("expected email delivery to succeed, got %v", err)
+	}
+	if ch != "email" {
+		t.Errorf("expected channel 'email', got %q", ch)
+	}
+	if dest != "o***r@pgcashflow.com" {
+		t.Errorf("expected masked email 'o***r@pgcashflow.com', got %q", dest)
+	}
+	if len(mm.sentTo) != 1 || mm.sentTo[0] != email {
+		t.Fatalf("expected mailer to send to %q, got %v", email, mm.sentTo)
+	}
+	if !strings.Contains(mm.subjects[0], "Payout Approval") {
+		t.Errorf("expected subject to contain 'Payout Approval', got %q", mm.subjects[0])
+	}
+
+	// 2. Rate limiting check: rate limits stay bound to canonical phone identity
+	_ = svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchID)
+	_ = svc.RequestStepUpOTP(ctx, phone, "payout_approval", &batchID)
+
+	// 4th request must fail with ErrRateLimited
+	_, _, err = svc.RequestStepUpOTPWithChannel(ctx, phone, "payout_approval", &batchID)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("expected ErrRateLimited on 4th attempt, got %v", err)
+	}
+
+	// 3. Without mailer and with NoopGateway -> fails closed with ErrNoDeliveryChannel
+	freshPhone := "+919888877777"
+	freshUsers := &stubUsers{byPhone: map[string]*domain.User{
+		freshPhone: {ID: uuid.New(), Phone: freshPhone, Email: "fresh@example.com"},
+	}}
+	svcNoMailer := NewService(otpRepo, freshUsers, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+	_, _, err = svcNoMailer.RequestStepUpOTPWithChannel(ctx, freshPhone, "payout_approval", &batchID)
+	if !errors.Is(err, ErrNoDeliveryChannel) {
+		t.Fatalf("expected ErrNoDeliveryChannel when neither channel is available, got %v", err)
 	}
 }
 

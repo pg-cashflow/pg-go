@@ -520,13 +520,13 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 		return
 	}
 
-	repo := h.getPayoutRepo()
-	if repo == nil {
+	batchStore := h.getPayoutBatchStore()
+	if batchStore == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
 		return
 	}
 
-	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
+	batch, err := batchStore.GetBatchByID(c.Request.Context(), batchID)
 	if err != nil || batch.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -552,18 +552,30 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 		return
 	}
 
-	if err := h.Auth.RequestStepUpOTP(c.Request.Context(), phone, "payout_approval", &batchID); err != nil {
+	channel, destination, err := h.Auth.RequestStepUpOTPWithChannel(c.Request.Context(), phone, "payout_approval", &batchID)
+	if err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
 			respondErr(c, clientErr(http.StatusTooManyRequests, "otp rate limit exceeded; please wait before requesting another code"))
+			return
+		}
+		if errors.Is(err, auth.ErrNoDeliveryChannel) {
+			respondErr(c, clientErr(http.StatusUnprocessableEntity, "no delivery channel available for payout approval; please register a verified email or phone"))
 			return
 		}
 		respondErr(c, fmt.Errorf("dispatch approval otp: %w", err))
 		return
 	}
 
+	displayDest := destination
+	if channel == "sms" {
+		displayDest = maskPhone(destination)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"message": "payout approval code sent via SMS",
-		"phone":   maskPhone(phone),
+		"message":     "payout approval code sent via " + channel,
+		"channel":     channel,
+		"destination": displayDest,
+		"phone":       maskPhone(phone),
 	})
 }
 
@@ -801,6 +813,17 @@ func formatPaiseToINR(paise int64) string {
 }
 
 // Helper methods
+func (h *Handlers) getPayoutBatchStore() PayoutBatchStore {
+	if h.PayoutBatchRepo != nil {
+		return h.PayoutBatchRepo
+	}
+	repo := h.getPayoutRepo()
+	if repo != nil {
+		return repo
+	}
+	return nil
+}
+
 func (h *Handlers) getPayoutRepo() *postgres.PayoutRepo {
 	if h.PayoutRepo != nil {
 		return h.PayoutRepo

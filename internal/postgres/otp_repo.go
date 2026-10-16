@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -22,15 +23,17 @@ type OTPRepo struct{ pool *pgxpool.Pool }
 func NewOTPRepo(pool *pgxpool.Pool) *OTPRepo { return &OTPRepo{pool: pool} }
 
 type OTPRequest struct {
-	ID        uuid.UUID
-	Phone     string
-	OTPHash   string
-	Attempts  int16
-	ExpiresAt time.Time
-	Used      bool
-	Purpose   string
-	BatchID   *uuid.UUID
-	CreatedAt time.Time
+	ID          uuid.UUID
+	Phone       string
+	OTPHash     string
+	Attempts    int16
+	ExpiresAt   time.Time
+	Used        bool
+	Purpose     string
+	BatchID     *uuid.UUID
+	Channel     string
+	Destination string
+	CreatedAt   time.Time
 }
 
 func (r *OTPRepo) Create(ctx context.Context, req *OTPRequest) error {
@@ -38,10 +41,16 @@ func (r *OTPRepo) Create(ctx context.Context, req *OTPRequest) error {
 	if req.Purpose == "" {
 		req.Purpose = "login"
 	}
+	if req.Channel == "" {
+		req.Channel = "sms"
+	}
+	if req.Destination == "" {
+		req.Destination = req.Phone
+	}
 	return r.pool.QueryRow(ctx, `
-		INSERT INTO otp_requests (phone, otp_hash, attempts, expires_at, used, purpose, batch_id, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.Purpose, req.BatchID, req.CreatedAt,
+		INSERT INTO otp_requests (phone, otp_hash, attempts, expires_at, used, purpose, batch_id, channel, destination, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.Purpose, req.BatchID, req.Channel, req.Destination, req.CreatedAt,
 	).Scan(&req.ID)
 }
 
@@ -53,20 +62,28 @@ func (r *OTPRepo) LatestUnusedByPurpose(ctx context.Context, phone string, purpo
 	var req OTPRequest
 	var batchIDVal *uuid.UUID
 	var purposeVal string
+	var channelVal string
+	var destinationVal sql.NullString
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, phone, otp_hash, attempts, expires_at, used, COALESCE(purpose, 'login'), batch_id, created_at
+		SELECT id, phone, otp_hash, attempts, expires_at, used, COALESCE(purpose, 'login'), batch_id, COALESCE(channel, 'sms'), destination, created_at
 		FROM otp_requests
 		WHERE phone=$1 AND used=FALSE
 		  AND ($2 = '' OR purpose=$2)
 		  AND ($3::uuid IS NULL OR batch_id=$3)
 		ORDER BY created_at DESC LIMIT 1`, phone, purpose, batchID).Scan(
-		&req.ID, &req.Phone, &req.OTPHash, &req.Attempts, &req.ExpiresAt, &req.Used, &purposeVal, &batchIDVal, &req.CreatedAt,
+		&req.ID, &req.Phone, &req.OTPHash, &req.Attempts, &req.ExpiresAt, &req.Used, &purposeVal, &batchIDVal, &channelVal, &destinationVal, &req.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
 	req.Purpose = purposeVal
 	req.BatchID = batchIDVal
+	req.Channel = channelVal
+	if destinationVal.Valid {
+		req.Destination = destinationVal.String
+	} else {
+		req.Destination = req.Phone
+	}
 	return &req, nil
 }
 

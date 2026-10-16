@@ -7,9 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strings"
 )
-
-// DLT not registered — risk accepted.
 
 // GenerateOTP returns a cryptographically random 6-digit OTP (zero-padded).
 func GenerateOTP() (string, error) {
@@ -31,4 +30,19 @@ func HashOTP(secret, otp string) string {
 func VerifyOTP(secret, otp, hash string) bool {
 	expected := HashOTP(secret, otp)
 	return hmac.Equal([]byte(expected), []byte(hash))
+}
+
+// MaskEmail masks an email address for safe display in API responses (e.g. j***e@example.com).
+func MaskEmail(email string) string {
+	clean := strings.TrimSpace(email)
+	parts := strings.Split(clean, "@")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "***"
+	}
+	name := parts[0]
+	domain := parts[1]
+	if len(name) <= 2 {
+		return string(name[0]) + "***@" + domain
+	}
+	return string(name[0]) + "***" + string(name[len(name)-1]) + "@" + domain
 }

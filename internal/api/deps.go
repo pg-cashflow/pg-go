@@ -43,6 +43,7 @@ type AuthService interface {
 	RequestOTP(ctx context.Context, phone string) error
 	RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error
 	RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error
+	RequestStepUpOTPWithChannel(ctx context.Context, phone, purpose string, batchID *uuid.UUID) (channel string, destination string, err error)
 	VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error)
 	VerifyStepUpOTP(ctx context.Context, phone, otp string) error
 	VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error
@@ -309,6 +310,11 @@ type CalendarTokenStore interface {
 	InsertToken(ctx context.Context, propertyID uuid.UUID, tokenHash string, expiresAt time.Time) error
 	GetTokenRevocation(ctx context.Context, propertyID uuid.UUID, tokenHash string) (revoked bool, exists bool, err error)
 	RevokeTokens(ctx context.Context, propertyID uuid.UUID) (int64, error)
+}
+
+// PayoutBatchStore defines batch reading operations needed by payout handlers.
+type PayoutBatchStore interface {
+	GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error)
 }
 
 // PayoutWebhookStore defines the store interface required by the Cashfree payout webhook handler.
