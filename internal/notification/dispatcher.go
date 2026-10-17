@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,12 +47,28 @@ type DispatcherConfig struct {
 }
 
 func DefaultConfig() DispatcherConfig {
-	return DispatcherConfig{
+	cfg := DispatcherConfig{
 		BatchSize:    50,
 		PollInterval: 500 * time.Millisecond,
 		IdleInterval: 2 * time.Second,
 		MaxRetries:   5,
 	}
+	if s := os.Getenv("OUTBOX_IDLE_INTERVAL"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			cfg.IdleInterval = d
+		}
+	}
+	if s := os.Getenv("OUTBOX_POLL_INTERVAL"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			cfg.PollInterval = d
+		}
+	}
+	if s := os.Getenv("OUTBOX_BATCH_SIZE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			cfg.BatchSize = n
+		}
+	}
+	return cfg
 }
 
 // Dispatcher is a background worker that polls outbox_events and fans them out

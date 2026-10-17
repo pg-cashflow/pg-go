@@ -18,10 +18,11 @@ var redactingLogFormatter = func(p gin.LogFormatterParams) string {
 	if len(path) > 3 && path[:3] == "/p/" {
 		path = "/p/[REDACTED]"
 	}
-	return fmt.Sprintf("[GIN] %s | %3d | %13v | %s\n",
+	return fmt.Sprintf("[GIN] %s | %3d | %13v | %-7s %s\n",
 		p.TimeStamp.Format("2006/01/02 - 15:04:05"),
 		p.StatusCode,
 		p.Latency,
+		p.Method,
 		path,
 	)
 }

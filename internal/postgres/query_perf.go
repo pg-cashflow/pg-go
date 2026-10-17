@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -129,6 +130,13 @@ func (t *QueryPerfTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data p
 
 	if duration >= t.slowThreshold {
 		t.slowQueries.Add(1)
+
+		// Internal advisory lock primitives (pg_try_advisory_lock, pg_advisory_unlock)
+		// execute in memory in <0.1ms; client elapsed time is purely WAN connection latency.
+		if strings.Contains(info.sql, "pg_try_advisory_lock") || strings.Contains(info.sql, "pg_advisory_unlock") {
+			return
+		}
+
 		rows := int64(-1)
 		if data.CommandTag.RowsAffected() >= 0 {
 			rows = data.CommandTag.RowsAffected()

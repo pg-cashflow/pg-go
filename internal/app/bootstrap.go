@@ -522,6 +522,8 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		ledgerWorker.SetPayoutDispatcher(bg.payoutDispatch)
 	}
 
+	bg.logger.Info("ledger outbox worker started", "poll_interval", "30s", "batch_size", 50)
+
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
