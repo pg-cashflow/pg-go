@@ -214,11 +214,18 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 		if strings.TrimSpace(slot.BoundPhone) != "" && auth.NormalizePhone(user.Phone) != auth.NormalizePhone(slot.BoundPhone) {
 			return nil, ErrInvalidInvite
 		}
+	phone := user.Phone
+	if strings.TrimSpace(phone) == "" {
+		clean := strings.ReplaceAll(user.ID.String(), "-", "")
+		if len(clean) > 12 {
+			clean = clean[:12]
+		}
+		phone = "+G" + clean
 	}
 	j := &domain.JoinRequest{
 		PropertyID:   propertyID,
 		UserID:       user.ID,
-		Phone:        user.Phone,
+		Phone:        phone,
 		Name:         "",
 		Status:       domain.JoinPending,
 		SlotInviteID: slotInviteID,
@@ -258,6 +265,7 @@ func (s *Service) BindSlotInvite(ctx context.Context, userID uuid.UUID, slotInvi
 
 type ProfileInput struct {
 	Name                 string
+	Phone                string
 	PermanentAddress     string
 	CurrentAddress       string
 	ParentName           string
@@ -341,7 +349,11 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 		}
 	}
 	schemaVer := profileSchemaVersion(j, slot, settings)
-	if err := ValidateProfileV1(in, j.Phone, schemaVer); err != nil {
+	loginPhone := j.Phone
+	if strings.TrimSpace(in.Phone) != "" {
+		loginPhone = in.Phone
+	}
+	if err := ValidateProfileV1(in, loginPhone, schemaVer); err != nil {
 		return nil, nil, err
 	}
 
@@ -369,6 +381,10 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	j.JoinedOn = &joinedOn
 
 	phone := j.Phone
+	if strings.TrimSpace(in.Phone) != "" {
+		phone = auth.NormalizePhone(in.Phone)
+		j.Phone = phone
+	}
 	var guardianName, guardianPhone *string
 	if strings.TrimSpace(in.GuardianName) != "" {
 		guardianName = &in.GuardianName
@@ -403,6 +419,9 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	finish := func(joins JoinStore, users UserLinker, pub events.Publisher, t *domain.Tenant) error {
 		if err := users.SetTenantID(ctx, j.UserID, t.ID); err != nil {
 			return fmt.Errorf("link user: %w", err)
+		}
+		if s.userDB != nil && strings.TrimSpace(in.Phone) != "" {
+			_ = s.userDB.SetTenantIDAndPhone(ctx, j.UserID, t.ID, phone)
 		}
 		j.Status = domain.JoinApproved
 		j.TenantID = &t.ID

@@ -62,7 +62,10 @@ func (r *JoinRepo) Create(ctx context.Context, j *domain.JoinRequest) error {
 			status, tenant_id, slot_invite_id,
 			occupation_type, date_of_birth, profile_schema_version, occupation_details, emergency_contact_name,
 			created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		ON CONFLICT (property_id, phone) WHERE status = 'pending'
+		DO UPDATE SET user_id = EXCLUDED.user_id, slot_invite_id = COALESCE(EXCLUDED.slot_invite_id, join_requests.slot_invite_id), updated_at = EXCLUDED.updated_at
+		RETURNING id`,
 		j.PropertyID, j.UserID, j.Phone, j.Name, j.AadhaarLast4,
 		j.PermanentAddress, j.CurrentAddress, j.ParentName, j.EmergencyPhone, j.JoinedOn,
 		j.Status, j.TenantID, j.SlotInviteID,

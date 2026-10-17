@@ -23,7 +23,7 @@ func ValidateProfileV1(in ProfileInput, loginPhone string, schemaVersion int) er
 	if emergency == "" || strings.TrimSpace(in.EmergencyContactName) == "" {
 		return ErrProfileIncomplete
 	}
-	if phone != "" && emergency == phone {
+	if phone != "" && !strings.HasPrefix(phone, "+G") && emergency == phone {
 		return ErrEmergencySameAsLogin
 	}
 	switch in.OccupationType {

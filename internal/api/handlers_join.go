@@ -79,7 +79,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	}
 
 	ct := c.GetHeader("Content-Type")
-	var name, permanent, current, parent, emergency string
+	var name, phone, permanent, current, parent, emergency string
 	var emergencyName string
 	var occupation domain.OccupationType
 	var details domain.OccupationDetails
@@ -93,6 +93,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			return
 		}
 		name = c.PostForm("name")
+		phone = c.PostForm("phone")
 		permanent = c.PostForm("permanent_address")
 		current = c.PostForm("current_address")
 		parent = c.PostForm("parent_name")
@@ -141,6 +142,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	} else {
 		var body struct {
 			Name                 string                   `json:"name"`
+			Phone                string                   `json:"phone"`
 			PermanentAddress     string                   `json:"permanent_address"`
 			CurrentAddress       string                   `json:"current_address"`
 			ParentName           string                   `json:"parent_name"`
@@ -161,6 +163,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			return
 		}
 		name = body.Name
+		phone = body.Phone
 		permanent = body.PermanentAddress
 		current = body.CurrentAddress
 		parent = body.ParentName
@@ -177,6 +180,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 
 	j, t, err := h.Joins.CompleteOnboarding(c.Request.Context(), claims.UserID, joinsvc.ProfileInput{
 		Name:                 name,
+		Phone:                phone,
 		PermanentAddress:     permanent,
 		CurrentAddress:       current,
 		ParentName:           parent,

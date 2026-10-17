@@ -201,6 +201,15 @@ func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) 
 	return err
 }
 
+func (r *UserRepo) SetTenantIDAndPhone(ctx context.Context, userID, tenantID uuid.UUID, phone string) error {
+	if phone != "" && !strings.HasPrefix(phone, "+G") {
+		_, err := r.db.Exec(ctx, `UPDATE users SET tenant_id=$2, phone=COALESCE(NULLIF(phone,''), $3) WHERE id=$1`, userID, tenantID, phone)
+		return err
+	}
+	_, err := r.db.Exec(ctx, `UPDATE users SET tenant_id=$2 WHERE id=$1`, userID, tenantID)
+	return err
+}
+
 func (r *UserRepo) SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET property_id=$2 WHERE id=$1`, userID, propertyID)
 	return err
