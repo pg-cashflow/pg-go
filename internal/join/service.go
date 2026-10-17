@@ -278,6 +278,9 @@ type ProfileInput struct {
 	Details              domain.OccupationDetails
 	GuardianName         string
 	GuardianPhone        string
+	GuardianRelation     string
+	AadhaarLast4         string
+	KYCMethod            string
 	Consent              bool
 	IDPhotoBytes         []byte
 	ReferralCode         string
@@ -316,6 +319,9 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 		in.EmergencyContactName = in.ParentName
 	}
 	in.EmergencyPhone = strings.TrimSpace(in.EmergencyPhone)
+	if in.OccupationType == "" {
+		in.OccupationType = domain.OccupationOther
+	}
 
 	if !in.Consent {
 		return nil, nil, ErrConsentRequired
@@ -323,7 +329,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	if in.Name == "" || in.PermanentAddress == "" || in.CurrentAddress == "" || in.EmergencyPhone == "" {
 		return nil, nil, ErrProfileIncomplete
 	}
-	if len(in.IDPhotoBytes) == 0 {
+	if len(in.IDPhotoBytes) == 0 && in.KYCMethod != "digilocker" && strings.TrimSpace(in.AadhaarLast4) == "" {
 		return nil, nil, ErrPhotoRequired
 	}
 	if len(in.IDPhotoBytes) > maxIDPhotoBytes {
@@ -369,11 +375,16 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	}
 	activate := resolveAutoActivateTerms(slot, settings, roomNumber)
 
+	parentName := strings.TrimSpace(in.ParentName)
+	if parentName == "" {
+		parentName = in.EmergencyContactName
+	}
+
 	joinedOn := s.now().UTC().Truncate(24 * time.Hour)
 	j.Name = in.Name
 	j.PermanentAddress = in.PermanentAddress
 	j.CurrentAddress = in.CurrentAddress
-	j.ParentName = in.EmergencyContactName
+	j.ParentName = parentName
 	j.EmergencyPhone = in.EmergencyPhone
 	j.EmergencyContactName = in.EmergencyContactName
 	j.OccupationType = in.OccupationType
@@ -382,26 +393,38 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	j.OccupationDetails = in.Details.JSON()
 	j.JoinedOn = &joinedOn
 
+	if strings.TrimSpace(in.AadhaarLast4) != "" {
+		l := strings.TrimSpace(in.AadhaarLast4)
+		if len(l) > 4 {
+			l = l[len(l)-4:]
+		}
+		j.AadhaarLast4 = &l
+	}
+
 	phone := j.Phone
 	if strings.TrimSpace(in.Phone) != "" {
 		phone = auth.NormalizePhone(in.Phone)
 		j.Phone = phone
 	}
-	var guardianName, guardianPhone *string
+	var guardianName, guardianPhone, guardianRelation *string
 	if strings.TrimSpace(in.GuardianName) != "" {
 		guardianName = &in.GuardianName
 	}
 	if strings.TrimSpace(in.GuardianPhone) != "" {
 		guardianPhone = &in.GuardianPhone
 	}
+	if strings.TrimSpace(in.GuardianRelation) != "" {
+		guardianRelation = &in.GuardianRelation
+	}
 	tenantIn := domain.NewTenantInput{
 		PropertyID:           j.PropertyID,
 		Name:                 in.Name,
 		Phone:                &phone,
 		RoomID:               slotRoomID,
+		AadhaarLast4:         j.AadhaarLast4,
 		PermanentAddress:     in.PermanentAddress,
 		CurrentAddress:       in.CurrentAddress,
-		ParentName:           in.EmergencyContactName,
+		ParentName:           parentName,
 		EmergencyPhone:       in.EmergencyPhone,
 		EmergencyContactName: in.EmergencyContactName,
 		OccupationType:       in.OccupationType,
@@ -409,6 +432,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 		OccupationDetails:    in.Details.JSON(),
 		GuardianName:         guardianName,
 		GuardianPhone:        guardianPhone,
+		GuardianRelation:     guardianRelation,
 		JoinedOn:             &joinedOn,
 		IDPhotoBytes:         in.IDPhotoBytes,
 		NoticePeriodDays:     30,

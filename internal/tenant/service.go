@@ -321,6 +321,8 @@ func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, 
 		HasIDPhoto:           len(in.IDPhotoBytes) > 0,
 		GuardianName:         in.GuardianName,
 		GuardianPhone:        in.GuardianPhone,
+		GuardianRelation:     in.GuardianRelation,
+		AadhaarLast4:         in.AadhaarLast4,
 	}
 	if in.DateOfBirth != nil {
 		majority := in.DateOfBirth.AddDate(18, 0, 0)

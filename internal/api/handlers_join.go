@@ -81,6 +81,7 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
 	var name, phone, permanent, current, parent, emergency string
 	var emergencyName string
+	var guardianRelation, aadhaarLast4, kycMethod string
 	var occupation domain.OccupationType
 	var details domain.OccupationDetails
 	var consent bool
@@ -97,6 +98,9 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		permanent = c.PostForm("permanent_address")
 		current = c.PostForm("current_address")
 		parent = c.PostForm("parent_name")
+		guardianRelation = c.PostForm("guardian_relation")
+		aadhaarLast4 = c.PostForm("aadhaar_last4")
+		kycMethod = c.PostForm("kyc_method")
 		emergencyName = c.PostForm("emergency_contact_name")
 		if emergencyName == "" {
 			emergencyName = parent
@@ -107,6 +111,9 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			return
 		}
 		occupation = domain.OccupationType(c.PostForm("occupation_type"))
+		if occupation == "" {
+			occupation = domain.OccupationOther
+		}
 		details = domain.OccupationDetails{
 			CollegeName:         c.PostForm("college_name"),
 			Course:              c.PostForm("course"),
@@ -146,6 +153,9 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 			PermanentAddress     string                   `json:"permanent_address"`
 			CurrentAddress       string                   `json:"current_address"`
 			ParentName           string                   `json:"parent_name"`
+			GuardianRelation     string                   `json:"guardian_relation"`
+			AadhaarLast4         string                   `json:"aadhaar_last4"`
+			KYCMethod            string                   `json:"kyc_method"`
 			EmergencyContactName string                   `json:"emergency_contact_name"`
 			EmergencyPhone       string                   `json:"emergency_phone"`
 			OccupationType       domain.OccupationType    `json:"occupation_type"`
@@ -167,12 +177,18 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		permanent = body.PermanentAddress
 		current = body.CurrentAddress
 		parent = body.ParentName
+		guardianRelation = body.GuardianRelation
+		aadhaarLast4 = body.AadhaarLast4
+		kycMethod = body.KYCMethod
 		emergencyName = body.EmergencyContactName
 		if emergencyName == "" {
 			emergencyName = parent
 		}
 		emergency = body.EmergencyPhone
 		occupation = body.OccupationType
+		if occupation == "" {
+			occupation = domain.OccupationOther
+		}
 		details = body.OccupationDetails
 		consent = body.Consent
 		referralCode = body.ReferralCode
@@ -191,6 +207,9 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 		Consent:              consent,
 		IDPhotoBytes:         photo,
 		ReferralCode:         referralCode,
+		GuardianRelation:     guardianRelation,
+		AadhaarLast4:         aadhaarLast4,
+		KYCMethod:            kycMethod,
 	})
 	if err != nil {
 		respondErr(c, joinHTTPError(err))

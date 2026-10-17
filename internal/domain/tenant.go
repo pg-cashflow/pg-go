@@ -114,4 +114,5 @@ type NewTenantInput struct {
 	EmergencyContactName string
 	GuardianName         *string
 	GuardianPhone        *string
+	GuardianRelation     *string
 }
