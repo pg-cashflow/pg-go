@@ -99,6 +99,14 @@ type OwnerDashboardSummaryResponse struct {
 	CollectionPct       float64                  `json:"collection_percentage"`
 	MonthlyCashFlow     []MonthlyCashFlowItem    `json:"monthly_cash_flow"`
 	AsOf                time.Time                `json:"as_of"`
+	// PayoutEmailMissing is true when this owner account has no email on
+	// file. Payout approval step-up OTP is email-only (ADR auth contract
+	// §4.3), so an owner in this state will hit a hard 422
+	// AUTH_NO_DELIVERY_CHANNEL the first time they try to approve a payout
+	// batch. Surfaced here (not just a one-time pre-launch SQL audit) so the
+	// owner dashboard can show a standing "add your email" banner and the
+	// gap doesn't silently regress as new owners sign up post-launch.
+	PayoutEmailMissing bool `json:"payout_email_missing"`
 }
 
 func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (OccupancyMetrics, error) {
@@ -493,6 +501,13 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		return
 	}
 
+	payoutEmailMissing := false
+	if uid, ok := userIDFromClaims(c); ok && h.UserStore != nil {
+		if u, err := h.UserStore.GetByID(ctx, uid); err == nil && u != nil {
+			payoutEmailMissing = strings.TrimSpace(u.Email) == ""
+		}
+	}
+
 	c.JSON(http.StatusOK, OwnerDashboardSummaryResponse{
 		PropertyID: pid,
 		Period:     period,
@@ -515,6 +530,7 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		CollectionPct:       collectionPct,
 		MonthlyCashFlow:     monthlyCashFlow,
 		AsOf:                time.Now().UTC(),
+		PayoutEmailMissing:  payoutEmailMissing,
 	})
 }
 

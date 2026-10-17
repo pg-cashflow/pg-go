@@ -1,6 +1,13 @@
+// S.token is intentionally NOT seeded from localStorage and saveAuth()
+// intentionally does NOT persist it. Per the auth contract (§3.1.6), the
+// access token lives in client memory only — persisting it to localStorage
+// is exactly the XSS-exfiltration surface the contract calls out, and a
+// prior version of this demo client did it anyway. The refresh cookie
+// (pg_refresh_token, HttpOnly, 30d) is what carries a returning user across
+// reloads now; see refreshSilently() below, called once at boot.
 const S = {
   api: localStorage.getItem("pg_api") || location.origin.replace(/\/$/, "") + "/api",
-  token: localStorage.getItem("pg_token") || "",
+  token: "",
   user: JSON.parse(localStorage.getItem("pg_user") || "null"),
   invite: localStorage.getItem("pg_invite") || "",
   firebase: JSON.parse(localStorage.getItem("pg_firebase") || "null"),
@@ -8,11 +15,60 @@ const S = {
 };
 
 function saveAuth() {
-  localStorage.setItem("pg_token", S.token || "");
   localStorage.setItem("pg_user", JSON.stringify(S.user));
   localStorage.setItem("pg_invite", S.invite || "");
   localStorage.setItem("pg_api", S.api);
   localStorage.setItem("pg_firebase", JSON.stringify(S.firebase));
+}
+
+let refreshTimer = null;
+
+// refreshSilently rotates the access token using the HttpOnly refresh
+// cookie, per contract §3.2: called proactively (never waiting for a 401),
+// at boot (to restore a session after reload without replaying Firebase
+// login) and again at minute 12 of every 15-minute access token lifespan.
+//
+// ADR-036 Phase 2 hook: a Capacitor wrapper gates app-resume with native
+// BiometricPrompt / LocalAuthentication *before* this call, by setting
+// `window.pgBiometricGate = async () => true|false` prior to loading this
+// script. On the pure-PWA path (no wrapper installed) pgBiometricGate is
+// undefined and refresh proceeds unmodified — Phase 1 behavior is
+// unchanged, matching the ADR's "zero backend complexity" and "PWA runs
+// standalone" requirements. This repo does not contain the pg-react /
+// Capacitor project the ADR describes, so the wrapper itself cannot be
+// built here; this hook is the integration point it would call into.
+async function refreshSilently() {
+  try {
+    if (typeof window.pgBiometricGate === "function") {
+      const allowed = await window.pgBiometricGate();
+      if (!allowed) return false;
+    }
+    const res = await fetch(S.api + "/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) logout();
+      return false;
+    }
+    const out = await res.json();
+    S.token = out.token;
+    if (out.user) S.user = out.user;
+    saveAuth();
+    scheduleRefresh();
+    return true;
+  } catch {
+    // Network failure: leave any in-memory session alone, retry on next
+    // scheduled tick rather than forcing a logout on a transient error.
+    return false;
+  }
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  // Minute 12 of the 15-minute access token lifespan, per contract §3.2.
+  refreshTimer = setTimeout(refreshSilently, 12 * 60 * 1000);
 }
 
 function el(html) {
@@ -31,7 +87,10 @@ async function api(path, opts = {}) {
   if (opts.body && !(opts.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(S.api + path, Object.assign({}, opts, { headers }));
+  const res = await fetch(
+    S.api + path,
+    Object.assign({ credentials: "include" }, opts, { headers })
+  );
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
@@ -121,7 +180,28 @@ async function enableWebPush(btn, statusEl) {
   }
 }
 
-function logout() {
+async function logout() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+
+  // Revoke the refresh token family server-side and clear the HttpOnly
+  // cookie (POST /auth/logout → AuthLogout in handlers_public.go, which
+  // already does both). Without this call, clearing only client state left
+  // an active, unrevoked token family in Postgres and a live
+  // pg_refresh_token cookie — anyone who captured the cookie before
+  // "logout" could still call /auth/refresh afterward. Fail open on a
+  // network error: a disconnected client must still be able to clear its
+  // own local session rather than get stuck mid-logout.
+  try {
+    await fetch(S.api + "/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    /* best-effort: proceed to local teardown regardless */
+  }
+
   S.token = "";
   S.user = null;
   saveAuth();
@@ -295,6 +375,7 @@ async function exchange(idToken) {
   S.token = out.token;
   S.user = out.user;
   saveAuth();
+  scheduleRefresh();
   route();
 }
 
@@ -1293,4 +1374,13 @@ async function authedBlob(path) {
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/app/sw.js").catch(() => {});
 }
-route();
+// Boot: S.token starts empty every page load (never persisted). If a prior
+// session left a cached user profile and a live refresh cookie, restore the
+// session silently instead of forcing Firebase login again — this is Phase
+// 1 fast re-entry (contract §3.3 / ADR-036 Phase 1). If there is no valid
+// refresh cookie (expired, revoked, or first visit), refreshSilently()
+// fails closed and route() falls through to the landing/login screen.
+(async () => {
+  if (S.user) await refreshSilently();
+  route();
+})();

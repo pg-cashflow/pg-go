@@ -186,6 +186,19 @@ var (
 	tokenVersionCache = make(map[uuid.UUID]tokenVersionHit)
 )
 
+// tokenVersionCacheTTL bounds how long a revoked access token keeps working
+// after RevokeUserSessions / InvalidateTokenVersionCache is called elsewhere
+// in the process. This is a deliberate latency-vs-load tradeoff, not an
+// oversight: a 30s window means a force-logged-out user (password/session
+// reset, fraud action) can keep making authenticated calls for up to 30s
+// after revocation, in exchange for not hitting the users table on every
+// request. Acceptable for this domain (PG tenant management, not a
+// payments-authorization check) because money-moving actions (payout
+// approval) sit behind a separate step-up OTP, not this cache. If a
+// requirement ever needs sub-second revocation (e.g. a stolen-device kill
+// switch), InvalidateTokenVersionCache already exists for an immediate,
+// call-site-triggered eviction — shrinking the TTL is the wrong lever since
+// it just trades latency back in for every request, not only revoked ones.
 const tokenVersionCacheTTL = 30 * time.Second
 
 // InvalidateTokenVersionCache evicts the cached token version for a user so
@@ -228,10 +241,16 @@ type tenantCacheHit struct {
 }
 
 var (
-	tenantCacheMu    sync.RWMutex
-	tenantCache      = make(map[uuid.UUID]tenantCacheHit)
+	tenantCacheMu sync.RWMutex
+	tenantCache   = make(map[uuid.UUID]tenantCacheHit)
 )
 
+// tenantCacheTTL is the same deliberate tradeoff as tokenVersionCacheTTL
+// above, applied to tenant.status reads in RequireTenant: a tenant marked
+// `vacated` can keep hitting tenant routes for up to 30s before the cache
+// expires or InvalidateTenantCache is called explicitly (e.g. from the
+// vacate handler). Kept equal to tokenVersionCacheTTL so both caches expire
+// together and this window has one documented value, not two.
 const tenantCacheTTL = 30 * time.Second
 
 // InvalidateTenantCache evicts the cached tenant for an ID so subsequent requests force a fresh DB lookup.
