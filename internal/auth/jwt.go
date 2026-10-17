@@ -19,6 +19,7 @@ type Claims struct {
 	TenantID     *uuid.UUID  `json:"tenant_id,omitempty"`
 	PropertyID   *uuid.UUID  `json:"property_id,omitempty"`
 	TokenVersion int         `json:"token_version"`
+	FamilyID     *uuid.UUID  `json:"family_id,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -35,14 +36,19 @@ const (
 	RefreshTokenTTL = 30 * 24 * time.Hour
 )
 
-func issueTokenWithTTL(secret string, user *domain.User, ttl time.Duration) (string, error) {
+func issueTokenWithTTL(secret string, user *domain.User, ttl time.Duration, familyID ...*uuid.UUID) (string, error) {
 	now := time.Now().UTC()
+	var famID *uuid.UUID
+	if len(familyID) > 0 {
+		famID = familyID[0]
+	}
 	claims := Claims{
 		UserID:       user.ID,
 		Role:         user.Role,
 		TenantID:     user.TenantID,
 		PropertyID:   user.PropertyID,
 		TokenVersion: tokenVersionOf(user),
+		FamilyID:     famID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        uuid.New().String(),
 			Subject:   user.ID.String(),
@@ -61,6 +67,11 @@ func issueTokenWithTTL(secret string, user *domain.User, ttl time.Duration) (str
 // IssueAccessToken creates a signed JWT with a 15-minute TTL.
 func IssueAccessToken(secret string, user *domain.User) (string, error) {
 	return issueTokenWithTTL(secret, user, AccessTokenTTL)
+}
+
+// IssueAccessTokenWithFamily creates a signed JWT with a 15-minute TTL and binds it to a refresh token family.
+func IssueAccessTokenWithFamily(secret string, user *domain.User, familyID *uuid.UUID) (string, error) {
+	return issueTokenWithTTL(secret, user, AccessTokenTTL, familyID)
 }
 
 // IssueToken creates a signed JWT with a 30-day TTL.

@@ -173,6 +173,18 @@ func (s *stubPIIAuthService) RevokeSession(_ context.Context, _ string) error {
 func (s *stubPIIAuthService) RevokeUserSessions(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
+func (s *stubPIIAuthService) IssueSessionWithClient(_ context.Context, _ *domain.User, _, _ string) (string, string, error) {
+	return "acc", "ref", nil
+}
+func (s *stubPIIAuthService) RotateRefreshTokenWithClient(_ context.Context, _, _, _ string) (string, string, *domain.User, error) {
+	return "acc", "ref", &domain.User{ID: uuid.New(), Role: domain.RoleTenant}, nil
+}
+func (s *stubPIIAuthService) ListSessions(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ string) ([]domain.ActiveSession, error) {
+	return nil, nil
+}
+func (s *stubPIIAuthService) RevokeDeviceSession(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
 
 // TestGate14_ZeroPIILeakInAPIHandlers tests that API handlers touching phone and Aadhaar
 // do not leak raw 12-digit Aadhaar numbers or unmasked 10-digit phone numbers into logs.

@@ -661,7 +661,13 @@ func setFirebaseUID(u *domain.User, firebaseUID string) {
 
 // IssueSession creates an access token (15m) and a newly seeded refresh token family (30d).
 func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error) {
-	accessToken, err = IssueAccessToken(s.jwtSecret, user)
+	return s.IssueSessionWithClient(ctx, user, "", "")
+}
+
+// IssueSessionWithClient creates an access token and binds device metadata to the refresh token family.
+func (s *Service) IssueSessionWithClient(ctx context.Context, user *domain.User, userAgent, ipAddress string) (accessToken string, plaintextRefreshToken string, err error) {
+	familyID := uuid.New()
+	accessToken, err = IssueAccessTokenWithFamily(s.jwtSecret, user, &familyID)
 	if err != nil {
 		return "", "", fmt.Errorf("issue access token: %w", err)
 	}
@@ -676,14 +682,27 @@ func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessTo
 	}
 
 	now := time.Now().UTC()
+	var uaPtr, ipPtr *string
+	if strings.TrimSpace(userAgent) != "" {
+		trimmedUA := strings.TrimSpace(userAgent)
+		uaPtr = &trimmedUA
+	}
+	if strings.TrimSpace(ipAddress) != "" {
+		trimmedIP := strings.TrimSpace(ipAddress)
+		ipPtr = &trimmedIP
+	}
+
 	rt := &domain.RefreshToken{
 		ID:              uuid.New(),
 		UserID:          user.ID,
-		FamilyID:        uuid.New(),
+		FamilyID:        familyID,
 		TokenHash:       hash,
 		ExpiresAt:       now.Add(RefreshTokenTTL),
 		Revoked:         false,
 		FamilyStartedAt: now,
+		UserAgent:       uaPtr,
+		IPAddress:       ipPtr,
+		LastUsedAt:      now,
 		CreatedAt:       now,
 	}
 	if err := s.refreshRepo.StoreRefreshToken(ctx, rt); err != nil {
@@ -694,6 +713,11 @@ func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessTo
 
 // RotateRefreshToken verifies a refresh token, executes replay detection, rotates the token within the family, and returns a new access token and new refresh token.
 func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error) {
+	return s.RotateRefreshTokenWithClient(ctx, plaintextToken, "", "")
+}
+
+// RotateRefreshTokenWithClient verifies and rotates a refresh token, refreshing its device metadata and returning a fresh access token bound to the family.
+func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextToken, userAgent, ipAddress string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error) {
 	if s.refreshRepo == nil {
 		return "", "", nil, errors.New("auth: refresh repository not configured")
 	}
@@ -709,9 +733,23 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 		return "", "", nil, fmt.Errorf("generate new refresh token: %w", err)
 	}
 
+	var uaPtr, ipPtr *string
+	if strings.TrimSpace(userAgent) != "" {
+		trimmedUA := strings.TrimSpace(userAgent)
+		uaPtr = &trimmedUA
+	}
+	if strings.TrimSpace(ipAddress) != "" {
+		trimmedIP := strings.TrimSpace(ipAddress)
+		ipPtr = &trimmedIP
+	}
+
+	now := time.Now().UTC()
 	newRT := &domain.RefreshToken{
-		TokenHash: newHash,
-		ExpiresAt: time.Now().UTC().Add(RefreshTokenTTL),
+		TokenHash:  newHash,
+		ExpiresAt:  now.Add(RefreshTokenTTL),
+		UserAgent:  uaPtr,
+		IPAddress:  ipPtr,
+		LastUsedAt: now,
 	}
 
 	rotatedRT, err := s.refreshRepo.RotateTokenTx(ctx, oldHash, newRT)
@@ -741,7 +779,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, plaintextToken string)
 		}
 	}
 
-	newAccessToken, err = IssueAccessToken(s.jwtSecret, user)
+	newAccessToken, err = IssueAccessTokenWithFamily(s.jwtSecret, user, &rotatedRT.FamilyID)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("issue new access token: %w", err)
 	}
@@ -774,4 +812,41 @@ func (s *Service) RevokeSession(ctx context.Context, plaintextToken string) erro
 		return nil
 	}
 	return s.refreshRepo.RevokeFamily(ctx, rt.FamilyID)
+}
+
+// ListSessions returns active sessions for a user, marking the current session.
+func (s *Service) ListSessions(ctx context.Context, userID uuid.UUID, currentFamilyID *uuid.UUID, currentRefreshToken string) ([]domain.ActiveSession, error) {
+	if s.refreshRepo == nil {
+		return nil, nil
+	}
+	sessions, err := s.refreshRepo.ListActiveSessions(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	var activeFamily uuid.UUID
+	if currentFamilyID != nil && *currentFamilyID != uuid.Nil {
+		activeFamily = *currentFamilyID
+	} else if strings.TrimSpace(currentRefreshToken) != "" {
+		hash := HashRefreshToken(strings.TrimSpace(currentRefreshToken))
+		if rt, err := s.refreshRepo.GetRefreshTokenByHash(ctx, hash); err == nil && rt != nil {
+			activeFamily = rt.FamilyID
+		}
+	}
+
+	for i := range sessions {
+		if activeFamily != uuid.Nil && sessions[i].ID == activeFamily {
+			sessions[i].IsCurrent = true
+		}
+	}
+
+	return sessions, nil
+}
+
+// RevokeDeviceSession revokes an individual session family belonging to the user.
+func (s *Service) RevokeDeviceSession(ctx context.Context, userID, familyID uuid.UUID) error {
+	if s.refreshRepo == nil {
+		return nil
+	}
+	return s.refreshRepo.RevokeFamilyByUser(ctx, userID, familyID)
 }

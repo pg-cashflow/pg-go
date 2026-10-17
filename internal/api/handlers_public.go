@@ -359,7 +359,7 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		}
 	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
-	accToken, refToken, err := h.Auth.IssueSession(c.Request.Context(), user)
+	accToken, refToken, err := h.Auth.IssueSessionWithClient(c.Request.Context(), user, c.Request.UserAgent(), c.ClientIP())
 	if err != nil || refToken == "" {
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{
 			Error: "session creation failed",
@@ -382,7 +382,7 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 		return
 	}
 
-	newAccessToken, newRefreshToken, user, err := h.Auth.RotateRefreshToken(c.Request.Context(), cookie)
+	newAccessToken, newRefreshToken, user, err := h.Auth.RotateRefreshTokenWithClient(c.Request.Context(), cookie, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
 		h.clearRefreshCookie(c)
 		code := apierr.CodeAuthUnauthorized
@@ -415,6 +415,53 @@ func (h *Handlers) AuthLogout(c *gin.Context) {
 		_ = h.Auth.RevokeSession(c.Request.Context(), cookie)
 	}
 	h.clearRefreshCookie(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// GetActiveSessions handles GET /auth/sessions.
+// Returns list of active device sessions for the authenticated user.
+func (h *Handlers) GetActiveSessions(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		return
+	}
+	if h.Auth == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	cookie, _ := c.Cookie(RefreshCookieName)
+	sessions, err := h.Auth.ListSessions(c.Request.Context(), claims.UserID, claims.FamilyID, cookie)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions})
+}
+
+// DeleteSession handles DELETE /auth/sessions/:id.
+// Revokes an individual active device session belonging to the authenticated user.
+func (h *Handlers) DeleteSession(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		return
+	}
+	sessionID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		apierr.RespondBindErr(c, "invalid session id", apierr.CodeRequestInvalidBody)
+		return
+	}
+	if h.Auth == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	if err := h.Auth.RevokeDeviceSession(c.Request.Context(), claims.UserID, sessionID); err != nil {
+		respondErr(c, err)
+		return
+	}
+	// If the user revoked their currently active session, clear the refresh cookie
+	if claims.FamilyID != nil && *claims.FamilyID == sessionID {
+		h.clearRefreshCookie(c)
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

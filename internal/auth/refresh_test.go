@@ -83,6 +83,55 @@ func (m *memoryRefreshTokenRepo) RevokeUserTokens(ctx context.Context, userID uu
 	return nil
 }
 
+func (m *memoryRefreshTokenRepo) RevokeFamilyByUser(ctx context.Context, userID, familyID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	for _, rt := range m.tokens {
+		if rt.UserID == userID && rt.FamilyID == familyID {
+			rt.Revoked = true
+			if rt.RevokedAt == nil {
+				rt.RevokedAt = &now
+			}
+		}
+	}
+	return nil
+}
+
+func (m *memoryRefreshTokenRepo) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]domain.ActiveSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	activeByFamily := make(map[uuid.UUID]*domain.RefreshToken)
+	for _, rt := range m.tokens {
+		if rt.UserID == userID && !rt.Revoked && rt.ExpiresAt.After(time.Now()) {
+			curr, exists := activeByFamily[rt.FamilyID]
+			if !exists || rt.LastUsedAt.After(curr.LastUsedAt) {
+				activeByFamily[rt.FamilyID] = rt
+			}
+		}
+	}
+	var res []domain.ActiveSession
+	for _, rt := range activeByFamily {
+		ua := ""
+		if rt.UserAgent != nil {
+			ua = *rt.UserAgent
+		}
+		ip := ""
+		if rt.IPAddress != nil {
+			ip = *rt.IPAddress
+		}
+		res = append(res, domain.ActiveSession{
+			ID:          rt.FamilyID,
+			DeviceLabel: ParseDeviceLabel(ua),
+			UserAgent:   ua,
+			IPAddress:   ip,
+			LastSeen:    rt.LastUsedAt,
+			CreatedAt:   rt.FamilyStartedAt,
+		})
+	}
+	return res, nil
+}
+
 func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, newRT *domain.RefreshToken) (*domain.RefreshToken, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

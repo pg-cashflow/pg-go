@@ -21,9 +21,11 @@ import (
 
 type fakeAuthRefreshService struct {
 	stubPIIAuthService
-	rotateErr error
-	otpErr    error
-	otpCalls  []string
+	rotateErr         error
+	otpErr            error
+	otpCalls          []string
+	sessionsToReturn  []domain.ActiveSession
+	revokedSessionIDs []uuid.UUID
 }
 
 func (s *fakeAuthRefreshService) RotateRefreshToken(_ context.Context, token string) (string, string, *domain.User, error) {
@@ -34,9 +36,29 @@ func (s *fakeAuthRefreshService) RotateRefreshToken(_ context.Context, token str
 	return "fresh-access-token", "rotated-refresh-token", user, nil
 }
 
+func (s *fakeAuthRefreshService) RotateRefreshTokenWithClient(ctx context.Context, token, _, _ string) (string, string, *domain.User, error) {
+	return s.RotateRefreshToken(ctx, token)
+}
+
 func (s *fakeAuthRefreshService) RequestOTP(_ context.Context, phone string) error {
 	s.otpCalls = append(s.otpCalls, phone)
 	return s.otpErr
+}
+
+func (s *fakeAuthRefreshService) ListSessions(_ context.Context, _ uuid.UUID, currentFamilyID *uuid.UUID, _ string) ([]domain.ActiveSession, error) {
+	res := make([]domain.ActiveSession, len(s.sessionsToReturn))
+	copy(res, s.sessionsToReturn)
+	for i := range res {
+		if currentFamilyID != nil && res[i].ID == *currentFamilyID {
+			res[i].IsCurrent = true
+		}
+	}
+	return res, nil
+}
+
+func (s *fakeAuthRefreshService) RevokeDeviceSession(_ context.Context, _, familyID uuid.UUID) error {
+	s.revokedSessionIDs = append(s.revokedSessionIDs, familyID)
+	return nil
 }
 
 type fakeAuthJoinService struct {
@@ -117,6 +139,12 @@ func TestAuthHandlers_T4d(t *testing.T) {
 	router.POST("/auth/refresh", h.AuthRefresh)
 	router.POST("/auth/otp/request", h.OTPRequest)
 	router.GET("/join/invite/:code", h.LookupInvite)
+
+	authGroup := router.Group("/auth", auth.RequireOwnerOrManagerOrTenant(jwtSecret, nil))
+	{
+		authGroup.GET("/sessions", h.GetActiveSessions)
+		authGroup.DELETE("/sessions/:id", h.DeleteSession)
+	}
 
 	pendingGroup := router.Group("/join", auth.RequirePendingJoin(jwtSecret, nil))
 	{
@@ -362,6 +390,94 @@ func TestAuthHandlers_T4d(t *testing.T) {
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("expected 403 for already activated tenant calling /join/me, got %d", w.Code)
+		}
+	})
+
+	t.Run("Sessions: ListActiveSessions returns 200 with current session", func(t *testing.T) {
+		famID := uuid.New()
+		ownerUser := &domain.User{
+			ID:           uuid.New(),
+			Role:         domain.RoleOwner,
+			TokenVersion: 1,
+		}
+		tok, err := auth.IssueAccessTokenWithFamily(jwtSecret, ownerUser, &famID)
+		if err != nil {
+			t.Fatalf("IssueAccessTokenWithFamily: %v", err)
+		}
+
+		authSvc.sessionsToReturn = []domain.ActiveSession{
+			{
+				ID:          famID,
+				DeviceLabel: "Safari on iPhone",
+				IPAddress:   "1.2.3.4",
+			},
+			{
+				ID:          uuid.New(),
+				DeviceLabel: "Chrome on Windows",
+				IPAddress:   "5.6.7.8",
+			},
+		}
+
+		req := httptest.NewRequest(http.MethodGet, "/auth/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for GetActiveSessions, got %d body=%s", w.Code, w.Body.String())
+		}
+
+		var resp struct {
+			Sessions []domain.ActiveSession `json:"sessions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if len(resp.Sessions) != 2 {
+			t.Fatalf("expected 2 sessions, got %d", len(resp.Sessions))
+		}
+		if !resp.Sessions[0].IsCurrent {
+			t.Errorf("expected session 0 to be marked current")
+		}
+		if resp.Sessions[1].IsCurrent {
+			t.Errorf("expected session 1 not to be marked current")
+		}
+	})
+
+	t.Run("Sessions: DeleteSession revokes session family and returns 200", func(t *testing.T) {
+		famToRevoke := uuid.New()
+		ownerUser := &domain.User{
+			ID:           uuid.New(),
+			Role:         domain.RoleOwner,
+			TokenVersion: 1,
+		}
+		tok, _ := auth.IssueAccessToken(jwtSecret, ownerUser)
+
+		req := httptest.NewRequest(http.MethodDelete, "/auth/sessions/"+famToRevoke.String(), nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for DeleteSession, got %d body=%s", w.Code, w.Body.String())
+		}
+		if len(authSvc.revokedSessionIDs) == 0 || authSvc.revokedSessionIDs[len(authSvc.revokedSessionIDs)-1] != famToRevoke {
+			t.Fatalf("expected revoked session %v, got %v", famToRevoke, authSvc.revokedSessionIDs)
+		}
+	})
+
+	t.Run("Sessions: DeleteSession with invalid UUID returns 400", func(t *testing.T) {
+		ownerUser := &domain.User{
+			ID:           uuid.New(),
+			Role:         domain.RoleOwner,
+			TokenVersion: 1,
+		}
+		tok, _ := auth.IssueAccessToken(jwtSecret, ownerUser)
+
+		req := httptest.NewRequest(http.MethodDelete, "/auth/sessions/invalid-not-a-uuid", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid session id, got %d body=%s", w.Code, w.Body.String())
 		}
 	})
 }

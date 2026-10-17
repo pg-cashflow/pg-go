@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,10 +46,13 @@ func (r *RefreshTokenRepo) StoreRefreshToken(ctx context.Context, rt *domain.Ref
 	if rt.FamilyStartedAt.IsZero() {
 		rt.FamilyStartedAt = rt.CreatedAt
 	}
+	if rt.LastUsedAt.IsZero() {
+		rt.LastUsedAt = rt.CreatedAt
+	}
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		rt.ID, rt.UserID, rt.FamilyID, rt.TokenHash, rt.ExpiresAt, rt.Revoked, rt.RevokedAt, rt.FamilyStartedAt, rt.CreatedAt,
+		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, user_agent, ip_address, last_used_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		rt.ID, rt.UserID, rt.FamilyID, rt.TokenHash, rt.ExpiresAt, rt.Revoked, rt.RevokedAt, rt.FamilyStartedAt, rt.UserAgent, rt.IPAddress, rt.LastUsedAt, rt.CreatedAt,
 	)
 	return err
 }
@@ -56,10 +60,10 @@ func (r *RefreshTokenRepo) StoreRefreshToken(ctx context.Context, rt *domain.Ref
 func (r *RefreshTokenRepo) GetRefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error) {
 	var rt domain.RefreshToken
 	err := r.db.QueryRow(ctx, `
-		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
+		SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, user_agent, ip_address, last_used_at, created_at
 		FROM refresh_tokens
 		WHERE token_hash = $1`, hash,
-	).Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &rt.TokenHash, &rt.ExpiresAt, &rt.Revoked, &rt.RevokedAt, &rt.FamilyStartedAt, &rt.CreatedAt)
+	).Scan(&rt.ID, &rt.UserID, &rt.FamilyID, &rt.TokenHash, &rt.ExpiresAt, &rt.Revoked, &rt.RevokedAt, &rt.FamilyStartedAt, &rt.UserAgent, &rt.IPAddress, &rt.LastUsedAt, &rt.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +88,15 @@ func (r *RefreshTokenRepo) RevokeFamily(ctx context.Context, familyID uuid.UUID)
 	return err
 }
 
+func (r *RefreshTokenRepo) RevokeFamilyByUser(ctx context.Context, userID, familyID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE refresh_tokens
+		SET revoked = TRUE, revoked_at = NOW()
+		WHERE user_id = $1 AND family_id = $2 AND revoked = FALSE`, userID, familyID,
+	)
+	return err
+}
+
 func (r *RefreshTokenRepo) RevokeUserTokens(ctx context.Context, userID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE refresh_tokens
@@ -91,6 +104,43 @@ func (r *RefreshTokenRepo) RevokeUserTokens(ctx context.Context, userID uuid.UUI
 		WHERE user_id = $1`, userID,
 	)
 	return err
+}
+
+func (r *RefreshTokenRepo) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]domain.ActiveSession, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT ON (family_id)
+			family_id,
+			COALESCE(user_agent, ''),
+			COALESCE(ip_address, ''),
+			last_used_at,
+			family_started_at
+		FROM refresh_tokens
+		WHERE user_id = $1
+		  AND revoked = FALSE
+		  AND expires_at > NOW()
+		ORDER BY family_id, last_used_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list active sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []domain.ActiveSession
+	for rows.Next() {
+		var s domain.ActiveSession
+		if err := rows.Scan(&s.ID, &s.UserAgent, &s.IPAddress, &s.LastSeen, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan active session: %w", err)
+		}
+		s.DeviceLabel = domain.ParseDeviceLabel(s.UserAgent)
+		sessions = append(sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].LastSeen.After(sessions[j].LastSeen)
+	})
+	return sessions, nil
 }
 
 // RotateTokenTx atomically validates, revokes, and rotates a refresh token inside a single transaction.
@@ -205,11 +255,18 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 	newRT.UserID = current.UserID
 	newRT.FamilyStartedAt = familyStarted
 	newRT.CreatedAt = now
+	newRT.LastUsedAt = now
+	if newRT.UserAgent == nil {
+		newRT.UserAgent = current.UserAgent
+	}
+	if newRT.IPAddress == nil {
+		newRT.IPAddress = current.IPAddress
+	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.CreatedAt,
+		INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, user_agent, ip_address, last_used_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.UserAgent, newRT.IPAddress, newRT.LastUsedAt, newRT.CreatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("insert rotated token: %w", err)
 	}

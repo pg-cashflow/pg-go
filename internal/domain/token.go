@@ -43,7 +43,21 @@ type RefreshToken struct {
 	Revoked         bool       `json:"revoked"`
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
 	FamilyStartedAt time.Time  `json:"family_started_at"`
+	UserAgent       *string    `json:"user_agent,omitempty"`
+	IPAddress       *string    `json:"ip_address,omitempty"`
+	LastUsedAt      time.Time  `json:"last_used_at"`
 	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// ActiveSession represents an authenticated client session/device.
+type ActiveSession struct {
+	ID          uuid.UUID `json:"id"`
+	DeviceLabel string    `json:"device_label"`
+	UserAgent   string    `json:"user_agent"`
+	IPAddress   string    `json:"ip_address"`
+	LastSeen    time.Time `json:"last_seen"`
+	CreatedAt   time.Time `json:"created_at"`
+	IsCurrent   bool      `json:"is_current"`
 }
 
 // GenerateToken returns a raw token (hex) for the URL; never store raw.

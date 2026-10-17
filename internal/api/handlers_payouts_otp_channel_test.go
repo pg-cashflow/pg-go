@@ -65,6 +65,18 @@ func (s *stubPayoutAuthService) RotateRefreshToken(context.Context, string) (str
 }
 func (s *stubPayoutAuthService) RevokeSession(context.Context, string) error    { return nil }
 func (s *stubPayoutAuthService) RevokeUserSessions(context.Context, uuid.UUID) error { return nil }
+func (s *stubPayoutAuthService) IssueSessionWithClient(context.Context, *domain.User, string, string) (string, string, error) {
+	return "", "", nil
+}
+func (s *stubPayoutAuthService) RotateRefreshTokenWithClient(context.Context, string, string, string) (string, string, *domain.User, error) {
+	return "", "", nil, nil
+}
+func (s *stubPayoutAuthService) ListSessions(context.Context, uuid.UUID, *uuid.UUID, string) ([]domain.ActiveSession, error) {
+	return nil, nil
+}
+func (s *stubPayoutAuthService) RevokeDeviceSession(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
 
 type stubPayoutUserStore struct {
 	user *domain.User

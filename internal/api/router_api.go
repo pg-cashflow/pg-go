@@ -23,6 +23,8 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	api.POST("/auth/refresh", ipRateLimit(30.0/60, 60), h.AuthRefresh)
 	api.POST("/auth/logout", h.AuthLogout)
 	api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
+	api.GET("/auth/sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.GetActiveSessions)
+	api.DELETE("/auth/sessions/:id", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.DeleteSession)
 
 	pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret, d.AuthUserRepo))
 	{

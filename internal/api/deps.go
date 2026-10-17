@@ -50,9 +50,13 @@ type AuthService interface {
 	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)
 	VerifyFirebaseStepUp(ctx context.Context, idToken string, maxAge time.Duration) (auth.FirebaseIdentity, error)
 	IssueSession(ctx context.Context, user *domain.User) (accessToken string, plaintextRefreshToken string, err error)
+	IssueSessionWithClient(ctx context.Context, user *domain.User, userAgent, ipAddress string) (accessToken string, plaintextRefreshToken string, err error)
 	RotateRefreshToken(ctx context.Context, plaintextToken string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error)
+	RotateRefreshTokenWithClient(ctx context.Context, plaintextToken, userAgent, ipAddress string) (newAccessToken string, newPlaintextRefreshToken string, user *domain.User, err error)
 	RevokeSession(ctx context.Context, plaintextToken string) error
 	RevokeUserSessions(ctx context.Context, userID uuid.UUID) error
+	ListSessions(ctx context.Context, userID uuid.UUID, currentFamilyID *uuid.UUID, currentRefreshToken string) ([]domain.ActiveSession, error)
+	RevokeDeviceSession(ctx context.Context, userID, familyID uuid.UUID) error
 }
 
 // MagicLinkService resolves and creates payment tokens.

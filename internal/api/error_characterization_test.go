@@ -296,6 +296,22 @@ func (s *stubAuthService) RevokeUserSessions(ctx context.Context, userID uuid.UU
 	return nil
 }
 
+func (s *stubAuthService) IssueSessionWithClient(_ context.Context, _ *domain.User, _, _ string) (string, string, error) {
+	return "stub-access-token", "stub-refresh-token", nil
+}
+
+func (s *stubAuthService) RotateRefreshTokenWithClient(_ context.Context, _, _, _ string) (string, string, *domain.User, error) {
+	return "stub-new-access-token", "stub-new-refresh-token", &domain.User{Role: domain.RoleOwner}, nil
+}
+
+func (s *stubAuthService) ListSessions(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ string) ([]domain.ActiveSession, error) {
+	return nil, nil
+}
+
+func (s *stubAuthService) RevokeDeviceSession(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+
 func TestOTPVerifyCharacterization(t *testing.T) {
 	cases := []struct {
 		name       string

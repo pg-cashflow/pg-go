@@ -23,7 +23,9 @@ type RefreshTokenRepository interface {
 	GetRefreshTokenByHash(ctx context.Context, hash string) (*domain.RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, id uuid.UUID) error
 	RevokeFamily(ctx context.Context, familyID uuid.UUID) error
+	RevokeFamilyByUser(ctx context.Context, userID, familyID uuid.UUID) error
 	RevokeUserTokens(ctx context.Context, userID uuid.UUID) error
+	ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]domain.ActiveSession, error)
 	RotateTokenTx(ctx context.Context, oldHash string, newRT *domain.RefreshToken) (*domain.RefreshToken, error)
 	PurgeExpiredTokens(ctx context.Context, olderThan time.Duration) (int64, error)
 }
