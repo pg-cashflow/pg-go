@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -354,6 +355,7 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 			}
 		}
 		if _, err := h.Joins.EnsurePending(c.Request.Context(), user, *user.PropertyID, slotInviteID); err != nil {
+			slog.Error("FirebaseAuth: EnsurePending failed", "err", err, "user_id", user.ID)
 			c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "join queue failed"})
 			return
 		}

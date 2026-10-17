@@ -214,6 +214,7 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 		if strings.TrimSpace(slot.BoundPhone) != "" && auth.NormalizePhone(user.Phone) != auth.NormalizePhone(slot.BoundPhone) {
 			return nil, ErrInvalidInvite
 		}
+	}
 	phone := user.Phone
 	if strings.TrimSpace(phone) == "" {
 		clean := strings.ReplaceAll(user.ID.String(), "-", "")
@@ -223,12 +224,13 @@ func (s *Service) EnsurePending(ctx context.Context, user *domain.User, property
 		phone = "+G" + clean
 	}
 	j := &domain.JoinRequest{
-		PropertyID:   propertyID,
-		UserID:       user.ID,
-		Phone:        phone,
-		Name:         "",
-		Status:       domain.JoinPending,
-		SlotInviteID: slotInviteID,
+		PropertyID:        propertyID,
+		UserID:            user.ID,
+		Phone:             phone,
+		Name:              "",
+		Status:            domain.JoinPending,
+		SlotInviteID:      slotInviteID,
+		OccupationDetails: json.RawMessage("{}"),
 	}
 	if err := s.joins.Create(ctx, j); err != nil {
 		return nil, err

@@ -285,6 +285,10 @@ func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
 		s := string(t.OccupationType)
 		occType = &s
 	}
+	occDetails := t.OccupationDetails
+	if len(occDetails) == 0 {
+		occDetails = json.RawMessage("{}")
+	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO tenants (
 			property_id, name, phone, room_number, room_id, aadhaar_last4, rent_amount, due_day,
@@ -301,7 +305,7 @@ func (r *TenantRepo) Create(ctx context.Context, t *domain.Tenant) error {
 		t.PermanentAddress, t.CurrentAddress, t.ParentName, t.EmergencyPhone, t.JoinedOn,
 		nullIfEmptyBytes(t.IDPhotoBytes), t.HasIDPhoto,
 		t.MajorityDate, t.GuardianName, t.GuardianPhone, t.GuardianRelation, t.GuardianKYCReferenceID, t.GuardianConsentVerifiedAt, t.IsGamificationDisabled,
-		occType, t.DateOfBirth, t.OccupationDetails, t.EmergencyContactName,
+		occType, t.DateOfBirth, occDetails, t.EmergencyContactName,
 		t.CreatedAt, t.UpdatedAt,
 	).Scan(&t.ID)
 }
@@ -394,6 +398,10 @@ func (r *TenantRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID) (
 // would silently overwrite a concurrent credit change (lost update).
 func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 	t.UpdatedAt = time.Now().UTC()
+	occDetails := t.OccupationDetails
+	if len(occDetails) == 0 {
+		occDetails = json.RawMessage("{}")
+	}
 	_, err := r.db.Exec(ctx, `
 		UPDATE tenants SET name=$2, phone=$3, room_number=$4, room_id=$5, aadhaar_last4=$6, rent_amount=$7,
 			due_day=$8, notice_period_days=$9, notice_given_at=$10,
@@ -410,7 +418,7 @@ func (r *TenantRepo) Update(ctx context.Context, t *domain.Tenant) error {
 		t.EmergencyPhone, t.JoinedOn,
 		t.MajorityDate, t.GuardianName, t.GuardianPhone, t.GuardianRelation,
 		t.GuardianKYCReferenceID, t.GuardianConsentVerifiedAt, t.IsGamificationDisabled,
-		nullableOccupationType(t.OccupationType), t.DateOfBirth, t.OccupationDetails, t.EmergencyContactName,
+		nullableOccupationType(t.OccupationType), t.DateOfBirth, occDetails, t.EmergencyContactName,
 		t.UpdatedAt,
 	)
 	return err

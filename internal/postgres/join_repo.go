@@ -55,6 +55,10 @@ func (r *JoinRepo) Create(ctx context.Context, j *domain.JoinRequest) error {
 		s := string(j.OccupationType)
 		occType = &s
 	}
+	occDetails := j.OccupationDetails
+	if len(occDetails) == 0 {
+		occDetails = json.RawMessage("{}")
+	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO join_requests (
 			property_id, user_id, phone, name, aadhaar_last4,
@@ -69,7 +73,7 @@ func (r *JoinRepo) Create(ctx context.Context, j *domain.JoinRequest) error {
 		j.PropertyID, j.UserID, j.Phone, j.Name, j.AadhaarLast4,
 		j.PermanentAddress, j.CurrentAddress, j.ParentName, j.EmergencyPhone, j.JoinedOn,
 		j.Status, j.TenantID, j.SlotInviteID,
-		occType, j.DateOfBirth, j.ProfileSchemaVersion, j.OccupationDetails, j.EmergencyContactName,
+		occType, j.DateOfBirth, j.ProfileSchemaVersion, occDetails, j.EmergencyContactName,
 		j.CreatedAt, j.UpdatedAt,
 	).Scan(&j.ID)
 }
@@ -121,6 +125,10 @@ func (r *JoinRepo) Update(ctx context.Context, j *domain.JoinRequest) error {
 		s := string(j.OccupationType)
 		occType = &s
 	}
+	occDetails := j.OccupationDetails
+	if len(occDetails) == 0 {
+		occDetails = json.RawMessage("{}")
+	}
 	_, err := r.db.Exec(ctx, `
 		UPDATE join_requests SET name=$2, aadhaar_last4=$3,
 			permanent_address=$4, current_address=$5, parent_name=$6, emergency_phone=$7, joined_on=$8,
@@ -131,7 +139,7 @@ func (r *JoinRepo) Update(ctx context.Context, j *domain.JoinRequest) error {
 		j.ID, j.Name, j.AadhaarLast4,
 		j.PermanentAddress, j.CurrentAddress, j.ParentName, j.EmergencyPhone, j.JoinedOn,
 		j.Status, j.TenantID, j.SlotInviteID,
-		occType, j.DateOfBirth, j.ProfileSchemaVersion, j.OccupationDetails, j.EmergencyContactName,
+		occType, j.DateOfBirth, j.ProfileSchemaVersion, occDetails, j.EmergencyContactName,
 		j.UpdatedAt,
 	)
 	return err
