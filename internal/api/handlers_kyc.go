@@ -401,6 +401,75 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
 }
 
+type aadhaarOTPRequestBody struct {
+	AadhaarNumber string `json:"aadhaar_number" binding:"required"`
+}
+
+// TenantKYCAadhaarOTPRequest handles POST /api/tenant/kyc/aadhaar/otp/request.
+// Triggers direct UIDAI OTP generation via Cashfree.
+func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	var body aadhaarOTPRequestBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "aadhaar_number is required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+
+	refID, err := svc.InitiateAadhaarOTP(c.Request.Context(), t.ID, body.AadhaarNumber, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ref_id": refID})
+}
+
+type aadhaarOTPVerifyBody struct {
+	RefID string `json:"ref_id" binding:"required"`
+	OTP   string `json:"otp"    binding:"required"`
+}
+
+// TenantKYCAadhaarOTPVerify handles POST /api/tenant/kyc/aadhaar/otp/verify.
+// Completes verification with UIDAI and auto-verifies immediately (no manual review).
+func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	var body aadhaarOTPVerifyBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "ref_id and otp are required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+
+	v, err := svc.CompleteAadhaarOTP(c.Request.Context(), t.ID, body.RefID, body.OTP, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
+}
+
 // ---------------------------------------------------------------------------
 // Owner-facing KYC endpoints
 // ---------------------------------------------------------------------------
@@ -544,6 +613,93 @@ func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
 	}
 	ct := http.DetectContentType(b)
 	c.Data(http.StatusOK, ct, b)
+}
+
+// OwnerKYCReviewQueue handles GET /api/owner/kyc/queue.
+// Lists pending manual review verifications for the owner's property.
+func (h *Handlers) OwnerKYCReviewQueue(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+
+	items, err := svc.ListPendingReviews(c.Request.Context(), propertyID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	views := make([]gin.H, len(items))
+	for i := range items {
+		views[i] = ownerKYCVerificationView(&items[i])
+	}
+	c.JSON(http.StatusOK, gin.H{"items": views})
+}
+
+// OwnerKYCApprove handles POST /api/owner/kyc/:id/approve.
+// Approves a pending manual upload verification.
+func (h *Handlers) OwnerKYCApprove(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	verificationID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	v, err := svc.ApproveManualReview(c.Request.Context(), verificationID, claims.UserID, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, ownerKYCVerificationView(v))
+}
+
+type kycRejectBody struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// OwnerKYCReject handles POST /api/owner/kyc/:id/reject.
+// Rejects a pending manual upload verification with a mandatory human reason.
+func (h *Handlers) OwnerKYCReject(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	verificationID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var body kycRejectBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "reason is required", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	v, err := svc.RejectManualReview(c.Request.Context(), verificationID, claims.UserID, body.Reason, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, ownerKYCVerificationView(v))
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +851,9 @@ func tenantKYCVerificationView(v *domain.KYCVerification) gin.H {
 	if v.FailureReason != nil {
 		m["failure_reason"] = v.FailureReason
 	}
+	if v.RejectionReason != nil {
+		m["rejection_reason"] = v.RejectionReason
+	}
 	return m
 }
 
@@ -709,5 +868,14 @@ func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 	m["qr_status"] = v.QRStatus
 	m["photo_stored"] = v.PhotoStored
 	m["name_mismatch"] = v.NameMismatch
+	if v.ReviewedBy != nil {
+		m["reviewed_by"] = v.ReviewedBy
+	}
+	if v.ReviewedAt != nil {
+		m["reviewed_at"] = v.ReviewedAt
+	}
+	if v.DocumentURL != nil {
+		m["document_url"] = v.DocumentURL
+	}
 	return m
 }

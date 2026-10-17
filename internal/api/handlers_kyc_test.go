@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +115,37 @@ func (f *fakeKYCSvc) ClearDuplicateFlag(ctx context.Context, verificationID uuid
 	}
 	return nil
 }
+func (f *fakeKYCSvc) InitiateAadhaarOTP(ctx context.Context, tenantID uuid.UUID, aadhaarNumber, actor string) (string, error) {
+	return "test_aadhaar_ref_123", nil
+}
+func (f *fakeKYCSvc) CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error) {
+	now := time.Now()
+	return &domain.KYCVerification{
+		ID:         uuid.New(),
+		TenantID:   tenantID,
+		Status:     domain.KYCStatusVerified,
+		Method:     domain.KYCMethodAadhaarOTP,
+		VerifiedAt: &now,
+	}, nil
+}
+func (f *fakeKYCSvc) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
+	return nil, nil
+}
+func (f *fakeKYCSvc) ApproveManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	now := time.Now()
+	return &domain.KYCVerification{
+		ID:         verificationID,
+		Status:     domain.KYCStatusVerified,
+		VerifiedAt: &now,
+	}, nil
+}
+func (f *fakeKYCSvc) RejectManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{
+		ID:              verificationID,
+		Status:          domain.KYCStatusRejected,
+		RejectionReason: &reason,
+	}, nil
+}
 
 // ---- Test router helpers ----------------------------------------------------
 
@@ -149,6 +181,8 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 		tenant_g.POST("/initiate", h.TenantKYCInitiate)
 		tenant_g.GET("/return", h.TenantKYCReturn)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
+		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)
+		tenant_g.POST("/aadhaar/otp/verify", h.TenantKYCAadhaarOTPVerify)
 		tenant_g.POST("/qr", h.TenantKYCSubmitQR)
 		tenant_g.POST("/revoke", h.TenantKYCRevoke)
 		tenant_g.GET("/status", h.TenantKYCStatus)
@@ -825,3 +859,145 @@ func TestTenantKYCInitiate_RateLimit_BurstEnforced(t *testing.T) {
 		t.Fatalf("request 3 expected 429 Too Many Requests, got %d", w.Code)
 	}
 }
+
+func kycTestOwnerRouter(svc KYCService, propertyID, ownerUserID uuid.UUID) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerUserID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+	h := &Handlers{Deps: Deps{
+		KYCSvc: svc,
+	}}
+	owner := r.Group("/api/owner/kyc")
+	{
+		owner.GET("/queue", h.OwnerKYCReviewQueue)
+		owner.POST("/:id/approve", h.OwnerKYCApprove)
+		owner.POST("/:id/reject", h.OwnerKYCReject)
+	}
+	return r
+}
+
+func TestTenantKYCAadhaarOTPRequest_OK(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	r := kycTestTenantRouter(svc, "")
+
+	body := `{"aadhaar_number":"548550008000"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	if resp["ref_id"] != "test_aadhaar_ref_123" {
+		t.Errorf("expected ref_id 'test_aadhaar_ref_123', got %v", resp["ref_id"])
+	}
+}
+
+func TestTenantKYCAadhaarOTPVerify_AutoVerified(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	r := kycTestTenantRouter(svc, "")
+
+	body := `{"ref_id":"test_aadhaar_ref_123","otp":"123456"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	// Aadhaar OTP is government-authenticated and auto-verified (instant verified status)
+	if resp["status"] != string(domain.KYCStatusVerified) {
+		t.Errorf("expected status 'verified', got %v", resp["status"])
+	}
+	if resp["method"] != string(domain.KYCMethodAadhaarOTP) {
+		t.Errorf("expected method 'aadhaar_otp', got %v", resp["method"])
+	}
+}
+
+func TestOwnerKYCReviewQueue_OK(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	svc := &fakeKYCSvc{}
+	r := kycTestOwnerRouter(svc, propertyID, ownerID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/owner/kyc/queue", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	if _, ok := resp["items"]; !ok {
+		t.Errorf("expected 'items' in response, got %v", resp)
+	}
+}
+
+func TestOwnerKYCApprove_OK(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+	svc := &fakeKYCSvc{}
+	r := kycTestOwnerRouter(svc, propertyID, ownerID)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/kyc/"+verifID.String()+"/approve", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	if resp["status"] != string(domain.KYCStatusVerified) {
+		t.Errorf("expected status 'verified', got %v", resp["status"])
+	}
+}
+
+func TestOwnerKYCReject_OK(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+	svc := &fakeKYCSvc{}
+	r := kycTestOwnerRouter(svc, propertyID, ownerID)
+
+	body := `{"reason":"Document illegible, corners cropped"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/kyc/"+verifID.String()+"/reject", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	if resp["status"] != string(domain.KYCStatusRejected) {
+		t.Errorf("expected status 'rejected', got %v", resp["status"])
+	}
+}
+

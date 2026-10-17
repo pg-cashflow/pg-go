@@ -22,6 +22,16 @@
 - Step-up authentication uses **Email via SMTP exclusively**.
 - All step-up verification codes (`payout_approval`) transmit to the verified email address of the authenticated owner.
 
+### 1.3 KYC Verification Boundary
+- KYC verification does not block user authentication.
+- All users with valid Firebase credentials can execute `POST /api/auth/firebase` and receive a session token.
+- Unverified tenants can access their tenant portal and view KYC submission screens (`/tenant/kyc/*`).
+- KYC status gates sensitive operations only:
+  1. Tenant rent payment is blocked if the property sets `require_kyc_before_pay = true`.
+  2. Room allocation completes only after identity verification.
+  3. Owner payout approvals require verified owner identity.
+- Client applications must route unverified tenants to the dedicated KYC submission workflow.
+
 ---
 
 ## 2. Token Architecture Specification
@@ -36,6 +46,17 @@
 - Refresh tokens belong to a cryptographic family.
 - If a revoked refresh token is presented again (replay attack), the backend revokes the complete token family immediately (`auth.ErrReplayDetected`).
 - The backend clears the cookie and returns HTTP 401 with code `AUTH_ACCESS_REVOKED`.
+
+### 2.2 Refresh Token CSRF Risk Profile and Accepted Risk
+- The endpoint `POST /api/auth/refresh` relies on the `pg_refresh_token` cookie.
+- The cookie uses `SameSite=Strict`, `HttpOnly`, and `Secure` (in production) attributes.
+- Modern web browsers do not transmit `SameSite=Strict` cookies during cross-site requests.
+- If an unauthorized cross-site request executes on a non-compliant browser:
+  1. The attacker cannot read the response body or the new JWT because browser same-origin policies block access.
+  2. The server rotates the token family.
+  3. The legitimate client encounters an unexpected rotation, causing an `auth.ErrReplayDetected` revocation on next use.
+- The security impact is limited to denial-of-service (forced session logout). The threat cannot extract credentials or escalate privileges.
+- This behavior is an accepted architectural risk. Dedicated CSRF double-submit tokens are not required.
 
 ---
 

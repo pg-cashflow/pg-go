@@ -82,9 +82,9 @@ func TestTenantRepo_Update_ExcludesCreditBalance_Unit(t *testing.T) {
 		}
 	}
 
-	// 3. Verify exactly 24 arguments are passed (ID at $1 + 23 columns)
-	if len(mockDB.lastArgs) != 24 {
-		t.Fatalf("expected 24 arguments to Update Exec, got %d", len(mockDB.lastArgs))
+	// 3. Verify exactly 28 arguments are passed (ID at $1 + 27 columns)
+	if len(mockDB.lastArgs) != 28 {
+		t.Fatalf("expected 28 arguments to Update Exec, got %d", len(mockDB.lastArgs))
 	}
 }
 

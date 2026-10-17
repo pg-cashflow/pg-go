@@ -16,17 +16,20 @@ import (
 type KYCStatus string
 
 const (
-	KYCStatusPending  KYCStatus = "pending"
-	KYCStatusVerified KYCStatus = "verified"
-	KYCStatusFailed   KYCStatus = "failed"
-	KYCStatusExpired  KYCStatus = "expired"
-	KYCStatusRevoked  KYCStatus = "revoked"
+	KYCStatusPending             KYCStatus = "pending"
+	KYCStatusPendingManualReview KYCStatus = "pending_manual_review"
+	KYCStatusVerified            KYCStatus = "verified"
+	KYCStatusFailed              KYCStatus = "failed"
+	KYCStatusRejected            KYCStatus = "rejected"
+	KYCStatusExpired             KYCStatus = "expired"
+	KYCStatusRevoked             KYCStatus = "revoked"
 )
 
 type KYCMethod string
 
 const (
 	KYCMethodDigiLocker KYCMethod = "digilocker"
+	KYCMethodAadhaarOTP KYCMethod = "aadhaar_otp"
 	KYCMethodOCR        KYCMethod = "ocr"
 	KYCMethodQR         KYCMethod = "qr"
 )
@@ -81,6 +84,11 @@ type KYCVerification struct {
 	NameMismatch       bool       `json:"name_mismatch"`
 	AttestedPhotoBytes []byte     `json:"-"`
 	PhotoStored        bool       `json:"photo_stored"`
+	ReviewedBy         *uuid.UUID `json:"reviewed_by,omitempty"`
+	ReviewedAt         *time.Time `json:"reviewed_at,omitempty"`
+	RejectionReason    *string    `json:"rejection_reason,omitempty"`
+	OCRData            *string    `json:"ocr_data,omitempty"`
+	DocumentURL        *string    `json:"document_url,omitempty"`
 	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
 	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
@@ -103,6 +111,9 @@ func (v *KYCVerification) TrustTier() string {
 	}
 	if v.Method == KYCMethodDigiLocker {
 		return "digilocker_verified"
+	}
+	if v.Method == KYCMethodAadhaarOTP {
+		return "aadhaar_otp_verified"
 	}
 	qr := ""
 	if v.QRStatus != nil {

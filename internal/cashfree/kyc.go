@@ -347,3 +347,131 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 		PhotoBytes:  photoBytes,
 	}, nil
 }
+
+// AadhaarOTPInitResult holds the response from initiating an Aadhaar OTP session.
+type AadhaarOTPInitResult struct {
+	RefID   string `json:"ref_id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// AadhaarOTPVerifyResult holds the demographic data returned after verifying Aadhaar OTP.
+type AadhaarOTPVerifyResult struct {
+	RefID      string `json:"ref_id"`
+	Status     string `json:"status"`
+	Name       string `json:"name"`
+	DOB        string `json:"dob"`
+	Gender     string `json:"gender"`
+	MaskedUID  string `json:"masked_uid"`
+	PhotoBytes []byte `json:"-"`
+}
+
+// RequestAadhaarOTP initiates an Aadhaar OTP verification session via Cashfree.
+func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*AadhaarOTPInitResult, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	body := map[string]string{
+		"aadhaar_number": strings.TrimSpace(aadhaarNumber),
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.verificationEndpoint()+"/offline-aadhaar/otp", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
+	}
+	var out struct {
+		RefID   any    `json:"ref_id"`
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("cashfree request aadhaar otp: unmarshal: %w", err)
+	}
+	refStr := fmt.Sprintf("%v", out.RefID)
+	return &AadhaarOTPInitResult{
+		RefID:   refStr,
+		Status:  out.Status,
+		Message: out.Message,
+	}, nil
+}
+
+// VerifyAadhaarOTP completes the Aadhaar OTP verification via Cashfree.
+func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*AadhaarOTPVerifyResult, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	body := map[string]string{
+		"ref_id": strings.TrimSpace(refID),
+		"otp":    strings.TrimSpace(otp),
+	}
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.verificationEndpoint()+"/offline-aadhaar/verify", bytes.NewReader(raw))
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
+	}
+	var out struct {
+		RefID     any    `json:"ref_id"`
+		Status    string `json:"status"`
+		Name      string `json:"name"`
+		DOB       string `json:"dob"`
+		Gender    string `json:"gender"`
+		UID       string `json:"uid"`
+		MaskedUID string `json:"masked_uid"`
+		Image     string `json:"image"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("cashfree verify aadhaar otp: unmarshal: %w", err)
+	}
+	mUID := out.MaskedUID
+	if mUID == "" && len(out.UID) >= 4 {
+		mUID = out.UID[len(out.UID)-4:]
+	}
+	var photoBytes []byte
+	if out.Image != "" {
+		photoBytes, _ = base64.StdEncoding.DecodeString(out.Image)
+	}
+	return &AadhaarOTPVerifyResult{
+		RefID:      fmt.Sprintf("%v", out.RefID),
+		Status:     out.Status,
+		Name:       out.Name,
+		DOB:        out.DOB,
+		Gender:     out.Gender,
+		MaskedUID:  mUID,
+		PhotoBytes: photoBytes,
+	}, nil
+}
+

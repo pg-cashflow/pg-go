@@ -1,5 +1,10 @@
 package auth
 
+// OTP generation and verification utilities.
+// Note: These functions are actively used for step-up verification (e.g. Owner payout batch approval via email).
+// They are NOT dead code. Only the legacy unauthenticated public phone-login endpoints (/auth/otp/request and /auth/otp/verify)
+// are deprecated and return HTTP 410 Gone (see internal/api/handlers_public.go).
+
 import (
 	"crypto/hmac"
 	"crypto/rand"

@@ -24,6 +24,7 @@ const (
 	kycVerificationCols = `id, tenant_id, consent_id, vendor_name, vendor_reference_id,
 		masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, method,
 		status, failure_reason, qr_status, name_mismatch, attested_photo_bytes, photo_stored,
+		reviewed_by, reviewed_at, rejection_reason, ocr_data::text, document_url,
 		verified_at, expires_at, created_at, updated_at`
 
 	kycConsentCols = `id, tenant_id, purpose, consent_version, consent_text,
@@ -38,6 +39,7 @@ func scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
 		&v.ID, &v.TenantID, &v.ConsentID, &v.VendorName, &v.VendorReferenceID,
 		&v.MaskedUID, &v.IdentityHash, &v.HashKeyVersion, &v.IsDedupable, &v.DuplicateDetected, &v.Method,
 		&v.Status, &v.FailureReason, &v.QRStatus, &v.NameMismatch, &v.AttestedPhotoBytes, &v.PhotoStored,
+		&v.ReviewedBy, &v.ReviewedAt, &v.RejectionReason, &v.OCRData, &v.DocumentURL,
 		&v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt,
 	)
 	if err != nil {
@@ -800,3 +802,235 @@ func (r *KYCRepo) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]b
 	}
 	return photoBytes, nil
 }
+
+// SubmitManualReviewTx marks a pending verification as pending_manual_review with OCR data and document URL.
+func (r *KYCRepo) SubmitManualReviewTx(
+	ctx context.Context,
+	verificationID uuid.UUID,
+	maskedUID, identityHash string,
+	ocrData, documentURL string,
+	actor string,
+) (*domain.KYCVerification, error) {
+	now := time.Now().UTC()
+	var updated *domain.KYCVerification
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var tenantID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		var exists int
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+			UPDATE kyc_verification
+			SET status = 'pending_manual_review',
+				masked_uid = $2,
+				identity_hash = $3,
+				ocr_data = $4::jsonb,
+				document_url = $5,
+				updated_at = $6
+			WHERE id = $1 AND status = 'pending'
+			RETURNING `+kycVerificationCols+`
+		`, verificationID, maskedUID, identityHash, ocrData, documentURL, now))
+		if err != nil {
+			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
+		}
+
+		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "manual_review_submitted", "document uploaded for manual review", now); err != nil {
+			return fmt.Errorf("kyc: append manual review audit log: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// ApproveManualReviewTx promotes a pending_manual_review verification to verified.
+func (r *KYCRepo) ApproveManualReviewTx(
+	ctx context.Context,
+	verificationID, reviewerID uuid.UUID,
+	actor string,
+) (*domain.KYCVerification, error) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(365 * 24 * time.Hour)
+	var updated *domain.KYCVerification
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var tenantID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		var exists int
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+			SELECT `+kycVerificationCols+`
+			FROM kyc_verification
+			WHERE id = $1
+			FOR UPDATE
+		`, verificationID))
+		if err != nil {
+			return fmt.Errorf("kyc: query verification to approve: %w", err)
+		}
+
+		if existing.Status != domain.KYCStatusPendingManualReview {
+			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
+		}
+
+		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+			UPDATE kyc_verification
+			SET status = 'verified',
+				reviewed_by = $2,
+				reviewed_at = $3,
+				verified_at = $3,
+				expires_at = $4,
+				updated_at = $3
+			WHERE id = $1 AND status = 'pending_manual_review'
+			RETURNING `+kycVerificationCols+`
+		`, verificationID, reviewerID, now, expiresAt))
+		if err != nil {
+			return fmt.Errorf("kyc: approve manual verification: %w", err)
+		}
+
+		if existing.MaskedUID != nil && *existing.MaskedUID != "" {
+			_, err = tx.Exec(ctx, `
+				UPDATE tenants
+				SET aadhaar_last4 = $2, updated_at = $3
+				WHERE id = $1
+			`, existing.TenantID, *existing.MaskedUID, now)
+			if err != nil {
+				return fmt.Errorf("kyc: update tenant aadhaar_last4: %w", err)
+			}
+		}
+
+		detail := fmt.Sprintf("approved by user=%s", reviewerID)
+		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "manual_review_approved", detail, now); err != nil {
+			return fmt.Errorf("kyc: append approve audit log: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// RejectManualReviewTx rejects a pending_manual_review verification with a human reason.
+func (r *KYCRepo) RejectManualReviewTx(
+	ctx context.Context,
+	verificationID, reviewerID uuid.UUID,
+	reason, actor string,
+) (*domain.KYCVerification, error) {
+	now := time.Now().UTC()
+	var updated *domain.KYCVerification
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var tenantID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		var exists int
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+			SELECT `+kycVerificationCols+`
+			FROM kyc_verification
+			WHERE id = $1
+			FOR UPDATE
+		`, verificationID))
+		if err != nil {
+			return fmt.Errorf("kyc: query verification to reject: %w", err)
+		}
+
+		if existing.Status != domain.KYCStatusPendingManualReview {
+			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
+		}
+
+		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+			UPDATE kyc_verification
+			SET status = 'rejected',
+				reviewed_by = $2,
+				reviewed_at = $3,
+				rejection_reason = $4,
+				failure_reason = $4,
+				updated_at = $3
+			WHERE id = $1 AND status = 'pending_manual_review'
+			RETURNING `+kycVerificationCols+`
+		`, verificationID, reviewerID, now, reason))
+		if err != nil {
+			return fmt.Errorf("kyc: reject manual verification: %w", err)
+		}
+
+		detail := fmt.Sprintf("rejected by user=%s reason=%s", reviewerID, reason)
+		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "manual_review_rejected", detail, now); err != nil {
+			return fmt.Errorf("kyc: append reject audit log: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
+// ListPendingReviews returns all pending_manual_review records for tenants belonging to the given property.
+func (r *KYCRepo) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification v
+		WHERE v.status = 'pending_manual_review'
+		  AND EXISTS (SELECT 1 FROM tenants t WHERE t.id = v.tenant_id AND t.property_id = $1)
+		ORDER BY v.created_at ASC
+	`, propertyID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc: list pending reviews: %w", err)
+	}
+	defer rows.Close()
+
+	var list []domain.KYCVerification
+	for rows.Next() {
+		v, err := scanKYCVerification(rows)
+		if err != nil {
+			return nil, fmt.Errorf("kyc: scan pending review: %w", err)
+		}
+		list = append(list, *v)
+	}
+	return list, rows.Err()
+}
+
+// GetVerificationByID fetches a single verification record by its primary key UUID.
+func (r *KYCRepo) GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error) {
+	return scanKYCVerification(r.pool.QueryRow(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification
+		WHERE id = $1
+	`, id))
+}
+

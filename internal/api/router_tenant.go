@@ -21,6 +21,8 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.POST("/kyc/initiate", tenantIDRateLimit(10.0/60, 2), h.TenantKYCInitiate)
 	tenant.GET("/kyc/return", tenantIDRateLimit(10.0/60, 3), h.TenantKYCReturn)
 	tenant.POST("/kyc/upload", tenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
+	tenant.POST("/kyc/aadhaar/otp/request", tenantIDRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
+	tenant.POST("/kyc/aadhaar/otp/verify", tenantIDRateLimit(10.0/60, 3), h.TenantKYCAadhaarOTPVerify)
 	tenant.POST("/kyc/qr", h.TenantKYCSubmitQR)
 	tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
 	tenant.GET("/kyc/status", h.TenantKYCStatus)

@@ -2,6 +2,7 @@ package kyc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -155,6 +156,61 @@ func (f *fakeRepo) GetTenantName(_ context.Context, _ uuid.UUID) (string, error)
 func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return f.attestedPhoto, nil
 }
+func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL, _ string) (*domain.KYCVerification, error) {
+	var raw struct {
+		NameMismatch bool `json:"name_mismatch"`
+	}
+	_ = json.Unmarshal([]byte(ocrData), &raw)
+	v := &domain.KYCVerification{
+		ID:           id,
+		Status:       domain.KYCStatusPendingManualReview,
+		MaskedUID:    &maskedUID,
+		OCRData:      &ocrData,
+		DocumentURL:  &docURL,
+		NameMismatch: raw.NameMismatch,
+	}
+	f.latestVerif = v
+	if f.verification != nil && f.verification.ID == id {
+		f.verification = v
+	}
+	return v, nil
+}
+func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, reviewerID uuid.UUID, _ string) (*domain.KYCVerification, error) {
+	now := time.Now().UTC()
+	v := &domain.KYCVerification{
+		ID:         id,
+		Status:     domain.KYCStatusVerified,
+		ReviewedBy: &reviewerID,
+		ReviewedAt: &now,
+		VerifiedAt: &now,
+	}
+	f.latestVerif = v
+	return v, nil
+}
+func (f *fakeRepo) RejectManualReviewTx(_ context.Context, id, reviewerID uuid.UUID, reason, _ string) (*domain.KYCVerification, error) {
+	now := time.Now().UTC()
+	v := &domain.KYCVerification{
+		ID:              id,
+		Status:          domain.KYCStatusRejected,
+		ReviewedBy:      &reviewerID,
+		ReviewedAt:      &now,
+		RejectionReason: &reason,
+	}
+	f.latestVerif = v
+	return v, nil
+}
+func (f *fakeRepo) ListPendingReviews(_ context.Context, _ uuid.UUID) ([]domain.KYCVerification, error) {
+	if f.verification != nil && f.verification.Status == domain.KYCStatusPendingManualReview {
+		return []domain.KYCVerification{*f.verification}, nil
+	}
+	return nil, nil
+}
+func (f *fakeRepo) GetVerificationByID(_ context.Context, id uuid.UUID) (*domain.KYCVerification, error) {
+	if f.verification != nil && f.verification.ID == id {
+		return f.verification, nil
+	}
+	return nil, domain.ErrVerificationNotFound
+}
 
 type fakeCashfree struct {
 	linkURL    string
@@ -182,6 +238,23 @@ func (f *fakeCashfree) GetDigiLockerStatus(_ context.Context, _ string) (*cashfr
 func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
 	f.ocrCalled = true
 	return f.ocrResp, f.ocrErr
+}
+func (f *fakeCashfree) RequestAadhaarOTP(_ context.Context, _ string) (*cashfree.AadhaarOTPInitResult, error) {
+	return &cashfree.AadhaarOTPInitResult{
+		RefID:   "123456",
+		Status:  "SUCCESS",
+		Message: "OTP sent successfully",
+	}, nil
+}
+func (f *fakeCashfree) VerifyAadhaarOTP(_ context.Context, refID, _ string) (*cashfree.AadhaarOTPVerifyResult, error) {
+	return &cashfree.AadhaarOTPVerifyResult{
+		RefID:     refID,
+		Status:    "VALID",
+		Name:      "Ravi Kumar",
+		DOB:       "1990-01-01",
+		Gender:    "M",
+		MaskedUID: "1234",
+	}, nil
 }
 
 func newTestService(repo *fakeRepo, cf kycsvc.CashfreeKYCClient) *kycsvc.Service {
@@ -546,17 +619,21 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v.Status != domain.KYCStatusVerified {
-		t.Fatalf("expected status verified, got %s", v.Status)
-	}
-	if !v.PhotoStored || len(v.AttestedPhotoBytes) == 0 {
-		t.Errorf("expected photo to be stored")
+	if v.Status != domain.KYCStatusPendingManualReview {
+		t.Fatalf("expected status pending_manual_review, got %s", v.Status)
 	}
 	if v.NameMismatch {
 		t.Errorf("expected name_mismatch=false for exact name match")
 	}
-	if v.TrustTier() != "document_secure_qr" {
-		t.Errorf("expected trust tier document_secure_qr, got %s", v.TrustTier())
+
+	// Owner approves the manual review
+	reviewerID := uuid.New()
+	approved, err := svc.ApproveManualReview(context.Background(), v.ID, reviewerID, "owner:admin")
+	if err != nil {
+		t.Fatalf("approve manual review error: %v", err)
+	}
+	if approved.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified after approval, got %s", approved.Status)
 	}
 }
 
@@ -768,6 +845,78 @@ func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
 	}
 }
 
+func TestInitiateAadhaarOTP_HappyPath(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	refID, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, "123456789012", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error initiating aadhaar otp: %v", err)
+	}
+	if refID != "123456" {
+		t.Errorf("expected refID '123456', got %s", refID)
+	}
+	if repo.verification == nil || repo.verification.Method != domain.KYCMethodAadhaarOTP {
+		t.Errorf("expected verification method aadhaar_otp, got %v", repo.verification)
+	}
+}
+
+func TestCompleteAadhaarOTP_AutoVerified(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "654321", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error completing aadhaar otp: %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified (auto), got %s", v.Status)
+	}
+}
+
+func TestRejectManualReview_Success(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:       verifID,
+			TenantID: tenantID,
+			Status:   domain.KYCStatusPendingManualReview,
+		},
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	reviewerID := uuid.New()
+	rejected, err := svc.RejectManualReview(context.Background(), verifID, reviewerID, "Blurry document", "owner:admin")
+	if err != nil {
+		t.Fatalf("unexpected error rejecting: %v", err)
+	}
+	if rejected.Status != domain.KYCStatusRejected {
+		t.Fatalf("expected status rejected, got %s", rejected.Status)
+	}
+	if rejected.RejectionReason == nil || *rejected.RejectionReason != "Blurry document" {
+		t.Errorf("expected rejection reason 'Blurry document', got %v", rejected.RejectionReason)
+	}
+}
+
 // ---- Helpers ----------------------------------------------------------------
 
 type countingCashfree struct {
@@ -787,4 +936,10 @@ func (c *countingCashfree) GetDigiLockerStatus(ctx context.Context, verification
 }
 func (c *countingCashfree) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error) {
 	return c.inner.UploadAadhaarDocument(ctx, fileReader, filename)
+}
+func (c *countingCashfree) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error) {
+	return c.inner.RequestAadhaarOTP(ctx, aadhaarNumber)
+}
+func (c *countingCashfree) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error) {
+	return c.inner.VerifyAadhaarOTP(ctx, refID, otp)
 }

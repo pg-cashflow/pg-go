@@ -10,6 +10,7 @@ package kyc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -69,6 +70,12 @@ type KYCRepo interface {
 	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+
+	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, actor string) (*domain.KYCVerification, error)
+	ApproveManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	RejectManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
+	GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error)
 }
 
 // CashfreeKYCClient is the Cashfree Secure ID dependency.
@@ -78,6 +85,8 @@ type CashfreeKYCClient interface {
 	GetDigiLockerDocument(ctx context.Context, verificationID string) (*cashfree.DigiLockerAadhaarDoc, error)
 	GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatus, error)
 	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
+	RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error)
+	VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error)
 }
 
 // DigiLockerDoc is a value-type shim for backwards compatibility in tests.
@@ -495,7 +504,7 @@ func (s *Service) VerifyAadhaarDocument(
 	nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
 
 	// 6. Normalise demographics and compute identity hash
-	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(resp.DOB)
+	canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
 	name := domain.NormalizeName(resp.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
 
@@ -509,19 +518,137 @@ func (s *Service) VerifyAadhaarDocument(
 		return nil, fmt.Errorf("kyc service: initiate ocr verification: %w", err)
 	}
 
-	// 8. DB transaction 2: Complete verification record
+	// 8. DB transaction 2: Manual upload requires human review -> pending_manual_review
+	ocrBytes, _ := json.Marshal(map[string]any{
+		"name":          resp.Name,
+		"dob":           resp.DOB,
+		"gender":        resp.Gender,
+		"masked_uid":    resp.MaskedUID,
+		"qr_status":     resp.QRStatus,
+		"name_mismatch": nameMismatch,
+	})
+	underReview, err := s.repo.SubmitManualReviewTx(ctx,
+		pending.ID, resp.MaskedUID, identityHash,
+		string(ocrBytes), filename, actor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
+	}
+
+	return underReview, nil
+}
+
+// InitiateAadhaarOTP requests an Aadhaar OTP from UIDAI via Cashfree for a tenant.
+func (s *Service) InitiateAadhaarOTP(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	aadhaarNumber string,
+	actor string,
+) (string, error) {
+	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
+	if err != nil {
+		if errors.Is(err, domain.ErrVerificationNotFound) {
+			return "", ErrNoActiveConsent
+		}
+		return "", fmt.Errorf("kyc service: get consent: %w", err)
+	}
+	if !consent.IsActive() {
+		return "", ErrNoActiveConsent
+	}
+
+	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
+	}
+	if !locked {
+		return "", domain.ErrVerificationInProgress
+	}
+	defer func() {
+		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+	}()
+
+	if s.cashfree == nil {
+		return "", ErrDigiLockerUnavailable
+	}
+
+	res, err := s.cashfree.RequestAadhaarOTP(ctx, aadhaarNumber)
+	if err != nil {
+		return "", fmt.Errorf("kyc service: request aadhaar otp: %w", err)
+	}
+
+	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", res.RefID)
+
+	_, err = s.repo.InitiateVerificationTx(ctx,
+		tenantID, consent.ID,
+		domain.KYCMethodAadhaarOTP,
+		"cashfree_aadhaar_otp", vendorRefID, actor,
+	)
+	if err != nil {
+		return "", fmt.Errorf("kyc service: initiate aadhaar otp record: %w", err)
+	}
+
+	return res.RefID, nil
+}
+
+// CompleteAadhaarOTP verifies the submitted OTP with UIDAI and auto-verifies the tenant.
+func (s *Service) CompleteAadhaarOTP(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	refID, otp string,
+	actor string,
+) (*domain.KYCVerification, error) {
+	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", refID)
+	pending, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: find aadhaar verification: %w", err)
+	}
+
+	if s.cashfree == nil {
+		return nil, ErrDigiLockerUnavailable
+	}
+
+	res, err := s.cashfree.VerifyAadhaarOTP(ctx, refID, otp)
+	if err != nil {
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, err.Error(), actor)
+		return nil, fmt.Errorf("kyc service: verify aadhaar otp: %w", err)
+	}
+
+	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
+	name := domain.NormalizeName(res.Name)
+	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, res.Gender, res.MaskedUID)
+
+	tenantName, _ := s.repo.GetTenantName(ctx, tenantID)
+	nameMismatch := !domain.IsNameMatch(tenantName, res.Name)
+
 	now := time.Now().UTC()
 	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+
+	// AUTO-VERIFIED: Government authenticated via direct UIDAI OTP
 	verified, err := s.repo.CompleteVerificationTx(ctx,
-		pending.ID, resp.MaskedUID, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, resp.QRStatus, nameMismatch, resp.PhotoBytes,
+		pending.ID, res.MaskedUID, identityHash, isDedupable,
+		s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
 		now, expiresAt, actor,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("kyc service: complete ocr verification: %w", err)
+		return nil, fmt.Errorf("kyc service: complete aadhaar otp: %w", err)
 	}
 
 	return verified, nil
+}
+
+// ListPendingReviews returns pending manual reviews for a property.
+func (s *Service) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
+	return s.repo.ListPendingReviews(ctx, propertyID)
+}
+
+// ApproveManualReview approves a pending manual review.
+func (s *Service) ApproveManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	return s.repo.ApproveManualReviewTx(ctx, verificationID, reviewerID, actor)
+}
+
+// RejectManualReview rejects a pending manual review with a human reason.
+func (s *Service) RejectManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+	return s.repo.RejectManualReviewTx(ctx, verificationID, reviewerID, reason, actor)
 }
 
 // GetDigiLockerReturnStatus inspects the verification status for a tenant landing back from DigiLocker.

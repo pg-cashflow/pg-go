@@ -132,6 +132,9 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.GET("/tenants/:id/kyc", h.OwnerGetTenantKYC)
 	owner.GET("/tenants/:id/kyc/photo", h.OwnerTenantKYCPhoto)
 	owner.POST("/tenants/:id/kyc/clear-duplicate", h.OwnerClearDuplicateKYC)
+	owner.GET("/kyc/queue", h.OwnerKYCReviewQueue)
+	owner.POST("/kyc/:id/approve", h.OwnerKYCApprove)
+	owner.POST("/kyc/:id/reject", h.OwnerKYCReject)
 
 	owner.POST("/tenants/:id/departures", h.OwnerCreateDeparture)
 	owner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
