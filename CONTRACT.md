@@ -1603,7 +1603,7 @@ CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 - Allowed headers: `Authorization`, `Content-Type`, `Idempotency-Key`, `Accept-Language`
 - Allowed methods: `GET`, `POST`, `PATCH`, `OPTIONS`
-- `AllowCredentials`: `false`
+- `AllowCredentials`: `true`
 - `MaxAge`: `12 * time.Hour`
 
 Required for pg-react local dev (`localhost:5173`). Production embedded PWA is served same-origin by pg-go and does not require CORS.

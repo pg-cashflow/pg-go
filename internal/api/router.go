@@ -150,7 +150,7 @@ func NewRouter(d Deps) *gin.Engine {
 			AllowOrigins:     d.CORSAllowedOrigins,
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 			AllowHeaders:     []string{"Authorization", "Content-Type", "Idempotency-Key", "X-Idempotency-Key", "Accept-Language", "X-Request-ID", "X-Correlation-ID", "X-Property-ID"},
-			AllowCredentials: false,
+			AllowCredentials: true,
 			MaxAge:           12 * time.Hour,
 		}))
 	}
