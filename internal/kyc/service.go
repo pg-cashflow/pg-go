@@ -481,10 +481,7 @@ func (s *Service) VerifyAadhaarDocument(
 	if s.cashfree != nil {
 		resp, err = s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
 		if err != nil {
-			slog.WarnContext(ctx, "cashfree smart ocr unavailable or rejected; routing to direct manual review",
-				"tenant_id", tenantID,
-				"err", err,
-			)
+			return nil, fmt.Errorf("kyc service: upload aadhaar document: %w", err)
 		}
 	}
 
