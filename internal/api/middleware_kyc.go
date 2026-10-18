@@ -20,6 +20,26 @@ func (h *Handlers) IsKYCVerified(ctx context.Context, tenantID uuid.UUID) bool {
 	return err == nil && ver != nil && ver.Status == domain.KYCStatusVerified
 }
 
+// KYCOnboardingGatePassed reports whether the tenant has done their part of identity
+// verification well enough to proceed past onboarding into the dashboard.
+//
+// This is deliberately broader than IsKYCVerified: a tenant who has submitted a
+// document for manual review (status pending_manual_review) has completed the
+// onboarding action required of them — the remaining step (owner approval) is not
+// something the tenant can accelerate, so blocking the dashboard on it would strand
+// them with no path forward. Automatic methods (digilocker / aadhaar_otp / qr) only
+// pass the gate once status == verified, since those are near-instant.
+func (h *Handlers) KYCOnboardingGatePassed(ctx context.Context, tenantID uuid.UUID) bool {
+	if h.KYCSvc == nil {
+		return false
+	}
+	ver, _, err := h.KYCSvc.GetStatus(ctx, tenantID)
+	if err != nil || ver == nil {
+		return false
+	}
+	return ver.Status == domain.KYCStatusVerified || ver.Status == domain.KYCStatusPendingManualReview
+}
+
 // RequireKYCVerified returns a middleware that requires the authenticated tenant
 // to have completed KYC verification (status == domain.KYCStatusVerified).
 func (h *Handlers) RequireKYCVerified() gin.HandlerFunc {

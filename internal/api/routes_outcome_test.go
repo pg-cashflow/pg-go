@@ -49,7 +49,7 @@ func (outcomeJoinStub) Reject(_ context.Context, _ uuid.UUID, _ uuid.UUID) error
 	return nil
 }
 
-func (outcomeJoinStub) BuildOnboardingState(_ context.Context, _ *domain.User, _ bool) (*joinsvc.OnboardingState, error) {
+func (outcomeJoinStub) BuildOnboardingState(_ context.Context, _ *domain.User, _, _ bool) (*joinsvc.OnboardingState, error) {
 	return &joinsvc.OnboardingState{Stage: "profile"}, nil
 }
 

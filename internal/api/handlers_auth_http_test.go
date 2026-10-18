@@ -114,7 +114,7 @@ func (s *fakeAuthJoinService) BindSlotInvite(_ context.Context, _ uuid.UUID, _ u
 	return nil
 }
 
-func (s *fakeAuthJoinService) BuildOnboardingState(_ context.Context, _ *domain.User, _ bool) (*joinsvc.OnboardingState, error) {
+func (s *fakeAuthJoinService) BuildOnboardingState(_ context.Context, _ *domain.User, _, _ bool) (*joinsvc.OnboardingState, error) {
 	return &joinsvc.OnboardingState{Stage: "profile"}, nil
 }
 

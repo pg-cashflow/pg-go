@@ -23,11 +23,13 @@ func (h *Handlers) MeOnboarding(c *gin.Context) {
 		Role:     claims.Role,
 		TenantID: claims.TenantID,
 	}
-	kycVerified := false
+	kycVerified := false   // true only once UIDAI/DigiLocker verification itself completed
+	kycGatePassed := false // true once the tenant has done their part (includes pending_manual_review)
 	if claims.TenantID != nil {
 		kycVerified = h.IsKYCVerified(c.Request.Context(), *claims.TenantID)
+		kycGatePassed = h.KYCOnboardingGatePassed(c.Request.Context(), *claims.TenantID)
 	}
-	state, err := h.Joins.BuildOnboardingState(c.Request.Context(), user, kycVerified)
+	state, err := h.Joins.BuildOnboardingState(c.Request.Context(), user, kycVerified, kycGatePassed)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "onboarding state failed"})
 		return

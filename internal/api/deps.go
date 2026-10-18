@@ -182,7 +182,7 @@ type JoinService interface {
 	Activate(ctx context.Context, propertyID, joinID uuid.UUID, in joinsvc.ActivateInput) (*domain.Tenant, error)
 	Reject(ctx context.Context, propertyID, joinID uuid.UUID) error
 	BindSlotInvite(ctx context.Context, userID uuid.UUID, slotInviteID uuid.UUID) error
-	BuildOnboardingState(ctx context.Context, user *domain.User, kycVerified bool) (*joinsvc.OnboardingState, error)
+	BuildOnboardingState(ctx context.Context, user *domain.User, kycVerified bool, kycGatePassed bool) (*joinsvc.OnboardingState, error)
 }
 
 // WaitlistAdmissionService manages room waitlists and bound slot offers (P1).

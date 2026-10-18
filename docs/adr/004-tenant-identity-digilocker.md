@@ -76,3 +76,67 @@ Tenants must verify identity (Aadhaar) during onboarding before room allocation.
 - Single unified verification state machine handling both live DigiLocker and offline Secure QR.
 - No third-party dependency for QR verification (handled in-process via Go crypto).
 - Compliant with DPDP Act 2023 with tamper-evident audit ledger.
+
+## Amendment (2026-10): Blocking Onboarding Gate
+
+**Standard: ASD-STE100.** This section uses simple words and short sentences.
+
+Section "Tenant Identity Verification (ADR-004 KYC)" in CONTRACT.md previously said
+KYC does not block dashboard access ("Non-Blocking Onboarding"). This amendment
+changes that decision for newly allocated tenants.
+
+**Decision.** A tenant must pass the KYC onboarding gate before they can open the
+tenant dashboard or any other tenant route. The gate is separate from the existing
+`RequireKYCBeforePay` property setting, which still controls payment access only.
+The dashboard gate applies to every property, with no opt-out, because identity
+checks now happen as part of onboarding itself, not as a later payment condition.
+
+**Why.** First-principles reasoning: the tenant relationship starts with "who is
+this person," not "can they pay." Gating the dashboard, not just payment, moves the
+trust check to the start of the relationship, where it belongs, and removes an
+entire class of UI states (an unverified tenant browsing dues, community, and
+rewards screens) that the product no longer needs to support or test.
+
+**What "pass the gate" means.** A tenant passes once `kyc_verification.status` is
+one of:
+- `verified` — an automatic method (DigiLocker, Aadhaar OTP, or Secure QR)
+  completed. These are near-instant (DigiLocker: a redirect and consent screen;
+  Aadhaar OTP: two round trips, no redirect at all), so the gate does not block on
+  anything outside the tenant's own next action.
+- `pending_manual_review` — the tenant uploaded a document. The remaining step
+  (owner review) is outside the tenant's control. Making them wait at a blank gate
+  for an owner to act would strand them with no path forward, so the gate treats
+  "I did my part" as enough. `TenantKYCCard` shows the review-pending state once
+  past the gate, so the tenant still sees exactly where they stand.
+
+Any other status (`unverified`, `pending` mid-flow with no action taken yet,
+`failed`, `rejected`, `expired`, `revoked`) keeps the gate closed.
+
+**Where it is enforced.**
+1. **Server (source of truth).** `GET /me/onboarding` (`internal/join/onboarding_state.go`)
+   returns a new `stage: "kyc_required"` whenever the gate is not passed, computed
+   from `Handlers.KYCOnboardingGatePassed` (`internal/api/middleware_kyc.go`), which
+   reads live KYC status the same way `IsKYCVerified` already does — no stale JWT
+   claims, no caching.
+2. **Client (feels instant).** `TenantKYCOnboardingGate`
+   (`src/components/shared/TenantKYCOnboardingGate.tsx`) wraps every `/tenant/*`
+   route. It checks `GET /tenant/kyc/status` directly (no extra round trip through
+   `/me/onboarding`) and renders a full-screen verification screen — both DigiLocker
+   and Aadhaar OTP presented as equal, upfront choices, exactly as `TenantKYCCard`
+   already offers them — instead of the dashboard, until the gate passes.
+
+The client check is a UX convenience, not a security boundary: it must stay fast
+and frictionless, but it is not what makes the gate correct. Every existing
+tenant-scoped API route keeps its own authorization as before; a tenant who
+bypasses the client gate (e.g. a direct API call) still cannot do anything the
+`RequireKYCVerified` / `RequireKYCIfPolicyEnforced` middleware, or the route's own
+business rules, do not already allow.
+
+**What did not change.** `RequireKYCBeforePay`, the duplicate-detection flow, the
+DPDP consent and revocation rules, the DigiLocker/OTP/QR/upload verification logic
+itself, the webhook and reconciliation paths, and the audit log are all untouched.
+A tenant whose KYC later expires or is revoked is not retroactively locked out of
+the dashboard by this amendment — expiry/revocation handling remains exactly what
+ADR-004 section 6 already specifies; this amendment governs the one-time onboarding
+gate only, not ongoing session validity.
+
