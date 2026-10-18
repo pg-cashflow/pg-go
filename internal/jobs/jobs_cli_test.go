@@ -27,7 +27,6 @@ var allBinaries = []string{
 	"daily-rollup",
 	"reminder",
 	"cashfree-poll",
-	"digilocker-reconcile",
 	"financial-summary",
 	"gamification-cycle",
 	"kpi-snapshot",

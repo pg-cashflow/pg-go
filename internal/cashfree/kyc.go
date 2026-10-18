@@ -527,3 +527,56 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	}, nil
 }
 
+// AadhaarFailureClass categorizes UIDAI/Cashfree failure modes.
+type AadhaarFailureClass string
+
+const (
+	FailureRecoverable AadhaarFailureClass = "recoverable"
+	FailureCooldown    AadhaarFailureClass = "cooldown"
+	FailureTerminal    AadhaarFailureClass = "terminal"
+	FailureSystemFault AadhaarFailureClass = "system_fault"
+)
+
+// ClassifyAadhaarError maps Cashfree and UIDAI response codes/messages to a failure class.
+// Matching is substring-based because Cashfree message text may vary slightly across versions.
+func ClassifyAadhaarError(httpStatus int, message string) (code string, class AadhaarFailureClass) {
+	m := strings.ToLower(message)
+	switch {
+	case strings.Contains(m, "does not have mobile number"),
+		strings.Contains(m, "not linked to mobile"),
+		strings.Contains(m, "mobile number not registered"):
+		return "MOBILE_NOT_LINKED", FailureTerminal
+	case strings.Contains(m, "otp expired"):
+		return "OTP_EXPIRED", FailureRecoverable
+	case strings.Contains(m, "session expired"):
+		return "SESSION_EXPIRED", FailureRecoverable
+	case strings.Contains(m, "otp entered is invalid"),
+		strings.Contains(m, "please enter a valid otp"),
+		strings.Contains(m, "incorrect otp"):
+		return "WRONG_OTP", FailureRecoverable
+	case strings.Contains(m, "please try after some time"),
+		strings.Contains(m, "otp generated for this aadhaar"):
+		return "COOLDOWN_ACTIVE", FailureCooldown
+	case strings.Contains(m, "invalid aadhaar"):
+		return "INVALID_AADHAAR", FailureRecoverable // Upgraded to terminal on repeat in service layer
+	case httpStatus == 422, strings.Contains(m, "insufficient balance"):
+		return "PROVIDER_BALANCE", FailureSystemFault
+	case httpStatus >= 500:
+		return "PROVIDER_ERROR", FailureSystemFault
+	default:
+		return "UNKNOWN", FailureRecoverable // Fail open to recoverable to prevent accidental lockouts
+	}
+}
+
+// CooldownSecondsFor returns the recommended retry cooldown in seconds.
+func CooldownSecondsFor(class AadhaarFailureClass) int {
+	switch class {
+	case FailureCooldown:
+		return 45
+	case FailureRecoverable:
+		return 30
+	default:
+		return 0
+	}
+}
+

@@ -1034,3 +1034,35 @@ func (r *KYCRepo) GetVerificationByID(ctx context.Context, id uuid.UUID) (*domai
 	`, id))
 }
 
+// RecordFailureAndCount inserts a failure-log row for this attempt and
+// returns how many times this exact reason_code has fired for this tenant
+// in the trailing window. Used to upgrade an ambiguous recoverable failure
+// (e.g. INVALID_AADHAAR) to terminal after one repeat.
+func (r *KYCRepo) RecordFailureAndCount(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	method domain.KYCMethod,
+	reasonCode string,
+	windowMinutes int,
+) (int, error) {
+	var count int
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO kyc_failure_log (tenant_id, method, reason_code, created_at)
+			VALUES ($1, $2, $3, now())
+		`, tenantID, method, reasonCode); err != nil {
+			return fmt.Errorf("kyc: insert failure log: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM kyc_failure_log
+			WHERE tenant_id = $1 AND reason_code = $2
+			  AND created_at > now() - make_interval(mins => $3)
+		`, tenantID, reasonCode, windowMinutes).Scan(&count); err != nil {
+			return fmt.Errorf("kyc: count failure log: %w", err)
+		}
+		return nil
+	})
+	return count, err
+}
+

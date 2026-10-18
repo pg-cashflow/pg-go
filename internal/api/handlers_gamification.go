@@ -1048,55 +1048,7 @@ func (h *Handlers) OwnerBulkGenerateFloorsRooms(c *gin.Context) {
 		"rooms_created":  createdRooms,
 	})
 }
-
-// OwnerCreateManager provisions a warden/manager user account scoped to a property.
-func (h *Handlers) OwnerCreateManager(c *gin.Context) {
-	pid, ok := propertyIDFromClaims(c)
-	if !ok {
-		return
-	}
-	var body struct {
-		PropertyID string `json:"property_id"`
-		Phone      string `json:"phone" binding:"required"`
-		Email      string `json:"email,omitempty"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Phone == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "phone is required"})
-		return
-	}
-
-	if body.PropertyID != "" {
-		if reqPID, err := uuid.Parse(body.PropertyID); err != nil || reqPID != pid {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
-			return
-		}
-	}
-
-	normPhone := auth.NormalizePhone(body.Phone)
-	if normPhone == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid phone number format"})
-		return
-	}
-
-	cleanEmail := strings.ToLower(strings.TrimSpace(body.Email))
-	if cleanEmail != "" && (!strings.Contains(cleanEmail, "@") || !strings.Contains(cleanEmail, ".")) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
-		return
-	}
-
-	u := &domain.User{
-		Phone:      normPhone,
-		Email:      cleanEmail,
-		Role:       domain.RoleManager,
-		PropertyID: &pid,
-	}
-	if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
-		respondErr(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"manager": u})
-}
-
+ 
 // OwnerListRedemptions lists coupon and perk redemptions for a property.
 func (h *Handlers) OwnerListRedemptions(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)

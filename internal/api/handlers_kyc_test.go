@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 )
@@ -38,6 +39,7 @@ type fakeKYCSvc struct {
 	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
 	returnFn     func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	photoFn      func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 }
 
 func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error) {
@@ -119,6 +121,9 @@ func (f *fakeKYCSvc) InitiateAadhaarOTP(ctx context.Context, tenantID uuid.UUID,
 	return "test_aadhaar_ref_123", nil
 }
 func (f *fakeKYCSvc) CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error) {
+	if f.completeAadhaarOTPFn != nil {
+		return f.completeAadhaarOTPFn(ctx, tenantID, refID, otp, actor)
+	}
 	now := time.Now()
 	return &domain.KYCVerification{
 		ID:         uuid.New(),
@@ -178,8 +183,6 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	tenant_g := r.Group("/api/tenant/kyc")
 	{
 		tenant_g.POST("/consent", h.TenantKYCConsent)
-		tenant_g.POST("/initiate", h.TenantKYCInitiate)
-		tenant_g.GET("/return", h.TenantKYCReturn)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)
 		tenant_g.POST("/aadhaar/otp/verify", h.TenantKYCAadhaarOTPVerify)
@@ -234,42 +237,6 @@ func TestTenantKYCConsent_MissingFields(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing required fields, got %d", w.Code)
-	}
-}
-
-// ---- TenantKYCInitiate ------------------------------------------------------
-
-func TestTenantKYCInitiate_OK(t *testing.T) {
-	r := kycTestTenantRouter(&fakeKYCSvc{}, "")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["verification_url"] == "" {
-		t.Error("expected non-empty verification_url")
-	}
-}
-
-func TestTenantKYCInitiate_DigiLockerUnavailable(t *testing.T) {
-	svc := &fakeKYCSvc{
-		initiateFn: func(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-			return "", kycsvc.ErrDigiLockerUnavailable
-		},
-	}
-	r := kycTestTenantRouter(svc, "")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -529,8 +496,6 @@ func TestKYCHandlers_NilService_Returns503(t *testing.T) {
 	grp := rr.Group("/api/tenant/kyc")
 	{
 		grp.POST("/consent", h.TenantKYCConsent)
-		grp.POST("/initiate", h.TenantKYCInitiate)
-		grp.GET("/return", h.TenantKYCReturn)
 		grp.POST("/upload", h.TenantKYCUpload)
 		grp.POST("/qr", h.TenantKYCSubmitQR)
 		grp.POST("/revoke", h.TenantKYCRevoke)
@@ -539,8 +504,6 @@ func TestKYCHandlers_NilService_Returns503(t *testing.T) {
 
 	cases := []struct{ method, path string }{
 		{http.MethodPost, "/api/tenant/kyc/consent"},
-		{http.MethodPost, "/api/tenant/kyc/initiate"},
-		{http.MethodGet, "/api/tenant/kyc/return"},
 		{http.MethodPost, "/api/tenant/kyc/upload"},
 		{http.MethodPost, "/api/tenant/kyc/qr"},
 		{http.MethodPost, "/api/tenant/kyc/revoke"},
@@ -665,84 +628,6 @@ func TestCashfreeKYCWebhook_DoubleDelivery(t *testing.T) {
 
 // ---- actor format verification -----------------------------------------------
 
-func TestTenantKYCInitiate_ActorFormat(t *testing.T) {
-	var capturedActor string
-	svc := &fakeKYCSvc{
-		initiateFn: func(_ context.Context, _ uuid.UUID, actor string) (string, error) {
-			capturedActor = actor
-			return "https://digi", nil
-		},
-	}
-	r := kycTestTenantRouter(svc, "")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-	expected := fmt.Sprintf("tenant:%s", "")
-	if len(capturedActor) < 8 || capturedActor[:7] != "tenant:" {
-		t.Errorf("actor should be in tenant:<uuid> format, got %q (expected prefix like %q)", capturedActor, expected)
-	}
-}
-
-func TestTenantKYCReturn_OK(t *testing.T) {
-	verified := domain.KYCStatusVerified
-	vID := uuid.New()
-	tenantID := uuid.New()
-	svc := &fakeKYCSvc{
-		returnFn: func(_ context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-			return &domain.KYCVerification{
-				ID:                vID,
-				TenantID:          tenantID,
-				Status:            verified,
-				VendorReferenceID: vendorRefID,
-			}, nil
-		},
-	}
-	r := kycTestTenantRouterWithTenant(svc, "", &domain.Tenant{ID: tenantID, PropertyID: uuid.New()})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/return?vendor_ref_id=test-ref", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
-	var resp map[string]interface{}
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "verified" {
-		t.Errorf("expected status verified, got %v", resp["status"])
-	}
-}
-
-func TestTenantKYCReturn_ForeignTenant_Returns404(t *testing.T) {
-	verified := domain.KYCStatusVerified
-	vID := uuid.New()
-	foreignTenantID := uuid.New() // distinct from calling tenant
-	svc := &fakeKYCSvc{
-		returnFn: func(_ context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-			return &domain.KYCVerification{
-				ID:                vID,
-				TenantID:          foreignTenantID,
-				Status:            verified,
-				VendorReferenceID: vendorRefID,
-			}, nil
-		},
-	}
-	r := kycTestTenantRouter(svc, "")
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/return?vendor_ref_id=test-foreign-ref", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 on foreign tenant verification, got %d", w.Code)
-	}
-}
-
 func TestOwnerKYCVerificationView_Fields(t *testing.T) {
 	qrStatus := domain.QRStatusSecure
 	v := &domain.KYCVerification{
@@ -767,28 +652,6 @@ func TestOwnerKYCVerificationView_Fields(t *testing.T) {
 	}
 	if view["name_mismatch"] != true {
 		t.Errorf("expected name_mismatch true, got %v", view["name_mismatch"])
-	}
-}
-
-func TestTenantKYCInitiate_InFlight_Returns409(t *testing.T) {
-	svc := &fakeKYCSvc{
-		initiateFn: func(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-			return "", domain.ErrVerificationInProgress
-		},
-	}
-	r := kycTestTenantRouter(svc, "")
-
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict, got %d", w.Code)
-	}
-	var resp map[string]interface{}
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["code"] != "kyc.in_flight" {
-		t.Errorf("expected code kyc.in_flight, got %v", resp["code"])
 	}
 }
 
@@ -821,7 +684,7 @@ func TestTenantKYCUpload_InFlight_Returns409(t *testing.T) {
 	}
 }
 
-func TestTenantKYCInitiate_RateLimit_BurstEnforced(t *testing.T) {
+func TestTenantKYCUpload_RateLimit_BurstEnforced(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tenant := &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
 
@@ -831,19 +694,31 @@ func TestTenantKYCInitiate_RateLimit_BurstEnforced(t *testing.T) {
 		c.Next()
 	})
 
+	now := time.Now()
 	svc := &fakeKYCSvc{
-		initiateFn: func(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-			return "https://digilocker.gov.in/session", nil
+		uploadFn: func(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
+			return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
 		},
 	}
 	h := &Handlers{Deps: Deps{KYCSvc: svc}}
 
-	// Wire rate-limited endpoint matching router.go: 10/min, burst 2
-	r.POST("/api/tenant/kyc/initiate", tenantIDRateLimit(10.0/60, 2), h.TenantKYCInitiate)
+	// Wire rate-limited endpoint matching router.go: 5/min, burst 2
+	r.POST("/api/tenant/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
+
+	makeUploadReq := func() *http.Request {
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
+		part, _ := writer.CreateFormFile("file", "aadhaar.jpg")
+		_, _ = part.Write([]byte("fake image bytes"))
+		_ = writer.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/upload", body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req
+	}
 
 	// Requests 1 & 2 should succeed within burst
 	for i := 1; i <= 2; i++ {
-		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
+		req := makeUploadReq()
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -852,7 +727,7 @@ func TestTenantKYCInitiate_RateLimit_BurstEnforced(t *testing.T) {
 	}
 
 	// Request 3 should immediately exceed burst and return 429 Too Many Requests
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/initiate", nil)
+	req := makeUploadReq()
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusTooManyRequests {
@@ -928,6 +803,43 @@ func TestTenantKYCAadhaarOTPVerify_AutoVerified(t *testing.T) {
 	}
 	if resp["method"] != string(domain.KYCMethodAadhaarOTP) {
 		t.Errorf("expected method 'aadhaar_otp', got %v", resp["method"])
+	}
+}
+
+func TestTenantKYCAadhaarOTPVerify_FailureClassification(t *testing.T) {
+	svc := &fakeKYCSvc{
+		completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
+			return nil, &kycsvc.AadhaarVerifyFailure{
+				ReasonCode:      "MOBILE_NOT_LINKED",
+				Class:           cashfree.FailureTerminal,
+				Retryable:       false,
+				CooldownSeconds: 0,
+			}
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	body := `{"ref_id":"test_aadhaar_ref_123","otp":"123456"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json response: %v", err)
+	}
+	if resp["status"] != "failed" {
+		t.Errorf("expected status 'failed', got %v", resp["status"])
+	}
+	if resp["reason_code"] != "MOBILE_NOT_LINKED" {
+		t.Errorf("expected reason_code 'MOBILE_NOT_LINKED', got %v", resp["reason_code"])
+	}
+	if resp["retryable"] != false {
+		t.Errorf("expected retryable false, got %v", resp["retryable"])
 	}
 }
 

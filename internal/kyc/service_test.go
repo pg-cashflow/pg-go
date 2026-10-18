@@ -211,6 +211,9 @@ func (f *fakeRepo) GetVerificationByID(_ context.Context, id uuid.UUID) (*domain
 	}
 	return nil, domain.ErrVerificationNotFound
 }
+func (f *fakeRepo) RecordFailureAndCount(_ context.Context, _ uuid.UUID, _ domain.KYCMethod, _ string, _ int) (int, error) {
+	return 1, nil
+}
 
 type fakeCashfree struct {
 	linkURL    string

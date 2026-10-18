@@ -76,6 +76,7 @@ type KYCRepo interface {
 	RejectManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
 	GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error)
+	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
 }
 
 // CashfreeKYCClient is the Cashfree Secure ID dependency.
@@ -594,6 +595,26 @@ func (s *Service) InitiateAadhaarOTP(
 }
 
 // CompleteAadhaarOTP verifies the submitted OTP with UIDAI and auto-verifies the tenant.
+// AadhaarVerifyFailure represents a classified UIDAI/Cashfree failure returned to the client.
+type AadhaarVerifyFailure struct {
+	ReasonCode      string
+	Class           cashfree.AadhaarFailureClass
+	Retryable       bool
+	CooldownSeconds int
+	Underlying      error
+}
+
+func (f *AadhaarVerifyFailure) Error() string {
+	if f.Underlying != nil {
+		return fmt.Sprintf("aadhaar verification failed (%s): %v", f.ReasonCode, f.Underlying)
+	}
+	return fmt.Sprintf("aadhaar verification failed (%s)", f.ReasonCode)
+}
+
+func (f *AadhaarVerifyFailure) Unwrap() error {
+	return f.Underlying
+}
+
 func (s *Service) CompleteAadhaarOTP(
 	ctx context.Context,
 	tenantID uuid.UUID,
@@ -613,7 +634,33 @@ func (s *Service) CompleteAadhaarOTP(
 	res, err := s.cashfree.VerifyAadhaarOTP(ctx, refID, otp)
 	if err != nil {
 		_ = s.repo.FailVerificationTx(ctx, pending.ID, err.Error(), actor)
-		return nil, fmt.Errorf("kyc service: verify aadhaar otp: %w", err)
+
+		var httpStatus int
+		var msg string
+		var apiErr *cashfree.APIError
+		if errors.As(err, &apiErr) {
+			httpStatus = apiErr.StatusCode
+			msg = apiErr.Body
+		} else {
+			msg = err.Error()
+		}
+		code, class := cashfree.ClassifyAadhaarError(httpStatus, msg)
+		if code == "INVALID_AADHAAR" {
+			count, logErr := s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
+			if logErr == nil && count >= 2 {
+				class = cashfree.FailureTerminal
+			}
+		} else {
+			_, _ = s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
+		}
+
+		return nil, &AadhaarVerifyFailure{
+			ReasonCode:      code,
+			Class:           class,
+			Retryable:       class == cashfree.FailureRecoverable || class == cashfree.FailureCooldown,
+			CooldownSeconds: cashfree.CooldownSecondsFor(class),
+			Underlying:      err,
+		}
 	}
 
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)

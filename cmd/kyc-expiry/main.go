@@ -73,5 +73,17 @@ func main() {
 		slog.Info("kyc-expiry: purged expired refresh tokens", "deleted", n)
 	}
 
+	if n, err := jobs.TrimKYCFailureLog(ctx, pool); err != nil {
+		slog.Error("kyc-expiry: failure log trim failed", "err", err)
+	} else if n > 0 {
+		slog.Info("kyc-expiry: trimmed kyc failure logs", "deleted", n)
+	}
+
+	if n, err := jobs.TrimRateLimitBuckets(ctx, pool); err != nil {
+		slog.Error("kyc-expiry: rate limit bucket trim failed", "err", err)
+	} else if n > 0 {
+		slog.Info("kyc-expiry: trimmed rate limit buckets", "deleted", n)
+	}
+
 	slog.Info("kyc-expiry job finished successfully")
 }

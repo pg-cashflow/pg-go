@@ -208,32 +208,6 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	})
 }
 
-// TenantKYCInitiate handles POST /api/tenant/kyc/initiate.
-// Rate-limited per tenant_id (10 req/min, burst 2).
-// Returns the DigiLocker consent URL — redirect is server-constructed from config.
-func (h *Handlers) TenantKYCInitiate(c *gin.Context) {
-	svc := h.kycSvcOrErr(c)
-	if svc == nil {
-		return
-	}
-	t := tenantFromContext(c)
-	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
-		return
-	}
-	actor := fmt.Sprintf("tenant:%s", t.ID)
-
-	url, err := svc.InitiateDigiLocker(c.Request.Context(), t.ID, actor)
-	if err != nil {
-		respondErr(c, kycClientErr(err))
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"verification_url": url,
-	})
-}
 
 type kycSubmitQRBody struct {
 	RawQR string `json:"raw_qr" binding:"required"`
@@ -330,48 +304,6 @@ func (h *Handlers) TenantKYCStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// TenantKYCReturn handles GET /api/tenant/kyc/return?vendor_ref_id=<id>.
-// This is the browser redirect landing endpoint after DigiLocker consent is completed.
-// It inspects or synchronizes verification status and returns the tenant-safe view.
-func (h *Handlers) TenantKYCReturn(c *gin.Context) {
-	svc := h.kycSvcOrErr(c)
-	if svc == nil {
-		return
-	}
-	t := tenantFromContext(c)
-	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
-		return
-	}
-
-	vendorRefID := c.Query("vendor_ref_id")
-	if vendorRefID == "" {
-		// Fallback to active verification for this tenant
-		v, _, err := svc.GetStatus(c.Request.Context(), t.ID)
-		if err != nil {
-			respondErr(c, kycClientErr(err))
-			return
-		}
-		if v == nil {
-			apierr.RespondClientErr(c, http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
-			return
-		}
-		vendorRefID = v.VendorReferenceID
-	}
-
-	v, err := svc.GetDigiLockerReturnStatus(c.Request.Context(), vendorRefID)
-	if err != nil {
-		respondErr(c, kycClientErr(err))
-		return
-	}
-	if v.TenantID != t.ID {
-		apierr.RespondClientErr(c, http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
-		return
-	}
-	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
-}
 
 // TenantKYCUpload handles POST /api/tenant/kyc/upload.
 // Presents a single Aadhaar document (image/PDF up to 5MB) for Smart OCR verification.
@@ -482,6 +414,16 @@ func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
 
 	v, err := svc.CompleteAadhaarOTP(c.Request.Context(), t.ID, body.RefID, body.OTP, actor)
 	if err != nil {
+		var fail *kycsvc.AadhaarVerifyFailure
+		if errors.As(err, &fail) {
+			c.JSON(http.StatusOK, gin.H{
+				"status":           "failed",
+				"reason_code":      fail.ReasonCode,
+				"retryable":        fail.Retryable,
+				"cooldown_seconds": fail.CooldownSeconds,
+			})
+			return
+		}
 		respondErr(c, kycClientErr(err))
 		return
 	}
