@@ -24,11 +24,8 @@ func (h *Handlers) MeOnboarding(c *gin.Context) {
 		TenantID: claims.TenantID,
 	}
 	kycVerified := false
-	if claims.TenantID != nil && h.KYCSvc != nil {
-		ver, _, err := h.KYCSvc.GetStatus(c.Request.Context(), *claims.TenantID)
-		if err == nil && ver != nil && ver.Status == domain.KYCStatusVerified {
-			kycVerified = true
-		}
+	if claims.TenantID != nil {
+		kycVerified = h.IsKYCVerified(c.Request.Context(), *claims.TenantID)
 	}
 	state, err := h.Joins.BuildOnboardingState(c.Request.Context(), user, kycVerified)
 	if err != nil {

@@ -18,9 +18,8 @@ func (h *Handlers) tenantPayable(ctx context.Context, t *domain.Tenant) bool {
 		}
 	}
 	kycVerified := true
-	if requireKYC && h.KYCSvc != nil {
-		ver, _, err := h.KYCSvc.GetStatus(ctx, t.ID)
-		kycVerified = err == nil && ver != nil && ver.Status == domain.KYCStatusVerified
+	if requireKYC {
+		kycVerified = h.IsKYCVerified(ctx, t.ID)
 	}
 	return t.Payable(requireKYC, kycVerified)
 }
