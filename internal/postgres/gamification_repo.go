@@ -30,6 +30,7 @@ func (r *GamificationRepo) CreateFloor(ctx context.Context, f *domain.Floor) err
 	return r.pool.QueryRow(ctx, `
 		INSERT INTO floors (property_id, floor_number, name)
 		VALUES ($1, $2, $3)
+		ON CONFLICT (property_id, floor_number) DO UPDATE SET name = EXCLUDED.name
 		RETURNING id, created_at`,
 		f.PropertyID, f.FloorNumber, f.Name,
 	).Scan(&f.ID, &f.CreatedAt)
@@ -64,6 +65,10 @@ func (r *GamificationRepo) CreateRoom(ctx context.Context, rm *domain.Room) erro
 	return r.pool.QueryRow(ctx, `
 		INSERT INTO rooms (property_id, floor_id, room_number, capacity, included_units)
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (property_id, room_number) DO UPDATE SET
+			floor_id = EXCLUDED.floor_id,
+			capacity = EXCLUDED.capacity,
+			included_units = EXCLUDED.included_units
 		RETURNING id, created_at`,
 		rm.PropertyID, rm.FloorId, rm.RoomNumber, rm.Capacity, rm.IncludedUnits,
 	).Scan(&rm.ID, &rm.CreatedAt)

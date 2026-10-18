@@ -211,7 +211,15 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if cfg.KYCIdentitySecret != "" {
 		kycRepo := postgres.NewKYCRepo(maintPool)
 		var cfKYCAdapter kycsvc.CashfreeKYCClient
-		if cfClient != nil {
+		if cfg.CashfreeKYCAppID != "" && cfg.CashfreeKYCSecretKey != "" {
+			cfKYCClient := cashfree.NewClient(cashfree.Config{
+				AppID:     cfg.CashfreeKYCAppID,
+				SecretKey: cfg.CashfreeKYCSecretKey,
+				Env:       cfg.CashfreeEnv,
+			})
+			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfKYCClient)
+			logger.Info("kyc service enabled with dedicated Cashfree KYC credentials", "digilocker", true)
+		} else if cfClient != nil {
 			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
 			logger.Info("kyc service enabled", "digilocker", true)
 		} else {
