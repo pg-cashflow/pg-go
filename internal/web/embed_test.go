@@ -79,3 +79,32 @@ func TestDirectoryTraversal_StaysInsideDist(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIRouteFallback_Returns404JSON(t *testing.T) {
+	r := gin.New()
+	r.Use(Handler())
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/owner/floors/bulk"},
+		{http.MethodGet, "/api/unknown"},
+		{http.MethodPost, "/non-api-post"},
+	}
+
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, c.path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s %s: expected 404, got %d", c.method, c.path, w.Code)
+		}
+		contentType := w.Header().Get("Content-Type")
+		if !strings.Contains(contentType, "application/json") {
+			t.Errorf("%s %s: expected JSON content-type, got %s", c.method, c.path, contentType)
+		}
+	}
+}
+

@@ -219,7 +219,6 @@ func (h *Handlers) TenantKYCInitiate(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"verification_url": url,
-		"vendor_flow_url":  url,
 	})
 }
 

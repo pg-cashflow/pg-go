@@ -993,6 +993,62 @@ func (h *Handlers) OwnerCreateRoom(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"room": rm})
 }
 
+type bulkGenerateFloorsRoomsBody struct {
+	PropertyID      string                      `json:"property_id"`
+	FloorsCount     int                         `json:"floors_count"`
+	TotalRoomsCount int                         `json:"total_rooms_count"`
+	RoomsPerFloor   int                         `json:"rooms_per_floor"`
+	RoomCapacity    int16                       `json:"room_capacity"`
+	StartFloor      *int                        `json:"start_floor"`
+	CustomFloors    []CreateFloorWithRoomsInput `json:"custom_floors,omitempty"`
+}
+
+// OwnerBulkGenerateFloorsRooms allows generating multiple floors and rooms conveniently in a single batch.
+func (h *Handlers) OwnerBulkGenerateFloorsRooms(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	var body bulkGenerateFloorsRoomsBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	targetPID := pid
+	if body.PropertyID != "" {
+		if parsed, err := uuid.Parse(body.PropertyID); err == nil && parsed != uuid.Nil {
+			targetPID = parsed
+		}
+	}
+	if targetPID != pid {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+		return
+	}
+
+	createdFloors, createdRooms, err := generateFloorsAndRooms(
+		c.Request.Context(),
+		h.GamificationStore,
+		targetPID,
+		body.FloorsCount,
+		body.TotalRoomsCount,
+		body.RoomsPerFloor,
+		body.RoomCapacity,
+		body.StartFloor,
+		body.CustomFloors,
+	)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":             true,
+		"floors_created": createdFloors,
+		"rooms_created":  createdRooms,
+	})
+}
+
 // OwnerCreateManager provisions a warden/manager user account scoped to a property.
 func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)

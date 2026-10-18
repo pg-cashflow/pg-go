@@ -129,6 +129,22 @@ func (m *mockGamificationStore) ListFloors(ctx context.Context, propertyID uuid.
 	return out, nil
 }
 
+func (m *mockGamificationStore) CreateFloor(ctx context.Context, f *domain.Floor) error {
+	if f.ID == uuid.Nil {
+		f.ID = uuid.New()
+	}
+	m.floors = append(m.floors, *f)
+	return nil
+}
+
+func (m *mockGamificationStore) CreateRoom(ctx context.Context, rm *domain.Room) error {
+	if rm.ID == uuid.Nil {
+		rm.ID = uuid.New()
+	}
+	m.rooms = append(m.rooms, *rm)
+	return nil
+}
+
 func (m *mockGamificationStore) ListRooms(ctx context.Context, propertyID uuid.UUID) ([]domain.Room, error) {
 	var out []domain.Room
 	for _, r := range m.rooms {

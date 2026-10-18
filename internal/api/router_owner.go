@@ -116,6 +116,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.PATCH("/gamification/settings", h.OwnerUpdateGamificationSettings)
 	owner.GET("/floors", h.OwnerListFloors)
 	owner.POST("/floors", h.OwnerCreateFloor)
+	owner.POST("/floors/bulk", h.OwnerBulkGenerateFloorsRooms)
 	owner.GET("/rooms", h.OwnerListRooms)
 	owner.POST("/rooms", h.OwnerCreateRoom)
 	owner.GET("/managers", h.OwnerListManagers)

@@ -38,6 +38,15 @@ func Handler() gin.HandlerFunc {
 			return
 		}
 
+		// Never fall back to index.html for API routes or non-GET/HEAD methods.
+		if strings.HasPrefix(reqPath, "api/") || reqPath == "api" || (c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead) {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
+				"error": "route not found",
+				"code":  "route.notFound",
+			})
+			return
+		}
+
 		// Client-side route fallback -> index.html
 		c.Request.URL.Path = "/"
 		fileServer.ServeHTTP(c.Writer, c.Request)

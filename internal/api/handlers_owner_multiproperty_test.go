@@ -183,11 +183,13 @@ func setupMultiPropRouter() (*gin.Engine, *Handlers, *domain.User, uuid.UUID, uu
 
 	jwtSecret := "test-secret-key-multi-property-test-32bytes"
 
+	mockGam := &mockGamificationStore{}
 	h := &Handlers{
 		Deps: Deps{
-			PropertyStore: propStore,
-			UserStore:     userStore,
-			AuthUserRepo:  userStore,
+			PropertyStore:     propStore,
+			UserStore:         userStore,
+			AuthUserRepo:      userStore,
+			GamificationStore: mockGam,
 		},
 	}
 
@@ -197,6 +199,9 @@ func setupMultiPropRouter() (*gin.Engine, *Handlers, *domain.User, uuid.UUID, uu
 		owner.GET("/properties", h.ListProperties)
 		owner.POST("/properties", h.CreateProperty)
 		owner.POST("/properties/:id/switch", h.OwnerSwitchProperty)
+		owner.GET("/floors", h.OwnerListFloors)
+		owner.POST("/floors/bulk", h.OwnerBulkGenerateFloorsRooms)
+		owner.GET("/rooms", h.OwnerListRooms)
 		owner.GET("/test-scope", func(c *gin.Context) {
 			pid, ok := propertyIDFromClaims(c)
 			if !ok {
@@ -386,3 +391,98 @@ func TestOwner_CreateProperty(t *testing.T) {
 		t.Errorf("created owner_phone: got %q, want %q", res.Property.OwnerPhone, user.Phone)
 	}
 }
+
+func TestOwner_CreateProperty_WithFloorsAndRooms(t *testing.T) {
+	jwtSecret := "test-secret-key-multi-property-test-32bytes"
+	r, _, user, _, _, _ := setupMultiPropRouter()
+
+	token, err := auth.IssueToken(jwtSecret, user)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	// 3 floors, 12 rooms, capacity 2, start floor 1
+	startFloor := 1
+	body := createPropertyBody{
+		Name:            "Silver PG",
+		Address:         "456 Indiranagar, Bangalore",
+		OwnerName:       "Sun Owner",
+		FloorsCount:     3,
+		TotalRoomsCount: 12,
+		RoomCapacity:    2,
+		StartFloor:      &startFloor,
+	}
+	raw, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/owner/properties", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create property with layout: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		Property      domain.Property `json:"property"`
+		FloorsCreated int             `json:"floors_created"`
+		RoomsCreated  int             `json:"rooms_created"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if res.Property.Name != "Silver PG" {
+		t.Errorf("property name: got %q, want 'Silver PG'", res.Property.Name)
+	}
+	if res.FloorsCreated != 3 {
+		t.Errorf("floors created: got %d, want 3", res.FloorsCreated)
+	}
+	if res.RoomsCreated != 12 {
+		t.Errorf("rooms created: got %d, want 12", res.RoomsCreated)
+	}
+}
+
+func TestOwner_BulkGenerateFloorsRooms(t *testing.T) {
+	jwtSecret := "test-secret-key-multi-property-test-32bytes"
+	r, _, user, p1ID, _, _ := setupMultiPropRouter()
+
+	token, err := auth.IssueToken(jwtSecret, user)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	startFloor := 0 // Ground floor start
+	body := bulkGenerateFloorsRoomsBody{
+		PropertyID:      p1ID.String(),
+		FloorsCount:     2,
+		TotalRoomsCount: 6,
+		RoomCapacity:    3,
+		StartFloor:      &startFloor,
+	}
+	raw, _ := json.Marshal(body)
+
+	req := httptest.NewRequest("POST", "/owner/floors/bulk", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("bulk generate: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var res struct {
+		Ok            bool `json:"ok"`
+		FloorsCreated int  `json:"floors_created"`
+		RoomsCreated  int  `json:"rooms_created"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !res.Ok || res.FloorsCreated != 2 || res.RoomsCreated != 6 {
+		t.Errorf("bulk generate result: got %+v, want floors=2, rooms=6", res)
+	}
+}
+

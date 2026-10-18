@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
@@ -57,14 +60,159 @@ func (h *Handlers) ListProperties(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"properties": out})
 }
 
-type createPropertyBody struct {
-	Name        string `json:"name" binding:"required"`
-	Address     string `json:"address"`
-	OwnerName   string `json:"owner_name"`
-	PaymentMode string `json:"payment_mode"`
+// CreateFloorWithRoomsInput defines custom floor details and room number assignments.
+type CreateFloorWithRoomsInput struct {
+	FloorNumber int      `json:"floor_number"`
+	Name        string   `json:"name"`
+	Rooms       []string `json:"rooms"`
+	Capacity    int16    `json:"capacity"`
 }
 
-// CreateProperty handles POST /owner/properties — creates an additional property for the authenticated owner.
+type createPropertyBody struct {
+	Name            string                      `json:"name" binding:"required"`
+	Address         string                      `json:"address"`
+	OwnerName       string                      `json:"owner_name"`
+	PaymentMode     string                      `json:"payment_mode"`
+	FloorsCount     int                         `json:"floors_count"`      // e.g. 3
+	TotalRoomsCount int                         `json:"total_rooms_count"` // e.g. 12
+	RoomsPerFloor   int                         `json:"rooms_per_floor"`   // e.g. 4
+	RoomCapacity    int16                       `json:"room_capacity"`     // default 2
+	StartFloor      *int                        `json:"start_floor"`       // default 1 (or 0 for Ground)
+	CustomFloors    []CreateFloorWithRoomsInput `json:"custom_floors,omitempty"`
+}
+
+// generateFloorsAndRooms creates floors and rooms in bulk for a property.
+func generateFloorsAndRooms(
+	ctx context.Context,
+	store gamification.Store,
+	propID uuid.UUID,
+	floorsCount, totalRooms, roomsPerFloor int,
+	roomCap int16,
+	startFloorPtr *int,
+	customFloors []CreateFloorWithRoomsInput,
+) (int, int, error) {
+	if store == nil {
+		return 0, 0, nil
+	}
+	createdFloors := 0
+	createdRooms := 0
+
+	if len(customFloors) > 0 {
+		defaultCap := roomCap
+		if defaultCap <= 0 {
+			defaultCap = 2
+		}
+		for _, fl := range customFloors {
+			fName := strings.TrimSpace(fl.Name)
+			if fName == "" {
+				if fl.FloorNumber == 0 {
+					fName = "Ground Floor"
+				} else {
+					fName = fmt.Sprintf("Floor %d", fl.FloorNumber)
+				}
+			}
+			floorObj := domain.Floor{
+				PropertyID:  propID,
+				FloorNumber: fl.FloorNumber,
+				Name:        fName,
+			}
+			if err := store.CreateFloor(ctx, &floorObj); err != nil {
+				return createdFloors, createdRooms, err
+			}
+			createdFloors++
+
+			cap := fl.Capacity
+			if cap <= 0 {
+				cap = defaultCap
+			}
+			for _, rNum := range fl.Rooms {
+				rTrim := strings.TrimSpace(rNum)
+				if rTrim == "" {
+					continue
+				}
+				roomObj := domain.Room{
+					PropertyID:    propID,
+					FloorId:       floorObj.ID,
+					RoomNumber:    rTrim,
+					Capacity:      cap,
+					IncludedUnits: 50,
+				}
+				if err := store.CreateRoom(ctx, &roomObj); err == nil {
+					createdRooms++
+				}
+			}
+		}
+		return createdFloors, createdRooms, nil
+	}
+
+	if floorsCount <= 0 {
+		return 0, 0, nil
+	}
+
+	if totalRooms <= 0 && roomsPerFloor > 0 {
+		totalRooms = floorsCount * roomsPerFloor
+	}
+	if totalRooms <= 0 {
+		totalRooms = floorsCount * 4
+	}
+
+	startFloor := 1
+	if startFloorPtr != nil {
+		startFloor = *startFloorPtr
+	}
+	defaultCap := roomCap
+	if defaultCap <= 0 {
+		defaultCap = 2
+	}
+
+	basePerFloor := totalRooms / floorsCount
+	extra := totalRooms % floorsCount
+
+	for i := 0; i < floorsCount; i++ {
+		flNum := startFloor + i
+		flName := fmt.Sprintf("Floor %d", flNum)
+		if flNum == 0 {
+			flName = "Ground Floor"
+		}
+		floorObj := domain.Floor{
+			PropertyID:  propID,
+			FloorNumber: flNum,
+			Name:        flName,
+		}
+		if err := store.CreateFloor(ctx, &floorObj); err != nil {
+			return createdFloors, createdRooms, err
+		}
+		createdFloors++
+
+		roomsOnThisFloor := basePerFloor
+		if i < extra {
+			roomsOnThisFloor++
+		}
+
+		for r := 1; r <= roomsOnThisFloor; r++ {
+			var roomNum string
+			if flNum == 0 {
+				roomNum = fmt.Sprintf("G%02d", r)
+			} else {
+				roomNum = fmt.Sprintf("%d%02d", flNum, r)
+			}
+			roomObj := domain.Room{
+				PropertyID:    propID,
+				FloorId:       floorObj.ID,
+				RoomNumber:    roomNum,
+				Capacity:      defaultCap,
+				IncludedUnits: 50,
+			}
+			if err := store.CreateRoom(ctx, &roomObj); err == nil {
+				createdRooms++
+			}
+		}
+	}
+	return createdFloors, createdRooms, nil
+}
+
+// CreateProperty handles POST /owner/properties — creates an additional property for the authenticated owner,
+// with optional bulk floor & room generation.
 func (h *Handlers) CreateProperty(c *gin.Context) {
 	claims, ok := auth.ClaimsFromContext(c)
 	if !ok || claims.Role != domain.RoleOwner {
@@ -105,8 +253,25 @@ func (h *Handlers) CreateProperty(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create property failed"})
 		return
 	}
+
+	floorsCreated, roomsCreated, _ := generateFloorsAndRooms(
+		c.Request.Context(),
+		h.GamificationStore,
+		prop.ID,
+		body.FloorsCount,
+		body.TotalRoomsCount,
+		body.RoomsPerFloor,
+		body.RoomCapacity,
+		body.StartFloor,
+		body.CustomFloors,
+	)
+
 	prop.UPIVPA = ""
-	c.JSON(http.StatusCreated, gin.H{"property": prop})
+	c.JSON(http.StatusCreated, gin.H{
+		"property":       prop,
+		"floors_created": floorsCreated,
+		"rooms_created":  roomsCreated,
+	})
 }
 
 // OwnerSwitchProperty handles POST /owner/properties/:id/switch — switches active property for single login.
