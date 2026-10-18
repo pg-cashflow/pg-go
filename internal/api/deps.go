@@ -62,6 +62,7 @@ type AuthService interface {
 	RevokeUserSessions(ctx context.Context, userID uuid.UUID) error
 	ListSessions(ctx context.Context, userID uuid.UUID, currentFamilyID *uuid.UUID, currentRefreshToken string) ([]domain.ActiveSession, error)
 	RevokeDeviceSession(ctx context.Context, userID, familyID uuid.UUID) error
+	RevokeOtherSessions(ctx context.Context, userID uuid.UUID, currentFamilyID *uuid.UUID, currentRefreshToken string) error
 }
 
 // MagicLinkService resolves and creates payment tokens.

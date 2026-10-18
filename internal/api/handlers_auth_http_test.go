@@ -26,6 +26,7 @@ type fakeAuthRefreshService struct {
 	otpCalls          []string
 	sessionsToReturn  []domain.ActiveSession
 	revokedSessionIDs []uuid.UUID
+	revokeOtherCalls  int
 }
 
 func (s *fakeAuthRefreshService) RotateRefreshToken(_ context.Context, token string) (string, string, *domain.User, error) {
@@ -58,6 +59,11 @@ func (s *fakeAuthRefreshService) ListSessions(_ context.Context, _ uuid.UUID, cu
 
 func (s *fakeAuthRefreshService) RevokeDeviceSession(_ context.Context, _, familyID uuid.UUID) error {
 	s.revokedSessionIDs = append(s.revokedSessionIDs, familyID)
+	return nil
+}
+
+func (s *fakeAuthRefreshService) RevokeOtherSessions(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ string) error {
+	s.revokeOtherCalls++
 	return nil
 }
 
@@ -140,6 +146,7 @@ func TestAuthHandlers_T4d(t *testing.T) {
 	{
 		authGroup.GET("/sessions", h.GetActiveSessions)
 		authGroup.DELETE("/sessions/:id", h.DeleteSession)
+		authGroup.POST("/revoke-sessions", h.RevokeSessions)
 	}
 
 	pendingGroup := router.Group("/join", auth.RequirePendingJoin(jwtSecret, nil))
@@ -474,6 +481,26 @@ func TestAuthHandlers_T4d(t *testing.T) {
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for invalid session id, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("Sessions: RevokeSessions revokes other sessions and returns 200 without bumping token version", func(t *testing.T) {
+		ownerUser := &domain.User{
+			ID:           uuid.New(),
+			Role:         domain.RoleOwner,
+			TokenVersion: 1,
+		}
+		tok, _ := auth.IssueAccessToken(jwtSecret, ownerUser)
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/revoke-sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for RevokeSessions, got %d body=%s", w.Code, w.Body.String())
+		}
+		if authSvc.revokeOtherCalls == 0 {
+			t.Fatalf("expected RevokeOtherSessions to be called")
 		}
 	})
 }

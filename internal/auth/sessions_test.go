@@ -95,3 +95,73 @@ func TestService_ListSessionsAndRevoke(t *testing.T) {
 		t.Errorf("expected remaining session to be session 1, got %v", sessionsAfter[0].ID)
 	}
 }
+
+func TestService_RevokeOtherSessions(t *testing.T) {
+	repo := newMemoryRefreshTokenRepo()
+	svc := &Service{
+		jwtSecret:   "test-secret-key-that-is-at-least-32-bytes-long",
+		refreshRepo: repo,
+	}
+
+	ctx := context.Background()
+	userID := uuid.New()
+	user := &domain.User{
+		ID:           userID,
+		Role:         domain.RoleTenant,
+		TokenVersion: 1,
+	}
+
+	// 1. Issue current session (Session 1)
+	acc1, ref1, err := svc.IssueSessionWithClient(ctx, user, "Safari on iPhone", "203.0.113.1")
+	if err != nil {
+		t.Fatalf("IssueSessionWithClient 1: %v", err)
+	}
+	claims1, err := VerifyToken(svc.jwtSecret, acc1)
+	if err != nil || claims1.FamilyID == nil {
+		t.Fatalf("VerifyToken 1: %v", err)
+	}
+
+	// 2. Issue other sessions (Session 2 and Session 3)
+	_, _, err = svc.IssueSessionWithClient(ctx, user, "Chrome on Windows", "198.51.100.2")
+	if err != nil {
+		t.Fatalf("IssueSessionWithClient 2: %v", err)
+	}
+	_, _, err = svc.IssueSessionWithClient(ctx, user, "Firefox on Linux", "198.51.100.3")
+	if err != nil {
+		t.Fatalf("IssueSessionWithClient 3: %v", err)
+	}
+
+	// 3. Confirm 3 active sessions exist
+	sessions, err := svc.ListSessions(ctx, userID, claims1.FamilyID, ref1)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("expected 3 active sessions, got %d", len(sessions))
+	}
+
+	// 4. Revoke other sessions from the perspective of Session 1
+	if err := svc.RevokeOtherSessions(ctx, userID, claims1.FamilyID, ref1); err != nil {
+		t.Fatalf("RevokeOtherSessions: %v", err)
+	}
+
+	// 5. Assert only Session 1 remains active
+	remaining, err := svc.ListSessions(ctx, userID, claims1.FamilyID, ref1)
+	if err != nil {
+		t.Fatalf("ListSessions after revoke others: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected exactly 1 remaining session, got %d", len(remaining))
+	}
+	if remaining[0].ID != *claims1.FamilyID {
+		t.Errorf("expected remaining session to be current session %v, got %v", *claims1.FamilyID, remaining[0].ID)
+	}
+	if !remaining[0].IsCurrent {
+		t.Errorf("expected remaining session to be marked as is_current")
+	}
+
+	// 6. Assert error when neither family ID nor refresh token is provided
+	if err := svc.RevokeOtherSessions(ctx, userID, nil, ""); err != ErrNoCurrentSession {
+		t.Errorf("expected ErrNoCurrentSession, got %v", err)
+	}
+}

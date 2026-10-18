@@ -97,6 +97,15 @@ func (r *RefreshTokenRepo) RevokeFamilyByUser(ctx context.Context, userID, famil
 	return err
 }
 
+func (r *RefreshTokenRepo) RevokeAllExceptFamily(ctx context.Context, userID, exceptFamilyID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE refresh_tokens
+		SET revoked = TRUE, revoked_at = NOW()
+		WHERE user_id = $1 AND family_id != $2 AND revoked = FALSE`, userID, exceptFamilyID,
+	)
+	return err
+}
+
 func (r *RefreshTokenRepo) RevokeUserTokens(ctx context.Context, userID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE refresh_tokens

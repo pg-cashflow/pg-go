@@ -77,6 +77,9 @@ func (s *stubPayoutAuthService) ListSessions(context.Context, uuid.UUID, *uuid.U
 func (s *stubPayoutAuthService) RevokeDeviceSession(context.Context, uuid.UUID, uuid.UUID) error {
 	return nil
 }
+func (s *stubPayoutAuthService) RevokeOtherSessions(context.Context, uuid.UUID, *uuid.UUID, string) error {
+	return nil
+}
 
 type stubPayoutUserStore struct {
 	user *domain.User

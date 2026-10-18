@@ -312,6 +312,10 @@ func (s *stubAuthService) RevokeDeviceSession(_ context.Context, _, _ uuid.UUID)
 	return nil
 }
 
+func (s *stubAuthService) RevokeOtherSessions(_ context.Context, _ uuid.UUID, _ *uuid.UUID, _ string) error {
+	return nil
+}
+
 func TestOTPVerifyCharacterization(t *testing.T) {
 	cases := []struct {
 		name       string

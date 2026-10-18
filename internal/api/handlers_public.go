@@ -270,24 +270,28 @@ func (h *Handlers) OTPVerify(c *gin.Context) {
 	apierr.RespondClientErr(c, http.StatusGone, otpEndpointDisabledMsg, apierr.CodeAuthEndpointDisabled)
 }
 
-// RevokeSessions handles POST /auth/revoke-sessions — bumps users.token_version
-// so previously issued JWTs fail live checks on the next request.
+// RevokeSessions handles POST /auth/revoke-sessions.
+// Revokes all active sessions for the user EXCEPT the caller's current session.
+// Note: We deliberately do not bump users.token_version here, as that would invalidate
+// the caller's own access token immediately. Global token_version bumps are reserved
+// for administrative account freezes / deactivations.
 func (h *Handlers) RevokeSessions(c *gin.Context) {
-	uid, ok := userIDFromClaims(c)
+	claims, ok := auth.ClaimsFromContext(c)
 	if !ok {
 		return
 	}
-	if h.AuthUserRepo == nil {
+	if h.Auth == nil {
 		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
 		return
 	}
-	if err := h.AuthUserRepo.IncrementTokenVersion(c.Request.Context(), uid); err != nil {
+	cookie, _ := c.Cookie(RefreshCookieName)
+	if err := h.Auth.RevokeOtherSessions(c.Request.Context(), claims.UserID, claims.FamilyID, cookie); err != nil {
+		if errors.Is(err, auth.ErrNoCurrentSession) {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "cannot identify current session", apierr.CodeRequestInvalidBody)
+			return
+		}
 		respondErr(c, err)
 		return
-	}
-	auth.InvalidateTokenVersionCache(uid)
-	if h.Auth != nil {
-		_ = h.Auth.RevokeUserSessions(c.Request.Context(), uid)
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

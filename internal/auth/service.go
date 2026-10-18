@@ -38,6 +38,7 @@ var (
 	ErrNoDeliveryChannel     = errors.New("no delivery channel configured for otp")
 	ErrStaleAuthToken        = errors.New("auth token is stale: fresh re-authentication required")
 	ErrRefreshTokenExpired   = errors.New("refresh token expired")
+	ErrNoCurrentSession      = errors.New("cannot identify current session")
 )
 
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
@@ -849,4 +850,24 @@ func (s *Service) RevokeDeviceSession(ctx context.Context, userID, familyID uuid
 		return nil
 	}
 	return s.refreshRepo.RevokeFamilyByUser(ctx, userID, familyID)
+}
+
+// RevokeOtherSessions revokes all active session families belonging to the user except the caller's current session family.
+func (s *Service) RevokeOtherSessions(ctx context.Context, userID uuid.UUID, currentFamilyID *uuid.UUID, currentRefreshToken string) error {
+	if s.refreshRepo == nil {
+		return nil
+	}
+	var activeFamily uuid.UUID
+	if currentFamilyID != nil && *currentFamilyID != uuid.Nil {
+		activeFamily = *currentFamilyID
+	} else if strings.TrimSpace(currentRefreshToken) != "" {
+		hash := HashRefreshToken(strings.TrimSpace(currentRefreshToken))
+		if rt, err := s.refreshRepo.GetRefreshTokenByHash(ctx, hash); err == nil && rt != nil {
+			activeFamily = rt.FamilyID
+		}
+	}
+	if activeFamily == uuid.Nil {
+		return ErrNoCurrentSession
+	}
+	return s.refreshRepo.RevokeAllExceptFamily(ctx, userID, activeFamily)
 }

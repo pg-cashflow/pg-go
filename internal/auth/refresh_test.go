@@ -98,6 +98,21 @@ func (m *memoryRefreshTokenRepo) RevokeFamilyByUser(ctx context.Context, userID,
 	return nil
 }
 
+func (m *memoryRefreshTokenRepo) RevokeAllExceptFamily(ctx context.Context, userID, exceptFamilyID uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	for _, rt := range m.tokens {
+		if rt.UserID == userID && rt.FamilyID != exceptFamilyID {
+			rt.Revoked = true
+			if rt.RevokedAt == nil {
+				rt.RevokedAt = &now
+			}
+		}
+	}
+	return nil
+}
+
 func (m *memoryRefreshTokenRepo) ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]domain.ActiveSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
