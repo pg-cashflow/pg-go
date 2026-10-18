@@ -83,7 +83,11 @@ func (c *Client) CreateDigiLockerLink(ctx context.Context, verificationID, redir
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("cashfree create digilocker: %s %s", resp.Status, string(b))
+		return "", &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
 	}
 	var out createDigiLockerResp
 	if err := json.Unmarshal(b, &out); err != nil {
@@ -120,7 +124,11 @@ func (c *Client) GetDigiLockerStatus(ctx context.Context, verificationID string)
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree get digilocker status: %s %s", resp.Status, string(b))
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
 	}
 	var out getDigiLockerStatusResp
 	if err := json.Unmarshal(b, &out); err != nil {

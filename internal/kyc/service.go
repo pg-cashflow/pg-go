@@ -477,7 +477,7 @@ func (s *Service) VerifyAadhaarDocument(
 		return nil, fmt.Errorf("kyc service: fetch tenant name: %w", err)
 	}
 
-	var resp *cashfree.AadhaarOCRResult
+	var resp *cashfree.SmartOCRResponse
 	if s.cashfree != nil {
 		resp, err = s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
 		if err != nil {
@@ -489,7 +489,7 @@ func (s *Service) VerifyAadhaarDocument(
 	}
 
 	if resp == nil || resp.Name == "" || resp.MaskedUID == "" {
-		resp = &cashfree.AadhaarOCRResult{
+		resp = &cashfree.SmartOCRResponse{
 			ReferenceID: time.Now().UnixNano(),
 			Status:      "PENDING_MANUAL_REVIEW",
 			Name:        tenantName,

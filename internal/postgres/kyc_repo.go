@@ -153,7 +153,7 @@ func (r *KYCRepo) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 				attested_photo_bytes = NULL,
 				photo_stored = FALSE,
 				updated_at = $2
-			WHERE tenant_id = $1 AND status IN ('pending', 'verified')
+			WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
 		`, tenantID, now)
 		if err != nil {
 			return fmt.Errorf("kyc: revoke verification records: %w", err)
@@ -201,11 +201,11 @@ func (r *KYCRepo) InitiateVerificationTx(
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
-		// 2. Check for active (pending or verified) verification
+		// 2. Check for active (pending, pending_manual_review, or verified) verification
 		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
-			WHERE tenant_id = $1 AND status IN ('pending', 'verified')
+			WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
 			FOR UPDATE
 		`, tenantID))
 		if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
@@ -242,7 +242,7 @@ case domain.KYCStatusVerified:
 				} else {
 					return domain.ErrAlreadyVerified
 				}
-			case domain.KYCStatusPending:
+			case domain.KYCStatusPending, domain.KYCStatusPendingManualReview:
 				// Pending verification superseded by fresh attempt
 				reason := "superseded by new attempt"
 				_, err = tx.Exec(ctx, `
@@ -472,12 +472,12 @@ func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UU
 	})
 }
 
-// GetActiveVerificationByTenant retrieves any currently pending or verified verification for a tenant.
+// GetActiveVerificationByTenant retrieves any currently pending, under-review, or verified verification for a tenant.
 func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
 	return scanKYCVerification(r.pool.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
-		WHERE tenant_id = $1 AND status IN ('pending', 'verified')
+		WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
 	`, tenantID))
 }
 
