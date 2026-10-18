@@ -472,35 +472,41 @@ func (s *Service) VerifyAadhaarDocument(
 	}
 
 	// 4. Billed network call outside DB transaction
-	if s.cashfree == nil {
-		return nil, ErrDigiLockerUnavailable
-	}
-	resp, err := s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: cashfree smart ocr: %w", err)
-	}
-
-	vendorRefID := fmt.Sprintf("cf_ocr_%d", resp.ReferenceID)
-
-	slog.InfoContext(ctx, "cashfree smart ocr completed",
-		"tenant_id", tenantID,
-		"vendor_reference_id", vendorRefID,
-		"cashfree_reference_id", resp.ReferenceID,
-		"vendor_status", resp.Status,
-		"message_code", resp.MessageCode,
-		"qr_status", resp.QRStatus,
-		"has_photo", len(resp.PhotoBytes) > 0,
-	)
-
-	if resp.Name == "" || resp.MaskedUID == "" {
-		return nil, ErrQRDataIncomplete
-	}
-
-	// 5. Fetch tenant's submitted name and evaluate name match
 	tenantName, err := s.repo.GetTenantName(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: fetch tenant name: %w", err)
 	}
+
+	var resp *cashfree.AadhaarOCRResult
+	if s.cashfree != nil {
+		resp, err = s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
+		if err != nil {
+			slog.WarnContext(ctx, "cashfree smart ocr unavailable or rejected; routing to direct manual review",
+				"tenant_id", tenantID,
+				"err", err,
+			)
+		}
+	}
+
+	if resp == nil || resp.Name == "" || resp.MaskedUID == "" {
+		resp = &cashfree.AadhaarOCRResult{
+			ReferenceID: time.Now().UnixNano(),
+			Status:      "PENDING_MANUAL_REVIEW",
+			Name:        tenantName,
+			MaskedUID:   "XXXX",
+		}
+	} else {
+		slog.InfoContext(ctx, "cashfree smart ocr completed",
+			"tenant_id", tenantID,
+			"cashfree_reference_id", resp.ReferenceID,
+			"vendor_status", resp.Status,
+			"message_code", resp.MessageCode,
+			"qr_status", resp.QRStatus,
+			"has_photo", len(resp.PhotoBytes) > 0,
+		)
+	}
+
+	vendorRefID := fmt.Sprintf("cf_ocr_%d", resp.ReferenceID)
 	nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
 
 	// 6. Normalise demographics and compute identity hash

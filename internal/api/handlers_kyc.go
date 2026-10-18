@@ -116,6 +116,19 @@ func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 func kycClientErr(err error) error {
+	var apiErr *cashfree.APIError
+	if errors.As(err, &apiErr) {
+		msg := apiErr.Error()
+		if apiErr.Body != "" {
+			var bodyMap map[string]any
+			if json.Unmarshal([]byte(apiErr.Body), &bodyMap) == nil {
+				if m, ok := bodyMap["message"].(string); ok && m != "" {
+					msg = m
+				}
+			}
+		}
+		return clientErrWithCode(http.StatusBadGateway, msg, apierr.Code("kyc.upstream_error"))
+	}
 	switch {
 	case errors.Is(err, kycsvc.ErrNoActiveConsent):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.no_consent"))
