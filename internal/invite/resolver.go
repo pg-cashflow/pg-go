@@ -14,14 +14,16 @@ import (
 // ErrInvalidInvite is returned when a code does not resolve to an active invite.
 var ErrInvalidInvite = errors.New("invalid invite code")
 
-// Resolver maps a normalized invite code to a property and optional slot invite.
+// Resolver maps a normalized invite code to a property + room/floor via the
+// slot-invite system. The legacy bare property-level invite code (no
+// room/floor binding) is retired: a code that is not a valid, open slot
+// invite is simply invalid. See docs/adr/ legacy-join-retirement.
 type Resolver struct {
-	props *postgres.PropertyRepo
 	slots *postgres.SlotInviteRepo
 }
 
-func NewResolver(props *postgres.PropertyRepo, slots *postgres.SlotInviteRepo) *Resolver {
-	return &Resolver{props: props, slots: slots}
+func NewResolver(slots *postgres.SlotInviteRepo) *Resolver {
+	return &Resolver{slots: slots}
 }
 
 func normalizeInviteCode(code string) string {
@@ -33,29 +35,23 @@ func (r *Resolver) Resolve(ctx context.Context, code string) (*domain.InviteReso
 	if code == "" {
 		return nil, ErrInvalidInvite
 	}
-	if r.slots != nil {
-		slot, err := r.slots.GetByCode(ctx, code)
-		if err == nil {
-			now := time.Now().UTC()
-			if slot.Status == domain.SlotInviteOpen && slot.ExpiresAt.After(now) {
-				return &domain.InviteResolution{
-					PropertyID:   slot.PropertyID,
-					SlotInviteID: &slot.ID,
-					SlotInvite:   slot,
-				}, nil
-			}
-			return nil, ErrInvalidInvite
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, err
-		}
+	if r.slots == nil {
+		return nil, ErrInvalidInvite
 	}
-	p, err := r.props.GetByInviteCode(ctx, code)
+	slot, err := r.slots.GetByCode(ctx, code)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrInvalidInvite
 		}
 		return nil, err
 	}
-	return &domain.InviteResolution{PropertyID: p.ID}, nil
+	now := time.Now().UTC()
+	if slot.Status != domain.SlotInviteOpen || !slot.ExpiresAt.After(now) {
+		return nil, ErrInvalidInvite
+	}
+	return &domain.InviteResolution{
+		PropertyID:   slot.PropertyID,
+		SlotInviteID: &slot.ID,
+		SlotInvite:   slot,
+	}, nil
 }

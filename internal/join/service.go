@@ -58,8 +58,6 @@ func NormalizeInvite(code string) string {
 
 type PropertyStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Property, error)
-	GetByInviteCode(ctx context.Context, code string) (*domain.Property, error)
-	SetInviteCode(ctx context.Context, id uuid.UUID, code string) error
 }
 
 type JoinStore interface {
@@ -113,10 +111,15 @@ type Service struct {
 	eventDB      *postgres.EventRepo
 	tenantTx     TenantTxCreator
 	tenantSvc    *tenant.Service
-	resolver     *invite.Resolver
+	resolver     InviteResolver
 	slotDB       *postgres.SlotInviteRepo
 	onboardingDB *postgres.OnboardingSettingsRepo
 	referralBind ReferralJoinBinder
+}
+
+// InviteResolver resolves invite codes to property and optional slot invite.
+type InviteResolver interface {
+	Resolve(ctx context.Context, code string) (*domain.InviteResolution, error)
 }
 
 // ReferralJoinBinder binds a referral code when a new joiner completes onboarding.
@@ -126,6 +129,10 @@ type ReferralJoinBinder interface {
 
 func NewService(props PropertyStore, joins JoinStore, users UserLinker, tenants TenantCreator, pub events.Publisher) *Service {
 	return &Service{props: props, joins: joins, users: users, tenants: tenants, pub: pub, now: func() time.Time { return time.Now().UTC() }}
+}
+
+func (s *Service) SetResolver(r InviteResolver) {
+	s.resolver = r
 }
 
 // NewServiceWithPool enables transactional CompleteOnboarding and Activate.
@@ -158,40 +165,26 @@ func (s *Service) SetReferralBinder(b ReferralJoinBinder) {
 	s.referralBind = b
 }
 
+// LookupInvite resolves an invite code via the slot-invite resolver only.
+// The legacy bare property-level invite code (no room/floor binding) is
+// retired: a code that does not resolve through the slot-invite resolver is
+// simply invalid, even if the resolver is not configured.
 func (s *Service) LookupInvite(ctx context.Context, code string) (*domain.Property, error) {
 	code = NormalizeInvite(code)
 	if code == "" {
 		return nil, ErrInvalidInvite
 	}
-	if s.resolver != nil {
-		res, err := s.resolver.Resolve(ctx, code)
-		if err != nil {
-			if errors.Is(err, invite.ErrInvalidInvite) {
-				return nil, ErrInvalidInvite
-			}
-			return nil, err
-		}
-		return s.props.GetByID(ctx, res.PropertyID)
+	if s.resolver == nil {
+		return nil, ErrInvalidInvite
 	}
-	p, err := s.props.GetByInviteCode(ctx, code)
+	res, err := s.resolver.Resolve(ctx, code)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, invite.ErrInvalidInvite) {
 			return nil, ErrInvalidInvite
 		}
 		return nil, err
 	}
-	return p, nil
-}
-
-func (s *Service) RotateInvite(ctx context.Context, propertyID uuid.UUID) (string, error) {
-	code, err := GenerateInviteCode()
-	if err != nil {
-		return "", err
-	}
-	if err := s.props.SetInviteCode(ctx, propertyID, code); err != nil {
-		return "", err
-	}
-	return code, nil
+	return s.props.GetByID(ctx, res.PropertyID)
 }
 
 // EnsurePending creates a pending join row for a newly authenticated invite user.

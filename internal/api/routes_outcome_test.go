@@ -34,10 +34,6 @@ type outcomeJoinStub struct {
 	JoinService
 }
 
-func (outcomeJoinStub) RotateInvite(_ context.Context, _ uuid.UUID) (string, error) {
-	return "INV-ROTATED-99", nil
-}
-
 func (outcomeJoinStub) LookupInvite(_ context.Context, code string) (*domain.Property, error) {
 	if code == "INVALID" {
 		return nil, errors.New("invalid invite code")
@@ -264,17 +260,6 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		}
 	})
 
-	// 3. POST /api/owner/invite/rotate
-	t.Run("POST /api/owner/invite/rotate rotates code", func(t *testing.T) {
-		w := doReq(http.MethodPost, "/api/owner/invite/rotate", ownerToken, nil, nil)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-		if !strings.Contains(w.Body.String(), "INV-ROTATED-99") {
-			t.Fatalf("expected rotated invite code, got %s", w.Body.String())
-		}
-	})
-
 	// 4. Finance endpoints
 	t.Run("GET /api/owner/finance/summary returns 200", func(t *testing.T) {
 		w := doReq(http.MethodGet, "/api/owner/finance/summary", ownerToken, nil, nil)
@@ -433,12 +418,6 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 	})
 
 	// 8. Join requests & invite endpoints
-	t.Run("GET /api/owner/invite returns invite code", func(t *testing.T) {
-		w := doReq(http.MethodGet, "/api/owner/invite", ownerToken, nil, nil)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
 
 	t.Run("GET /api/join/invite/:code returns property info", func(t *testing.T) {
 		w := doReq(http.MethodGet, "/api/join/invite/VALID123", "", nil, nil)

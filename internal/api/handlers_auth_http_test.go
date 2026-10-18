@@ -73,10 +73,6 @@ func (s *fakeAuthJoinService) LookupInvite(_ context.Context, code string) (*dom
 	return nil, errors.New("invalid invite code")
 }
 
-func (s *fakeAuthJoinService) RotateInvite(_ context.Context, _ uuid.UUID) (string, error) {
-	return "", nil
-}
-
 func (s *fakeAuthJoinService) EnsurePending(_ context.Context, _ *domain.User, _ uuid.UUID, _ *uuid.UUID) (*domain.JoinRequest, error) {
 	return nil, nil
 }

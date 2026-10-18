@@ -218,14 +218,7 @@ func (s *fakeOwnerPropertyStore) Create(_ context.Context, p *domain.Property) e
 
 type fakeOwnerJoinService struct {
 	api.JoinService
-	rotatedInvites map[uuid.UUID]string
 	rejectedJoins  map[uuid.UUID]bool
-}
-
-func (s *fakeOwnerJoinService) RotateInvite(_ context.Context, pid uuid.UUID) (string, error) {
-	code := "INVITE-ROTATED-" + pid.String()[:4]
-	s.rotatedInvites[pid] = code
-	return code, nil
 }
 
 func (s *fakeOwnerJoinService) Reject(_ context.Context, pid, id uuid.UUID) error {
@@ -311,7 +304,6 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 	validJoinID := uuid.New()
 	foreignJoinID := uuid.New()
 	joinSvc := &fakeOwnerJoinService{
-		rotatedInvites: make(map[uuid.UUID]string),
 		rejectedJoins:  map[uuid.UUID]bool{validJoinID: true},
 	}
 
@@ -350,8 +342,6 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 	ownerGroup.POST("/tenants/:id/prorate", h.TenantProrate)
 	ownerGroup.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
 	ownerGroup.POST("/join-requests/:id/reject", h.RejectJoin)
-	ownerGroup.GET("/invite", h.OwnerInvite)
-	ownerGroup.POST("/invite/rotate", h.OwnerRotateInvite)
 
 	// 1. OwnerTenantKYCPhoto
 	t.Run("OwnerTenantKYCPhoto: Happy path 200", func(t *testing.T) {
@@ -659,70 +649,6 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 
 	t.Run("RejectJoin: Tenant role returns 403", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/owner/join-requests/"+validJoinID.String()+"/reject", nil)
-		req.Header.Set("Authorization", "Bearer "+tenantToken)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
-		}
-	})
-
-	// 10. OwnerRotateInvite
-	t.Run("OwnerRotateInvite: Happy path 200", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
-		req.Header.Set("Authorization", "Bearer "+ownerToken)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("OwnerRotateInvite: Foreign property returns 403", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
-		req.Header.Set("Authorization", "Bearer "+ownerToken)
-		req.Header.Set("X-Property-ID", propForeign.String())
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for foreign property scope, got %d", w.Code)
-		}
-	})
-
-	t.Run("OwnerRotateInvite: Tenant role returns 403", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/owner/invite/rotate", nil)
-		req.Header.Set("Authorization", "Bearer "+tenantToken)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for non-owner, got %d", w.Code)
-		}
-	})
-
-	// 11. OwnerInvite
-	t.Run("OwnerInvite: Happy path 200", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
-		req.Header.Set("Authorization", "Bearer "+ownerToken)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("OwnerInvite: Foreign property returns 403", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
-		req.Header.Set("Authorization", "Bearer "+ownerToken)
-		req.Header.Set("X-Property-ID", propForeign.String())
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 for foreign property scope, got %d", w.Code)
-		}
-	})
-
-	t.Run("OwnerInvite: Tenant role returns 403", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/owner/invite", nil)
 		req.Header.Set("Authorization", "Bearer "+tenantToken)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)

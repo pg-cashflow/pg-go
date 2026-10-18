@@ -8,8 +8,6 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/properties/:id/switch", h.OwnerSwitchProperty)
 	owner.GET("/onboarding-settings", h.OwnerGetOnboardingSettings)
 	owner.PATCH("/onboarding-settings", h.OwnerPatchOnboardingSettings)
-	owner.GET("/invite", h.OwnerInvite)
-	owner.POST("/invite/rotate", h.OwnerRotateInvite)
 	owner.POST("/slot-invites", h.OwnerCreateSlotInvite)
 	owner.GET("/slot-invites", h.OwnerListSlotInvites)
 	owner.POST("/slot-invites/:id/revoke", h.OwnerRevokeSlotInvite)

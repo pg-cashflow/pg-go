@@ -173,7 +173,6 @@ type CSVParser func(r io.Reader) ([]csv.Row, error)
 
 type JoinService interface {
 	LookupInvite(ctx context.Context, code string) (*domain.Property, error)
-	RotateInvite(ctx context.Context, propertyID uuid.UUID) (string, error)
 	EnsurePending(ctx context.Context, user *domain.User, propertyID uuid.UUID, slotInviteID *uuid.UUID) (*domain.JoinRequest, error)
 	SetProfile(ctx context.Context, userID uuid.UUID, name string, aadhaarLast4 *string) (*domain.JoinRequest, error)
 	CompleteOnboarding(ctx context.Context, userID uuid.UUID, in joinsvc.ProfileInput) (*domain.JoinRequest, *domain.Tenant, error)

@@ -174,7 +174,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	slotInviteRepo := postgres.NewSlotInviteRepo(maintPool)
 	onboardingSettingsRepo := postgres.NewOnboardingSettingsRepo(maintPool)
-	inviteResolver := invite.NewResolver(propertyRepo, slotInviteRepo)
+	inviteResolver := invite.NewResolver(slotInviteRepo)
 	authSvc.SetInviteResolver(inviteResolver)
 	slotInviteSvc := slotinvite.NewService(maintPool, slotInviteRepo, onboardingSettingsRepo)
 

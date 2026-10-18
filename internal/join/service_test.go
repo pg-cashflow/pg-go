@@ -3,19 +3,19 @@ package join
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
+	"github.com/pg-cashflow/pg-go/internal/invite"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
 )
 
 type stubProps struct {
-	byID     map[uuid.UUID]*domain.Property
-	byInvite map[string]*domain.Property
-	rotated  string
+	byID map[uuid.UUID]*domain.Property
 }
 
 func (s *stubProps) GetByID(_ context.Context, id uuid.UUID) (*domain.Property, error) {
@@ -25,21 +25,6 @@ func (s *stubProps) GetByID(_ context.Context, id uuid.UUID) (*domain.Property, 
 	}
 	cp := *p
 	return &cp, nil
-}
-func (s *stubProps) GetByInviteCode(_ context.Context, code string) (*domain.Property, error) {
-	p, ok := s.byInvite[code]
-	if !ok {
-		return nil, pgx.ErrNoRows
-	}
-	cp := *p
-	return &cp, nil
-}
-func (s *stubProps) SetInviteCode(_ context.Context, id uuid.UUID, code string) error {
-	s.rotated = code
-	if p, ok := s.byID[id]; ok {
-		p.InviteCode = code
-	}
-	return nil
 }
 
 type stubJoins struct {
@@ -156,12 +141,28 @@ func (d *depositBilling) CreateDepositDue(_ context.Context, tenant *domain.Tena
 	return &domain.Due{ID: uuid.New(), TenantID: tenant.ID, Amount: amountPaise, Kind: domain.DueKindDeposit}, nil
 }
 
+type stubInviteResolver struct {
+	codes map[string]*domain.InviteResolution
+}
+
+func (s *stubInviteResolver) Resolve(_ context.Context, code string) (*domain.InviteResolution, error) {
+	res, ok := s.codes[strings.ToUpper(code)]
+	if !ok {
+		return nil, invite.ErrInvalidInvite
+	}
+	return res, nil
+}
+
 func TestLookupInvite(t *testing.T) {
 	pid := uuid.New()
-	props := &stubProps{byInvite: map[string]*domain.Property{
-		"ABCD1234": {ID: pid, Name: "Dev PG", OwnerName: "Owner"},
+	props := &stubProps{byID: map[uuid.UUID]*domain.Property{
+		pid: {ID: pid, Name: "Dev PG", OwnerName: "Owner"},
+	}}
+	resolver := &stubInviteResolver{codes: map[string]*domain.InviteResolution{
+		"ABCD1234": {PropertyID: pid},
 	}}
 	svc := NewService(props, &stubJoins{}, &stubUsers{}, &stubTenants{}, events.NoopPublisher{})
+	svc.SetResolver(resolver)
 	p, err := svc.LookupInvite(context.Background(), "abcd1234")
 	if err != nil || p.ID != pid {
 		t.Fatalf("lookup: %v %+v", err, p)

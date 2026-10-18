@@ -276,34 +276,6 @@ func (h *Handlers) JoinProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// OwnerInvite handles GET /owner/invite.
-func (h *Handlers) OwnerInvite(c *gin.Context) {
-	pid, ok := propertyIDFromClaims(c)
-	if !ok {
-		return
-	}
-	p, err := h.PropertyStore.GetByID(c.Request.Context(), pid)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "property"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"invite_code": p.InviteCode, "payment_mode": p.PaymentMode})
-}
-
-// OwnerRotateInvite handles POST /owner/invite/rotate.
-func (h *Handlers) OwnerRotateInvite(c *gin.Context) {
-	pid, ok := propertyIDFromClaims(c)
-	if !ok {
-		return
-	}
-	code, err := h.Joins.RotateInvite(c.Request.Context(), pid)
-	if err != nil {
-		respondErr(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"invite_code": code})
-}
-
 // ListJoinRequests handles GET /owner/join-requests.
 func (h *Handlers) ListJoinRequests(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
