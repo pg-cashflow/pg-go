@@ -217,7 +217,10 @@ func (h *Handlers) TenantKYCInitiate(c *gin.Context) {
 		respondErr(c, kycClientErr(err))
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"verification_url": url})
+	c.JSON(http.StatusOK, gin.H{
+		"verification_url": url,
+		"vendor_flow_url":  url,
+	})
 }
 
 type kycSubmitQRBody struct {
@@ -374,6 +377,9 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 
 	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		fileHeader, err = c.FormFile("document")
+	}
 	if err != nil {
 		apierr.RespondBindErr(c, "file field is required in multipart form", apierr.CodeRequestInvalidBody)
 		return
