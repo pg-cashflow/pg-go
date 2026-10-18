@@ -46,3 +46,11 @@ func (a *CashfreeAdapter) GetDigiLockerStatus(ctx context.Context, verificationI
 func (a *CashfreeAdapter) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error) {
 	return a.client.UploadAadhaarDocument(ctx, fileReader, filename)
 }
+
+func (a *CashfreeAdapter) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error) {
+	return a.client.RequestAadhaarOTP(ctx, aadhaarNumber)
+}
+
+func (a *CashfreeAdapter) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error) {
+	return a.client.VerifyAadhaarOTP(ctx, refID, otp)
+}
