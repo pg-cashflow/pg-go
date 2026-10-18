@@ -109,7 +109,13 @@ func (r *SlotInviteRepo) AvailableNormalBeds(ctx context.Context, roomID uuid.UU
 func (r *SlotInviteRepo) roomSnapshot(ctx context.Context, roomID uuid.UUID) (RoomBedSnapshot, uuid.UUID, error) {
 	var cap int
 	var propertyID uuid.UUID
-	err := r.db.QueryRow(ctx, `SELECT capacity, property_id FROM rooms WHERE id=$1`, roomID).Scan(&cap, &propertyID)
+	// FOR UPDATE: serializes concurrent capacity checks for this room. Any second
+	// CreateOpen/OfferNext call for the same room blocks here until the first
+	// transaction commits or rolls back, so both always see fresh occupancy —
+	// this is what actually prevents overbooking, not the Go-level comparison below.
+	// Caller MUST run this inside a transaction (see CreateOpen/AvailableNormalBeds
+	// callers) or the lock is released immediately and provides no protection.
+	err := r.db.QueryRow(ctx, `SELECT capacity, property_id FROM rooms WHERE id=$1 FOR UPDATE`, roomID).Scan(&cap, &propertyID)
 	if err != nil {
 		return RoomBedSnapshot{}, uuid.Nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/join"
@@ -65,21 +66,41 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.SlotInvit
 		ttlDays = 14
 	}
 	expires := s.now().Add(time.Duration(ttlDays) * 24 * time.Hour)
-	return s.invites.CreateOpen(ctx, postgres.CreateSlotInviteInput{
-		PropertyID:           in.PropertyID,
-		FloorID:              in.FloorID,
-		RoomID:               in.RoomID,
-		Code:                 code,
-		RentPaise:            in.RentPaise,
-		DepositPaise:         in.DepositPaise,
-		DueDay:               in.DueDay,
-		ProfileSchemaVersion: settings.ProfileSchemaVersion,
-		AllowOverCapacity:    in.AllowOverCapacity,
-		ExpiresAt:            expires,
-		CreatedByUserID:      in.CreatedBy,
-		ReserveBed:           settings.ReserveBedsForOpenInvites,
-		MaxExtraBeds:         settings.MaxExtraBedsPerRoom,
+
+	// Dual-mode invariant (see postgres/dbtx.go): CreateOpen performs multiple
+	// writes (rooms row lock, slot_invites insert, room_occupancy update) and
+	// MUST run inside a transaction. Wrapping here — rather than letting
+	// CreateOpen run on the bare pool — is what makes the FOR UPDATE lock in
+	// roomSnapshot actually serialize concurrent invite creation for the same
+	// room instead of releasing immediately after the read.
+	var invite *domain.SlotInvite
+	err = postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
+		sl := s.invites.WithTx(tx)
+		created, err := sl.CreateOpen(ctx, postgres.CreateSlotInviteInput{
+			PropertyID:           in.PropertyID,
+			FloorID:              in.FloorID,
+			RoomID:               in.RoomID,
+			Code:                 code,
+			RentPaise:            in.RentPaise,
+			DepositPaise:         in.DepositPaise,
+			DueDay:               in.DueDay,
+			ProfileSchemaVersion: settings.ProfileSchemaVersion,
+			AllowOverCapacity:    in.AllowOverCapacity,
+			ExpiresAt:            expires,
+			CreatedByUserID:      in.CreatedBy,
+			ReserveBed:           settings.ReserveBedsForOpenInvites,
+			MaxExtraBeds:         settings.MaxExtraBedsPerRoom,
+		})
+		if err != nil {
+			return err
+		}
+		invite = created
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return invite, nil
 }
 
 func (s *Service) List(ctx context.Context, propertyID uuid.UUID, status *domain.SlotInviteStatus) ([]domain.SlotInvite, error) {
