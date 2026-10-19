@@ -479,11 +479,15 @@ func (h *Handlers) attachUserLocale(ctx context.Context, r *http.Request, user *
 		if pref, err := h.PreferencesStore.GetByUserID(ctx, user.ID); err == nil && pref != nil {
 			user.Locale = pref.Locale
 			user.HasSavedPreference = true
+			user.Theme = pref.Theme
+			user.HasSavedTheme = pref.Theme != nil
 			return
 		}
 	}
 	user.Locale = localization.ResolveLocale(nil, r)
 	user.HasSavedPreference = false
+	user.Theme = nil
+	user.HasSavedTheme = false
 }
 
 func propertyIDFromClaims(c *gin.Context) (uuid.UUID, bool) {

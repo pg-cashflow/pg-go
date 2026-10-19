@@ -44,7 +44,7 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 		if claims != nil {
 			locale := strings.TrimSpace(*body.Locale)
 			if locale != "" {
-				_, _ = h.PreferencesStore.Upsert(c.Request.Context(), claims.UserID, locale)
+				_, _ = h.PreferencesStore.Upsert(c.Request.Context(), claims.UserID, &locale, nil)
 			}
 		}
 	}

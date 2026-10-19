@@ -90,6 +90,8 @@ const (
 	// Preferences
 	CodePreferencesLocaleRequired Code = "preferences.localeRequired"
 	CodePreferencesInvalidLocale  Code = "preferences.invalidLocale"
+	CodePreferencesInvalidTheme   Code = "preferences.invalidTheme"
+	CodePreferencesNoFields       Code = "preferences.noFields"
 
 	// Push
 	CodePushEndpointInvalid  Code = "push.endpointInvalid"
@@ -176,6 +178,8 @@ var AllCodes = []Code{
 
 	CodePreferencesLocaleRequired,
 	CodePreferencesInvalidLocale,
+	CodePreferencesInvalidTheme,
+	CodePreferencesNoFields,
 
 	CodePushEndpointInvalid,
 	CodePushEndpointConflict,

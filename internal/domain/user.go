@@ -26,6 +26,8 @@ type User struct {
 	TokenVersion       int        `json:"-"`
 	Locale             string     `json:"locale,omitempty"`
 	HasSavedPreference bool       `json:"has_saved_preference"`
+	Theme              *string    `json:"theme,omitempty"`
+	HasSavedTheme      bool       `json:"has_saved_theme"`
 	CreatedAt          time.Time  `json:"created_at"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
 }

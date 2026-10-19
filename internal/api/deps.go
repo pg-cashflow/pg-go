@@ -161,7 +161,7 @@ type UserStore interface {
 // PreferencesStore manages user preferences.
 type PreferencesStore interface {
 	GetByUserID(ctx context.Context, userID uuid.UUID) (*domain.UserPreferences, error)
-	Upsert(ctx context.Context, userID uuid.UUID, locale string) (*domain.UserPreferences, error)
+	Upsert(ctx context.Context, userID uuid.UUID, locale *string, theme *string) (*domain.UserPreferences, error)
 }
 
 // AadhaarDecoder is optional override for tests.

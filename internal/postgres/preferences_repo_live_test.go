@@ -28,6 +28,16 @@ func TestLivePostgresPreferencesAndCheckConstraint(t *testing.T) {
 		t.Fatalf("apply migration 014 SQL: %v", err)
 	}
 
+	// Read and apply migration 082 directly from migrations/082_user_preferences_theme.sql
+	themeMigrationPath := filepath.Join("..", "..", "migrations", "082_user_preferences_theme.sql")
+	themeMigrationBytes, err := os.ReadFile(themeMigrationPath)
+	if err != nil {
+		t.Fatalf("failed to read migration file %s: %v", themeMigrationPath, err)
+	}
+	if _, err := pool.Exec(ctx, string(themeMigrationBytes)); err != nil {
+		t.Fatalf("apply migration 082 SQL: %v", err)
+	}
+
 	// Verify table and constraint exist in PostgreSQL system catalogs
 	var tableExists bool
 	err = pool.QueryRow(ctx, `
@@ -78,7 +88,7 @@ func TestLivePostgresPreferencesAndCheckConstraint(t *testing.T) {
 	}
 
 	// 1b. Verify preferences repo Upsert cleanly maps 23514 to ErrInvalidLocale
-	_, err = repo.Upsert(ctx, testUser.ID, "fr-FR")
+	_, err = repo.Upsert(ctx, testUser.ID, strPtr("fr-FR"), nil)
 	if err == nil {
 		t.Fatalf("expected error for invalid locale 'fr-FR', got nil")
 	}
@@ -86,13 +96,16 @@ func TestLivePostgresPreferencesAndCheckConstraint(t *testing.T) {
 		t.Fatalf("expected ErrInvalidLocale from live check constraint, got: %v", err)
 	}
 
-	// 2. Verify valid locale insert
-	pref, err := repo.Upsert(ctx, testUser.ID, "te-IN")
+	// 2. Verify valid locale insert; theme stays unset (nil) because it was never sent
+	pref, err := repo.Upsert(ctx, testUser.ID, strPtr("te-IN"), nil)
 	if err != nil {
 		t.Fatalf("upsert valid locale 'te-IN': %v", err)
 	}
 	if pref.Locale != "te-IN" {
 		t.Errorf("expected 'te-IN', got %s", pref.Locale)
+	}
+	if pref.Theme != nil {
+		t.Errorf("expected theme to remain nil when not sent, got %v", *pref.Theme)
 	}
 
 	// 3. Verify get by user ID
@@ -104,18 +117,44 @@ func TestLivePostgresPreferencesAndCheckConstraint(t *testing.T) {
 		t.Errorf("expected 'te-IN', got %s", fetched.Locale)
 	}
 
-	// 4. Verify upsert update
-	updated, err := repo.Upsert(ctx, testUser.ID, "kn-IN")
+	// 4. Verify theme-only update does NOT clobber the previously saved locale
+	themed, err := repo.Upsert(ctx, testUser.ID, nil, strPtr("dark"))
+	if err != nil {
+		t.Fatalf("upsert theme 'dark': %v", err)
+	}
+	if themed.Locale != "te-IN" {
+		t.Errorf("theme-only update must not change locale; expected 'te-IN', got %s", themed.Locale)
+	}
+	if themed.Theme == nil || *themed.Theme != "dark" {
+		t.Errorf("expected theme 'dark', got %v", themed.Theme)
+	}
+
+	// 5. Verify locale-only update does NOT clobber the previously saved theme
+	localeOnly, err := repo.Upsert(ctx, testUser.ID, strPtr("kn-IN"), nil)
 	if err != nil {
 		t.Fatalf("upsert update to 'kn-IN': %v", err)
 	}
-	if updated.Locale != "kn-IN" {
-		t.Errorf("expected 'kn-IN', got %s", updated.Locale)
+	if localeOnly.Locale != "kn-IN" {
+		t.Errorf("expected 'kn-IN', got %s", localeOnly.Locale)
+	}
+	if localeOnly.Theme == nil || *localeOnly.Theme != "dark" {
+		t.Errorf("locale-only update must not change theme; expected 'dark', got %v", localeOnly.Theme)
+	}
+
+	// 6. Verify an invalid theme is rejected and distinguished from ErrInvalidLocale
+	_, err = repo.Upsert(ctx, testUser.ID, nil, strPtr("neon"))
+	if err == nil {
+		t.Fatalf("expected error for invalid theme 'neon', got nil")
+	}
+	if !errors.Is(err, ErrInvalidTheme) {
+		t.Fatalf("expected ErrInvalidTheme from live check constraint, got: %v", err)
 	}
 
 	// Clean up test user
 	_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, testUser.ID)
 }
+
+func strPtr(s string) *string { return &s }
 
 func fmtRandomPhone() string {
 	u := uuid.New()

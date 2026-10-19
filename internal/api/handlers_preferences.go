@@ -11,6 +11,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
+var validThemes = map[string]bool{"system": true, "light": true, "dark": true}
+
 // ListLocales handles GET /api/locales — returns supported locale registry.
 func (h *Handlers) ListLocales(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -30,6 +32,8 @@ func (h *Handlers) GetPreferences(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"locale":               resolved,
 			"has_saved_preference": false,
+			"theme":                nil,
+			"has_saved_theme":      false,
 		})
 		return
 	}
@@ -40,6 +44,8 @@ func (h *Handlers) GetPreferences(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"locale":               resolved,
 				"has_saved_preference": false,
+				"theme":                nil,
+				"has_saved_theme":      false,
 			})
 			return
 		}
@@ -50,14 +56,18 @@ func (h *Handlers) GetPreferences(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"locale":               resolved,
 		"has_saved_preference": true,
+		"theme":                pref.Theme,
+		"has_saved_theme":      pref.Theme != nil,
 	})
 }
 
 type patchPreferencesBody struct {
-	Locale string `json:"locale" binding:"required"`
+	Locale *string `json:"locale"`
+	Theme  *string `json:"theme"`
 }
 
-// PatchPreferences handles PATCH /api/me/preferences — updates authenticated user's locale.
+// PatchPreferences handles PATCH /api/me/preferences — partially updates the
+// authenticated user's locale and/or theme. Omitted fields are left unchanged.
 func (h *Handlers) PatchPreferences(c *gin.Context) {
 	uid, ok := userIDFromClaims(c)
 	if !ok {
@@ -65,12 +75,20 @@ func (h *Handlers) PatchPreferences(c *gin.Context) {
 	}
 	var body patchPreferencesBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "locale is required", apierr.CodePreferencesLocaleRequired)
+		apierr.RespondBindErr(c, "invalid request body", apierr.CodePreferencesNoFields)
 		return
 	}
 
-	if !localization.IsValid(body.Locale) {
+	if body.Locale == nil && body.Theme == nil {
+		respondErr(c, clientErrWithCode(http.StatusBadRequest, "at least one of locale or theme is required", apierr.CodePreferencesNoFields))
+		return
+	}
+	if body.Locale != nil && !localization.IsValid(*body.Locale) {
 		respondErr(c, clientErrWithCode(http.StatusBadRequest, "unsupported locale", apierr.CodePreferencesInvalidLocale))
+		return
+	}
+	if body.Theme != nil && !validThemes[*body.Theme] {
+		respondErr(c, clientErrWithCode(http.StatusBadRequest, "invalid theme", apierr.CodePreferencesInvalidTheme))
 		return
 	}
 
@@ -79,10 +97,14 @@ func (h *Handlers) PatchPreferences(c *gin.Context) {
 		return
 	}
 
-	pref, err := h.PreferencesStore.Upsert(c.Request.Context(), uid, body.Locale)
+	pref, err := h.PreferencesStore.Upsert(c.Request.Context(), uid, body.Locale, body.Theme)
 	if err != nil {
 		if errors.Is(err, postgres.ErrInvalidLocale) {
 			respondErr(c, clientErrWithCode(http.StatusBadRequest, "invalid locale", apierr.CodePreferencesInvalidLocale))
+			return
+		}
+		if errors.Is(err, postgres.ErrInvalidTheme) {
+			respondErr(c, clientErrWithCode(http.StatusBadRequest, "invalid theme", apierr.CodePreferencesInvalidTheme))
 			return
 		}
 		respondErr(c, err)
@@ -92,5 +114,7 @@ func (h *Handlers) PatchPreferences(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"locale":               pref.Locale,
 		"has_saved_preference": true,
+		"theme":                pref.Theme,
+		"has_saved_theme":      pref.Theme != nil,
 	})
 }

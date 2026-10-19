@@ -61,6 +61,8 @@
   "request.imageReadFailed",
   "preferences.localeRequired",
   "preferences.invalidLocale",
+  "preferences.invalidTheme",
+  "preferences.noFields",
   "push.endpointInvalid",
   "push.endpointConflict"
 ]

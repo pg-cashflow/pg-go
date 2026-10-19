@@ -17,32 +17,53 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
-type stubPreferencesStore struct {
-	prefs map[uuid.UUID]string
+type stubPref struct {
+	locale string
+	theme  *string
 }
 
+type stubPreferencesStore struct {
+	prefs map[uuid.UUID]stubPref
+}
+
+var stubValidThemes = map[string]bool{"system": true, "light": true, "dark": true}
+
 func (s *stubPreferencesStore) GetByUserID(_ context.Context, userID uuid.UUID) (*domain.UserPreferences, error) {
-	loc, ok := s.prefs[userID]
+	p, ok := s.prefs[userID]
 	if !ok {
 		return nil, pgx.ErrNoRows
 	}
 	return &domain.UserPreferences{
 		UserID: userID,
-		Locale: loc,
+		Locale: p.locale,
+		Theme:  p.theme,
 	}, nil
 }
 
-func (s *stubPreferencesStore) Upsert(_ context.Context, userID uuid.UUID, locale string) (*domain.UserPreferences, error) {
-	if !localization.IsValid(locale) {
+func (s *stubPreferencesStore) Upsert(_ context.Context, userID uuid.UUID, locale *string, theme *string) (*domain.UserPreferences, error) {
+	if locale != nil && !localization.IsValid(*locale) {
 		return nil, postgres.ErrInvalidLocale
 	}
-	if s.prefs == nil {
-		s.prefs = make(map[uuid.UUID]string)
+	if theme != nil && !stubValidThemes[*theme] {
+		return nil, postgres.ErrInvalidTheme
 	}
-	s.prefs[userID] = locale
+	if s.prefs == nil {
+		s.prefs = make(map[uuid.UUID]stubPref)
+	}
+	existing := s.prefs[userID]
+	if locale != nil {
+		existing.locale = *locale
+	} else if existing.locale == "" {
+		existing.locale = "en-IN"
+	}
+	if theme != nil {
+		existing.theme = theme
+	}
+	s.prefs[userID] = existing
 	return &domain.UserPreferences{
 		UserID: userID,
-		Locale: locale,
+		Locale: existing.locale,
+		Theme:  existing.theme,
 	}, nil
 }
 
@@ -63,7 +84,7 @@ func TestPreferencesEndpoints(t *testing.T) {
 	}
 
 	sessionStore := &stubSessionStore{user: user}
-	prefStore := &stubPreferencesStore{prefs: make(map[uuid.UUID]string)}
+	prefStore := &stubPreferencesStore{prefs: make(map[uuid.UUID]stubPref)}
 
 	router := NewRouter(Deps{
 		JWTSecret:        jwtSecret,
@@ -182,7 +203,6 @@ func TestPreferencesEndpoints(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/me/preferences", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		// Even if Accept-Language is different, explicit preference wins
 		req.Header.Set("Accept-Language", "te-IN")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
@@ -201,6 +221,104 @@ func TestPreferencesEndpoints(t *testing.T) {
 		}
 		if !resp.HasSavedPreference {
 			t.Errorf("expected HasSavedPreference true")
+		}
+	}
+
+	// 7. PATCH /api/me/preferences with empty body is rejected with CodePreferencesNoFields
+	{
+		req := httptest.NewRequest(http.MethodPatch, "/api/me/preferences", bytes.NewReader([]byte("{}")))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal error resp: %v", err)
+		}
+		if errResp.Code != "preferences.noFields" {
+			t.Errorf("expected code preferences.noFields, got %s", errResp.Code)
+		}
+	}
+
+	// 8. PATCH /api/me/preferences with invalid theme is rejected with CodePreferencesInvalidTheme
+	{
+		body, _ := json.Marshal(map[string]string{"theme": "neon"})
+		req := httptest.NewRequest(http.MethodPatch, "/api/me/preferences", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+			t.Fatalf("unmarshal error resp: %v", err)
+		}
+		if errResp.Code != "preferences.invalidTheme" {
+			t.Errorf("expected code preferences.invalidTheme, got %s", errResp.Code)
+		}
+	}
+
+	// 9. PATCH /api/me/preferences with valid theme only preserves existing locale
+	{
+		body, _ := json.Marshal(map[string]string{"theme": "dark"})
+		req := httptest.NewRequest(http.MethodPatch, "/api/me/preferences", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Locale             string  `json:"locale"`
+			HasSavedPreference bool    `json:"has_saved_preference"`
+			Theme              *string `json:"theme"`
+			HasSavedTheme      bool    `json:"has_saved_theme"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp.Locale != "kn-IN" {
+			t.Errorf("theme-only PATCH must not change locale; expected kn-IN, got %s", resp.Locale)
+		}
+		if resp.Theme == nil || *resp.Theme != "dark" {
+			t.Errorf("expected theme dark, got %v", resp.Theme)
+		}
+		if !resp.HasSavedTheme {
+			t.Errorf("expected HasSavedTheme true after explicit theme save")
+		}
+	}
+
+	// 10. GET /api/me/preferences reflects both saved locale and theme
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/me/preferences", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Locale             string  `json:"locale"`
+			HasSavedPreference bool    `json:"has_saved_preference"`
+			Theme              *string `json:"theme"`
+			HasSavedTheme      bool    `json:"has_saved_theme"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if resp.Locale != "kn-IN" || resp.Theme == nil || *resp.Theme != "dark" || !resp.HasSavedTheme {
+			t.Errorf("expected locale=kn-IN theme=dark has_saved_theme=true, got locale=%s theme=%v has_saved_theme=%v",
+				resp.Locale, resp.Theme, resp.HasSavedTheme)
 		}
 	}
 }
