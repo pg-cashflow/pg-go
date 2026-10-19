@@ -807,40 +807,93 @@ func TestTenantKYCAadhaarOTPVerify_AutoVerified(t *testing.T) {
 }
 
 func TestTenantKYCAadhaarOTPVerify_FailureClassification(t *testing.T) {
-	svc := &fakeKYCSvc{
-		completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
-			return nil, &kycsvc.AadhaarVerifyFailure{
-				ReasonCode:      "MOBILE_NOT_LINKED",
-				Class:           cashfree.FailureTerminal,
-				Retryable:       false,
-				CooldownSeconds: 0,
-			}
-		},
-	}
-	r := kycTestTenantRouter(svc, "")
+	t.Run("Terminal Failure (Mobile Not Linked)", func(t *testing.T) {
+		svc := &fakeKYCSvc{
+			completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
+				return nil, &kycsvc.AadhaarVerifyFailure{
+					ReasonCode:        "MOBILE_NOT_LINKED",
+					Class:             cashfree.FailureTerminal,
+					Retryable:         false,
+					CooldownSeconds:   0,
+					AttemptsRemaining: 0,
+				}
+			},
+		}
+		r := kycTestTenantRouter(svc, "")
 
-	body := `{"ref_id":"test_aadhaar_ref_123","otp":"123456"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+		body := `{"ref_id":"test_aadhaar_ref_123","otp":"123456"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("invalid json response: %v", err)
-	}
-	if resp["status"] != "failed" {
-		t.Errorf("expected status 'failed', got %v", resp["status"])
-	}
-	if resp["reason_code"] != "MOBILE_NOT_LINKED" {
-		t.Errorf("expected reason_code 'MOBILE_NOT_LINKED', got %v", resp["reason_code"])
-	}
-	if resp["retryable"] != false {
-		t.Errorf("expected retryable false, got %v", resp["retryable"])
-	}
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json response: %v", err)
+		}
+		if resp["status"] != "failed" {
+			t.Errorf("expected status 'failed', got %v", resp["status"])
+		}
+		if resp["reason_code"] != "MOBILE_NOT_LINKED" {
+			t.Errorf("expected reason_code 'MOBILE_NOT_LINKED', got %v", resp["reason_code"])
+		}
+		if resp["retryable"] != false {
+			t.Errorf("expected retryable false, got %v", resp["retryable"])
+		}
+		if resp["cooldown_seconds"] != float64(0) {
+			t.Errorf("expected cooldown_seconds 0, got %v", resp["cooldown_seconds"])
+		}
+		if resp["attempts_remaining"] != float64(0) {
+			t.Errorf("expected attempts_remaining 0, got %v", resp["attempts_remaining"])
+		}
+	})
+
+	t.Run("Recoverable Failure (Wrong OTP with remaining attempts)", func(t *testing.T) {
+		svc := &fakeKYCSvc{
+			completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
+				return nil, &kycsvc.AadhaarVerifyFailure{
+					ReasonCode:        "WRONG_OTP",
+					Class:             cashfree.FailureRecoverable,
+					Retryable:         true,
+					CooldownSeconds:   50,
+					AttemptsRemaining: 2,
+				}
+			},
+		}
+		r := kycTestTenantRouter(svc, "")
+
+		body := `{"ref_id":"test_aadhaar_ref_123","otp":"999999"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json response: %v", err)
+		}
+		if resp["status"] != "failed" {
+			t.Errorf("expected status 'failed', got %v", resp["status"])
+		}
+		if resp["reason_code"] != "WRONG_OTP" {
+			t.Errorf("expected reason_code 'WRONG_OTP', got %v", resp["reason_code"])
+		}
+		if resp["retryable"] != true {
+			t.Errorf("expected retryable true, got %v", resp["retryable"])
+		}
+		if resp["cooldown_seconds"] != float64(50) {
+			t.Errorf("expected cooldown_seconds 50, got %v", resp["cooldown_seconds"])
+		}
+		if resp["attempts_remaining"] != float64(2) {
+			t.Errorf("expected attempts_remaining 2, got %v", resp["attempts_remaining"])
+		}
+	})
 }
 
 func TestOwnerKYCReviewQueue_OK(t *testing.T) {

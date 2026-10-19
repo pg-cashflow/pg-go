@@ -569,11 +569,16 @@ func ClassifyAadhaarError(httpStatus int, message string) (code string, class Aa
 }
 
 // CooldownSecondsFor returns the recommended retry cooldown in seconds.
-func CooldownSecondsFor(class AadhaarFailureClass) int {
+// Cashfree guidance requires 50s before resubmitting after a wrong OTP failure,
+// 30s before requesting a new OTP, and 45s for general throttle cooldowns.
+func CooldownSecondsFor(class AadhaarFailureClass, reasonCode string) int {
 	switch class {
 	case FailureCooldown:
 		return 45
 	case FailureRecoverable:
+		if reasonCode == "WRONG_OTP" {
+			return 50
+		}
 		return 30
 	default:
 		return 0

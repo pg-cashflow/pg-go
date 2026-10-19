@@ -597,11 +597,12 @@ func (s *Service) InitiateAadhaarOTP(
 // CompleteAadhaarOTP verifies the submitted OTP with UIDAI and auto-verifies the tenant.
 // AadhaarVerifyFailure represents a classified UIDAI/Cashfree failure returned to the client.
 type AadhaarVerifyFailure struct {
-	ReasonCode      string
-	Class           cashfree.AadhaarFailureClass
-	Retryable       bool
-	CooldownSeconds int
-	Underlying      error
+	ReasonCode        string
+	Class             cashfree.AadhaarFailureClass
+	Retryable         bool
+	CooldownSeconds   int
+	AttemptsRemaining int
+	Underlying        error
 }
 
 func (f *AadhaarVerifyFailure) Error() string {
@@ -645,21 +646,39 @@ func (s *Service) CompleteAadhaarOTP(
 			msg = err.Error()
 		}
 		code, class := cashfree.ClassifyAadhaarError(httpStatus, msg)
-		if code == "INVALID_AADHAAR" {
-			count, logErr := s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
-			if logErr == nil && count >= 2 {
-				class = cashfree.FailureTerminal
+		var count int
+		if code != "COOLDOWN_ACTIVE" {
+			c, logErr := s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
+			if logErr != nil {
+				slog.Error("kyc: failure log write failed", "err", logErr)
+			} else {
+				count = c
 			}
-		} else {
-			_, _ = s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
+		}
+		if code == "INVALID_AADHAAR" && count >= 2 {
+			class = cashfree.FailureTerminal
+		}
+
+		attemptsRemaining := 3 - count
+		if attemptsRemaining < 0 {
+			attemptsRemaining = 0
+		}
+		if class == cashfree.FailureTerminal || class == cashfree.FailureSystemFault {
+			attemptsRemaining = 0
+		}
+
+		retryable := class == cashfree.FailureRecoverable && attemptsRemaining > 0
+		if class == cashfree.FailureCooldown {
+			retryable = true
 		}
 
 		return nil, &AadhaarVerifyFailure{
-			ReasonCode:      code,
-			Class:           class,
-			Retryable:       class == cashfree.FailureRecoverable || class == cashfree.FailureCooldown,
-			CooldownSeconds: cashfree.CooldownSecondsFor(class),
-			Underlying:      err,
+			ReasonCode:        code,
+			Class:             class,
+			Retryable:         retryable,
+			CooldownSeconds:   cashfree.CooldownSecondsFor(class, code),
+			AttemptsRemaining: attemptsRemaining,
+			Underlying:        err,
 		}
 	}
 

@@ -417,10 +417,11 @@ func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
 		var fail *kycsvc.AadhaarVerifyFailure
 		if errors.As(err, &fail) {
 			c.JSON(http.StatusOK, gin.H{
-				"status":           "failed",
-				"reason_code":      fail.ReasonCode,
-				"retryable":        fail.Retryable,
-				"cooldown_seconds": fail.CooldownSeconds,
+				"status":             "failed",
+				"reason_code":        fail.ReasonCode,
+				"retryable":          fail.Retryable,
+				"cooldown_seconds":   fail.CooldownSeconds,
+				"attempts_remaining": fail.AttemptsRemaining,
 			})
 			return
 		}

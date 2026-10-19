@@ -34,6 +34,7 @@ type fakeRepo struct {
 	completeVTxFn   func(id uuid.UUID) (*domain.KYCVerification, error)
 	failVTxFn       func(id uuid.UUID, reason string) error
 	clearDupFn      func(id uuid.UUID, reason string) error
+	recordFailureAndCountFn func(reasonCode string) (int, error)
 }
 
 func (f *fakeRepo) RecordConsent(_ context.Context, c *domain.KYCConsent, _ string) error {
@@ -211,21 +212,26 @@ func (f *fakeRepo) GetVerificationByID(_ context.Context, id uuid.UUID) (*domain
 	}
 	return nil, domain.ErrVerificationNotFound
 }
-func (f *fakeRepo) RecordFailureAndCount(_ context.Context, _ uuid.UUID, _ domain.KYCMethod, _ string, _ int) (int, error) {
+func (f *fakeRepo) RecordFailureAndCount(_ context.Context, _ uuid.UUID, _ domain.KYCMethod, reasonCode string, _ int) (int, error) {
+	if f.recordFailureAndCountFn != nil {
+		return f.recordFailureAndCountFn(reasonCode)
+	}
 	return 1, nil
 }
 
 type fakeCashfree struct {
-	linkURL    string
-	linkErr    error
-	linkCalled bool
-	doc        *kycsvc.DigiLockerDoc
-	docErr     error
-	status     *cashfree.DigiLockerStatus
-	statusErr  error
-	ocrResp    *cashfree.SmartOCRResponse
-	ocrErr     error
-	ocrCalled  bool
+	linkURL        string
+	linkErr        error
+	linkCalled     bool
+	doc            *kycsvc.DigiLockerDoc
+	docErr         error
+	status         *cashfree.DigiLockerStatus
+	statusErr      error
+	ocrResp        *cashfree.SmartOCRResponse
+	ocrErr         error
+	ocrCalled      bool
+	verifyOTPErr   error
+	verifyOTPResp  *cashfree.AadhaarOTPVerifyResult
 }
 
 func (f *fakeCashfree) CreateDigiLockerLink(_ context.Context, _, _ string) (string, error) {
@@ -250,6 +256,12 @@ func (f *fakeCashfree) RequestAadhaarOTP(_ context.Context, _ string) (*cashfree
 	}, nil
 }
 func (f *fakeCashfree) VerifyAadhaarOTP(_ context.Context, refID, _ string) (*cashfree.AadhaarOTPVerifyResult, error) {
+	if f.verifyOTPErr != nil {
+		return nil, f.verifyOTPErr
+	}
+	if f.verifyOTPResp != nil {
+		return f.verifyOTPResp, nil
+	}
 	return &cashfree.AadhaarOTPVerifyResult{
 		RefID:     refID,
 		Status:    "VALID",
@@ -893,6 +905,195 @@ func TestCompleteAadhaarOTP_AutoVerified(t *testing.T) {
 	if v.Status != domain.KYCStatusVerified {
 		t.Fatalf("expected status verified (auto), got %s", v.Status)
 	}
+}
+
+func TestCompleteAadhaarOTP_FailureClassificationAndRetryBudget(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+
+	basePendingVerif := func() *domain.KYCVerification {
+		return &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_fail",
+		}
+	}
+
+	t.Run("Wrong OTP 1st attempt is recoverable with 2 attempts left and 50s cooldown", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(code string) (int, error) {
+				if code != "WRONG_OTP" {
+					t.Errorf("unexpected code: %s", code)
+				}
+				return 1, nil // 1st failure
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPErr: &cashfree.APIError{
+				StatusCode: 400,
+				Body:       `{"message": "OTP entered is invalid"}`,
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "000000", "tenant:"+tenantID.String())
+		if err == nil {
+			t.Fatal("expected failure")
+		}
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T: %v", err, err)
+		}
+		if fail.ReasonCode != "WRONG_OTP" {
+			t.Errorf("expected WRONG_OTP, got %s", fail.ReasonCode)
+		}
+		if !fail.Retryable {
+			t.Error("expected retryable true on attempt 1")
+		}
+		if fail.AttemptsRemaining != 2 {
+			t.Errorf("expected 2 attempts remaining, got %d", fail.AttemptsRemaining)
+		}
+		if fail.CooldownSeconds != 50 {
+			t.Errorf("expected 50s cooldown, got %d", fail.CooldownSeconds)
+		}
+	})
+
+	t.Run("Wrong OTP 3rd attempt burns retry budget (0 remaining, retryable: false)", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(_ string) (int, error) {
+				return 3, nil // 3rd failure
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPErr: &cashfree.APIError{
+				StatusCode: 400,
+				Body:       `{"message": "OTP entered is invalid"}`,
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "000000", "tenant:"+tenantID.String())
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T", err)
+		}
+		if fail.AttemptsRemaining != 0 {
+			t.Errorf("expected 0 attempts remaining, got %d", fail.AttemptsRemaining)
+		}
+		if fail.Retryable {
+			t.Error("expected retryable false when attempts exhausted")
+		}
+	})
+
+	t.Run("Invalid Aadhaar on repeat upgrades to FailureTerminal with 0 attempts remaining", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(_ string) (int, error) {
+				return 2, nil // 2nd failure of INVALID_AADHAAR
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPErr: &cashfree.APIError{
+				StatusCode: 200,
+				Body:       `{"message": "Invalid Aadhaar Card"}`,
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "111111", "tenant:"+tenantID.String())
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T", err)
+		}
+		if fail.ReasonCode != "INVALID_AADHAAR" {
+			t.Errorf("expected INVALID_AADHAAR, got %s", fail.ReasonCode)
+		}
+		if fail.Class != cashfree.FailureTerminal {
+			t.Errorf("expected upgraded FailureTerminal, got %s", fail.Class)
+		}
+		if fail.Retryable {
+			t.Error("expected retryable false on repeated invalid aadhaar")
+		}
+		if fail.AttemptsRemaining != 0 {
+			t.Errorf("expected 0 attempts remaining, got %d", fail.AttemptsRemaining)
+		}
+	})
+
+	t.Run("Mobile not linked is immediately terminal without burning rate limit tokens", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(_ string) (int, error) {
+				return 1, nil
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPErr: &cashfree.APIError{
+				StatusCode: 200,
+				Body:       `{"message": "Aadhaar number does not have mobile number"}`,
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "123456", "tenant:"+tenantID.String())
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T", err)
+		}
+		if fail.ReasonCode != "MOBILE_NOT_LINKED" {
+			t.Errorf("expected MOBILE_NOT_LINKED, got %s", fail.ReasonCode)
+		}
+		if fail.Class != cashfree.FailureTerminal {
+			t.Errorf("expected FailureTerminal, got %s", fail.Class)
+		}
+		if fail.Retryable {
+			t.Error("expected retryable false for mobile not linked")
+		}
+		if fail.AttemptsRemaining != 0 {
+			t.Errorf("expected 0 attempts remaining, got %d", fail.AttemptsRemaining)
+		}
+	})
+
+	t.Run("Cooldown active throttle does not burn retry attempt and is retryable", func(t *testing.T) {
+		failureLogged := false
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(_ string) (int, error) {
+				failureLogged = true
+				return 1, nil
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPErr: &cashfree.APIError{
+				StatusCode: 409,
+				Body:       `{"message": "Otp generated for this aadhaar, please try after some time"}`,
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "123456", "tenant:"+tenantID.String())
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T", err)
+		}
+		if failureLogged {
+			t.Error("COOLDOWN_ACTIVE should not be logged to failure table or burn retry budget")
+		}
+		if fail.ReasonCode != "COOLDOWN_ACTIVE" {
+			t.Errorf("expected COOLDOWN_ACTIVE, got %s", fail.ReasonCode)
+		}
+		if !fail.Retryable {
+			t.Error("expected retryable true for cooldown active")
+		}
+		if fail.CooldownSeconds != 45 {
+			t.Errorf("expected 45s cooldown, got %d", fail.CooldownSeconds)
+		}
+		if fail.AttemptsRemaining != 3 {
+			t.Errorf("expected full retry budget (3) remaining, got %d", fail.AttemptsRemaining)
+		}
+	})
 }
 
 func TestRejectManualReview_Success(t *testing.T) {
