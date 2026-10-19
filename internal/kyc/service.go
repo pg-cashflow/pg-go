@@ -80,19 +80,13 @@ type KYCRepo interface {
 	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
 }
 
-// CashfreeKYCClient is the Cashfree Secure ID dependency.
-// Implemented by *cashfree.Client.
+// CashfreeKYCClient is the Cashfree dependency for document OCR and Aadhaar OTP.
+// Implemented by *cashfree.Client via CashfreeAdapter.
 type CashfreeKYCClient interface {
-	CreateDigiLockerLink(ctx context.Context, verificationID, redirectURL string) (string, error)
-	GetDigiLockerDocument(ctx context.Context, verificationID string) (*cashfree.DigiLockerAadhaarDoc, error)
-	GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatus, error)
 	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
 	RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error)
 	VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error)
 }
-
-// DigiLockerDoc is a value-type shim for backwards compatibility in tests.
-type DigiLockerDoc = cashfree.DigiLockerAadhaarDoc
 
 // Config holds the invariant configuration for the KYC service.
 type Config struct {
@@ -107,11 +101,6 @@ type Config struct {
 	// VerificationValidityDays is how long a verified record remains valid before
 	// the reaper transitions it to 'expired'. Typically 365.
 	VerificationValidityDays int
-
-	// DigiLockerRedirectURL is the server-side callback URL injected into the
-	// Cashfree Secure ID request. MUST be server-constructed from config —
-	// never taken from a client request.
-	DigiLockerRedirectURL string
 }
 
 // Service is the top-level KYC orchestrator.
@@ -162,187 +151,6 @@ func (s *Service) RecordConsent(
 func (s *Service) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error {
 	if err := s.repo.RevokeConsent(ctx, tenantID, actor); err != nil {
 		return fmt.Errorf("kyc service: revoke consent: %w", err)
-	}
-	return nil
-}
-
-// --- DigiLocker flow ----------------------------------------------------------
-
-// InitiateDigiLocker enforces the network-before-transaction invariant:
-//  1. Verifies active consent exists (repo read, cheap).
-//  2. Allocates a verification UUID as vendor_reference_id.
-//  3. Calls Cashfree to create a DigiLocker session (network — outside any tx).
-//  4. Only then opens the DB transaction to record the pending verification.
-//
-// The redirect URL is always server-constructed from Config.DigiLockerRedirectURL.
-func (s *Service) InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, actor string) (verificationURL string, err error) {
-	// 1. Consent gate.
-	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
-	if err != nil {
-		if errors.Is(err, domain.ErrVerificationNotFound) {
-			return "", ErrNoActiveConsent
-		}
-		return "", fmt.Errorf("kyc service: get consent: %w", err)
-	}
-	if !consent.IsActive() {
-		return "", ErrNoActiveConsent
-	}
-
-	// 2. Acquire distributed in-flight lease FIRST (30s TTL, Cloud Run multi-instance guard)
-	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
-	}
-	if !locked {
-		return "", domain.ErrVerificationInProgress
-	}
-	defer func() {
-		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
-	}()
-
-	// 3. Under lease lock: pre-check active verification status and enforce 60s cooldown
-	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
-	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
-		return "", fmt.Errorf("kyc service: check active verification: %w", err)
-	}
-	if active != nil {
-		if active.Status == domain.KYCStatusVerified {
-			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
-				return "", domain.ErrAlreadyVerified
-			}
-		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
-			return "", domain.ErrVerificationInProgress
-		}
-	}
-
-	// 4. Allocate stable vendor reference ID.
-	vendorRefID := uuid.New().String()
-
-	// 5. Network call — OUTSIDE transaction (ADR-004).
-	if s.cashfree == nil {
-		return "", ErrDigiLockerUnavailable
-	}
-	url, err := s.cashfree.CreateDigiLockerLink(ctx, vendorRefID, s.cfg.DigiLockerRedirectURL)
-	if err != nil {
-		return "", fmt.Errorf("kyc service: create digilocker link: %w", err)
-	}
-
-	// 6. DB transaction: supersede any stale pending, insert new pending record.
-	if _, err := s.repo.InitiateVerificationTx(ctx,
-		tenantID, consent.ID,
-		domain.KYCMethodDigiLocker,
-		"cashfree_secure_id", vendorRefID, actor,
-	); err != nil {
-		return "", fmt.Errorf("kyc service: initiate verification tx: %w", err)
-	}
-
-	return url, nil
-}
-
-// ProcessDigiLockerCompletion is called by the webhook handler after Cashfree
-// delivers a VERIFICATION_COMPLETED or VERIFICATION_FAILED event.
-//
-// Idempotency: if the vendorRefID's verification is already in a terminal state
-// (verified/failed/expired/revoked), this is a safe no-op — returns nil.
-//
-// Network-before-transaction: document fetch from Cashfree happens before the
-// DB CompleteVerificationTx call (ADR-004).
-//
-// failedReason is non-empty only for VERIFICATION_FAILED events.
-func (s *Service) ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, failedReason, actor string) error {
-	// 1. Look up the pending verification by vendor reference.
-	v, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
-	if err != nil {
-		if errors.Is(err, domain.ErrVerificationNotFound) {
-			// Unknown vendor ref — could be a misconfigured event; log and swallow.
-			return fmt.Errorf("kyc service: unknown vendor_ref_id %q: %w", vendorRefID, err)
-		}
-		return fmt.Errorf("kyc service: lookup vendor ref: %w", err)
-	}
-
-	// 2. Idempotency short-circuit: terminal states are immutable.
-	switch v.Status {
-	case domain.KYCStatusVerified, domain.KYCStatusFailed,
-		domain.KYCStatusExpired, domain.KYCStatusRevoked:
-		return nil // already processed; Cashfree is retrying — safe no-op
-	}
-
-	// 3. Failure path — no document fetch needed.
-	if failedReason != "" {
-		if err := s.repo.FailVerificationTx(ctx, v.ID, failedReason, actor); err != nil {
-			return fmt.Errorf("kyc service: fail verification: %w", err)
-		}
-		return nil
-	}
-
-	// 4. Fetch Aadhaar document from Cashfree — OUTSIDE transaction (ADR-004).
-	if s.cashfree == nil {
-		return ErrDigiLockerUnavailable
-	}
-	doc, err := s.cashfree.GetDigiLockerDocument(ctx, vendorRefID)
-	if err != nil {
-		if IsPermanentError(err) {
-			// Permanent failure (e.g. 4xx bad reference, expired session, corrupted payload).
-			// Transition verification to 'failed' in DB and append audit log so the tenant
-			// is not stuck in 'pending' indefinitely.
-			//
-			// Zero PII Invariant: Do not interpolate raw upstream response text into the audit log.
-			// Format as a safe, structured failure category so the immutable audit chain
-			// never receives unvalidated or demographic response fragments.
-			var failReason string
-			type httpStatusCodeGetter interface {
-				HTTPStatusCode() int
-			}
-			var sc httpStatusCodeGetter
-			if errors.As(err, &sc) {
-				failReason = fmt.Sprintf("document_fetch_failed_http_%d", sc.HTTPStatusCode())
-			} else {
-				failReason = "document_corrupt_or_incomplete"
-			}
-
-			if failErr := s.repo.FailVerificationTx(ctx, v.ID, failReason, actor); failErr != nil {
-				return fmt.Errorf("kyc service: fail verification after permanent doc error: %w", failErr)
-			}
-			// Return nil so the webhook handler acknowledges with 200 OK to stop retries.
-			return nil
-		}
-		return fmt.Errorf("kyc service: fetch digilocker document: %w", err)
-	}
-
-	// 5. Fetch tenant's submitted name and evaluate name match
-	tenantName, err := s.repo.GetTenantName(ctx, v.TenantID)
-	if err != nil {
-		return fmt.Errorf("kyc service: fetch tenant name: %w", err)
-	}
-	nameMismatch := !domain.IsNameMatch(tenantName, doc.Name)
-
-	// 6. Normalise demographics.
-	canonicalDOB, isDedupable, err := domain.NormalizeDOB(doc.DOB)
-	if err != nil {
-		// Year-only DOB is handled inside NormalizeDOB (returns isDedupable=false).
-		// This branch only fires on truly unparseable formats.
-		canonicalDOB = ""
-		isDedupable = false
-	}
-	name := domain.NormalizeName(doc.Name)
-	gender := doc.Gender
-	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, gender, doc.MaskedUID)
-
-	// 7. DB transaction: mark verified, run dedup, write audit.
-	now := time.Now().UTC()
-	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
-	if _, err := s.repo.CompleteVerificationTx(ctx,
-		v.ID, doc.MaskedUID, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, nil, nameMismatch, doc.PhotoBytes,
-		now, expiresAt, actor,
-	); err != nil {
-		if errors.Is(err, domain.ErrVerificationNotPending) {
-			// TOCTOU race guard: the verification was superseded by a new attempt or revoked
-			// while the upstream network document fetch was in flight.
-			// Treat as an idempotent terminal no-op: return nil so webhook acks 200 OK.
-			return nil
-		}
-		return fmt.Errorf("kyc service: complete verification tx: %w", err)
 	}
 	return nil
 }
@@ -721,35 +529,6 @@ func (s *Service) RejectManualReview(ctx context.Context, verificationID, review
 	return s.repo.RejectManualReviewTx(ctx, verificationID, reviewerID, reason, actor)
 }
 
-// GetDigiLockerReturnStatus inspects the verification status for a tenant landing back from DigiLocker.
-// If the record is still pending, it queries Cashfree's status endpoint and opportunistically
-// completes the verification if DigiLocker has finished, avoiding race conditions with asynchronous webhooks.
-func (s *Service) GetDigiLockerReturnStatus(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-	v, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: get return verification: %w", err)
-	}
-
-	if v.Status == domain.KYCStatusPending && s.cashfree != nil {
-		st, err := s.cashfree.GetDigiLockerStatus(ctx, vendorRefID)
-		if err == nil && st != nil {
-			if st.Status == "COMPLETED" {
-				if compErr := s.ProcessDigiLockerCompletion(ctx, vendorRefID, "", "tenant_return"); compErr == nil {
-					if reloaded, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID); err == nil {
-						v = reloaded
-					}
-				}
-			} else if st.Status == "FAILED" {
-				_ = s.ProcessDigiLockerCompletion(ctx, vendorRefID, st.Message, "tenant_return")
-				if reloaded, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID); err == nil {
-					v = reloaded
-				}
-			}
-		}
-	}
-
-	return v, nil
-}
 
 // GetAttestedPhoto retrieves the verified government/vendor-attested photo crop for owner inspection.
 func (s *Service) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {

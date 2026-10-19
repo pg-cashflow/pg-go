@@ -25,11 +25,8 @@ import (
 // (standard Go dependency-inversion pattern — consumer defines the interface).
 type KYCService interface {
 	RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, consentVersion, consentText, ip, userAgent, actor string) (*domain.KYCConsent, error)
-	InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, actor string) (verificationURL string, err error)
-	ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, failedReason, actor string) error
 	VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
 	VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
-	GetDigiLockerReturnStatus(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 	GetStatus(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)

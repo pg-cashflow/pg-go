@@ -28,8 +28,6 @@ import (
 
 type fakeKYCSvc struct {
 	consentFn    func(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error)
-	initiateFn   func(ctx context.Context, tenantID uuid.UUID, actor string) (string, error)
-	completionFn func(ctx context.Context, vendorRefID, failedReason, actor string) error
 	qrFn         func(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
 	revokeFn     func(ctx context.Context, tenantID uuid.UUID, actor string) error
 	statusFn     func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
@@ -37,7 +35,6 @@ type fakeKYCSvc struct {
 	vendorRefFn  func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	clearDupFn   func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
 	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
-	returnFn     func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	photoFn      func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 }
@@ -47,18 +44,6 @@ func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purp
 		return f.consentFn(ctx, tenantID, purpose, version, text, ip, ua, actor)
 	}
 	return &domain.KYCConsent{ID: uuid.New(), ConsentVersion: version}, nil
-}
-func (f *fakeKYCSvc) InitiateDigiLocker(ctx context.Context, tenantID uuid.UUID, actor string) (string, error) {
-	if f.initiateFn != nil {
-		return f.initiateFn(ctx, tenantID, actor)
-	}
-	return "https://digilocker.gov.in/verify?session=test", nil
-}
-func (f *fakeKYCSvc) ProcessDigiLockerCompletion(ctx context.Context, vendorRefID, failedReason, actor string) error {
-	if f.completionFn != nil {
-		return f.completionFn(ctx, vendorRefID, failedReason, actor)
-	}
-	return nil
 }
 func (f *fakeKYCSvc) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error) {
 	if f.qrFn != nil {
@@ -70,13 +55,6 @@ func (f *fakeKYCSvc) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, raw
 func (f *fakeKYCSvc) VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error) {
 	if f.uploadFn != nil {
 		return f.uploadFn(ctx, tenantID, fileReader, filename, actor)
-	}
-	now := time.Now()
-	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
-}
-func (f *fakeKYCSvc) GetDigiLockerReturnStatus(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-	if f.returnFn != nil {
-		return f.returnFn(ctx, vendorRefID)
 	}
 	now := time.Now()
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
@@ -348,13 +326,7 @@ func TestCashfreeKYCWebhook_UnconfiguredSecret_Returns503(t *testing.T) {
 
 func TestCashfreeKYCWebhook_BadHMAC_Returns200NotError(t *testing.T) {
 	// Bad signatures must return 200, not 4xx, to prevent Cashfree retry storms.
-	completionCalled := false
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, _, _, _ string) error {
-			completionCalled = true
-			return nil
-		},
-	}
+	svc := &fakeKYCSvc{}
 	r := kycTestTenantRouter(svc, "real-secret")
 
 	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-001"}}`
@@ -368,24 +340,10 @@ func TestCashfreeKYCWebhook_BadHMAC_Returns200NotError(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("bad HMAC should return 200 (not retry-triggering 4xx), got %d", w.Code)
 	}
-	if completionCalled {
-		t.Error("completion must NOT be called when HMAC fails")
-	}
 }
 
 func TestCashfreeKYCWebhook_CompletedEvent(t *testing.T) {
-	completionCalled := false
-	capturedVendorRef := ""
-	capturedFailedReason := "initial" // should end up empty for COMPLETED
-
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, vendorRefID, failedReason, actor string) error {
-			completionCalled = true
-			capturedVendorRef = vendorRefID
-			capturedFailedReason = failedReason
-			return nil
-		},
-	}
+	svc := &fakeKYCSvc{}
 	secret := "test-webhook-secret"
 	r := kycTestTenantRouter(svc, secret)
 
@@ -403,28 +361,10 @@ func TestCashfreeKYCWebhook_CompletedEvent(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if !completionCalled {
-		t.Error("expected ProcessDigiLockerCompletion to be called")
-	}
-	if capturedVendorRef != "ver-completed" {
-		t.Errorf("expected vendor_ref=ver-completed, got %q", capturedVendorRef)
-	}
-	if capturedFailedReason != "" {
-		t.Errorf("COMPLETED event should have empty failedReason, got %q", capturedFailedReason)
-	}
 }
 
 func TestCashfreeKYCWebhook_FailedEvent(t *testing.T) {
-	completionCalled := false
-	capturedReason := ""
-
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, _, failedReason, _ string) error {
-			completionCalled = true
-			capturedReason = failedReason
-			return nil
-		},
-	}
+	svc := &fakeKYCSvc{}
 	secret := "test-webhook-secret"
 	r := kycTestTenantRouter(svc, secret)
 
@@ -442,22 +382,10 @@ func TestCashfreeKYCWebhook_FailedEvent(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if !completionCalled {
-		t.Error("expected ProcessDigiLockerCompletion to be called for FAILED event")
-	}
-	if capturedReason == "" {
-		t.Error("VERIFICATION_FAILED must pass a non-empty failedReason to the service")
-	}
 }
 
 func TestCashfreeKYCWebhook_UnknownEventType_IsNoOp(t *testing.T) {
-	completionCalled := false
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, _, _, _ string) error {
-			completionCalled = true
-			return nil
-		},
-	}
+	svc := &fakeKYCSvc{}
 	secret := "test-webhook-secret"
 	r := kycTestTenantRouter(svc, secret)
 
@@ -474,9 +402,6 @@ func TestCashfreeKYCWebhook_UnknownEventType_IsNoOp(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
-	}
-	if completionCalled {
-		t.Error("non-KYC event types must not trigger ProcessDigiLockerCompletion")
 	}
 }
 
@@ -527,66 +452,9 @@ func TestKYCHandlers_NilService_Returns503(t *testing.T) {
 	}
 }
 
-func TestCashfreeKYCWebhook_TransientError_Returns500(t *testing.T) {
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, _, _, _ string) error {
-			return fmt.Errorf("database connection lost: transient blip")
-		},
-	}
-	secret := "test-webhook-secret"
-	r := kycTestTenantRouter(svc, secret)
-
-	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-transient","status":"COMPLETED","entity":"AADHAAR"}}`
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	sig := signHMAC(secret, ts, payload)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-webhook-timestamp", ts)
-	req.Header.Set("x-webhook-signature", sig)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 on transient DB error, got %d", w.Code)
-	}
-}
-
-func TestCashfreeKYCWebhook_UnknownVendorRef_Returns200(t *testing.T) {
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, _, _, _ string) error {
-			return fmt.Errorf("kyc service: unknown vendor_ref_id: %w", domain.ErrVerificationNotFound)
-		},
-	}
-	secret := "test-webhook-secret"
-	r := kycTestTenantRouter(svc, secret)
-
-	payload := `{"type":"VERIFICATION_COMPLETED","data":{"verification_id":"ver-unknown","status":"COMPLETED","entity":"AADHAAR"}}`
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	sig := signHMAC(secret, ts, payload)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/public/cashfree/kyc/webhook", bytes.NewBufferString(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-webhook-timestamp", ts)
-	req.Header.Set("x-webhook-signature", sig)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 for unknown vendor ref (no retry wanted), got %d", w.Code)
-	}
-}
 
 func TestCashfreeKYCWebhook_DoubleDelivery(t *testing.T) {
-	callCount := 0
-	svc := &fakeKYCSvc{
-		completionFn: func(_ context.Context, vendorRefID, failedReason, _ string) error {
-			callCount++
-			// First call transitions to terminal state, second call is an idempotent no-op.
-			// Both return nil to signal success to the handler.
-			return nil
-		},
-	}
+	svc := &fakeKYCSvc{}
 	secret := "test-webhook-secret"
 	r := kycTestTenantRouter(svc, secret)
 
@@ -616,10 +484,6 @@ func TestCashfreeKYCWebhook_DoubleDelivery(t *testing.T) {
 
 	if w2.Code != http.StatusOK {
 		t.Errorf("second delivery: expected 200, got %d", w2.Code)
-	}
-
-	if callCount != 2 {
-		t.Errorf("expected ProcessDigiLockerCompletion to be invoked twice (service handles idempotency), got %d calls", callCount)
 	}
 }
 

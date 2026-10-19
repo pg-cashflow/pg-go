@@ -104,12 +104,8 @@ func TestGate14_DPDP_ConsentRevocationAtomicWipe(t *testing.T) {
 	repo := &fakeRevokeRepo{
 		revokedTenants: make(map[uuid.UUID]bool),
 	}
-	cf := &fakeCashfree{
-		doc: &kycsvc.DigiLockerDoc{Name: "Ravi Kumar", DOB: "1990-05-15", Gender: "M", MaskedUID: "XXXX-1234"},
-	}
-	svc := newTestService(&repo.fakeRepo, cf)
-	// Override service repo with fakeRevokeRepo
-	svc = kycsvc.NewService(repo, cf, kycsvc.Config{
+	cf := &fakeCashfree{}
+	svc := kycsvc.NewService(repo, cf, kycsvc.Config{
 		IdentitySecret:           "test-secret-key",
 		HashKeyVersion:           1,
 		VerificationValidityDays: 365,
@@ -127,22 +123,18 @@ func TestGate14_DPDP_ConsentRevocationAtomicWipe(t *testing.T) {
 		t.Fatalf("expected active consent")
 	}
 
-	// 2. Initiate Verification
-	vendorRefID := "ref-dpdp-001"
+	// 2. Verified record with PII
+	maskedUIDVal := "XXXX-XXXX-1234"
+	hashVal := "hash_abc123"
 	repo.verification = &domain.KYCVerification{
-		ID:                uuid.New(),
-		TenantID:          tenantID,
-		VendorReferenceID: vendorRefID,
-		Status:            domain.KYCStatusPending,
+		ID:           uuid.New(),
+		TenantID:     tenantID,
+		Status:       domain.KYCStatusVerified,
+		MaskedUID:    &maskedUIDVal,
+		IdentityHash: &hashVal,
 	}
 
-	// 3. Complete Verification
-	err = svc.ProcessDigiLockerCompletion(ctx, vendorRefID, "", "cashfree_webhook")
-	if err != nil {
-		t.Fatalf("complete verification: %v", err)
-	}
-
-	// 4. Revoke Consent (DPDP Rule 8)
+	// 3. Revoke Consent (DPDP Rule 8)
 	if err := svc.RevokeConsent(ctx, tenantID, "tenant"); err != nil {
 		t.Fatalf("revoke consent: %v", err)
 	}

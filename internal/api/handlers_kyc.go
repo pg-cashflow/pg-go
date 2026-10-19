@@ -644,12 +644,11 @@ type kycWebhookPayload struct {
 // CashfreeKYCWebhook handles POST /api/public/cashfree/kyc/webhook.
 //
 // Security: raw body bytes are read FIRST, HMAC is verified BEFORE JSON parsing.
-// Idempotency: ProcessDigiLockerCompletion no-ops on already-terminal verifications.
+// DigiLocker sessions are retired; webhook validates authenticity and acknowledges with 200 OK.
 //
 // Response status codes:
-//   - 200: malformed payload, bad HMAC, unknown event type, or unknown vendor reference (drop forever, no retry wanted)
-//   - 200: successful completion or already-processed idempotent no-op
-//   - 500: transient processing failure (DB error, network blip fetching doc, etc.) so Cashfree retries delivery
+//   - 200: validly signed delivery acknowledged
+//   - 503: webhook secret not configured
 func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	svc := h.kycSvcOrErr(c)
 	if svc == nil {
@@ -707,45 +706,11 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
-	// 4. Ignore non-KYC event types silently.
-	switch payload.Type {
-	case "VERIFICATION_COMPLETED", "VERIFICATION_FAILED":
-		// handled below
-	default:
-		c.Status(http.StatusOK)
-		return
-	}
-
-	vendorRefID := payload.Data.VerificationID
-	if vendorRefID == "" {
-		c.Status(http.StatusOK)
-		return
-	}
-
-	// 5. Delegate to service — which handles idempotency internally.
-	failedReason := ""
-	if payload.Type == "VERIFICATION_FAILED" {
-		failedReason = payload.Data.FailedReason
-		if failedReason == "" {
-			failedReason = "verification failed (reason not provided)"
-		}
-	}
-
-	if err := svc.ProcessDigiLockerCompletion(c.Request.Context(), vendorRefID, failedReason, "cashfree_webhook"); err != nil {
-		if errors.Is(err, domain.ErrVerificationNotFound) {
-			slog.Warn("cashfree kyc webhook: unknown vendor reference id",
-				"vendor_ref_id", vendorRefID,
-			)
-			c.Status(http.StatusOK)
-			return
-		}
-		slog.Error("cashfree kyc webhook: transient processing failure",
-			"vendor_ref_id", vendorRefID,
-			"err", err,
-		)
-		c.Status(http.StatusInternalServerError)
-		return
-	}
+	// 4. DigiLocker is deprecated and retired. Acknowledge validly signed webhooks with 200 OK.
+	slog.Info("cashfree kyc webhook received",
+		"event_type", payload.Type,
+		"verification_id", payload.Data.VerificationID,
+	)
 	c.Status(http.StatusOK)
 }
 

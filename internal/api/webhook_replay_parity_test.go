@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -145,13 +144,7 @@ func TestWebhookReplayParity_KYC(t *testing.T) {
 		{name: "negative tolerance defaults to 300", tolerance: -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			completionCalled := false
-			fakeSvc := &fakeKYCSvc{
-				completionFn: func(_ context.Context, _, _, _ string) error {
-					completionCalled = true
-					return nil
-				},
-			}
+			fakeSvc := &fakeKYCSvc{}
 			h := &Handlers{Deps: Deps{
 				CashfreeSecret:      secret,
 				WebhookToleranceSec: tc.tolerance,
@@ -166,12 +159,9 @@ func TestWebhookReplayParity_KYC(t *testing.T) {
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 
-			// Per D1: returns HTTP 200 (not exposing internals to Cashfree), but NO processing must occur!
+			// Per D1: returns HTTP 200 (not exposing internals to Cashfree)
 			if w.Code != http.StatusOK {
 				t.Fatalf("expected 200 OK per D1 convention, got %d", w.Code)
-			}
-			if completionCalled {
-				t.Fatalf("stale KYC replay must NOT trigger processing in KYC service (tolerance=%d)", tc.tolerance)
 			}
 		})
 	}

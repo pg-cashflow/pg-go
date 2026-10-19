@@ -92,19 +92,10 @@ type stubPIIKYCService struct{}
 func (s *stubPIIKYCService) RecordConsent(_ context.Context, _ uuid.UUID, _, _, _, _, _, _ string) (*domain.KYCConsent, error) {
 	return &domain.KYCConsent{ID: uuid.New()}, nil
 }
-func (s *stubPIIKYCService) InitiateDigiLocker(_ context.Context, _ uuid.UUID, _ string) (string, error) {
-	return "https://digilocker.test", nil
-}
-func (s *stubPIIKYCService) ProcessDigiLockerCompletion(_ context.Context, _, _, _ string) error {
-	return nil
-}
 func (s *stubPIIKYCService) VerifySecureQR(_ context.Context, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
 }
 func (s *stubPIIKYCService) VerifyAadhaarDocument(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
-	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
-}
-func (s *stubPIIKYCService) GetDigiLockerReturnStatus(_ context.Context, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
 }
 func (s *stubPIIKYCService) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
