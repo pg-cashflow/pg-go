@@ -304,8 +304,13 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 	defer file.Close()
 
+	ct := fileHeader.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+
 	actor := fmt.Sprintf("tenant:%s", t.ID)
-	v, err := svc.VerifyAadhaarDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, actor)
+	v, err := svc.VerifyAadhaarDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, ct, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
 		return
@@ -539,6 +544,42 @@ func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
 	c.Data(http.StatusOK, ct, b)
 }
 
+// OwnerKYCDocument handles GET /api/owner/kyc/:id/document and GET /api/manager/kyc/:id/document.
+// Serves the uploaded manual review document binary (PDF/image) or fallback attested photo.
+func (h *Handlers) OwnerKYCDocument(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	b, ct, err := svc.GetKYCDocument(c.Request.Context(), id, propertyID)
+	if err != nil {
+		if errors.Is(err, domain.ErrVerificationNotFound) {
+			apierr.RespondClientErr(c, http.StatusNotFound, "document not found", apierr.CodeRequestInvalidId)
+			return
+		}
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	if len(b) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no document available"})
+		return
+	}
+
+	if ct == "" {
+		ct = http.DetectContentType(b)
+	}
+	c.Data(http.StatusOK, ct, b)
+}
+
 // OwnerKYCReviewQueue handles GET /api/owner/kyc/queue.
 // Lists pending manual review verifications for the owner's property.
 func (h *Handlers) OwnerKYCReviewQueue(c *gin.Context) {
@@ -763,8 +804,9 @@ func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 	if v.ReviewedAt != nil {
 		m["reviewed_at"] = v.ReviewedAt
 	}
+	m["document_url"] = fmt.Sprintf("/api/owner/kyc/%s/document", v.ID)
 	if v.DocumentURL != nil {
-		m["document_url"] = v.DocumentURL
+		m["document_name"] = v.DocumentURL
 	}
 	return m
 }

@@ -90,7 +90,7 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	}
 
 	// 3. Submit for manual review
-	verif, err := repo.SubmitManualReviewTx(ctx, initVerif.ID, "1234", "hash123", `{"name":"Manual Tenant"}`, "http://docs.example/doc1.pdf", "tenant:"+tenantID.String())
+	verif, err := repo.SubmitManualReviewTx(ctx, initVerif.ID, "1234", "hash123", `{"name":"Manual Tenant"}`, "http://docs.example/doc1.pdf", []byte("%PDF-1.4 mock"), "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("submit manual review: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initiate second verification: %v", err)
 	}
-	verif2, err := repo.SubmitManualReviewTx(ctx, initVerif2.ID, "1234", "hash456", `{"name":"Manual Tenant"}`, "http://docs.example/doc2.pdf", "tenant:"+tenantID.String())
+	verif2, err := repo.SubmitManualReviewTx(ctx, initVerif2.ID, "1234", "hash456", `{"name":"Manual Tenant"}`, "http://docs.example/doc2.pdf", []byte("%PDF-1.4 mock 2"), "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("submit second manual review: %v", err)
 	}

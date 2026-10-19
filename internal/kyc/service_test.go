@@ -156,7 +156,7 @@ func (f *fakeRepo) GetTenantName(_ context.Context, _ uuid.UUID) (string, error)
 func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return f.attestedPhoto, nil
 }
-func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string) (*domain.KYCVerification, error) {
 	var raw struct {
 		NameMismatch bool `json:"name_mismatch"`
 	}
@@ -174,6 +174,15 @@ func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedU
 		f.verification = v
 	}
 	return v, nil
+}
+func (f *fakeRepo) GetKYCDocument(_ context.Context, _ uuid.UUID) ([]byte, string, error) {
+	if len(f.attestedPhoto) > 0 {
+		return f.attestedPhoto, "image/jpeg", nil
+	}
+	return []byte("dummy-doc"), "application/pdf", nil
+}
+func (f *fakeRepo) VerifyPropertyOwnership(_ context.Context, _, _ uuid.UUID) (bool, error) {
+	return true, nil
 }
 func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, reviewerID uuid.UUID, _ string) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
@@ -342,7 +351,7 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -385,7 +394,7 @@ func TestVerifyAadhaarDocument_NameMismatch(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -408,7 +417,7 @@ func TestVerifyAadhaarDocument_InFlightLockContention(t *testing.T) {
 	cf := &fakeCashfree{}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if !errors.Is(err, domain.ErrVerificationInProgress) {
 		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
 	}
@@ -430,7 +439,7 @@ func TestVerifyAadhaarDocument_ReleaseLockOnError(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -458,7 +467,7 @@ func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
 	cf := &fakeCashfree{}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "card.jpg", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "card.jpg", "image/jpeg", "tenant:"+tenantID.String())
 	if !errors.Is(err, domain.ErrVerificationInProgress) {
 		t.Fatalf("expected ErrVerificationInProgress on cooldown, got %v", err)
 	}

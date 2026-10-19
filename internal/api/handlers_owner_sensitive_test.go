@@ -71,6 +71,14 @@ func (k *fakeOwnerKYCService) GetAttestedPhoto(_ context.Context, tenantID uuid.
 	return b, nil
 }
 
+func (k *fakeOwnerKYCService) GetKYCDocument(_ context.Context, id, _ uuid.UUID) ([]byte, string, error) {
+	b, ok := k.photos[id]
+	if !ok || len(b) == 0 {
+		return nil, "", fmt.Errorf("no kyc document")
+	}
+	return b, "application/pdf", nil
+}
+
 type fakeOwnerDueStore struct {
 	dues map[uuid.UUID]*domain.Due
 }

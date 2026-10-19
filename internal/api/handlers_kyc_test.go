@@ -34,7 +34,7 @@ type fakeKYCSvc struct {
 	ownerViewFn  func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
 	vendorRefFn  func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	clearDupFn   func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
-	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
+	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
 	photoFn      func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 }
@@ -52,9 +52,9 @@ func (f *fakeKYCSvc) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, raw
 	now := time.Now()
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
 }
-func (f *fakeKYCSvc) VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error) {
+func (f *fakeKYCSvc) VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error) {
 	if f.uploadFn != nil {
-		return f.uploadFn(ctx, tenantID, fileReader, filename, actor)
+		return f.uploadFn(ctx, tenantID, fileReader, filename, contentType, actor)
 	}
 	now := time.Now()
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
@@ -64,6 +64,9 @@ func (f *fakeKYCSvc) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) (
 		return f.photoFn(ctx, tenantID)
 	}
 	return []byte{0x89, 0x50, 0x4E, 0x47}, nil
+}
+func (f *fakeKYCSvc) GetKYCDocument(ctx context.Context, id, propertyID uuid.UUID) ([]byte, string, error) {
+	return []byte("%PDF-1.4 mock"), "application/pdf", nil
 }
 func (f *fakeKYCSvc) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error {
 	if f.revokeFn != nil {
@@ -518,7 +521,7 @@ func TestOwnerKYCVerificationView_Fields(t *testing.T) {
 
 func TestTenantKYCUpload_InFlight_Returns409(t *testing.T) {
 	svc := &fakeKYCSvc{
-		uploadFn: func(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
+		uploadFn: func(_ context.Context, _ uuid.UUID, _ io.Reader, _, _, _ string) (*domain.KYCVerification, error) {
 			return nil, domain.ErrVerificationInProgress
 		},
 	}
@@ -557,7 +560,7 @@ func TestTenantKYCUpload_RateLimit_BurstEnforced(t *testing.T) {
 
 	now := time.Now()
 	svc := &fakeKYCSvc{
-		uploadFn: func(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
+		uploadFn: func(_ context.Context, _ uuid.UUID, _ io.Reader, _, _, _ string) (*domain.KYCVerification, error) {
 			return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
 		},
 	}
@@ -613,6 +616,7 @@ func kycTestOwnerRouter(svc KYCService, propertyID, ownerUserID uuid.UUID) *gin.
 	owner := r.Group("/api/owner/kyc")
 	{
 		owner.GET("/queue", h.OwnerKYCReviewQueue)
+		owner.GET("/:id/document", h.OwnerKYCDocument)
 		owner.POST("/:id/approve", h.OwnerKYCApprove)
 		owner.POST("/:id/reject", h.OwnerKYCReject)
 	}
@@ -824,6 +828,28 @@ func TestOwnerKYCReject_OK(t *testing.T) {
 	}
 	if resp["status"] != string(domain.KYCStatusRejected) {
 		t.Errorf("expected status 'rejected', got %v", resp["status"])
+	}
+}
+
+func TestOwnerKYCDocument_OK(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+	svc := &fakeKYCSvc{}
+	r := kycTestOwnerRouter(svc, propertyID, ownerID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/owner/kyc/"+verifID.String()+"/document", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Content-Type") != "application/pdf" {
+		t.Errorf("expected application/pdf, got %s", w.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(w.Body.String(), "%PDF-1.4 mock") {
+		t.Errorf("expected PDF content, got %s", w.Body.String())
 	}
 }
 

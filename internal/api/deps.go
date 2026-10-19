@@ -26,8 +26,9 @@ import (
 type KYCService interface {
 	RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, consentVersion, consentText, ip, userAgent, actor string) (*domain.KYCConsent, error)
 	VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
-	VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, actor string) (*domain.KYCVerification, error)
+	VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+	GetKYCDocument(ctx context.Context, id, propertyID uuid.UUID) ([]byte, string, error)
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 	GetStatus(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
 	GetOwnerView(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)

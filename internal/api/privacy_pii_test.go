@@ -95,11 +95,14 @@ func (s *stubPIIKYCService) RecordConsent(_ context.Context, _ uuid.UUID, _, _, 
 func (s *stubPIIKYCService) VerifySecureQR(_ context.Context, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
 }
-func (s *stubPIIKYCService) VerifyAadhaarDocument(_ context.Context, _ uuid.UUID, _ io.Reader, _, _ string) (*domain.KYCVerification, error) {
+func (s *stubPIIKYCService) VerifyAadhaarDocument(_ context.Context, _ uuid.UUID, _ io.Reader, _, _, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
 }
 func (s *stubPIIKYCService) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return []byte("fake-attested-photo"), nil
+}
+func (s *stubPIIKYCService) GetKYCDocument(_ context.Context, _, _ uuid.UUID) ([]byte, string, error) {
+	return []byte("fake-document"), "application/pdf", nil
 }
 func (s *stubPIIKYCService) RevokeConsent(_ context.Context, _ uuid.UUID, _ string) error {
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -152,6 +153,10 @@ func (r *KYCRepo) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 				identity_hash = NULL,
 				attested_photo_bytes = NULL,
 				photo_stored = FALSE,
+				document_bytes = NULL,
+				document_content_type = NULL,
+				document_url = NULL,
+				ocr_data = NULL,
 				updated_at = $2
 			WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
 		`, tenantID, now)
@@ -785,6 +790,8 @@ func (r *KYCRepo) SubmitManualReviewTx(
 	verificationID uuid.UUID,
 	maskedUID, identityHash string,
 	ocrData, documentURL string,
+	documentBytes []byte,
+	documentContentType string,
 	actor string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
@@ -813,10 +820,12 @@ func (r *KYCRepo) SubmitManualReviewTx(
 				identity_hash = $3,
 				ocr_data = $4::jsonb,
 				document_url = $5,
-				updated_at = $6
+				document_bytes = $6,
+				document_content_type = $7,
+				updated_at = $8
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, ocrData, documentURL, now))
+		`, verificationID, maskedUID, identityHash, ocrData, documentURL, documentBytes, documentContentType, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
 		}
@@ -830,6 +839,69 @@ func (r *KYCRepo) SubmitManualReviewTx(
 		return nil, err
 	}
 	return updated, nil
+}
+
+// GetKYCDocument fetches the uploaded document binary or fallback attested photo for a verification.
+func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error) {
+	var docBytes []byte
+	var contentType *string
+	var attestedBytes []byte
+	var tenantID uuid.UUID
+
+	err := r.pool.QueryRow(ctx, `
+		SELECT document_bytes, document_content_type, attested_photo_bytes, tenant_id
+		FROM kyc_verification
+		WHERE id = $1
+	`, id).Scan(&docBytes, &contentType, &attestedBytes, &tenantID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, "", domain.ErrVerificationNotFound
+		}
+		return nil, "", fmt.Errorf("kyc: get document: %w", err)
+	}
+
+	if len(docBytes) > 0 {
+		ct := "application/octet-stream"
+		if contentType != nil && *contentType != "" {
+			ct = *contentType
+		} else {
+			ct = http.DetectContentType(docBytes)
+		}
+		return docBytes, ct, nil
+	}
+
+	if len(attestedBytes) > 0 {
+		ct := http.DetectContentType(attestedBytes)
+		return attestedBytes, ct, nil
+	}
+
+	// Fallback to tenant profile ID photo if available
+	var idPhoto []byte
+	err = r.pool.QueryRow(ctx, `SELECT id_photo_bytes FROM tenants WHERE id = $1`, tenantID).Scan(&idPhoto)
+	if err == nil && len(idPhoto) > 0 {
+		ct := http.DetectContentType(idPhoto)
+		return idPhoto, ct, nil
+	}
+
+	return nil, "", nil
+}
+
+// VerifyPropertyOwnership verifies that a verification record belongs to a tenant of propertyID.
+func (r *KYCRepo) VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error) {
+	var exists int
+	err := r.pool.QueryRow(ctx, `
+		SELECT 1
+		FROM kyc_verification v
+		JOIN tenants t ON t.id = v.tenant_id
+		WHERE v.id = $1 AND t.property_id = $2
+	`, verificationID, propertyID).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("kyc: check property ownership: %w", err)
+	}
+	return true, nil
 }
 
 // ApproveManualReviewTx promotes a pending_manual_review verification to verified.

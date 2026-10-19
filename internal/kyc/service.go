@@ -9,6 +9,7 @@
 package kyc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,11 +73,13 @@ type KYCRepo interface {
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 
-	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, actor string) (*domain.KYCVerification, error)
+	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string) (*domain.KYCVerification, error)
 	ApproveManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	RejectManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
 	GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error)
+	GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error)
+	VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error)
 	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
 }
 
@@ -240,8 +243,17 @@ func (s *Service) VerifyAadhaarDocument(
 	ctx context.Context,
 	tenantID uuid.UUID,
 	fileReader io.Reader,
-	filename, actor string,
+	filename, contentType, actor string,
 ) (*domain.KYCVerification, error) {
+	// Read file bytes up to 5MB + 1 byte guard
+	fileBytes, err := io.ReadAll(io.LimitReader(fileReader, 5*1024*1024+1))
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: read uploaded document: %w", err)
+	}
+	if len(fileBytes) > 5*1024*1024 {
+		return nil, errors.New("file size exceeds 5MB limit")
+	}
+
 	// 1. Consent gate
 	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
 	if err != nil {
@@ -289,7 +301,7 @@ func (s *Service) VerifyAadhaarDocument(
 
 	var resp *cashfree.SmartOCRResponse
 	if s.cashfree != nil {
-		resp, err = s.cashfree.UploadAadhaarDocument(ctx, fileReader, filename)
+		resp, err = s.cashfree.UploadAadhaarDocument(ctx, bytes.NewReader(fileBytes), filename)
 		if err != nil {
 			return nil, fmt.Errorf("kyc service: upload aadhaar document: %w", err)
 		}
@@ -340,9 +352,10 @@ func (s *Service) VerifyAadhaarDocument(
 		"qr_status":     resp.QRStatus,
 		"name_mismatch": nameMismatch,
 	})
+	docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
 	underReview, err := s.repo.SubmitManualReviewTx(ctx,
 		pending.ID, resp.MaskedUID, identityHash,
-		string(ocrBytes), filename, actor,
+		string(ocrBytes), docURL, fileBytes, contentType, actor,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
@@ -533,6 +546,18 @@ func (s *Service) RejectManualReview(ctx context.Context, verificationID, review
 // GetAttestedPhoto retrieves the verified government/vendor-attested photo crop for owner inspection.
 func (s *Service) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
 	return s.repo.GetAttestedPhoto(ctx, tenantID)
+}
+
+// GetKYCDocument retrieves the document file bytes or fallback photo for owner inspection.
+func (s *Service) GetKYCDocument(ctx context.Context, id, propertyID uuid.UUID) ([]byte, string, error) {
+	ok, err := s.repo.VerifyPropertyOwnership(ctx, id, propertyID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !ok {
+		return nil, "", domain.ErrVerificationNotFound
+	}
+	return s.repo.GetKYCDocument(ctx, id)
 }
 
 // --- Read-side ----------------------------------------------------------------
