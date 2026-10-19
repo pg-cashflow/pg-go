@@ -28,7 +28,7 @@ func NewPGRateLimiter(pool *pgxpool.Pool) *PGRateLimiter {
 // Returns (true, nil) if allowed, (false, nil) if rate limited, or (false, err) on DB error.
 func (r *PGRateLimiter) Allow(ctx context.Context, key string, rps float64, burst float64) (bool, error) {
 	if r == nil || r.pool == nil {
-		return true, nil
+		return false, errors.New("rate limiter: pool not configured")
 	}
 	const q = `
 INSERT INTO rate_limit_bucket (bucket_key, tokens, updated_at)

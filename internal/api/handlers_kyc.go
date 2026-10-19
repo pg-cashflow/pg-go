@@ -142,8 +142,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusUnprocessableEntity, err.Error(), apierr.Code("kyc.qr_invalid"))
 	case errors.Is(err, kycsvc.ErrQRDataIncomplete):
 		return clientErrWithCode(http.StatusUnprocessableEntity, err.Error(), apierr.Code("kyc.qr_incomplete"))
-	case errors.Is(err, kycsvc.ErrDigiLockerUnavailable):
-		return clientErrWithCode(http.StatusServiceUnavailable, err.Error(), apierr.Code("kyc.digilocker_unavailable"))
+	case errors.Is(err, kycsvc.ErrCashfreeUnavailable):
+		return clientErrWithCode(http.StatusServiceUnavailable, err.Error(), apierr.Code("kyc.cashfree_unavailable"))
 	case errors.Is(err, domain.ErrVerificationNotFound):
 		return clientErrWithCode(http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
 	default:
@@ -206,43 +206,6 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 		"consent_version":  consent.ConsentVersion,
 		"consent_given_at": consent.ConsentGivenAt,
 	})
-}
-
-
-type kycSubmitQRBody struct {
-	RawQR string `json:"raw_qr" binding:"required"`
-}
-
-// TenantKYCSubmitQR handles POST /api/tenant/kyc/qr.
-// Offline fallback path: decodes and RSA-verifies the UIDAI Secure QR in-process.
-// Consent must be active before this endpoint accepts a submission.
-func (h *Handlers) TenantKYCSubmitQR(c *gin.Context) {
-	svc := h.kycSvcOrErr(c)
-	if svc == nil {
-		return
-	}
-	t := tenantFromContext(c)
-	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
-		return
-	}
-
-	var body kycSubmitQRBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "raw_qr is required", apierr.CodeRequestInvalidBody)
-		return
-	}
-	actor := fmt.Sprintf("tenant:%s", t.ID)
-
-	v, err := svc.VerifySecureQR(c.Request.Context(), t.ID, body.RawQR, actor)
-	if err != nil {
-		respondErr(c, kycClientErr(err))
-		return
-	}
-	// Tenant-facing projection: no identity_hash or duplicate_detected.
-	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
 }
 
 // TenantKYCRevoke handles POST /api/tenant/kyc/revoke.

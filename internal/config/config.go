@@ -46,7 +46,6 @@ type Config struct {
 	WebhookAPIVersion                 string
 	AadhaarQRPublicKeyPEM             string
 	KYCIdentitySecret                 string
-	KYCDigiLockerRedirectURL          string
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
 	CashfreePayoutAPIVersion          string
@@ -121,7 +120,6 @@ func Load() (*Config, error) {
 		WebhookAPIVersion:                 envOr("CASHFREE_API_VERSION", "2025-01-01"),
 		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
-		KYCDigiLockerRedirectURL:          os.Getenv("KYC_DIGILOCKER_REDIRECT_URL"),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
@@ -139,13 +137,6 @@ func Load() (*Config, error) {
 	} else if cfg.CashfreePGSecretKey != "" {
 		cfg.CashfreeWebhookSecret = cfg.CashfreePGSecretKey
 		cfg.WebhookSecretSource = "pg_secret_key"
-	}
-	if cfg.KYCDigiLockerRedirectURL == "" {
-		if cfg.FrontendURL != "" {
-			cfg.KYCDigiLockerRedirectURL = strings.TrimRight(cfg.FrontendURL, "/") + "/tenant/kyc/callback"
-		} else {
-			cfg.KYCDigiLockerRedirectURL = "http://localhost:3000/tenant/kyc/callback"
-		}
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")

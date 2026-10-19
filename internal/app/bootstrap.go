@@ -218,18 +218,17 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 				Env:       cfg.CashfreeEnv,
 			})
 			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfKYCClient)
-			logger.Info("kyc service enabled with dedicated Cashfree KYC credentials", "digilocker", true)
+			logger.Info("kyc service enabled with dedicated Cashfree KYC credentials")
 		} else if cfClient != nil {
 			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
-			logger.Info("kyc service enabled", "digilocker", true)
+			logger.Info("kyc service enabled with default Cashfree credentials")
 		} else {
-			logger.Warn("kyc service enabled in QR-only mode (Cashfree credentials not configured; DigiLocker unavailable)")
+			logger.Warn("kyc service enabled in document-only mode (Cashfree credentials not configured; Aadhaar OTP unavailable)")
 		}
 		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
 			IdentitySecret:           cfg.KYCIdentitySecret,
 			HashKeyVersion:           1,
 			VerificationValidityDays: 365,
-			DigiLockerRedirectURL:    cfg.KYCDigiLockerRedirectURL,
 		})
 	} else {
 		logger.Info("kyc service dormant (KYC_IDENTITY_SECRET not set)")

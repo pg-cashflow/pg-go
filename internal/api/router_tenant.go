@@ -1,6 +1,9 @@
 package api
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/pg-cashflow/pg-go/internal/domain"
+)
 
 func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.GET("/me", h.TenantMe)
@@ -20,8 +23,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.POST("/kyc/consent", h.TenantKYCConsent)
 	tenant.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
 	tenant.POST("/kyc/aadhaar/otp/request", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
-	tenant.POST("/kyc/aadhaar/otp/verify", h.TenantIDRateLimit(10.0/60, 3), h.TenantKYCAadhaarOTPVerify)
-	tenant.POST("/kyc/qr", h.TenantKYCSubmitQR)
+	tenant.POST("/kyc/aadhaar/otp/verify", h.TenantIDRateLimit(10.0/60, domain.AadhaarOTPMaxAttempts), h.TenantKYCAadhaarOTPVerify)
 	tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
 	tenant.GET("/kyc/status", h.TenantKYCStatus)
 

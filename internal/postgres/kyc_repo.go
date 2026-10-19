@@ -533,30 +533,6 @@ func (r *KYCRepo) ListAuditLogsByTenant(ctx context.Context, tenantID uuid.UUID)
 	return logs, rows.Err()
 }
 
-// ListPendingDigiLockerVerifications returns all pending DigiLocker verification sessions ordered by creation time.
-func (r *KYCRepo) ListPendingDigiLockerVerifications(ctx context.Context) ([]domain.KYCVerification, error) {
-	rows, err := r.pool.Query(ctx, `
-		SELECT `+kycVerificationCols+`
-		FROM kyc_verification
-		WHERE status = 'pending' AND method = 'digilocker'
-		ORDER BY created_at ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("kyc: list pending digilocker: %w", err)
-	}
-	defer rows.Close()
-
-	var list []domain.KYCVerification
-	for rows.Next() {
-		v, err := scanKYCVerification(rows)
-		if err != nil {
-			return nil, fmt.Errorf("kyc: scan pending digilocker: %w", err)
-		}
-		list = append(list, *v)
-	}
-	return list, rows.Err()
-}
-
 // ExpireStalePendingVerifications batch expires pending verifications past their TTL cutoff.
 func (r *KYCRepo) ExpireStalePendingVerifications(ctx context.Context, cutoff time.Time) (int64, error) {
 	tag, err := r.pool.Exec(ctx, `

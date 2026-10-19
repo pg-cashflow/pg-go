@@ -28,11 +28,18 @@ const (
 type KYCMethod string
 
 const (
+	// KYCMethodDigiLocker is retained as a read-only tag for historical records.
+	// Active verification uses Aadhaar OTP or Manual Document OCR.
 	KYCMethodDigiLocker KYCMethod = "digilocker"
 	KYCMethodAadhaarOTP KYCMethod = "aadhaar_otp"
 	KYCMethodOCR        KYCMethod = "ocr"
 	KYCMethodQR         KYCMethod = "qr"
 )
+
+// AadhaarOTPMaxAttempts defines the unified retry and burst budget for Aadhaar OTP verification.
+// Used concurrently by the API rate-limiter burst capacity and the KYC service retry counter
+// to prevent divergence between HTTP 429 rate limiting and logical attempts remaining.
+const AadhaarOTPMaxAttempts = 3
 
 var (
 	ErrAlreadyVerified        = errors.New("kyc: tenant is already verified")

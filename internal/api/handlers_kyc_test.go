@@ -186,7 +186,6 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 		tenant_g.POST("/upload", h.TenantKYCUpload)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)
 		tenant_g.POST("/aadhaar/otp/verify", h.TenantKYCAadhaarOTPVerify)
-		tenant_g.POST("/qr", h.TenantKYCSubmitQR)
 		tenant_g.POST("/revoke", h.TenantKYCRevoke)
 		tenant_g.GET("/status", h.TenantKYCStatus)
 	}
@@ -497,7 +496,6 @@ func TestKYCHandlers_NilService_Returns503(t *testing.T) {
 	{
 		grp.POST("/consent", h.TenantKYCConsent)
 		grp.POST("/upload", h.TenantKYCUpload)
-		grp.POST("/qr", h.TenantKYCSubmitQR)
 		grp.POST("/revoke", h.TenantKYCRevoke)
 		grp.GET("/status", h.TenantKYCStatus)
 	}
@@ -505,7 +503,6 @@ func TestKYCHandlers_NilService_Returns503(t *testing.T) {
 	cases := []struct{ method, path string }{
 		{http.MethodPost, "/api/tenant/kyc/consent"},
 		{http.MethodPost, "/api/tenant/kyc/upload"},
-		{http.MethodPost, "/api/tenant/kyc/qr"},
 		{http.MethodPost, "/api/tenant/kyc/revoke"},
 		{http.MethodGet, "/api/tenant/kyc/status"},
 	}

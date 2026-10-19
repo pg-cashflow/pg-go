@@ -162,9 +162,9 @@ func (c *Config) ValidateWarnings() []string {
 		warns = append(warns, "Cashfree is in sandbox mode (CASHFREE_ENV != production) — payments are not real")
 	}
 
-	// KYC enabled without Cashfree (DigiLocker unavailable, QR-only mode)
+	// KYC enabled without Cashfree (Aadhaar OTP unavailable)
 	if strings.TrimSpace(c.KYCIdentitySecret) != "" && !cashfreeEnabled {
-		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured — KYC is active in QR-only mode; DigiLocker initiation will return 503")
+		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured — Aadhaar OTP verification will return 503")
 	}
 
 	// Admin email unset warning in non-production

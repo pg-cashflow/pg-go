@@ -322,7 +322,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	if in.Name == "" || in.PermanentAddress == "" || in.CurrentAddress == "" || in.EmergencyPhone == "" {
 		return nil, nil, ErrProfileIncomplete
 	}
-	if len(in.IDPhotoBytes) == 0 && in.KYCMethod != "digilocker" && strings.TrimSpace(in.AadhaarLast4) == "" {
+	if len(in.IDPhotoBytes) == 0 && in.KYCMethod != string(domain.KYCMethodAadhaarOTP) && strings.TrimSpace(in.AadhaarLast4) == "" {
 		return nil, nil, ErrPhotoRequired
 	}
 	if len(in.IDPhotoBytes) > maxIDPhotoBytes {

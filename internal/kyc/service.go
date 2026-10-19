@@ -27,8 +27,9 @@ import (
 var (
 	ErrNoActiveConsent       = errors.New("kyc: no active consent — record consent before initiating verification")
 	ErrQRSignatureInvalid    = errors.New("kyc: QR signature verification failed — UIDAI key not configured or payload corrupted")
-	ErrQRDataIncomplete      = errors.New("kyc: QR data incomplete — required fields (name, uid) missing; use DigiLocker for full verification")
-	ErrDigiLockerUnavailable = errors.New("kyc: digilocker verification unavailable — cashfree is not configured")
+	ErrQRDataIncomplete      = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
+	ErrCashfreeUnavailable   = errors.New("kyc: verification unavailable — cashfree is not configured")
+	ErrDigiLockerUnavailable = ErrCashfreeUnavailable // Deprecated alias
 )
 
 // PermanentError is an interface implemented by errors that represent an
@@ -572,7 +573,7 @@ func (s *Service) InitiateAadhaarOTP(
 	}()
 
 	if s.cashfree == nil {
-		return "", ErrDigiLockerUnavailable
+		return "", ErrCashfreeUnavailable
 	}
 
 	res, err := s.cashfree.RequestAadhaarOTP(ctx, aadhaarNumber)
@@ -629,7 +630,7 @@ func (s *Service) CompleteAadhaarOTP(
 	}
 
 	if s.cashfree == nil {
-		return nil, ErrDigiLockerUnavailable
+		return nil, ErrCashfreeUnavailable
 	}
 
 	res, err := s.cashfree.VerifyAadhaarOTP(ctx, refID, otp)
@@ -659,7 +660,7 @@ func (s *Service) CompleteAadhaarOTP(
 			class = cashfree.FailureTerminal
 		}
 
-		attemptsRemaining := 3 - count
+		attemptsRemaining := domain.AadhaarOTPMaxAttempts - count
 		if attemptsRemaining < 0 {
 			attemptsRemaining = 0
 		}
