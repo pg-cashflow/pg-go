@@ -45,9 +45,35 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	}
 
 	if body.PropertyID != "" {
-		if reqPID, err := uuid.Parse(body.PropertyID); err != nil || reqPID != pid {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+		reqPID, err := uuid.Parse(body.PropertyID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid property_id"})
 			return
+		}
+		if reqPID != pid {
+			authorized := false
+			if h.PropertyStore != nil {
+				if prop, err := h.PropertyStore.GetByID(c.Request.Context(), reqPID); err == nil && prop != nil {
+					claims, _ := auth.ClaimsFromContext(c)
+					var userPhone, userEmail string
+					if h.UserStore != nil {
+						if u, _ := h.UserStore.GetByID(c.Request.Context(), claims.UserID); u != nil {
+							userPhone = u.Phone
+							userEmail = u.Email
+						}
+					}
+					if userPhone != "" && prop.OwnerPhone == userPhone {
+						authorized = true
+					} else if userEmail != "" && strings.EqualFold(prop.OwnerEmail, userEmail) {
+						authorized = true
+					}
+				}
+			}
+			if !authorized {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not authorized for this property"})
+				return
+			}
+			pid = reqPID
 		}
 	}
 
@@ -69,9 +95,26 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 		Role:       domain.RoleManager,
 		PropertyID: &pid,
 	}
-	if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
-		respondErr(c, err)
-		return
+	existing, _ := h.UserStore.GetByPhone(c.Request.Context(), normPhone)
+	if existing != nil {
+		u = existing
+		if u.Role != domain.RoleManager || u.PropertyID == nil || *u.PropertyID != pid {
+			u.Role = domain.RoleManager
+			u.PropertyID = &pid
+			_ = h.UserStore.SetPropertyID(c.Request.Context(), u.ID, pid)
+		}
+	} else {
+		if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
+			respondErr(c, err)
+			return
+		}
+	}
+
+	if h.CapabilityStore != nil {
+		grantedBy, _ := userIDFromClaims(c)
+		for _, cap := range delegableCapabilities {
+			_ = h.CapabilityStore.Grant(c.Request.Context(), pid, u.ID, cap, grantedBy)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"manager": u})
 }
