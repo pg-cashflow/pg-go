@@ -264,9 +264,7 @@ func (s *Service) CreatePendingFromOnboarding(ctx context.Context, in domain.New
 	if s.pool != nil && s.tenantDB != nil && s.eventDB != nil {
 		var out *domain.Tenant
 		err := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
-			tenants := s.tenantDB.WithTx(tx)
-			pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
-			got, err := create(tenants, pub, s.now())
+			got, err := s.CreatePendingFromOnboardingTx(ctx, tx, in)
 			if err != nil {
 				return err
 			}
@@ -333,7 +331,96 @@ func (s *Service) CreatePendingFromOnboardingTx(ctx context.Context, tx pgx.Tx, 
 	}
 	tenants := s.tenantDB.WithTx(tx)
 	pub := events.NewPostgresPublisher(s.eventDB.WithTx(tx))
+
+	var existing *domain.Tenant
+	if in.Phone != nil && *in.Phone != "" {
+		normPhone := *in.Phone
+		ex, err := tenants.GetByPhone(ctx, normPhone)
+		if err == nil && ex != nil {
+			existing = ex
+		} else {
+			digits := ""
+			for _, r := range normPhone {
+				if r >= '0' && r <= '9' {
+					digits += string(r)
+				}
+			}
+			last10 := digits
+			if len(last10) > 10 {
+				last10 = last10[len(last10)-10:]
+			}
+			if len(last10) == 10 {
+				var existingID uuid.UUID
+				row := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE phone = $1 OR phone = $2 OR (length(phone) >= 10 AND RIGHT(phone, 10) = $3) LIMIT 1`,
+					normPhone, "+91"+last10, last10)
+				if scanErr := row.Scan(&existingID); scanErr == nil {
+					if loaded, getErr := tenants.GetByID(ctx, existingID); getErr == nil && loaded != nil {
+						existing = loaded
+					}
+				}
+			}
+		}
+	}
+
+	updateExisting := func(ex *domain.Tenant) (*domain.Tenant, error) {
+		ex.PropertyID = in.PropertyID
+		ex.Status = domain.TenantStatusPendingAllocation
+		ex.RentAmount = 0
+		ex.DueDay = nil
+		ex.RoomNumber = nil
+		ex.RoomID = in.RoomID
+		ex.Name = strings.TrimSpace(in.Name)
+		if in.Phone != nil && *in.Phone != "" {
+			ex.Phone = in.Phone
+		}
+		if in.AadhaarLast4 != nil {
+			ex.AadhaarLast4 = in.AadhaarLast4
+		}
+		ex.PermanentAddress = strings.TrimSpace(in.PermanentAddress)
+		ex.CurrentAddress = strings.TrimSpace(in.CurrentAddress)
+		ex.ParentName = strings.TrimSpace(in.ParentName)
+		ex.EmergencyPhone = strings.TrimSpace(in.EmergencyPhone)
+		ex.EmergencyContactName = strings.TrimSpace(in.EmergencyContactName)
+		ex.OccupationType = in.OccupationType
+		ex.DateOfBirth = in.DateOfBirth
+		ex.OccupationDetails = in.OccupationDetails
+		if in.JoinedOn != nil {
+			ex.JoinedOn = in.JoinedOn
+		}
+		if len(in.IDPhotoBytes) > 0 {
+			ex.IDPhotoBytes = in.IDPhotoBytes
+			ex.HasIDPhoto = true
+		}
+		ex.GuardianName = in.GuardianName
+		ex.GuardianPhone = in.GuardianPhone
+		ex.GuardianRelation = in.GuardianRelation
+		ex.MajorityDate = t.MajorityDate
+		ex.IsGamificationDisabled = t.IsGamificationDisabled
+
+		if _, err := tx.Exec(ctx, `UPDATE tenants SET property_id=$2, status=$3, rent_amount=0, due_day=NULL, room_number=NULL, room_id=$4 WHERE id=$1`,
+			ex.ID, in.PropertyID, domain.TenantStatusPendingAllocation, in.RoomID); err != nil {
+			return nil, err
+		}
+		if err := tenants.Update(ctx, ex); err != nil {
+			return nil, err
+		}
+		return ex, nil
+	}
+
+	if existing != nil {
+		return updateExisting(existing)
+	}
+
 	if err := tenants.Create(ctx, t); err != nil {
+		if in.Phone != nil && (strings.Contains(err.Error(), "tenants_phone_key") || strings.Contains(err.Error(), "23505")) {
+			var existingID uuid.UUID
+			row := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE phone = $1 LIMIT 1`, *in.Phone)
+			if scanErr := row.Scan(&existingID); scanErr == nil {
+				if loaded, getErr := tenants.GetByID(ctx, existingID); getErr == nil && loaded != nil {
+					return updateExisting(loaded)
+				}
+			}
+		}
 		return nil, err
 	}
 	if err := pub.Publish(ctx, domain.Event{

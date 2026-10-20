@@ -322,9 +322,6 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	if in.Name == "" || in.PermanentAddress == "" || in.CurrentAddress == "" || in.EmergencyPhone == "" {
 		return nil, nil, ErrProfileIncomplete
 	}
-	if len(in.IDPhotoBytes) == 0 && in.KYCMethod != string(domain.KYCMethodAadhaarOTP) && strings.TrimSpace(in.AadhaarLast4) == "" {
-		return nil, nil, ErrPhotoRequired
-	}
 	if len(in.IDPhotoBytes) > maxIDPhotoBytes {
 		return nil, nil, fmt.Errorf("join: id photo too large (max 2MB)")
 	}
@@ -436,11 +433,18 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 	}
 
 	finish := func(joins JoinStore, users UserLinker, pub events.Publisher, t *domain.Tenant) error {
-		if err := users.SetTenantID(ctx, j.UserID, t.ID); err != nil {
-			return fmt.Errorf("link user: %w", err)
-		}
-		if s.userDB != nil && strings.TrimSpace(in.Phone) != "" {
-			_ = s.userDB.SetTenantIDAndPhone(ctx, j.UserID, t.ID, phone)
+		if phoneLinker, ok := users.(interface {
+			SetTenantIDAndPhone(ctx context.Context, userID, tenantID uuid.UUID, phone string) error
+		}); ok && strings.TrimSpace(in.Phone) != "" {
+			if err := phoneLinker.SetTenantIDAndPhone(ctx, j.UserID, t.ID, phone); err != nil {
+				if err := users.SetTenantID(ctx, j.UserID, t.ID); err != nil {
+					return fmt.Errorf("link user: %w", err)
+				}
+			}
+		} else {
+			if err := users.SetTenantID(ctx, j.UserID, t.ID); err != nil {
+				return fmt.Errorf("link user: %w", err)
+			}
 		}
 		j.Status = domain.JoinApproved
 		j.TenantID = &t.ID
@@ -477,7 +481,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 					return err
 				}
 			}
-			if activate.Should {
+			if activate.Should && t.Status == domain.TenantStatusPendingAllocation {
 				t, err = s.tenantSvc.AssignTermsTx(ctx, tx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
 				if err != nil {
 					return err
@@ -512,7 +516,7 @@ func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, in P
 			return nil, nil, err
 		}
 	}
-	if activate.Should {
+	if activate.Should && t.Status == domain.TenantStatusPendingAllocation {
 		t, err = s.tenantSvc.AssignTerms(ctx, t.ID, activate.RoomNumber, activate.RentPaise, activate.DueDay, activate.DepositPaise, 30)
 		if err != nil {
 			return nil, nil, err

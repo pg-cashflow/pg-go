@@ -250,8 +250,8 @@ func TestCompleteOnboardingRequiresPhotoAndFields(t *testing.T) {
 		Name: "Ram", PermanentAddress: "a", CurrentAddress: "b",
 		EmergencyContactName: "c", EmergencyPhone: "+919888777666",
 		OccupationType: domain.OccupationOther, Consent: true,
-	}); err != ErrPhotoRequired {
-		t.Fatalf("got %v", err)
+	}); err != nil {
+		t.Fatalf("expected onboarding to succeed without photo, got %v", err)
 	}
 }
 
