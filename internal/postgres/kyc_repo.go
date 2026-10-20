@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -304,6 +305,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 	nameMismatch bool,
 	attestedPhotoBytes []byte,
 	verifiedAt, expiresAt time.Time,
+	majorityDate *time.Time,
 	actor string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
@@ -394,12 +396,14 @@ func (r *KYCRepo) CompleteVerificationTx(
 			return fmt.Errorf("kyc: update verification to verified: %w", err)
 		}
 
-		// Update tenant profile with masked UID only (never clobber name or id_photo_bytes)
+		// Update tenant profile with masked UID and majority_date if verified
 		_, err = tx.Exec(ctx, `
 			UPDATE tenants
-			SET aadhaar_last4 = $2, updated_at = $3
+			SET aadhaar_last4 = $2,
+			    majority_date = COALESCE($3, majority_date),
+			    updated_at = $4
 			WHERE id = $1
-		`, existing.TenantID, maskedUID, now)
+		`, existing.TenantID, maskedUID, majorityDate, now)
 		if err != nil {
 			return fmt.Errorf("kyc: update tenant aadhaar_last4: %w", err)
 		}
@@ -959,14 +963,40 @@ func (r *KYCRepo) ApproveManualReviewTx(
 			return fmt.Errorf("kyc: approve manual verification: %w", err)
 		}
 
+		var majorityDate *time.Time
+		if existing.OCRData != nil && *existing.OCRData != "" {
+			var ocrPayload struct {
+				DOB string `json:"dob"`
+			}
+			if err := json.Unmarshal([]byte(*existing.OCRData), &ocrPayload); err == nil && ocrPayload.DOB != "" {
+				if canonicalDOB, _, err := domain.NormalizeDOB(ocrPayload.DOB); err == nil {
+					if md, err := domain.MajorityDateFromDOB(canonicalDOB); err == nil {
+						majorityDate = md
+					}
+				}
+			}
+		}
+
 		if existing.MaskedUID != nil && *existing.MaskedUID != "" {
 			_, err = tx.Exec(ctx, `
 				UPDATE tenants
-				SET aadhaar_last4 = $2, updated_at = $3
+				SET aadhaar_last4 = $2,
+				    majority_date = COALESCE($3, majority_date),
+				    updated_at = $4
 				WHERE id = $1
-			`, existing.TenantID, *existing.MaskedUID, now)
+			`, existing.TenantID, *existing.MaskedUID, majorityDate, now)
 			if err != nil {
 				return fmt.Errorf("kyc: update tenant aadhaar_last4: %w", err)
+			}
+		} else if majorityDate != nil {
+			_, err = tx.Exec(ctx, `
+				UPDATE tenants
+				SET majority_date = COALESCE($2, majority_date),
+				    updated_at = $3
+				WHERE id = $1
+			`, existing.TenantID, majorityDate, now)
+			if err != nil {
+				return fmt.Errorf("kyc: update tenant majority_date: %w", err)
 			}
 		}
 
@@ -1112,5 +1142,55 @@ func (r *KYCRepo) RecordFailureAndCount(
 		return nil
 	})
 	return count, err
+}
+
+// RecordGuardianConsentTx atomically records guardian details on the tenant record
+// and appends a cryptographically chained entry to kyc_audit_log.
+func (r *KYCRepo) RecordGuardianConsentTx(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	guardianName, guardianPhone, relation, refID string,
+	actor string,
+) (*domain.Tenant, error) {
+	now := time.Now().UTC()
+	var updated *domain.Tenant
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		// 1. Lock tenant row
+		var exists int
+		err := tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lock tenant for guardian consent: %w", err)
+		}
+
+		// 2. Update tenant guardian fields
+		row := tx.QueryRow(ctx, `
+			UPDATE tenants
+			SET guardian_name = $2,
+			    guardian_phone = $3,
+			    guardian_relation = $4,
+			    guardian_kyc_reference_id = $5,
+			    guardian_consent_verified_at = $6,
+			    updated_at = $6
+			WHERE id = $1
+			RETURNING `+tenantCols,
+			tenantID, guardianName, guardianPhone, relation, refID, now,
+		)
+		t, err := scanTenant(row)
+		if err != nil {
+			return fmt.Errorf("kyc: update tenant guardian fields: %w", err)
+		}
+		updated = t
+
+		// 3. Cryptographic audit log chaining
+		detail := fmt.Sprintf("guardian_name=%s|guardian_phone=%s|relation=%s|ref_id=%s",
+			guardianName, guardianPhone, relation, refID)
+		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "guardian_consent_recorded", detail, now)
+	})
+
+	return updated, err
 }
 

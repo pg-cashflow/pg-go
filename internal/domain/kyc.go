@@ -221,3 +221,16 @@ func ComputeAuditHash(prevHash string, tenantID uuid.UUID, actor, action, detail
 	h.Write([]byte(entry))
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// MajorityDateFromDOB computes the 18th birthday from a canonical YYYY-MM-DD string.
+func MajorityDateFromDOB(canonicalDOB string) (*time.Time, error) {
+	if canonicalDOB == "" {
+		return nil, errors.New("kyc: empty dob")
+	}
+	dob, err := time.Parse("2006-01-02", canonicalDOB)
+	if err != nil {
+		return nil, fmt.Errorf("kyc: parse canonical dob %q: %w", canonicalDOB, err)
+	}
+	majority := dob.AddDate(18, 0, 0)
+	return &majority, nil
+}

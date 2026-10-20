@@ -58,7 +58,7 @@ type KYCRepo interface {
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 
 	InitiateVerificationTx(ctx context.Context, tenantID, consentID uuid.UUID, method domain.KYCMethod, vendorName, vendorRefID, actor string) (*domain.KYCVerification, error)
-	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, actor string) (*domain.KYCVerification, error)
+	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, majorityDate *time.Time, actor string) (*domain.KYCVerification, error)
 	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
@@ -81,6 +81,7 @@ type KYCRepo interface {
 	GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error)
 	VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error)
 	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
+	RecordGuardianConsentTx(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
 }
 
 // CashfreeKYCClient is the Cashfree dependency for document OCR and Aadhaar OTP.
@@ -220,10 +221,11 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	now := time.Now().UTC()
 	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
 	qrStatus := domain.QRStatusSecure
+	majorityDate, _ := domain.MajorityDateFromDOB(canonicalDOB)
 	verified, err := s.repo.CompleteVerificationTx(ctx,
 		pending.ID, data.UIDLast4, identityHash, isDedupable,
 		s.cfg.HashKeyVersion, &qrStatus, nameMismatch, nil,
-		now, expiresAt, actor,
+		now, expiresAt, majorityDate, actor,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: complete qr verification: %w", err)
@@ -513,6 +515,15 @@ func (s *Service) CompleteAadhaarOTP(
 	}
 
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
+	majorityDate, mdErr := domain.MajorityDateFromDOB(canonicalDOB)
+	if mdErr != nil {
+		slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "dob", res.DOB, "err", mdErr)
+		return nil, &AadhaarVerifyFailure{
+			ReasonCode: "INVALID_DOB_FORMAT",
+			Retryable:  false,
+			Underlying: mdErr,
+		}
+	}
 	name := domain.NormalizeName(res.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, res.Gender, res.MaskedUID)
 
@@ -526,7 +537,7 @@ func (s *Service) CompleteAadhaarOTP(
 	verified, err := s.repo.CompleteVerificationTx(ctx,
 		pending.ID, res.MaskedUID, identityHash, isDedupable,
 		s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
-		now, expiresAt, actor,
+		now, expiresAt, majorityDate, actor,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: complete aadhaar otp: %w", err)
@@ -630,3 +641,9 @@ func (s *Service) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 	}
 	return nil
 }
+
+// RecordGuardianConsent records guardian details and cryptographic audit log for a tenant.
+func (s *Service) RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error) {
+	return s.repo.RecordGuardianConsentTx(ctx, tenantID, guardianName, guardianPhone, relation, refID, actor)
+}
+

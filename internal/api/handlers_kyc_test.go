@@ -132,6 +132,17 @@ func (f *fakeKYCSvc) RejectManualReview(ctx context.Context, verificationID, rev
 		RejectionReason: &reason,
 	}, nil
 }
+func (f *fakeKYCSvc) RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error) {
+	now := time.Now()
+	return &domain.Tenant{
+		ID:                        tenantID,
+		GuardianName:              &guardianName,
+		GuardianPhone:             &guardianPhone,
+		GuardianRelation:          &relation,
+		GuardianKYCReferenceID:    &refID,
+		GuardianConsentVerifiedAt: &now,
+	}, nil
+}
 
 // ---- Test router helpers ----------------------------------------------------
 
@@ -894,6 +905,110 @@ func TestOwnerKYCDocument_SetsNoStoreHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options must be nosniff, got %q", got)
+	}
+}
+
+type stubTenantStoreForKYC struct {
+	tenant *domain.Tenant
+}
+
+func (s *stubTenantStoreForKYC) GetByID(_ context.Context, _ uuid.UUID) (*domain.Tenant, error) {
+	if s.tenant == nil {
+		return nil, domain.ErrVerificationNotFound
+	}
+	return s.tenant, nil
+}
+func (s *stubTenantStoreForKYC) ListByProperty(_ context.Context, _ uuid.UUID) ([]domain.Tenant, error) {
+	return nil, nil
+}
+func (s *stubTenantStoreForKYC) Update(_ context.Context, t *domain.Tenant) error {
+	s.tenant = t
+	return nil
+}
+func (s *stubTenantStoreForKYC) GetIDPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
+	return nil, nil
+}
+
+func TestOwnerRecordGuardianConsent_Success(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	tenantID := uuid.New()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+	tenant := &domain.Tenant{
+		ID:         tenantID,
+		PropertyID: propertyID,
+		Name:       "Minor Tenant",
+		Status:     domain.TenantStatusActive,
+	}
+	tStore := &stubTenantStoreForKYC{tenant: tenant}
+	h := &Handlers{Deps: Deps{
+		KYCSvc:      &fakeKYCSvc{},
+		TenantStore: tStore,
+	}}
+	r.POST("/api/owner/tenants/:id/kyc/guardian-consent", h.OwnerRecordGuardianConsent)
+
+	payload := `{"guardian_name":"Parent One","guardian_phone":"+919876543210","relationship":"parent"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/kyc/guardian-consent", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTenantPayable_MinorGate(t *testing.T) {
+	now := time.Now().UTC()
+	futureMajority := now.Add(365 * 24 * time.Hour)
+	pastMajority := now.Add(-365 * 24 * time.Hour)
+
+	h := &Handlers{}
+
+	// Minor without guardian consent: BLOCKED
+	minorNoConsent := &domain.Tenant{
+		Status:       domain.TenantStatusActive,
+		MajorityDate: &futureMajority,
+	}
+	if h.tenantPayable(context.Background(), minorNoConsent) {
+		t.Fatalf("expected minor without guardian consent to be blocked")
+	}
+
+	// Minor with guardian consent: ALLOWED
+	minorWithConsent := &domain.Tenant{
+		Status:                    domain.TenantStatusActive,
+		MajorityDate:              &futureMajority,
+		GuardianConsentVerifiedAt: &now,
+	}
+	if !h.tenantPayable(context.Background(), minorWithConsent) {
+		t.Fatalf("expected minor with guardian consent to be payable")
+	}
+
+	// Adult: ALLOWED without guardian consent
+	adult := &domain.Tenant{
+		Status:       domain.TenantStatusActive,
+		MajorityDate: &pastMajority,
+	}
+	if !h.tenantPayable(context.Background(), adult) {
+		t.Fatalf("expected adult to be payable")
+	}
+
+	// Pre-existing tenant with nil majority date: ALLOWED
+	nilMajorityTenant := &domain.Tenant{
+		Status: domain.TenantStatusActive,
+	}
+	if !h.tenantPayable(context.Background(), nilMajorityTenant) {
+		t.Fatalf("expected tenant with nil majority date to be payable")
 	}
 }
 

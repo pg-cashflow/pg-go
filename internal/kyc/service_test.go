@@ -69,7 +69,7 @@ func (f *fakeRepo) InitiateVerificationTx(_ context.Context, tenantID, consentID
 	f.verification = v
 	return v, nil
 }
-func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, _, _ time.Time, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, _, _ time.Time, _ *time.Time, _ string) (*domain.KYCVerification, error) {
 	if f.completeVTxFn != nil {
 		return f.completeVTxFn(id)
 	}
@@ -226,6 +226,18 @@ func (f *fakeRepo) RecordFailureAndCount(_ context.Context, _ uuid.UUID, _ domai
 	}
 	return 1, nil
 }
+func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, _ string) (*domain.Tenant, error) {
+	now := time.Now().UTC()
+	return &domain.Tenant{
+		ID:                        tenantID,
+		GuardianName:              &guardianName,
+		GuardianPhone:             &guardianPhone,
+		GuardianRelation:          &relation,
+		GuardianKYCReferenceID:    &refID,
+		GuardianConsentVerifiedAt: &now,
+	}, nil
+}
+
 
 type fakeCashfree struct {
 	ocrResp       *cashfree.SmartOCRResponse

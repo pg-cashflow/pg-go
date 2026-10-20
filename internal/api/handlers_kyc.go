@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -509,6 +510,72 @@ func (h *Handlers) OwnerClearDuplicateKYC(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+type recordGuardianConsentBody struct {
+	GuardianName  string  `json:"guardian_name" binding:"required"`
+	GuardianPhone string  `json:"guardian_phone" binding:"required"`
+	Relationship  string  `json:"relationship" binding:"required,oneof=parent legal_guardian"`
+	ReferenceID   *string `json:"reference_id"`
+}
+
+// OwnerRecordGuardianConsent handles POST /api/owner/tenants/:id/kyc/guardian-consent.
+func (h *Handlers) OwnerRecordGuardianConsent(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var body recordGuardianConsentBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "invalid guardian details", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	tenant, err := h.TenantStore.GetByID(c.Request.Context(), tenantID)
+	if err != nil || tenant.PropertyID != propertyID {
+		apierr.RespondClientErr(c, http.StatusNotFound, "tenant not found", apierr.CodeRequestInvalidId)
+		return
+	}
+
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	actor := fmt.Sprintf("owner:%s", claims.UserID)
+
+	refID := fmt.Sprintf("guard_manual_%s", uuid.New().String())
+	if body.ReferenceID != nil && *body.ReferenceID != "" {
+		refID = *body.ReferenceID
+	}
+
+	updatedTenant, err := svc.RecordGuardianConsent(
+		c.Request.Context(),
+		tenantID,
+		body.GuardianName,
+		body.GuardianPhone,
+		body.Relationship,
+		refID,
+		actor,
+	)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":     true,
+		"tenant": tenantResponse(updatedTenant),
+	})
 }
 
 // OwnerTenantKYCPhoto handles GET /api/owner/tenants/:id/kyc/photo.

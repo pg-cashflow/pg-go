@@ -134,6 +134,17 @@ func (s *stubPIIKYCService) ApproveManualReview(_ context.Context, _, _ uuid.UUI
 func (s *stubPIIKYCService) RejectManualReview(_ context.Context, _, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusRejected}, nil
 }
+func (s *stubPIIKYCService) RecordGuardianConsent(_ context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, _ string) (*domain.Tenant, error) {
+	now := time.Now().UTC()
+	return &domain.Tenant{
+		ID:                        tenantID,
+		GuardianName:              &guardianName,
+		GuardianPhone:             &guardianPhone,
+		GuardianRelation:          &relation,
+		GuardianKYCReferenceID:    &refID,
+		GuardianConsentVerifiedAt: &now,
+	}, nil
+}
 
 type stubPIIAuthService struct {
 	requestedPhone string

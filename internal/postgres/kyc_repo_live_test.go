@@ -106,7 +106,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	verifiedAt := time.Now().UTC()
 	expiresAt := verifiedAt.Add(365 * 24 * time.Hour)
 	identityHash := domain.ComputeIdentityHash("test-secret", "KYC Test Tenant", "1995-01-01", "M", "9999")
-	v2Completed, err := repo.CompleteVerificationTx(ctx, v2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "system")
+	v2Completed, err := repo.CompleteVerificationTx(ctx, v2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "system")
 	if err != nil {
 		t.Fatalf("CompleteVerificationTx failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	}
 
 	// Complete verification for tenant 2 with the EXACT SAME identityHash as tenant 1
-	vT2Completed, err := repo.CompleteVerificationTx(ctx, vTenant2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "system")
+	vT2Completed, err := repo.CompleteVerificationTx(ctx, vTenant2.ID, "9999", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "system")
 	if err != nil {
 		t.Fatalf("CompleteVerificationTx for tenant 2 failed (should flag, not block): %v", err)
 	}
@@ -371,7 +371,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 				verifiedAt := time.Now().UTC()
 				expiresAt := verifiedAt.Add(365 * 24 * time.Hour)
 				identityHash := domain.ComputeIdentityHash("test-secret", "Concurrent Tenant", "1995-01-01", "M", "1234")
-				completeResult, completeErr = repo.CompleteVerificationTx(ctx, vA.ID, "1234", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook")
+				completeResult, completeErr = repo.CompleteVerificationTx(ctx, vA.ID, "1234", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "webhook")
 			}()
 
 			// Goroutine 2: Supersede pending verification by initiating session B
@@ -511,14 +511,14 @@ func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, err1 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook-worker-1")
+				_, err1 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "webhook-worker-1")
 			}()
 
 			// Goroutine 2: duplicate complete v
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, err2 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook-worker-2")
+				_, err2 = repo.CompleteVerificationTx(ctx, v.ID, "5678", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "webhook-worker-2")
 			}()
 
 			startBarrier.Done()
@@ -633,7 +633,7 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 			go func() {
 				defer done.Done()
 				startBarrier.Wait()
-				_, completeErr = repo.CompleteVerificationTx(ctx, v.ID, "7777", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, "webhook")
+				_, completeErr = repo.CompleteVerificationTx(ctx, v.ID, "7777", identityHash, true, 1, nil, false, nil, verifiedAt, expiresAt, nil, "webhook")
 			}()
 
 			// Goroutine 2: RevokeConsent

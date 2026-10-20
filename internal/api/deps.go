@@ -39,6 +39,7 @@ type KYCService interface {
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
 	ApproveManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	RejectManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
 }
 
 // AuthService handles Firebase ID-token exchange (and legacy OTP helpers kept for rollback).
