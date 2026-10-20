@@ -138,6 +138,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.in_flight"))
 	case errors.Is(err, domain.ErrConsentRevoked):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.consent_revoked"))
+	case errors.Is(err, kycsvc.ErrUnsupportedDocumentType):
+		return clientErrWithCode(http.StatusUnprocessableEntity, err.Error(), apierr.CodeRequestInvalidBody)
 	case errors.Is(err, kycsvc.ErrQRSignatureInvalid):
 		return clientErrWithCode(http.StatusUnprocessableEntity, err.Error(), apierr.Code("kyc.qr_invalid"))
 	case errors.Is(err, kycsvc.ErrQRDataIncomplete):
@@ -560,7 +562,7 @@ func (h *Handlers) OwnerKYCDocument(c *gin.Context) {
 		return
 	}
 
-	b, ct, err := svc.GetKYCDocument(c.Request.Context(), id, propertyID)
+	b, _, err := svc.GetKYCDocument(c.Request.Context(), id, propertyID)
 	if err != nil {
 		if errors.Is(err, domain.ErrVerificationNotFound) {
 			apierr.RespondClientErr(c, http.StatusNotFound, "document not found", apierr.CodeRequestInvalidId)
@@ -574,10 +576,17 @@ func (h *Handlers) OwnerKYCDocument(c *gin.Context) {
 		return
 	}
 
-	if ct == "" {
-		ct = http.DetectContentType(b)
+	// Serve only signature-verified types, whatever content type was stored at upload time.
+	// This also protects rows written before the upload check existed.
+	sniffed, sniffErr := kycsvc.SniffDocumentMIME(b)
+	if sniffErr != nil {
+		apierr.RespondClientErr(c, http.StatusUnsupportedMediaType, "stored document is not a supported type", apierr.CodeRequestInvalidBody)
+		return
 	}
-	c.Data(http.StatusOK, ct, b)
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, sniffed, b)
 }
 
 // OwnerKYCReviewQueue handles GET /api/owner/kyc/queue.

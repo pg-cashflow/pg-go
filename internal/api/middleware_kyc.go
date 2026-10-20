@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -90,3 +91,24 @@ func (h *Handlers) RequireKYCIfPolicyEnforced() gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequireKYCOnboardingPassed blocks tenant data routes until the tenant has completed their
+// part of identity verification (verified, or pending owner review). It uses the same rule
+// that yields the kyc_required onboarding stage, so the server and the dashboard gate agree.
+// Fail-closed: a missing tenant, a missing KYC service, or a status lookup error all deny.
+func (h *Handlers) RequireKYCOnboardingPassed() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		v, ok := c.Get(auth.ContextTenantKey)
+		t, isTenant := v.(*domain.Tenant)
+		if !ok || !isTenant || t == nil {
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return
+		}
+		if !h.KYCOnboardingGatePassed(c.Request.Context(), t.ID) {
+			apierr.Abort(c, http.StatusForbidden, "kyc verification required", apierr.CodeAuthForbidden)
+			return
+		}
+		c.Next()
+	}
+}
+

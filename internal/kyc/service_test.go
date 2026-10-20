@@ -351,7 +351,7 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("%PDF-1.4 dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestVerifyAadhaarDocument_NameMismatch(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("%PDF-1.4 dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestVerifyAadhaarDocument_InFlightLockContention(t *testing.T) {
 	cf := &fakeCashfree{}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("%PDF-1.4 dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if !errors.Is(err, domain.ErrVerificationInProgress) {
 		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
 	}
@@ -439,7 +439,7 @@ func TestVerifyAadhaarDocument_ReleaseLockOnError(t *testing.T) {
 	}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("%PDF-1.4 dummy"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -467,7 +467,7 @@ func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
 	cf := &fakeCashfree{}
 	svc := newTestService(repo, cf)
 
-	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("dummy"), "card.jpg", "image/jpeg", "tenant:"+tenantID.String())
+	_, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("\xff\xd8\xff dummy"), "card.jpg", "image/jpeg", "tenant:"+tenantID.String())
 	if !errors.Is(err, domain.ErrVerificationInProgress) {
 		t.Fatalf("expected ErrVerificationInProgress on cooldown, got %v", err)
 	}

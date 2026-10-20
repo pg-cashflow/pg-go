@@ -296,6 +296,7 @@ func TestSamePropertyTenantIsolation(t *testing.T) {
 		AuthTenantRepo: tenantStore,
 		AuthUserRepo:   userStore,
 		Collector:      collector.New(nil, nil),
+		KYCSvc:         verifiedKYCSvc(),
 	})
 
 	// 1. Tenant A calls GET /api/tenant/dues -> must only list Due A, never Due B.

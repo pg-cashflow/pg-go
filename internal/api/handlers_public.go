@@ -32,6 +32,17 @@ func (h *Handlers) isProduction() bool {
 	return strings.EqualFold(h.AppEnv, "production")
 }
 
+// refreshCookieSecure reports whether the refresh cookie must carry the Secure flag.
+// Production always sets it. Otherwise it is set whenever the request arrived over HTTPS,
+// directly or through a reverse proxy. Setting Secure can only restrict the cookie, so a
+// spoofed X-Forwarded-Proto cannot weaken it.
+func (h *Handlers) refreshCookieSecure(c *gin.Context) bool {
+	if h.isProduction() || c.Request.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+}
+
 func (h *Handlers) setRefreshCookie(c *gin.Context, token string, expiresAt time.Time) {
 	c.SetSameSite(http.SameSiteStrictMode)
 	maxAge := int(time.Until(expiresAt).Seconds())
@@ -44,14 +55,15 @@ func (h *Handlers) setRefreshCookie(c *gin.Context, token string, expiresAt time
 		maxAge,
 		RefreshCookiePath,
 		"", // host-only
-		h.isProduction(),
+		h.refreshCookieSecure(c),
 		true, // HttpOnly
 	)
 }
 
 func (h *Handlers) clearRefreshCookie(c *gin.Context) {
 	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(RefreshCookieName, "", -1, RefreshCookiePath, "", h.isProduction(), true)
+	// Attributes must match the set call, or browsers keep the original cookie.
+	c.SetCookie(RefreshCookieName, "", -1, RefreshCookiePath, "", h.refreshCookieSecure(c), true)
 }
 
 var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>

@@ -177,6 +177,7 @@ func (f *matrixFixture) newRouter() *gin.Engine {
 		UserStore:      userStore,
 		AuthTenantRepo: matrixTenantRepo{tenantID: f.tenantID, propertyID: f.propA},
 		AuthUserRepo:   userStore,
+		KYCSvc:         verifiedKYCSvc(),
 	})
 }
 

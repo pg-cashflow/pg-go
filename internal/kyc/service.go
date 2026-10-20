@@ -254,6 +254,14 @@ func (s *Service) VerifyAadhaarDocument(
 		return nil, errors.New("file size exceeds 5MB limit")
 	}
 
+	// Validate by file signature. The client-declared type and filename are never trusted.
+	detectedCT, err := SniffDocumentMIME(fileBytes)
+	if err != nil {
+		return nil, err
+	}
+	contentType = detectedCT
+	filename = SanitizeDocumentFilename(filename)
+
 	// 1. Consent gate
 	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
 	if err != nil {

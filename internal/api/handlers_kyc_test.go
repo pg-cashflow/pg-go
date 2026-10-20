@@ -853,3 +853,48 @@ func TestOwnerKYCDocument_OK(t *testing.T) {
 	}
 }
 
+// htmlDocKYCSvc simulates a row stored before the upload signature check existed:
+// the bytes are HTML even though the stored content type claims application/pdf.
+type htmlDocKYCSvc struct{ *fakeKYCSvc }
+
+func (htmlDocKYCSvc) GetKYCDocument(_ context.Context, _, _ uuid.UUID) ([]byte, string, error) {
+	return []byte("<html><script>alert(1)</script></html>"), "application/pdf", nil
+}
+
+func TestOwnerKYCDocument_RefusesNonAllowlistedStoredBytes(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+	r := kycTestOwnerRouter(htmlDocKYCSvc{&fakeKYCSvc{}}, propertyID, ownerID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/owner/kyc/"+verifID.String()+"/document", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("expected 415, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "<script>") {
+		t.Fatalf("stored HTML must never be echoed back")
+	}
+}
+
+func TestOwnerKYCDocument_SetsNoStoreHeaders(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+	r := kycTestOwnerRouter(&fakeKYCSvc{}, propertyID, ownerID)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/owner/kyc/"+verifID.String()+"/document", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control must include no-store, got %q", got)
+	}
+	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options must be nosniff, got %q", got)
+	}
+}
+
+
