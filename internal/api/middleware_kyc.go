@@ -111,4 +111,3 @@ func (h *Handlers) RequireKYCOnboardingPassed() gin.HandlerFunc {
 		c.Next()
 	}
 }
-
