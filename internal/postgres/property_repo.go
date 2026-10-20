@@ -126,6 +126,22 @@ func (r *PropertyRepo) Unarchive(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// UpdatePaymentMode updates properties.payment_mode for a property.
+func (r *PropertyRepo) UpdatePaymentMode(ctx context.Context, id uuid.UUID, mode string) error {
+	cleanMode := strings.TrimSpace(strings.ToLower(mode))
+	if cleanMode != domain.PaymentModeManual && cleanMode != domain.PaymentModeCashfree {
+		return errors.New("invalid payment_mode: must be manual or cashfree")
+	}
+	cmd, err := r.db.Exec(ctx, `UPDATE properties SET payment_mode=$2 WHERE id=$1`, id, cleanMode)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return ErrPropertyNotFound
+	}
+	return nil
+}
+
 func (r *PropertyRepo) List(ctx context.Context) ([]domain.Property, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_mode, created_at
@@ -149,6 +165,14 @@ func (r *PropertyRepo) GetSettings(ctx context.Context, propertyID uuid.UUID) (*
 	var s domain.PropertySettings
 	var rawModules []byte
 	var offsets []int32
+
+	var propPaymentMode string
+	_ = r.db.QueryRow(ctx, `SELECT payment_mode FROM properties WHERE id=$1`, propertyID).Scan(&propPaymentMode)
+	if propPaymentMode == "" {
+		propPaymentMode = domain.PaymentModeManual
+	}
+	s.PaymentMode = propPaymentMode
+
 	err := r.db.QueryRow(ctx, `
 		SELECT property_id, payout_auto_dispatch, reminder_offsets, reminder_catch_up_days,
 		       active_modules, auto_apply_credit, created_at, updated_at
@@ -158,6 +182,7 @@ func (r *PropertyRepo) GetSettings(ctx context.Context, propertyID uuid.UUID) (*
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			defaults := domain.DefaultPropertySettings(propertyID)
+			defaults.PaymentMode = propPaymentMode
 			return &defaults, nil
 		}
 		return nil, err

@@ -31,6 +31,7 @@ const (
 
 type PropertySettings struct {
 	PropertyID          uuid.UUID       `json:"property_id"`
+	PaymentMode         string          `json:"payment_mode,omitempty"`
 	PayoutAutoDispatch  bool            `json:"payout_auto_dispatch"`
 	ReminderOffsets     []int           `json:"reminder_offsets"`
 	ReminderCatchUpDays int             `json:"reminder_catch_up_days"`
@@ -43,6 +44,7 @@ type PropertySettings struct {
 func DefaultPropertySettings(propertyID uuid.UUID) PropertySettings {
 	return PropertySettings{
 		PropertyID:          propertyID,
+		PaymentMode:         PaymentModeManual,
 		PayoutAutoDispatch:  false,
 		ReminderOffsets:     []int{-3, 0, 1, 7},
 		ReminderCatchUpDays: 2,

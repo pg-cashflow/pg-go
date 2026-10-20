@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/payment"
@@ -137,6 +138,13 @@ func (s *dashboardPropStore) UpsertSettings(_ context.Context, st *domain.Proper
 		s.settings = make(map[uuid.UUID]*domain.PropertySettings)
 	}
 	s.settings[st.PropertyID] = st
+	return nil
+}
+
+func (s *dashboardPropStore) UpdatePaymentMode(_ context.Context, id uuid.UUID, mode string) error {
+	if s.props != nil && s.props[id] != nil {
+		s.props[id].PaymentMode = mode
+	}
 	return nil
 }
 
@@ -1001,6 +1009,120 @@ func TestOwnerPropertySettings_GetAndPatch(t *testing.T) {
 	if getRes2.Settings.PayoutAutoDispatch != true || getRes2.Settings.ReminderCatchUpDays != 4 {
 		t.Errorf("persisted settings mismatch: %+v", getRes2.Settings)
 	}
+}
+
+func TestOwnerPaymentModeAndCashfreeReadiness(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	jwtSecret := "test-secret-key-32-bytes-long!!"
+	ownerID := uuid.New()
+	ownerUser := &domain.User{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner}
+	token, _ := auth.IssueToken(jwtSecret, ownerUser)
+
+	propStore := &dashboardPropStore{
+		props: map[uuid.UUID]*domain.Property{
+			propID: {ID: propID, Name: "Test PG", PaymentMode: domain.PaymentModeManual},
+		},
+	}
+
+	d := Deps{
+		PropertyStore: propStore,
+		JWTSecret:     jwtSecret,
+		CashfreeEnv:   "sandbox",
+	}
+	r := NewRouter(d)
+
+	// 1. GET /api/owner/settings/cashfree-readiness when Collector has no cashfree
+	reqReadiness := httptest.NewRequest(http.MethodGet, "/api/owner/settings/cashfree-readiness", nil)
+	reqReadiness.Header.Set("Authorization", "Bearer "+token)
+	wReadiness := httptest.NewRecorder()
+	r.ServeHTTP(wReadiness, reqReadiness)
+
+	if wReadiness.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wReadiness.Code, wReadiness.Body.String())
+	}
+	var readyRes struct {
+		Ready       bool   `json:"ready"`
+		PaymentMode string `json:"payment_mode"`
+		Reason      string `json:"reason"`
+	}
+	_ = json.Unmarshal(wReadiness.Body.Bytes(), &readyRes)
+	if readyRes.Ready {
+		t.Errorf("expected ready=false when Collector has no cashfree, got true")
+	}
+	if readyRes.PaymentMode != domain.PaymentModeManual {
+		t.Errorf("expected payment_mode=manual, got %s", readyRes.PaymentMode)
+	}
+
+	// 2. PATCH /api/owner/settings with invalid payment_mode -> 400
+	reqBad := httptest.NewRequest(http.MethodPatch, "/api/owner/settings", strings.NewReader(`{"payment_mode": "crypto"}`))
+	reqBad.Header.Set("Authorization", "Bearer "+token)
+	reqBad.Header.Set("Content-Type", "application/json")
+	wBad := httptest.NewRecorder()
+	r.ServeHTTP(wBad, reqBad)
+	if wBad.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid payment mode, got %d", wBad.Code)
+	}
+
+	// 3. PATCH /api/owner/settings to cashfree when not ready -> 422
+	reqCfBlocked := httptest.NewRequest(http.MethodPatch, "/api/owner/settings", strings.NewReader(`{"payment_mode": "cashfree"}`))
+	reqCfBlocked.Header.Set("Authorization", "Bearer "+token)
+	reqCfBlocked.Header.Set("Content-Type", "application/json")
+	wCfBlocked := httptest.NewRecorder()
+	r.ServeHTTP(wCfBlocked, reqCfBlocked)
+	if wCfBlocked.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 when cashfree is dormant, got %d: %s", wCfBlocked.Code, wCfBlocked.Body.String())
+	}
+
+	// 4. Now configure mock collector with cashfree enabled
+	collectorSvc := collector.New(nil, &fakeCashfreeOrders{})
+	dReady := Deps{
+		PropertyStore: propStore,
+		JWTSecret:     jwtSecret,
+		Collector:     collectorSvc,
+		CashfreeEnv:   "sandbox",
+	}
+	rReady := NewRouter(dReady)
+
+	// Verify readiness check is now true
+	wReady2 := httptest.NewRecorder()
+	rReady.ServeHTTP(wReady2, reqReadiness)
+	_ = json.Unmarshal(wReady2.Body.Bytes(), &readyRes)
+	if !readyRes.Ready {
+		t.Errorf("expected ready=true when cashfree client is present, got false")
+	}
+
+	// 5. PATCH /api/owner/settings to cashfree now succeeds
+	reqCfOk := httptest.NewRequest(http.MethodPatch, "/api/owner/settings", strings.NewReader(`{"payment_mode": "cashfree"}`))
+	reqCfOk.Header.Set("Authorization", "Bearer "+token)
+	reqCfOk.Header.Set("Content-Type", "application/json")
+	wCfOk := httptest.NewRecorder()
+	rReady.ServeHTTP(wCfOk, reqCfOk)
+	if wCfOk.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wCfOk.Code, wCfOk.Body.String())
+	}
+	if propStore.props[propID].PaymentMode != domain.PaymentModeCashfree {
+		t.Errorf("expected prop payment_mode updated to cashfree, got %s", propStore.props[propID].PaymentMode)
+	}
+
+	// 6. PATCH /api/owner/properties/:id/payment-mode to switch back to manual
+	reqSwitchManual := httptest.NewRequest(http.MethodPatch, "/api/owner/properties/"+propID.String()+"/payment-mode", strings.NewReader(`{"payment_mode": "manual"}`))
+	reqSwitchManual.Header.Set("Authorization", "Bearer "+token)
+	reqSwitchManual.Header.Set("Content-Type", "application/json")
+	wSwitchManual := httptest.NewRecorder()
+	rReady.ServeHTTP(wSwitchManual, reqSwitchManual)
+	if wSwitchManual.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wSwitchManual.Code, wSwitchManual.Body.String())
+	}
+	if propStore.props[propID].PaymentMode != domain.PaymentModeManual {
+		t.Errorf("expected prop payment_mode reverted to manual, got %s", propStore.props[propID].PaymentMode)
+	}
+}
+
+type fakeCashfreeOrders struct{}
+
+func (f *fakeCashfreeOrders) CreateUPIOrder(_ context.Context, _ string, _ int64, _, _ string) (string, *time.Time, error) {
+	return "sess_test", nil, nil
 }
 
 func TestOwnerDashboardSummaryAndMonthlyCashFlow(t *testing.T) {

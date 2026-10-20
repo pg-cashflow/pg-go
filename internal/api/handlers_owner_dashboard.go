@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
@@ -1047,6 +1048,7 @@ func (h *Handlers) OwnerGetPropertySettings(c *gin.Context) {
 }
 
 type UpdatePropertySettingsInput struct {
+	PaymentMode         *string         `json:"payment_mode"`
 	PayoutAutoDispatch  *bool           `json:"payout_auto_dispatch"`
 	ReminderOffsets     []int           `json:"reminder_offsets"`
 	ReminderCatchUpDays *int            `json:"reminder_catch_up_days"`
@@ -1071,6 +1073,35 @@ func (h *Handlers) OwnerUpdatePropertySettings(c *gin.Context) {
 	if err != nil {
 		respondErr(c, err)
 		return
+	}
+
+	if in.PaymentMode != nil {
+		cleanMode := strings.TrimSpace(strings.ToLower(*in.PaymentMode))
+		if cleanMode != domain.PaymentModeManual && cleanMode != domain.PaymentModeCashfree {
+			respondErr(c, clientErr(http.StatusBadRequest, "invalid payment_mode: must be manual or cashfree"))
+			return
+		}
+		if cleanMode == domain.PaymentModeCashfree {
+			if h.Collector == nil || !h.Collector.HasCashfree() {
+				respondErr(c, clientErr(http.StatusUnprocessableEntity, "cashfree payment gateway is not configured or client is dormant"))
+				return
+			}
+		}
+		if pmu, ok := h.PropertyStore.(interface {
+			UpdatePaymentMode(context.Context, uuid.UUID, string) error
+		}); ok {
+			if err := pmu.UpdatePaymentMode(c.Request.Context(), pid, cleanMode); err != nil {
+				respondErr(c, err)
+				return
+			}
+		} else if pool := h.appOrMaintPool(); pool != nil {
+			repo := postgres.NewPropertyRepo(pool)
+			if err := repo.UpdatePaymentMode(c.Request.Context(), pid, cleanMode); err != nil {
+				respondErr(c, err)
+				return
+			}
+		}
+		current.PaymentMode = cleanMode
 	}
 
 	if in.PayoutAutoDispatch != nil {
@@ -1105,6 +1136,96 @@ func (h *Handlers) OwnerUpdatePropertySettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"settings": current})
+}
+
+// OwnerCashfreeReadiness handles GET /owner/settings/cashfree-readiness.
+func (h *Handlers) OwnerCashfreeReadiness(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	ready := h.Collector != nil && h.Collector.HasCashfree()
+	var reason string
+	if ready {
+		reason = "Cashfree payment gateway initialized and operational"
+	} else {
+		reason = "Cashfree credentials missing or gateway client disabled"
+	}
+
+	mode := domain.PaymentModeManual
+	if prop, err := h.PropertyStore.GetByID(c.Request.Context(), pid); err == nil && prop != nil {
+		if prop.PaymentMode != "" {
+			mode = prop.PaymentMode
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ready":        ready,
+		"payment_mode": mode,
+		"reason":       reason,
+		"env":          h.CashfreeEnv,
+	})
+}
+
+// OwnerUpdatePropertyPaymentMode handles PATCH /owner/properties/:id/payment-mode.
+func (h *Handlers) OwnerUpdatePropertyPaymentMode(c *gin.Context) {
+	pid, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	if claims.Role != domain.RoleOwner {
+		apierr.RespondClientErr(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
+		return
+	}
+	if claims.PropertyID != nil && *claims.PropertyID != pid {
+		apierr.RespondClientErr(c, http.StatusForbidden, "cannot modify other properties", apierr.CodeAuthForbidden)
+		return
+	}
+
+	var in struct {
+		PaymentMode string `json:"payment_mode" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil {
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
+		return
+	}
+	cleanMode := strings.TrimSpace(strings.ToLower(in.PaymentMode))
+	if cleanMode != domain.PaymentModeManual && cleanMode != domain.PaymentModeCashfree {
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid payment_mode: must be manual or cashfree"))
+		return
+	}
+	if cleanMode == domain.PaymentModeCashfree {
+		if h.Collector == nil || !h.Collector.HasCashfree() {
+			respondErr(c, clientErr(http.StatusUnprocessableEntity, "cashfree payment gateway is not configured or client is dormant"))
+			return
+		}
+	}
+
+	if pmu, ok := h.PropertyStore.(interface {
+		UpdatePaymentMode(context.Context, uuid.UUID, string) error
+	}); ok {
+		if err := pmu.UpdatePaymentMode(c.Request.Context(), pid, cleanMode); err != nil {
+			respondErr(c, err)
+			return
+		}
+	} else if pool := h.appOrMaintPool(); pool != nil {
+		repo := postgres.NewPropertyRepo(pool)
+		if err := repo.UpdatePaymentMode(c.Request.Context(), pid, cleanMode); err != nil {
+			respondErr(c, err)
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":           true,
+		"property_id":  pid,
+		"payment_mode": cleanMode,
+	})
 }
 
 func (h *Handlers) appOrMaintPool() *pgxpool.Pool {

@@ -6,6 +6,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.GET("/properties", h.ListProperties)
 	owner.POST("/properties", h.CreateProperty)
 	owner.POST("/properties/:id/switch", h.OwnerSwitchProperty)
+	owner.PATCH("/properties/:id/payment-mode", h.OwnerUpdatePropertyPaymentMode)
 	owner.GET("/onboarding-settings", h.OwnerGetOnboardingSettings)
 	owner.PATCH("/onboarding-settings", h.OwnerPatchOnboardingSettings)
 	owner.POST("/slot-invites", h.OwnerCreateSlotInvite)
@@ -45,6 +46,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/calendar/revoke", h.OwnerRevokeCalendarToken)
 	owner.GET("/settings", h.OwnerGetPropertySettings)
 	owner.PATCH("/settings", h.OwnerUpdatePropertySettings)
+	owner.GET("/settings/cashfree-readiness", h.OwnerCashfreeReadiness)
 
 	owner.GET("/payment-reports", h.ListPaymentReports)
 	owner.POST("/payment-reports/:id/confirm", h.ConfirmPaymentReport)

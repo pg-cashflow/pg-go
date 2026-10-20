@@ -33,6 +33,11 @@ func New(intents IntentStore, cashfree CashfreeOrders) *Service {
 	return &Service{intents: intents, cashfree: cashfree}
 }
 
+// HasCashfree returns true if the Cashfree orders client is initialized and operational.
+func (s *Service) HasCashfree() bool {
+	return s != nil && s.cashfree != nil
+}
+
 func (s *Service) PayIntent(ctx context.Context, due *domain.Due, prop *domain.Property, room, pngURL, customerPhone string) (*domain.PayIntent, []byte, error) {
 	note := domain.UPINote(due.DueCode)
 	payable := due.Status == domain.DueStatusPending || due.Status == domain.DueStatusPartial
