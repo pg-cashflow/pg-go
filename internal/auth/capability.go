@@ -22,12 +22,18 @@ type capHit struct {
 	at time.Time
 }
 
+const (
+	capabilityCacheTTL        = 30 * time.Second
+	maxCapabilityCacheEntries = 1024
+)
+
 // RequireCapability allows the owner. A manager must hold the named grant.
 // A nil checker does not enforce grants. cmd/server always sets a checker.
 // Database errors fail closed with HTTP 503. Grants are cached for 30 seconds.
+// Memory is bounded to maxCapabilityCacheEntries with active eviction.
 func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 	var mu sync.Mutex
-	cache := map[string]capHit{}
+	cache := make(map[string]capHit)
 	return func(c *gin.Context) {
 		if checker == nil {
 			c.Next()
@@ -47,9 +53,11 @@ func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 			return
 		}
 		key := claims.PropertyID.String() + "|" + claims.UserID.String() + "|" + cap
+		now := time.Now()
+
 		mu.Lock()
 		hit, found := cache[key]
-		if found && time.Since(hit.at) < 30*time.Second {
+		if found && now.Sub(hit.at) < capabilityCacheTTL {
 			mu.Unlock()
 			if !hit.ok {
 				apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
@@ -65,9 +73,33 @@ func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 			apierr.Abort(c, http.StatusServiceUnavailable, "capability lookup failed", apierr.CodeAuthForbidden)
 			return
 		}
+
 		mu.Lock()
-		cache[key] = capHit{ok: allowed, at: time.Now()}
+		if len(cache) >= maxCapabilityCacheEntries {
+			for k, v := range cache {
+				if now.Sub(v.at) >= capabilityCacheTTL {
+					delete(cache, k)
+				}
+			}
+			if len(cache) >= maxCapabilityCacheEntries {
+				var oldestKey string
+				var oldestTime time.Time
+				first := true
+				for k, v := range cache {
+					if first || v.at.Before(oldestTime) {
+						oldestKey = k
+						oldestTime = v.at
+						first = false
+					}
+				}
+				if !first {
+					delete(cache, oldestKey)
+				}
+			}
+		}
+		cache[key] = capHit{ok: allowed, at: now}
 		mu.Unlock()
+
 		if !allowed {
 			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
 			return

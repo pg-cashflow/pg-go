@@ -126,8 +126,11 @@ type Deps struct {
 	MetricsSecret string
 }
 
-// NewRouter wires all Rev 6 routes.
 func NewRouter(d Deps) *gin.Engine {
+	if (d.AppEnv == "production" || d.AppEnv == "staging") && d.Pool == nil {
+		panic("api: database pool is required in production/staging")
+	}
+
 	r := gin.New()
 	if len(d.TrustedProxies) > 0 {
 		_ = r.SetTrustedProxies(d.TrustedProxies)
