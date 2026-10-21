@@ -122,6 +122,16 @@ func (m *Matcher) Match(ctx context.Context, propertyID uuid.UUID, amountPaise i
 	return &MatchResult{Due: due, MatchedBy: domain.MatchedByAmountDateWindow, IsDeterministic: false}, nil
 }
 
+var istLocation = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		return time.FixedZone("IST", 5*3600+30*60)
+	}
+	return loc
+}()
+
 func dateOnly(t time.Time) time.Time {
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	tLocal := t.In(istLocation)
+	return time.Date(tLocal.Year(), tLocal.Month(), tLocal.Day(), 0, 0, 0, 0, time.UTC)
 }
+

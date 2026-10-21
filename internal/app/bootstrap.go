@@ -477,6 +477,7 @@ type backgroundConfig struct {
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	go bg.dispatcher.Run(ctx)
+	auth.StartCacheSweeper(ctx, 5*time.Minute)
 
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)

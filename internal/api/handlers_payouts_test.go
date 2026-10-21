@@ -575,11 +575,22 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, owner2ID)
 		}()
 
+		// Insert a self-contained payee so this subtest does not depend on earlier subtests.
+		dualPayeeID := uuid.New()
+		_, err = pool.Exec(ctx, `
+			INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, is_verified, created_at)
+			VALUES ($1, $2, 'vendor', 'Dual Control Vendor', 'dc00000000000000000000000000000000000000000000000000000000000000', '0000', 'dualvendor@upi', TRUE, NOW() - INTERVAL '25 hours')`,
+			dualPayeeID, propID)
+		if err != nil {
+			t.Fatalf("insert dual-control payee: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_payees WHERE id = $1`, dualPayeeID) }()
+
 		// Create a new batch as ownerID (maker)
 		piID := uuid.New()
 		_, err = pool.Exec(ctx, `
 			INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
-			VALUES ($1, $2, 'REF-DUAL-01', 250000, 'Vendor Service', '2026-09', 'pending')`, piID, payeeID)
+			VALUES ($1, $2, 'REF-DUAL-01', 250000, 'Vendor Service', '2026-09', 'pending')`, piID, dualPayeeID)
 		if err != nil {
 			t.Fatalf("insert payout item: %v", err)
 		}
@@ -636,7 +647,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		piID2 := uuid.New()
 		_, _ = pool.Exec(ctx, `
 			INSERT INTO payout_items (id, payee_id, reference_number, amount_paise, purpose, period_label, status)
-			VALUES ($1, $2, 'REF-DUAL-02', 150000, 'Vendor Supply', '2026-09', 'pending')`, piID2, payeeID)
+			VALUES ($1, $2, 'REF-DUAL-02', 150000, 'Vendor Supply', '2026-09', 'pending')`, piID2, dualPayeeID)
 		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE id = $1`, piID2) }()
 
 		w = httptest.NewRecorder()
@@ -654,7 +665,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Fatalf("delete second owner: %v", err)
 		}
 
-		// Request OTP for solo fallback
+		// Request OTP for solo fallback (clear prior OTP to avoid 30s rate limit in rapid test)
+		_, _ = pool.Exec(ctx, `DELETE FROM otp_requests WHERE phone = $1`, ownerPhone)
 		w = httptest.NewRecorder()
 		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payouts/batches/%s/approve/request-otp", fallbackBatchID), nil)
 		router.ServeHTTP(w, req)

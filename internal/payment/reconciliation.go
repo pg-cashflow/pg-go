@@ -81,7 +81,8 @@ func (r *SQLSummaryRepository) QueryReconciliation(ctx context.Context, property
 				  )
 			), 0),
 			COALESCE((
-				SELECT SUM((payload->>'refunded_amount_paise')::bigint)
+				SELECT SUM(CASE WHEN payload->>'refunded_amount_paise' ~ '^\-?[0-9]+$'
+				                THEN (payload->>'refunded_amount_paise')::bigint END)
 				FROM events
 				WHERE property_id = $1 AND event_type = 'DepositSettled'
 				  AND occurred_at >= $2 AND occurred_at < $3

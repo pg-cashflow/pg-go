@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -282,6 +283,41 @@ func setCachedTenant(tenantID uuid.UUID, tenant *domain.Tenant) {
 	tenantCache[tenantID] = tenantCacheHit{
 		tenant:    tenant,
 		expiresAt: time.Now().Add(tenantCacheTTL),
+	}
+	tenantCacheMu.Unlock()
+}
+
+// StartCacheSweeper launches a background goroutine that periodically evicts expired
+// entries from tokenVersionCache and tenantCache, bounding memory to O(active sessions).
+func StartCacheSweeper(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				sweepExpiredCaches(now)
+			}
+		}
+	}()
+}
+
+func sweepExpiredCaches(now time.Time) {
+	tokenVersionMu.Lock()
+	for k, v := range tokenVersionCache {
+		if now.After(v.expiresAt) {
+			delete(tokenVersionCache, k)
+		}
+	}
+	tokenVersionMu.Unlock()
+
+	tenantCacheMu.Lock()
+	for k, v := range tenantCache {
+		if now.After(v.expiresAt) {
+			delete(tenantCache, k)
+		}
 	}
 	tenantCacheMu.Unlock()
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/billing"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -184,6 +185,7 @@ func (h *Handlers) TenantVacate(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	auth.InvalidateTenantCache(id)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

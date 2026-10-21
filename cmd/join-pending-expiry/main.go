@@ -20,6 +20,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("join-pending-expiry: config: %v", err)
 	}
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		log.Fatalf("join-pending-expiry: validation: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseWorkerURL)

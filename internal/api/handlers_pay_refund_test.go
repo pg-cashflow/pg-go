@@ -291,6 +291,9 @@ func (s *mockRefundIntentStore) MarkPaid(context.Context, uuid.UUID, string) err
 func (s *mockRefundIntentStore) GetDuesSnapshot(context.Context, uuid.UUID) ([]domain.PaymentIntentDue, error) {
 	return nil, nil
 }
+func (s *mockRefundIntentStore) LatestOpenForDue(context.Context, uuid.UUID) (*domain.PaymentIntent, error) {
+	return nil, nil
+}
 
 type mockRefundTenantStore struct {
 	t *domain.Tenant

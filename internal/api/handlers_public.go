@@ -496,7 +496,11 @@ func (h *Handlers) attachUserLocale(ctx context.Context, r *http.Request, user *
 			return
 		}
 	}
-	user.Locale = localization.ResolveLocale(nil, r)
+	if loc := localization.FromContext(ctx); loc != localization.DefaultLocale {
+		user.Locale = loc
+	} else {
+		user.Locale = localization.ResolveLocale(nil, r)
+	}
 	user.HasSavedPreference = false
 	user.Theme = nil
 	user.HasSavedTheme = false

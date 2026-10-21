@@ -138,7 +138,7 @@ func TestRequestBatchTransferV2(t *testing.T) {
 			Transfers: []BatchTransferEntry{
 				{
 					TransferID:     "pgo_item_1",
-					TransferAmount: FormatPaiseToRupees(150000), // "1500.00"
+					TransferAmount: json.Number(FormatPaiseToRupees(150000)), // "1500.00"
 					TransferMode:   "banktransfer",
 					FundsourceID:   "fund_01",
 					BeneficiaryDetails: TransferBeneficiaryDetails{

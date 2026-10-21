@@ -136,12 +136,6 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 		PayerPhone:          row.PayerPhone,
 		PayerVPA:            row.PayerVPA,
 	}
-	if ledger != nil && in.FinanceEnabled {
-		if err := ledger.MirrorBankStatementCredit(ctx, in.PropertyID, sourceID, row.AmountPaise, row.Date); err != nil {
-			slog.Error("ImportStatements ledger mirror quarantine failed", "error", err)
-			return &Error{Message: "failed to record financial entry"}
-		}
-	}
 	if bank != nil {
 		inserted, err := bank.InsertTransaction(ctx, nil, creditTxn)
 		if err != nil {
@@ -151,6 +145,12 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 		if !inserted {
 			out.Duplicates++
 			return nil
+		}
+	}
+	if ledger != nil && in.FinanceEnabled {
+		if err := ledger.MirrorBankStatementCredit(ctx, in.PropertyID, sourceID, row.AmountPaise, row.Date); err != nil {
+			slog.Error("ImportStatements ledger mirror quarantine failed", "error", err)
+			return &Error{Message: "failed to record financial entry"}
 		}
 	}
 	if row.IsReversal || row.IsInternalTransfer {

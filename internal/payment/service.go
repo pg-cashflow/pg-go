@@ -291,7 +291,13 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 	if err != nil {
 		return nil, err
 	}
-	if in.PropertyID != uuid.Nil && due.PropertyID != in.PropertyID {
+	// INV-PAY-2: Property scope is mandatory for corrections — fail closed, never bypass.
+	// Mirrors the same invariant in VerifyPayment (line 213). A zero PropertyID must be
+	// an explicit caller error, not a silent wildcard that permits cross-property mutations.
+	if in.PropertyID == uuid.Nil {
+		return nil, errors.New("payment: property scope required for correction")
+	}
+	if due.PropertyID != in.PropertyID {
 		return nil, ErrPropertyMismatch
 	}
 
@@ -340,20 +346,31 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 		}
 
 		// 3. Update due amount and credit tenant on overpayment
-		netDiff := in.CorrectedAmount - orig.Amount
-		if netDiff != 0 {
-			if netDiff > due.Amount {
-				excess := netDiff - due.Amount
-				due.Amount = 0
-				due.MarkPaid(at)
-				if err := addTenantCredit(ctx, tenants, due.TenantID, excess); err != nil {
-					return fmt.Errorf("credit overpayment: %w", err)
+		dueRemainingBeforeOrig := due.Amount + orig.Amount
+		if dueRemainingBeforeOrig > int64(due.OriginalAmount) {
+			dueRemainingBeforeOrig = int64(due.OriginalAmount)
+		}
+		oldExcess := orig.Amount - (dueRemainingBeforeOrig - due.Amount)
+		if oldExcess < 0 {
+			oldExcess = 0
+		}
+
+		if in.CorrectedAmount >= dueRemainingBeforeOrig {
+			newExcess := in.CorrectedAmount - dueRemainingBeforeOrig
+			due.Amount = 0
+			due.MarkPaid(at)
+			creditDelta := newExcess - oldExcess
+			if creditDelta != 0 {
+				if err := addTenantCredit(ctx, tenants, due.TenantID, creditDelta); err != nil {
+					return fmt.Errorf("adjust tenant credit: %w", err)
 				}
+			}
+			if newExcess > 0 {
 				overpayPayload, _ := json.Marshal(domain.OverpaymentCreditedPayload{
 					DueID:       due.ID.String(),
 					PaymentID:   corrected.ID.String(),
 					TenantID:    due.TenantID.String(),
-					AmountPaise: excess,
+					AmountPaise: newExcess,
 					MatchedBy:   string(domain.MatchedByManual),
 					Reason:      "correction_overpayment",
 				})
@@ -366,17 +383,18 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 					OccurredAt: at,
 					Payload:    overpayPayload,
 				})
-			} else {
-				due.Amount -= netDiff
-				if due.Amount == 0 {
-					due.MarkPaid(at)
-				} else {
-					due.Status = domain.DueStatusPartial
+			}
+		} else {
+			due.Amount = dueRemainingBeforeOrig - in.CorrectedAmount
+			due.Status = domain.DueStatusPartial
+			if oldExcess > 0 {
+				if err := addTenantCredit(ctx, tenants, due.TenantID, -oldExcess); err != nil {
+					return fmt.Errorf("reclaim overpayment credit: %w", err)
 				}
 			}
-			if err := dues.Update(ctx, due); err != nil {
-				return fmt.Errorf("update due: %w", err)
-			}
+		}
+		if err := dues.Update(ctx, due); err != nil {
+			return fmt.Errorf("update due: %w", err)
 		}
 
 		// 4. Record audit correction entry
@@ -568,6 +586,7 @@ func (s *Service) settleMatched(
 		dedup = dedupKey[0]
 	}
 	var out *domain.Payment
+	var isReplay bool
 	err := s.runInTx(ctx, func(dues DueRepository, payments PaymentRepository, tenants TenantRepository, pub events.Publisher) error {
 		if dedup != "" {
 			if recorder, ok := payments.(interface {
@@ -578,6 +597,7 @@ func (s *Service) settleMatched(
 					return err
 				}
 				if !firstSeen {
+					isReplay = true
 					return nil
 				}
 			}
@@ -688,6 +708,12 @@ func (s *Service) settleMatched(
 		return nil
 	})
 	if err == nil {
+		if isReplay {
+			if txnID != nil && *txnID != "" {
+				out, _ = s.payments.GetByUPITxnID(ctx, *txnID)
+			}
+			return out, nil
+		}
 		if out == nil && txnID != nil && *txnID != "" {
 			out, _ = s.payments.GetByUPITxnID(ctx, *txnID)
 		}
@@ -720,7 +746,7 @@ func (s *Service) findDepositDue(ctx context.Context, tenantID uuid.UUID) (*doma
 	var best *domain.Due
 	for i := range list {
 		d := &list[i]
-		if d.Kind != domain.DueKindDeposit {
+		if d.Kind != domain.DueKindDeposit || d.Status != domain.DueStatusPaid {
 			continue
 		}
 		if best == nil || d.CreatedAt.After(best.CreatedAt) {

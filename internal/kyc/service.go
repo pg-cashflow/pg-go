@@ -318,12 +318,56 @@ func (s *Service) VerifyAadhaarDocument(
 	}
 
 	if resp == nil || resp.Name == "" || resp.MaskedUID == "" {
+		// KYC-2: Use a UUID for the synthetic reference so the vendor_ref_id is collision-free
+		// under concurrent uploads. time.Now().UnixNano() is not guaranteed unique across
+		// goroutines on the same host within the same nanosecond.
+		// The distinct status suffix lets downstream queries and reviewers distinguish
+		// "OCR service unavailable" from "OCR returned a genuinely incomplete result".
+		syntheticID := uuid.New().String()
 		resp = &cashfree.SmartOCRResponse{
-			ReferenceID: time.Now().UnixNano(),
-			Status:      "PENDING_MANUAL_REVIEW",
-			Name:        tenantName,
-			MaskedUID:   "XXXX",
+			Status:    "PENDING_MANUAL_REVIEW_OCR_UNAVAILABLE",
+			Name:      tenantName,
+			MaskedUID: "XXXX",
 		}
+		vendorRefID := fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
+		_ = vendorRefID // assigned below via the shared path
+		// reassign so the shared vendorRefID line below picks it up
+		_ = fmt.Sprintf // keep import; vendorRefID is used immediately after the if/else
+		responseVendorRefID := fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
+		_ = responseVendorRefID
+		// Use a closure-captured value so both branches reach the same declaration below.
+		// Simpler: set a local overrideVendorRefID and use it after the block.
+		var overrideVendorRefID = fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
+		nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
+		canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
+		name := domain.NormalizeName(resp.Name)
+		identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
+		pending, err := s.repo.InitiateVerificationTx(ctx,
+			tenantID, consent.ID,
+			domain.KYCMethodOCR,
+			"cashfree_smart_ocr", overrideVendorRefID, actor,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("kyc service: initiate ocr verification: %w", err)
+		}
+		ocrBytes, _ := json.Marshal(map[string]any{
+			"name":          resp.Name,
+			"dob":           resp.DOB,
+			"gender":        resp.Gender,
+			"masked_uid":    resp.MaskedUID,
+			"qr_status":     resp.QRStatus,
+			"name_mismatch": nameMismatch,
+			"ocr_status":    "UNAVAILABLE",
+		})
+		docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
+		underReview, err := s.repo.SubmitManualReviewTx(ctx,
+			pending.ID, resp.MaskedUID, identityHash,
+			string(ocrBytes), docURL, fileBytes, contentType, actor,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
+		}
+		return underReview, nil
 	} else {
 		slog.InfoContext(ctx, "cashfree smart ocr completed",
 			"tenant_id", tenantID,
@@ -405,6 +449,25 @@ func (s *Service) InitiateAadhaarOTP(
 
 	if s.cashfree == nil {
 		return "", ErrCashfreeUnavailable
+	}
+
+	// KYC-1: Under the distributed lock, pre-check active verification status before
+	// issuing a billed UIDAI OTP request. The 30s in-flight lock alone is a concurrent-request
+	// guard; this check is the sequential-request guard. Without it, a tenant who is already
+	// verified (or has a pending OTP from >30s ago once the lock expires) can re-trigger
+	// a new billed UIDAI call repeatedly. Mirrors the identical guard in VerifyAadhaarDocument.
+	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+		return "", fmt.Errorf("kyc service: check active verification: %w", err)
+	}
+	if active != nil {
+		if active.Status == domain.KYCStatusVerified {
+			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
+				return "", domain.ErrAlreadyVerified
+			}
+		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
+			return "", domain.ErrVerificationInProgress
+		}
 	}
 
 	res, err := s.cashfree.RequestAadhaarOTP(ctx, aadhaarNumber)

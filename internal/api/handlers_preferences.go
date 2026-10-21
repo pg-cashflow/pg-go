@@ -28,7 +28,7 @@ func (h *Handlers) GetPreferences(c *gin.Context) {
 		return
 	}
 	if h.PreferencesStore == nil {
-		resolved := localization.ResolveLocale(nil, c.Request)
+		resolved := localization.FromGinContext(c)
 		c.JSON(http.StatusOK, gin.H{
 			"locale":               resolved,
 			"has_saved_preference": false,
@@ -40,7 +40,7 @@ func (h *Handlers) GetPreferences(c *gin.Context) {
 	pref, err := h.PreferencesStore.GetByUserID(c.Request.Context(), uid)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			resolved := localization.ResolveLocale(nil, c.Request)
+			resolved := localization.FromGinContext(c)
 			c.JSON(http.StatusOK, gin.H{
 				"locale":               resolved,
 				"has_saved_preference": false,

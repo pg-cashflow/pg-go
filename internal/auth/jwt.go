@@ -75,6 +75,8 @@ func IssueAccessTokenWithFamily(secret string, user *domain.User, familyID *uuid
 }
 
 // IssueToken creates a signed JWT with a 30-day TTL.
+// Deprecated: Use IssueAccessToken or IssueAccessTokenWithFamily.
+// 30-day access tokens bypass the refresh-token family revocation model.
 func IssueToken(secret string, user *domain.User) (string, error) {
 	return issueTokenWithTTL(secret, user, TokenTTL)
 }

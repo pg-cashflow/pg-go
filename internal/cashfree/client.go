@@ -15,11 +15,19 @@ import (
 )
 
 type Config struct {
-	AppID               string
-	SecretKey           string
-	Env                 string // sandbox | production
-	APIVersion          string // e.g. "2025-01-01"
-	OrderExpiryDuration time.Duration
+	AppID                      string
+	SecretKey                  string
+	Env                        string // sandbox | production
+	APIVersion                 string // e.g. "2025-01-01"
+	OrderExpiryDuration        time.Duration
+	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
+}
+
+func (c Config) WebhookReplayWindow() int {
+	if c.WebhookReplayWindowSeconds <= 0 {
+		return 300
+	}
+	return c.WebhookReplayWindowSeconds
 }
 
 func (c Config) Enabled() bool {

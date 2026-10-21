@@ -19,7 +19,7 @@ type TransferBeneficiaryDetails struct {
 // BatchTransferEntry specifies an individual payout item inside a batch transfer request.
 type BatchTransferEntry struct {
 	TransferID         string                     `json:"transfer_id"`
-	TransferAmount     string                     `json:"transfer_amount"` // Exact 2-decimal INR string via FormatPaiseToRupees
+	TransferAmount     json.Number                `json:"transfer_amount"` // Exact 2-decimal INR numeric value via FormatPaiseToRupees
 	TransferMode       string                     `json:"transfer_mode"`   // "banktransfer" | "upi"
 	FundsourceID       string                     `json:"fundsource_id"`
 	TransferRemarks    string                     `json:"transfer_remarks,omitempty"` // max 70 chars

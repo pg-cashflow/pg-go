@@ -125,7 +125,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
 			TransferID:      fmt.Sprintf("pgo_%s", it.ID),
-			TransferAmount:  cashfree.FormatPaiseToRupees(it.AmountPaise),
+			TransferAmount:  json.Number(cashfree.FormatPaiseToRupees(it.AmountPaise)),
 			TransferMode:    mode,
 			FundsourceID:    d.fundsourceID,
 			TransferRemarks: remarks,

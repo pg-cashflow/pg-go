@@ -122,6 +122,14 @@ func (outcomeBillingStub) Prorate(_ context.Context, _ uuid.UUID, _ time.Time) (
 	return &domain.Due{ID: uuid.New(), Amount: 50000}, nil
 }
 
+type outcomeKYCStub struct {
+	KYCService
+}
+
+func (outcomeKYCStub) GetStatus(_ context.Context, _ uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+	return &domain.KYCVerification{Status: domain.KYCStatusVerified}, nil, nil
+}
+
 // TestUnreferencedRoutesOutcome verifies HTTP request outcomes for previously unreferenced routes.
 func TestUnreferencedRoutesOutcome(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -203,8 +211,9 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		PaymentStore:        &isolationPaymentStore{},
 		AuthTenantRepo:      tStore,
 		AuthUserRepo:        uStore,
-		Billing:        outcomeBillingStub{},
-		Tenants:        outcomeTenantStub{},
+		Billing:             outcomeBillingStub{},
+		Tenants:             outcomeTenantStub{},
+		KYCSvc:              outcomeKYCStub{},
 	})
 
 	doReq := func(method, path, token string, body any, headers map[string]string) *httptest.ResponseRecorder {

@@ -111,7 +111,7 @@ func (a *CashfreeAdapter) VerifyWebhook(headers http.Header, rawBody []byte) err
 	if sig == "" {
 		return fmt.Errorf("cashfree: missing x-webhook-signature header")
 	}
-	if err := cashfree.VerifyWebhookTimestamp(ts, 300, time.Now()); err != nil {
+	if err := cashfree.VerifyWebhookTimestamp(ts, a.cfg.WebhookReplayWindow(), time.Now()); err != nil {
 		return err
 	}
 	if !cashfree.VerifyWebhookHMAC(a.cfg.SecretKey, ts, string(rawBody), sig) {
