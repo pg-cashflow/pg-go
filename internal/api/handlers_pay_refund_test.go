@@ -60,6 +60,10 @@ func (m *mockCFClient) FetchRefundStatus(ctx context.Context, orderID, refundID 
 	return nil, nil
 }
 
+func (m *mockCFClient) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error) {
+	return "", "", 0, false, nil
+}
+
 type mockRefundPaymentRepo struct {
 	mu           sync.Mutex
 	payments     map[uuid.UUID]*domain.Payment

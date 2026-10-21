@@ -116,4 +116,7 @@ type PayIntent struct {
 	PaymentSessionID string      `json:"payment_session_id,omitempty"`
 	DueCount         int         `json:"due_count,omitempty"`
 	DueIDs           []uuid.UUID `json:"due_ids,omitempty"`
+	// FallbackReason is set when the property is in cashfree mode but the backend
+	// fell back to manual. Possible values: "missing_phone", "gateway_down".
+	FallbackReason   string      `json:"fallback_reason,omitempty"`
 }

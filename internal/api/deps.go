@@ -219,6 +219,7 @@ type IntentStore interface {
 	GetByCFPaymentID(ctx context.Context, cfID string) (*domain.PaymentIntent, error)
 	MarkPaid(ctx context.Context, id uuid.UUID, cfPaymentID string) error
 	GetDuesSnapshot(ctx context.Context, intentID uuid.UUID) ([]domain.PaymentIntentDue, error)
+	LatestOpenForDue(ctx context.Context, dueID uuid.UUID) (*domain.PaymentIntent, error)
 }
 
 type PaymentLookup interface {
@@ -281,6 +282,7 @@ type GatewayPaymentRepo interface {
 type CashfreeClient interface {
 	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
+	FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error)
 }
 
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC

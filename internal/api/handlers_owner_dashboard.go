@@ -1182,7 +1182,38 @@ func (h *Handlers) OwnerUpdatePropertyPaymentMode(c *gin.Context) {
 		apierr.RespondClientErr(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
 		return
 	}
-	if claims.PropertyID != nil && *claims.PropertyID != pid {
+	prop, err := h.PropertyStore.GetByID(c.Request.Context(), pid)
+	if err != nil || prop == nil {
+		apierr.RespondClientErr(c, http.StatusNotFound, "property not found", apierr.CodeRequestNotFound)
+		return
+	}
+
+	var userPhone, userEmail string
+	var user *domain.User
+	if h.UserStore != nil {
+		user, _ = h.UserStore.GetByID(c.Request.Context(), claims.UserID)
+	} else if h.AuthUserRepo != nil {
+		user, _ = h.AuthUserRepo.GetByID(c.Request.Context(), claims.UserID)
+	}
+	if user != nil {
+		userPhone = user.Phone
+		userEmail = user.Email
+	}
+
+	authorized := false
+	if claims.PropertyID != nil && *claims.PropertyID == pid {
+		authorized = true
+	} else if userPhone != "" && prop.OwnerPhone == userPhone {
+		authorized = true
+	} else if userEmail != "" && strings.EqualFold(prop.OwnerEmail, userEmail) {
+		authorized = true
+	} else if user != nil && user.PropertyID != nil && *user.PropertyID == pid {
+		// switchProperty updates user.property_id in DB but does NOT reissue the JWT.
+		// Allow when the user's DB-side property_id already reflects the newly switched property.
+		authorized = true
+	}
+
+	if !authorized {
 		apierr.RespondClientErr(c, http.StatusForbidden, "cannot modify other properties", apierr.CodeAuthForbidden)
 		return
 	}

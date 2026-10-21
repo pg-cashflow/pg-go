@@ -1,6 +1,8 @@
 package api
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/payment"
 )
 
 func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
@@ -89,6 +92,80 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 		return
 	}
 	h.duePayJSON(c, due, "tenant")
+}
+
+// TenantDuePayVerify handles POST /tenant/dues/:id/pay/verify.
+func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	id, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	due, err := h.DueStore.GetByID(c.Request.Context(), id)
+	if err != nil || due.TenantID != t.ID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if due.Status == domain.DueStatusPaid || due.Status == domain.DueStatusWaived {
+		c.JSON(http.StatusOK, gin.H{"paid": true})
+		return
+	}
+
+	if h.IntentStore == nil || h.CashfreeClient == nil || h.Payments == nil {
+		c.JSON(http.StatusOK, gin.H{"paid": false})
+		return
+	}
+
+	intent, err := h.IntentStore.LatestOpenForDue(c.Request.Context(), id)
+	if err != nil || intent == nil || intent.ProviderOrderID == "" {
+		c.JSON(http.StatusOK, gin.H{"paid": false})
+		return
+	}
+
+	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), intent.ProviderOrderID)
+	if err != nil || !ok || amount <= 0 {
+		c.JSON(http.StatusOK, gin.H{"paid": false})
+		return
+	}
+
+	txn := bankRef
+	if txn == "" {
+		txn = cfID
+	}
+	dedupKey := ""
+	if cfID != "" {
+		dedupKey = fmt.Sprintf("cashfree:pg:%s", cfID)
+	}
+
+	snapshot, snapErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID)
+	if snapErr == nil && len(snapshot) > 1 {
+		for _, item := range snapshot {
+			itemDedup := ""
+			if dedupKey != "" {
+				itemDedup = fmt.Sprintf("%s:%s", dedupKey, item.DueID)
+			}
+			_, _ = h.Payments.GatewaySettle(c.Request.Context(), item.DueID, item.AmountPaise, txn, itemDedup)
+		}
+	} else {
+		if dedupKey != "" {
+			_, err = h.Payments.GatewaySettle(c.Request.Context(), due.ID, amount, txn, dedupKey)
+		} else {
+			_, err = h.Payments.GatewaySettle(c.Request.Context(), due.ID, amount, txn)
+		}
+		if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
+			c.JSON(http.StatusOK, gin.H{"paid": false})
+			return
+		}
+	}
+
+	if cfID != "" {
+		_ = h.IntentStore.MarkPaid(c.Request.Context(), intent.ID, cfID)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"paid": true})
 }
 
 type PayBatchRequest struct {

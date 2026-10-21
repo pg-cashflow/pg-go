@@ -62,9 +62,11 @@ func (r *PaymentIntentRepo) GetByCFPaymentID(ctx context.Context, cfID string) (
 func (r *PaymentIntentRepo) LatestOpenForDue(ctx context.Context, dueID uuid.UUID) (*domain.PaymentIntent, error) {
 	return scanIntent(r.db.QueryRow(ctx, `
 		SELECT `+intentCols+` FROM payment_intents
-		WHERE due_id=$1 AND status='created' AND (expires_at IS NULL OR expires_at > NOW())
+		WHERE (due_id=$1 OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id=$1))
+		AND status IN ('created', 'initiating', 'paid') AND (expires_at IS NULL OR expires_at > NOW() - INTERVAL '1 hour')
 		ORDER BY created_at DESC LIMIT 1`, dueID))
 }
+
 
 func (r *PaymentIntentRepo) ListStaleCreated(ctx context.Context, olderThan time.Time) ([]domain.PaymentIntent, error) {
 	rows, err := r.db.Query(ctx, `

@@ -83,6 +83,7 @@ const (
 	// Request & Bind
 	CodeRequestInvalidBody     Code = "request.invalidBody"
 	CodeRequestInvalidId       Code = "request.invalidId"
+	CodeRequestNotFound        Code = "request.notFound"
 	CodeRequestDueDayInvalid   Code = "request.dueDayInvalid"
 	CodeRequestImageTooLarge   Code = "request.imageTooLarge"
 	CodeRequestImageReadFailed Code = "request.imageReadFailed"
@@ -172,6 +173,7 @@ var AllCodes = []Code{
 
 	CodeRequestInvalidBody,
 	CodeRequestInvalidId,
+	CodeRequestNotFound,
 	CodeRequestDueDayInvalid,
 	CodeRequestImageTooLarge,
 	CodeRequestImageReadFailed,

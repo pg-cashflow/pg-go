@@ -66,6 +66,15 @@ func (s *Service) PayIntent(ctx context.Context, due *domain.Due, prop *domain.P
 		return out, nil, nil
 	}
 
+	// Cashfree configured but cannot be used — set fallback reason for UI
+	if prop.PaymentMode == domain.PaymentModeCashfree {
+		if customerPhone == "" {
+			out.FallbackReason = "missing_phone"
+		} else {
+			out.FallbackReason = "gateway_down"
+		}
+	}
+
 	link := qr.GenerateUPILink(prop.UPIVPA, prop.OwnerName, int64(due.Amount), due.DueCode, room)
 	png, err := qr.GenerateQR(link)
 	if err != nil {
