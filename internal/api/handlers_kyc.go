@@ -609,6 +609,9 @@ func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no kyc photo"})
 		return
 	}
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("X-Content-Type-Options", "nosniff")
 	ct := http.DetectContentType(b)
 	c.Data(http.StatusOK, ct, b)
 }

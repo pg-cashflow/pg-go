@@ -136,6 +136,23 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 		PayerPhone:          row.PayerPhone,
 		PayerVPA:            row.PayerVPA,
 	}
+	// Calculate suggested match before database insertion so that SuggestedDueID and
+	// ConfidenceScore are persisted directly in the INSERT statement.
+	isSuggested := false
+	if !row.IsReversal && !row.IsInternalTransfer && matcher != nil {
+		matchRes, err := matcher.SuggestMatch(ctx, in.PropertyID, row.AmountPaise, row.Date, row.Note)
+		if err == nil && matchRes != nil && matchRes.Due != nil {
+			isSuggested = true
+			creditTxn.Status = domain.BankTxnSuggestedMatch
+			creditTxn.SuggestedDueID = &matchRes.Due.ID
+			if matchRes.IsDeterministic {
+				creditTxn.ConfidenceScore = 1.00
+			} else {
+				creditTxn.ConfidenceScore = 0.80
+			}
+		}
+	}
+
 	if bank != nil {
 		inserted, err := bank.InsertTransaction(ctx, nil, creditTxn)
 		if err != nil {
@@ -153,26 +170,8 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 			return &Error{Message: "failed to record financial entry"}
 		}
 	}
-	if row.IsReversal || row.IsInternalTransfer {
-		out.Unmatched++
-		return nil
-	}
-	matchRes, err := matcher.SuggestMatch(ctx, in.PropertyID, row.AmountPaise, row.Date, row.Note)
-	if err == nil && matchRes != nil && matchRes.Due != nil {
+	if isSuggested {
 		out.Suggested++
-		creditTxn.Status = domain.BankTxnSuggestedMatch
-		creditTxn.SuggestedDueID = &matchRes.Due.ID
-		if matchRes.IsDeterministic {
-			creditTxn.ConfidenceScore = 1.00
-		} else {
-			creditTxn.ConfidenceScore = 0.80
-		}
-		if bank != nil {
-			if err := bank.UpdateStatus(ctx, nil, creditTxn.ID, creditTxn.Status, nil, nil, nil, nil); err != nil {
-				slog.Error("ImportStatements updating transaction status failed", "error", err)
-				return &Error{Message: "failed to update transaction status"}
-			}
-		}
 		return nil
 	}
 	out.Unmatched++

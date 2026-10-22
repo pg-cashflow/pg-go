@@ -55,11 +55,11 @@ func main() {
 
 	var kycDocKey []byte
 	if hex64 := cfg.KYCDocCryptoKey; hex64 != "" {
-		if decoded, err := hex.DecodeString(hex64); err != nil || len(decoded) != 32 {
-			slog.Warn("kyc-expiry: KYC_DOC_CRYPTO_KEY invalid; doc encryption disabled", "err", err)
-		} else {
-			kycDocKey = decoded
+		decoded, decErr := hex.DecodeString(hex64)
+		if decErr != nil || len(decoded) != 32 {
+			log.Fatalf("kyc-expiry: KYC_DOC_CRYPTO_KEY is set but invalid (must be 64 hex chars / 32 bytes): %v", decErr)
 		}
+		kycDocKey = decoded
 	}
 	repo := postgres.NewKYCRepo(pool, kycDocKey)
 	job := jobs.NewKYCExpiryJob(repo)

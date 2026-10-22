@@ -287,22 +287,30 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 	if err != nil {
 		return nil, err
 	}
-	due, err := s.dues.GetByID(ctx, orig.DueID)
-	if err != nil {
-		return nil, err
-	}
 	// INV-PAY-2: Property scope is mandatory for corrections — fail closed, never bypass.
 	// Mirrors the same invariant in VerifyPayment (line 213). A zero PropertyID must be
 	// an explicit caller error, not a silent wildcard that permits cross-property mutations.
 	if in.PropertyID == uuid.Nil {
 		return nil, errors.New("payment: property scope required for correction")
 	}
-	if due.PropertyID != in.PropertyID {
-		return nil, ErrPropertyMismatch
-	}
+	// NOTE: `due` is intentionally NOT fetched here. It is fetched inside runInTx below
+	// via getDueForUpdate (SELECT ... FOR UPDATE) to hold a row-level lock for the entire
+	// transaction duration. Fetching before runInTx would be a lost-update race against
+	// concurrent settleMatched calls on the same due — the pattern every other money-
+	// mutating path (MarkCashPaid, settleMatched) correctly follows.
 
 	var correction *domain.FinancialCorrection
 	err = s.runInTx(ctx, func(dues DueRepository, payments PaymentRepository, tenants TenantRepository, pub events.Publisher) error {
+		// Fetch due inside the transaction with a row-level lock (SELECT ... FOR UPDATE).
+		// This closes the lost-update race: no concurrent settleMatched can modify this
+		// due row until our transaction commits or rolls back.
+		due, err := getDueForUpdate(ctx, dues, orig.DueID)
+		if err != nil {
+			return fmt.Errorf("lock due for correction: %w", err)
+		}
+		if due.PropertyID != in.PropertyID {
+			return ErrPropertyMismatch
+		}
 		at := s.now()
 		// 1. Reversing entry
 		revNote := fmt.Sprintf("Reversal of payment %s: %s", orig.ID, in.Reason)

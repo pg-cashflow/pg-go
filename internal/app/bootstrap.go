@@ -212,16 +212,23 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if cfg.KYCIdentitySecret != "" {
 		// Decode AES-256-GCM key for Aadhaar document-bytes encryption.
 		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
-		// Absent or malformed key degrades gracefully (no encryption).
+		//
+		// Security invariants (both enforced in KYCRepo.encryptBytes / decryptBytes):
+		//   - Absent key (empty string): encryption intentionally disabled — documents stored as
+		//     plaintext. This is the opted-out path; warn only.
+		//   - Present but malformed key: FATAL — the repo hard-errors on any encrypt/decrypt call
+		//     rather than silently storing Aadhaar documents in plaintext. Fail at startup here to
+		//     surface this misconfiguration immediately.
 		var kycDocKey []byte
 		if hex64 := cfg.KYCDocCryptoKey; hex64 != "" {
-			if decoded, err := hex.DecodeString(hex64); err != nil || len(decoded) != 32 {
-				logger.Warn("kyc: KYC_DOC_CRYPTO_KEY invalid (must be 64 hex chars / 32 bytes); doc encryption DISABLED",
-					"decode_err", err)
-			} else {
-				kycDocKey = decoded
-				logger.Info("kyc: document-bytes encryption enabled")
+			decoded, decErr := hex.DecodeString(hex64)
+			if decErr != nil || len(decoded) != 32 {
+				// A present-but-malformed key must never silently fall through to plaintext.
+				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is set but invalid (must be 64 hex chars / 32 bytes); "+
+					"refusing to start to avoid silently storing Aadhaar documents unencrypted: %v", decErr)
 			}
+			kycDocKey = decoded
+			logger.Info("kyc: document-bytes encryption enabled")
 		} else {
 			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set — Aadhaar document bytes will be stored unencrypted (DPDP §8(5) gap)")
 		}
