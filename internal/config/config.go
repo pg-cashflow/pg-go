@@ -46,6 +46,10 @@ type Config struct {
 	WebhookAPIVersion                 string
 	AadhaarQRPublicKeyPEM             string
 	KYCIdentitySecret                 string
+	// KYCDocCryptoKey is the hex-encoded 32-byte AES-256 key used to encrypt
+	// Aadhaar document bytes (document_bytes, attested_photo_bytes) at rest.
+	// Set via KYC_DOC_CRYPTO_KEY. Empty = encryption disabled (dev/CI safe).
+	KYCDocCryptoKey                   string
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
 	CashfreePayoutAPIVersion          string
@@ -120,6 +124,7 @@ func Load() (*Config, error) {
 		WebhookAPIVersion:                 envOr("CASHFREE_API_VERSION", "2025-01-01"),
 		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
+		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),

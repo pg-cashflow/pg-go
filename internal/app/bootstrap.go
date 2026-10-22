@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -209,7 +210,22 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	var kycSvc api.KYCService
 	if cfg.KYCIdentitySecret != "" {
-		kycRepo := postgres.NewKYCRepo(maintPool)
+		// Decode AES-256-GCM key for Aadhaar document-bytes encryption.
+		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
+		// Absent or malformed key degrades gracefully (no encryption).
+		var kycDocKey []byte
+		if hex64 := cfg.KYCDocCryptoKey; hex64 != "" {
+			if decoded, err := hex.DecodeString(hex64); err != nil || len(decoded) != 32 {
+				logger.Warn("kyc: KYC_DOC_CRYPTO_KEY invalid (must be 64 hex chars / 32 bytes); doc encryption DISABLED",
+					"decode_err", err)
+			} else {
+				kycDocKey = decoded
+				logger.Info("kyc: document-bytes encryption enabled")
+			}
+		} else {
+			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set — Aadhaar document bytes will be stored unencrypted (DPDP §8(5) gap)")
+		}
+		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
 		var cfKYCAdapter kycsvc.CashfreeKYCClient
 		if cfg.CashfreeKYCAppID != "" && cfg.CashfreeKYCSecretKey != "" {
 			cfKYCClient := cashfree.NewClient(cashfree.Config{

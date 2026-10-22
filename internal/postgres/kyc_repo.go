@@ -11,15 +11,43 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 type KYCRepo struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	cryptoKey []byte
 }
 
-func NewKYCRepo(pool *pgxpool.Pool) *KYCRepo {
-	return &KYCRepo{pool: pool}
+func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
+	var key []byte
+	if len(cryptoKey) > 0 {
+		key = cryptoKey[0]
+	}
+	return &KYCRepo{pool: pool, cryptoKey: key}
+}
+
+func (r *KYCRepo) SetCryptoKey(key []byte) {
+	r.cryptoKey = key
+}
+
+func (r *KYCRepo) encryptBytes(plaintext []byte) ([]byte, error) {
+	if len(plaintext) == 0 || len(r.cryptoKey) != 32 {
+		return plaintext, nil
+	}
+	return crypto.Encrypt(r.cryptoKey, plaintext)
+}
+
+func (r *KYCRepo) decryptBytes(ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) == 0 || len(r.cryptoKey) != 32 {
+		return ciphertext, nil
+	}
+	dec, _, err := crypto.Decrypt(r.cryptoKey, ciphertext)
+	if err != nil {
+		return ciphertext, nil
+	}
+	return dec, nil
 }
 
 const (
@@ -226,7 +254,11 @@ case domain.KYCStatusVerified:
 					// Record has expired; transition to 'expired', clear active tenant profile last4, and audit
 					_, err = tx.Exec(ctx, `
 						UPDATE kyc_verification
-						SET status = 'expired', updated_at = $2
+						SET status = 'expired',
+							document_bytes = NULL,
+							attested_photo_bytes = NULL,
+							photo_stored = FALSE,
+							updated_at = $2
 						WHERE id = $1
 					`, existing.ID, now)
 					if err != nil {
@@ -253,7 +285,12 @@ case domain.KYCStatusVerified:
 				reason := "superseded by new attempt"
 				_, err = tx.Exec(ctx, `
 					UPDATE kyc_verification
-					SET status = 'expired', failure_reason = $2, updated_at = $3
+					SET status = 'expired',
+						document_bytes = NULL,
+						attested_photo_bytes = NULL,
+						photo_stored = FALSE,
+						failure_reason = $2,
+						updated_at = $3
 					WHERE id = $1
 				`, existing.ID, reason, now)
 				if err != nil {
@@ -374,6 +411,10 @@ func (r *KYCRepo) CompleteVerificationTx(
 		duplicateDetected := len(collidingTenantIDs) > 0
 
 		photoStored := len(attestedPhotoBytes) > 0
+		encPhotoBytes, err := r.encryptBytes(attestedPhotoBytes)
+		if err != nil {
+			return fmt.Errorf("kyc: encrypt attested photo: %w", err)
+		}
 		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
@@ -391,7 +432,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 				updated_at = $13
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, qrStatus, nameMismatch, attestedPhotoBytes, photoStored, verifiedAt, expiresAt, now))
+		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, qrStatus, nameMismatch, encPhotoBytes, photoStored, verifiedAt, expiresAt, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to verified: %w", err)
 		}
@@ -547,6 +588,9 @@ func (r *KYCRepo) ExpireStalePendingVerifications(ctx context.Context, cutoff ti
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE kyc_verification
 		SET status = 'expired',
+			document_bytes = NULL,
+			attested_photo_bytes = NULL,
+			photo_stored = FALSE,
 			failure_reason = 'expired by TTL reaper',
 			updated_at = NOW()
 		WHERE status = 'pending' AND created_at <= $1
@@ -606,6 +650,9 @@ func (r *KYCRepo) ExpireLapsedVerifications(ctx context.Context, now time.Time) 
 			tag, err := tx.Exec(ctx, `
 				UPDATE kyc_verification
 				SET status = 'expired',
+					document_bytes = NULL,
+					attested_photo_bytes = NULL,
+					photo_stored = FALSE,
 					failure_reason = 'validity period lapsed',
 					updated_at = $2
 				WHERE id = $1 AND status = 'verified'
@@ -785,6 +832,13 @@ func (r *KYCRepo) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]b
 		}
 		return nil, fmt.Errorf("kyc: get attested photo: %w", err)
 	}
+	if len(photoBytes) > 0 {
+		decPhotoBytes, err := r.decryptBytes(photoBytes)
+		if err != nil {
+			return nil, fmt.Errorf("kyc: decrypt attested photo: %w", err)
+		}
+		return decPhotoBytes, nil
+	}
 	return photoBytes, nil
 }
 
@@ -817,6 +871,11 @@ func (r *KYCRepo) SubmitManualReviewTx(
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
+		encDocBytes, err := r.encryptBytes(documentBytes)
+		if err != nil {
+			return fmt.Errorf("kyc: encrypt document bytes: %w", err)
+		}
+
 		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'pending_manual_review',
@@ -829,7 +888,7 @@ func (r *KYCRepo) SubmitManualReviewTx(
 				updated_at = $8
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, ocrData, documentURL, documentBytes, documentContentType, now))
+		`, verificationID, maskedUID, identityHash, ocrData, documentURL, encDocBytes, documentContentType, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
 		}
@@ -865,18 +924,26 @@ func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, str
 	}
 
 	if len(docBytes) > 0 {
+		decDocBytes, err := r.decryptBytes(docBytes)
+		if err != nil {
+			return nil, "", fmt.Errorf("kyc: decrypt document: %w", err)
+		}
 		ct := "application/octet-stream"
 		if contentType != nil && *contentType != "" {
 			ct = *contentType
 		} else {
-			ct = http.DetectContentType(docBytes)
+			ct = http.DetectContentType(decDocBytes)
 		}
-		return docBytes, ct, nil
+		return decDocBytes, ct, nil
 	}
 
 	if len(attestedBytes) > 0 {
-		ct := http.DetectContentType(attestedBytes)
-		return attestedBytes, ct, nil
+		decAttestedBytes, err := r.decryptBytes(attestedBytes)
+		if err != nil {
+			return nil, "", fmt.Errorf("kyc: decrypt attested photo: %w", err)
+		}
+		ct := http.DetectContentType(decAttestedBytes)
+		return decAttestedBytes, ct, nil
 	}
 
 	// Fallback to tenant profile ID photo if available

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"log"
 	"log/slog"
@@ -52,7 +53,15 @@ func main() {
 		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, kycExpiryLockKey)
 	}()
 
-	repo := postgres.NewKYCRepo(pool)
+	var kycDocKey []byte
+	if hex64 := cfg.KYCDocCryptoKey; hex64 != "" {
+		if decoded, err := hex.DecodeString(hex64); err != nil || len(decoded) != 32 {
+			slog.Warn("kyc-expiry: KYC_DOC_CRYPTO_KEY invalid; doc encryption disabled", "err", err)
+		} else {
+			kycDocKey = decoded
+		}
+	}
+	repo := postgres.NewKYCRepo(pool, kycDocKey)
 	job := jobs.NewKYCExpiryJob(repo)
 
 	now := time.Now().UTC()
