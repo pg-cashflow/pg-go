@@ -51,7 +51,9 @@ DECLARE
         'payment_reports',
         'payments',
         'payout_batches',
+        'payout_items',
         'payout_payees',
+        'payout_records',
         'tenants'
     ];
     r_sec boolean;
@@ -82,7 +84,6 @@ DECLARE
         'approval_policies',
         'approval_requests',
         'attendance_records',
-        'bank_accounts',
         'budgets',
         'capital_transactions',
         'daily_financial_rollups',
@@ -111,11 +112,9 @@ DECLARE
         'meter_readings',
         'notifications',
         'outbox_events',
-        'payout_records',
         'period_tie_outs',
         'point_rules',
         'points_ledger',
-        'property_calendar_tokens',
         'property_finance_settings',
         'property_gamification_settings',
         'property_settings',

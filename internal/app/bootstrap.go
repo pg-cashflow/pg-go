@@ -117,6 +117,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	reportRepo := postgres.NewPaymentReportRepo(scopedDB)
 	intentRepo := postgres.NewPaymentIntentRepo(scopedDB)
 	preferencesRepo := postgres.NewPreferencesRepo(scopedDB)
+	calendarTokenRepo := postgres.NewCalendarTokenRepo(scopedDB)
 
 	maintTenantRepo := postgres.NewTenantRepo(maintPool)
 	maintDueRepo := postgres.NewDueRepo(maintPool)
@@ -261,7 +262,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	gamificationConsumer := gamification.NewEventConsumer(gamificationSvc)
 	dispatchPub.Subscribe(gamificationConsumer.ProcessEventAsync)
 
-	financeRepo := postgres.NewFinanceRepo(appPool)
+	financeRepo := postgres.NewFinanceRepo(appPool, scopedDB)
 	financeSvc := finance.NewService(financeRepo, pub)
 	roiSvc := roisvc.NewService(financeSvc)
 	intelSvc := intelligence.NewService(financeRepo)
@@ -318,11 +319,11 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	searchRepo := postgres.NewSearchRepo(searchPool)
 	searchSvc := &search.Service{Repo: searchRepo, Cache: search.NewCache(5*time.Second, 2000)}
 
-	payoutRepo := postgres.NewPayoutRepo(appPool, financeSvc)
+	payoutRepo := postgres.NewPayoutRepo(appPool, scopedDB, financeSvc)
 	attendanceRepo := postgres.NewAttendanceRepo(appPool)
 	attendanceSvc := attendance.NewService(appPool, attendanceRepo, payoutRepo)
-	bankTxnRepo := postgres.NewBankTransactionRepo(appPool)
-	bankAccountRepo := postgres.NewBankAccountRepo(appPool)
+	bankTxnRepo := postgres.NewBankTransactionRepo(scopedDB)
+	bankAccountRepo := postgres.NewBankAccountRepo(scopedDB)
 	settlementRepo := postgres.NewSettlementRepo(maintPool)
 	settlementReconciler := finance.NewSettlementReconciler(settlementRepo, intentRepo, maintDueRepo, maintPaymentRepo, financeSvc)
 	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(maintPool)
@@ -410,7 +411,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		CashfreeSecret:              cfg.CashfreeWebhookSecret,
 		CashfreeEnv:                 cfg.CashfreeEnv,
 		CashfreeClient:              cfClient,
-		AuthTenantRepo:              maintTenantRepo,
+		AuthTenantRepo:              tenantRepo,
 		AuthUserRepo:                userRepo,
 		OutboxEvents:                outboxRepo,
 		NotificationSvc:             notifSvc,
@@ -444,6 +445,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		LedgerOutboxRepo:            ledgerOutboxRepo,
 		MetricsSecret:               cfg.MetricsSecret,
 		CapabilityStore:             postgres.NewCapabilityRepo(maintPool),
+		CalendarTokenStore:          calendarTokenRepo,
 	})
 
 	bg := backgroundConfig{

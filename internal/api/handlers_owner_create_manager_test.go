@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -167,3 +168,67 @@ func TestOwnerCreateManager_PhoneNormalization(t *testing.T) {
 		})
 	}
 }
+
+type mockFailingCapabilityStore struct {
+	grantErr error
+}
+
+func (m *mockFailingCapabilityStore) HasActive(ctx context.Context, propertyID, userID uuid.UUID, capability string) (bool, error) {
+	return false, nil
+}
+func (m *mockFailingCapabilityStore) ListActive(ctx context.Context, propertyID, userID uuid.UUID) ([]string, error) {
+	return nil, nil
+}
+func (m *mockFailingCapabilityStore) Grant(ctx context.Context, propertyID, userID uuid.UUID, capability string, grantedBy uuid.UUID) error {
+	return m.grantErr
+}
+func (m *mockFailingCapabilityStore) Revoke(ctx context.Context, propertyID, userID uuid.UUID, capability string) error {
+	return nil
+}
+func (m *mockFailingCapabilityStore) RevokeAll(ctx context.Context, propertyID, userID uuid.UUID) error {
+	return nil
+}
+
+func TestOwnerCreateManager_CapabilityGrantFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test-secret-key-with-sufficient-length-32"
+	propID := uuid.New()
+
+	ownerToken, err := auth.IssueToken(jwtSecret, &domain.User{
+		ID:         uuid.New(),
+		Role:       domain.RoleOwner,
+		PropertyID: &propID,
+	})
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	store := &mockManagerUserStore{}
+	capStore := &mockFailingCapabilityStore{grantErr: errors.New("db insert grant failed")}
+	router := gin.New()
+	h := &Handlers{Deps: Deps{
+		JWTSecret:       jwtSecret,
+		UserStore:       store,
+		CapabilityStore: capStore,
+	}}
+
+	owner := router.Group("/api/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
+	owner.POST("/managers", h.OwnerCreateManager)
+
+	payload := map[string]any{
+		"phone":       "9876543210",
+		"property_id": propID.String(),
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/managers", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ownerToken)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 when capability grant fails, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+

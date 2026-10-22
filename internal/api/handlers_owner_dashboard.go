@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
@@ -816,19 +814,9 @@ func (h *Handlers) OwnerGetCalendarToken(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store calendar token"})
 			return
 		}
-	} else if pool := h.appOrMaintPool(); pool != nil {
-		if _, err := pool.Exec(c.Request.Context(), `
-			INSERT INTO property_calendar_tokens (property_id, token_hash, expires_at)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (token_hash) DO NOTHING
-		`, pid, tokenHash, expiresAt); err != nil {
-			slog.ErrorContext(c.Request.Context(), "failed to store calendar token", "property_id", pid, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store calendar token"})
-			return
-		}
 	} else {
 		slog.ErrorContext(c.Request.Context(), "calendar token store unavailable", "property_id", pid)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "calendar token storage unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calendar token storage unavailable"})
 		return
 	}
 
@@ -880,25 +868,6 @@ func (h *Handlers) OwnerCalendarICS(c *gin.Context) {
 			return
 		}
 		if revoked {
-			c.String(http.StatusUnauthorized, "calendar token revoked")
-			return
-		}
-	} else if pool := h.appOrMaintPool(); pool != nil {
-		var revokedAt *time.Time
-		err := pool.QueryRow(c.Request.Context(), `
-			SELECT revoked_at FROM property_calendar_tokens
-			WHERE property_id = $1 AND token_hash = $2
-		`, propID, tokenHash).Scan(&revokedAt)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				c.String(http.StatusUnauthorized, "calendar token not found or invalid")
-				return
-			}
-			slog.ErrorContext(c.Request.Context(), "failed checking calendar token status", "err", err)
-			c.String(http.StatusServiceUnavailable, "database error checking calendar token status")
-			return
-		}
-		if revokedAt != nil {
 			c.String(http.StatusUnauthorized, "calendar token revoked")
 			return
 		}
@@ -1012,25 +981,7 @@ func (h *Handlers) OwnerRevokeCalendarToken(c *gin.Context) {
 		return
 	}
 
-	if pool := h.appOrMaintPool(); pool != nil {
-		tag, err := pool.Exec(c.Request.Context(), `
-			UPDATE property_calendar_tokens
-			SET revoked_at = NOW()
-			WHERE property_id = $1 AND revoked_at IS NULL
-		`, pid)
-		if err != nil {
-			slog.ErrorContext(c.Request.Context(), "failed revoking calendar tokens", "property_id", pid, "err", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke calendar tokens"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{
-			"property_id": pid,
-			"revoked":     tag.RowsAffected(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusInternalServerError, gin.H{"error": "calendar token storage unavailable"})
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calendar token storage unavailable"})
 }
 
 // OwnerGetPropertySettings handles GET /owner/settings.

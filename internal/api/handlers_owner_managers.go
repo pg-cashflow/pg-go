@@ -113,7 +113,10 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	if h.CapabilityStore != nil {
 		grantedBy, _ := userIDFromClaims(c)
 		for _, cap := range delegableCapabilities {
-			_ = h.CapabilityStore.Grant(c.Request.Context(), pid, u.ID, cap, grantedBy)
+			if err := h.CapabilityStore.Grant(c.Request.Context(), pid, u.ID, cap, grantedBy); err != nil {
+				respondErr(c, err)
+				return
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"manager": u})

@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -16,11 +15,15 @@ var (
 )
 
 type BankAccountRepo struct {
-	pool *pgxpool.Pool
+	db DBTX
 }
 
-func NewBankAccountRepo(pool *pgxpool.Pool) *BankAccountRepo {
-	return &BankAccountRepo{pool: pool}
+func NewBankAccountRepo(db DBTX) *BankAccountRepo {
+	return &BankAccountRepo{db: db}
+}
+
+func (r *BankAccountRepo) WithTx(tx pgx.Tx) *BankAccountRepo {
+	return &BankAccountRepo{db: tx}
 }
 
 // Create inserts a new bank account profile for a property.
@@ -46,7 +49,7 @@ func (r *BankAccountRepo) Create(ctx context.Context, acct *domain.BankAccount) 
 		)
 		RETURNING created_at, updated_at;
 	`
-	err := r.pool.QueryRow(ctx, query,
+	err := r.db.QueryRow(ctx, query,
 		acct.ID, acct.PropertyID, acct.BankName, string(acct.AccountType), acct.AccountNumberLast4,
 		acct.Label, acct.StatementProfile, acct.IsActive,
 	).Scan(&acct.CreatedAt, &acct.UpdatedAt)
@@ -67,7 +70,7 @@ func (r *BankAccountRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Ba
 	`
 	var acct domain.BankAccount
 	var acctType string
-	err := r.pool.QueryRow(ctx, query, id).Scan(
+	err := r.db.QueryRow(ctx, query, id).Scan(
 		&acct.ID, &acct.PropertyID, &acct.BankName, &acctType, &acct.AccountNumberLast4,
 		&acct.Label, &acct.StatementProfile, &acct.IsActive, &acct.CreatedAt, &acct.UpdatedAt,
 	)
@@ -91,7 +94,7 @@ func (r *BankAccountRepo) ListByProperty(ctx context.Context, propertyID uuid.UU
 		WHERE property_id = $1 AND is_active = TRUE
 		ORDER BY created_at ASC
 	`
-	rows, err := r.pool.Query(ctx, query, propertyID)
+	rows, err := r.db.Query(ctx, query, propertyID)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list bank_accounts: %w", err)
 	}
@@ -123,7 +126,7 @@ func (r *BankAccountRepo) Deactivate(ctx context.Context, id uuid.UUID) error {
 		SET is_active = FALSE, updated_at = NOW()
 		WHERE id = $1
 	`
-	ct, err := r.pool.Exec(ctx, query, id)
+	ct, err := r.db.Exec(ctx, query, id)
 	if err != nil {
 		return fmt.Errorf("postgres: deactivate bank_account: %w", err)
 	}

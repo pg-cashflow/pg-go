@@ -185,13 +185,14 @@ func (h *Handlers) TenantPaymentReceipt(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"receipt": gin.H{
-			"payment_id":    p.ID,
-			"tenant_id":     p.TenantID,
-			"amount_paise":  p.Amount,
-			"matched_at":    p.MatchedAt,
-			"matched_by":    p.MatchedBy,
-			"upi_txn_id":     p.UPITxnID,
-			"property_id":   p.PropertyID,
+			"payment_id":   p.ID,
+			"due_id":       p.DueID,
+			"tenant_id":    p.TenantID,
+			"amount_paise": p.Amount,
+			"matched_at":   p.MatchedAt,
+			"matched_by":   p.MatchedBy,
+			"upi_txn_id":   p.UPITxnID,
+			"property_id":  p.PropertyID,
 		},
 	})
 }

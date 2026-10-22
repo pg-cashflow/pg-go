@@ -26,18 +26,50 @@ type DepartureMirrorer interface {
 
 type PayoutRepo struct {
 	pool     *pgxpool.Pool
+	db       DBTX
 	mirrorer DepartureMirrorer
 	outbox   *LedgerOutboxRepo
 }
 
 var ErrNoUnbatchedPayoutItems = errors.New("no unbatched pending payout items found")
 
-func NewPayoutRepo(pool *pgxpool.Pool, mirrorer ...DepartureMirrorer) *PayoutRepo {
+func NewPayoutRepo(pool *pgxpool.Pool, args ...any) *PayoutRepo {
 	var m DepartureMirrorer
-	if len(mirrorer) > 0 {
-		m = mirrorer[0]
+	var db DBTX = pool
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case DepartureMirrorer:
+			m = v
+		case DBTX:
+			if v != nil {
+				db = v
+			}
+		}
 	}
-	return &PayoutRepo{pool: pool, mirrorer: m, outbox: NewLedgerOutboxRepo(pool)}
+	return &PayoutRepo{
+		pool:     pool,
+		db:       db,
+		mirrorer: m,
+		outbox:   NewLedgerOutboxRepo(pool),
+	}
+}
+
+func (r *PayoutRepo) WithScopedDB(db DBTX) *PayoutRepo {
+	return &PayoutRepo{
+		pool:     r.pool,
+		db:       db,
+		mirrorer: r.mirrorer,
+		outbox:   r.outbox,
+	}
+}
+
+func (r *PayoutRepo) WithTx(tx pgx.Tx) *PayoutRepo {
+	return &PayoutRepo{
+		pool:     r.pool,
+		db:       tx,
+		mirrorer: r.mirrorer,
+		outbox:   r.outbox,
+	}
 }
 
 func (r *PayoutRepo) SetMirrorer(m DepartureMirrorer) {
@@ -72,7 +104,7 @@ func (r *PayoutRepo) CreatePayee(ctx context.Context, p *domain.PayoutPayee) err
 	if p.KeyVersion == 0 {
 		p.KeyVersion = 1
 	}
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO payout_payees (
 			property_id, payee_type, name, phone, account_number_encrypted,
 			account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
@@ -87,7 +119,7 @@ func (r *PayoutRepo) CreatePayee(ctx context.Context, p *domain.PayoutPayee) err
 
 func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy uuid.UUID) (*domain.PayoutPayee, error) {
 	now := time.Now().UTC()
-	return scanPayee(r.pool.QueryRow(ctx, `
+	return scanPayee(r.db.QueryRow(ctx, `
 		UPDATE payout_payees
 		SET is_verified = TRUE, verified_by = $3, verified_at = $4, updated_at = $4
 		WHERE id = $1 AND property_id = $2
@@ -98,11 +130,11 @@ func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy
 
 
 func (r *PayoutRepo) GetPayeeByID(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
-	return scanPayee(r.pool.QueryRow(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE id=$1`, id))
+	return scanPayee(r.db.QueryRow(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE id=$1`, id))
 }
 
 func (r *PayoutRepo) GetPayeeByHash(ctx context.Context, propertyID uuid.UUID, hash string, payeeType domain.PayeeType) (*domain.PayoutPayee, error) {
-	return scanPayee(r.pool.QueryRow(ctx, `
+	return scanPayee(r.db.QueryRow(ctx, `
 		SELECT `+payeeCols+` FROM payout_payees
 		WHERE property_id=$1 AND account_number_hash=$2 AND payee_type=$3`,
 		propertyID, hash, payeeType,
@@ -110,7 +142,7 @@ func (r *PayoutRepo) GetPayeeByHash(ctx context.Context, propertyID uuid.UUID, h
 }
 
 func (r *PayoutRepo) ListPayeesByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutPayee, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE property_id=$1 ORDER BY name ASC, id ASC LIMIT 50`, propertyID)
+	rows, err := r.db.Query(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE property_id=$1 ORDER BY name ASC, id ASC LIMIT 50`, propertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +190,7 @@ func (r *PayoutRepo) CreateDeparture(ctx context.Context, d *domain.TenantDepart
 	if d.Status == "" {
 		d.Status = domain.DeparturePending
 	}
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO tenant_departures (
 			tenant_id, property_id, notice_given_at, planned_vacate_date,
 			actual_vacate_date, inspected_at, sla_deadline_at, deposit_amount_paise,
@@ -176,11 +208,11 @@ func (r *PayoutRepo) CreateDeparture(ctx context.Context, d *domain.TenantDepart
 }
 
 func (r *PayoutRepo) GetDepartureByID(ctx context.Context, id uuid.UUID) (*domain.TenantDeparture, error) {
-	return scanDeparture(r.pool.QueryRow(ctx, `SELECT `+departureCols+` FROM tenant_departures WHERE id=$1`, id))
+	return scanDeparture(r.db.QueryRow(ctx, `SELECT `+departureCols+` FROM tenant_departures WHERE id=$1`, id))
 }
 
 func (r *PayoutRepo) GetActiveDepartureByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.TenantDeparture, error) {
-	return scanDeparture(r.pool.QueryRow(ctx, `
+	return scanDeparture(r.db.QueryRow(ctx, `
 		SELECT `+departureCols+` FROM tenant_departures
 		WHERE tenant_id=$1 AND status IN ('pending', 'inspected', 'approved')
 		ORDER BY created_at DESC LIMIT 1`, tenantID,
@@ -189,7 +221,7 @@ func (r *PayoutRepo) GetActiveDepartureByTenant(ctx context.Context, tenantID uu
 
 func (r *PayoutRepo) UpdateDepartureInspection(ctx context.Context, id uuid.UUID, inspectedAt time.Time, notes *string) error {
 	slaDeadline := inspectedAt.Add(24 * time.Hour)
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		UPDATE tenant_departures
 		SET inspected_at=$2, sla_deadline_at=$3, status='inspected', notes=COALESCE($4, notes), updated_at=NOW()
 		WHERE id=$1 AND status='pending'`,
@@ -204,7 +236,7 @@ func (r *PayoutRepo) AddDeduction(ctx context.Context, ded *domain.DepartureDedu
 	if ded.Status == "" {
 		ded.Status = domain.DeductionAgreed
 	}
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO departure_deductions (
 			departure_id, description, amount_paise, evidence_photo_key, status, tenant_acknowledged_at, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -214,7 +246,7 @@ func (r *PayoutRepo) AddDeduction(ctx context.Context, ded *domain.DepartureDedu
 }
 
 func (r *PayoutRepo) ListDeductions(ctx context.Context, departureID uuid.UUID) ([]domain.DepartureDeduction, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, departure_id, description, amount_paise, evidence_photo_key, status, tenant_acknowledged_at, created_at
 		FROM departure_deductions WHERE departure_id=$1 ORDER BY created_at ASC`, departureID,
 	)
@@ -239,7 +271,7 @@ func (r *PayoutRepo) AddDueAdjustment(ctx context.Context, adj *domain.Departure
 	if adj.AdjustmentType == "" {
 		adj.AdjustmentType = "unused_rent_reversal"
 	}
-	return r.pool.QueryRow(ctx, `
+	return r.db.QueryRow(ctx, `
 		INSERT INTO departure_due_adjustments (departure_id, due_id, amount_paise, adjustment_type, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id`,
@@ -248,7 +280,7 @@ func (r *PayoutRepo) AddDueAdjustment(ctx context.Context, adj *domain.Departure
 }
 
 func (r *PayoutRepo) ListDueAdjustments(ctx context.Context, departureID uuid.UUID) ([]domain.DepartureDueAdjustment, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, departure_id, due_id, amount_paise, adjustment_type, created_at
 		FROM departure_due_adjustments WHERE departure_id=$1 ORDER BY created_at ASC`, departureID,
 	)
@@ -299,7 +331,7 @@ func (r *PayoutRepo) CreatePayoutItemTx(ctx context.Context, tx pgx.Tx, it *doma
 	if it.Status == "" {
 		it.Status = domain.PayoutPending
 	}
-	var runner DBTX = r.pool
+	var runner DBTX = r.db
 	if tx != nil {
 		runner = tx
 	}
@@ -317,7 +349,7 @@ func (r *PayoutRepo) CreatePayoutItemTx(ctx context.Context, tx pgx.Tx, it *doma
 }
 
 func (r *PayoutRepo) GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
-	return scanPayoutItem(r.pool.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id=$1`, id))
+	return scanPayoutItem(r.db.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id=$1`, id))
 }
 
 func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutItem, error) {
@@ -364,7 +396,7 @@ func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, proper
 }
 
 func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
+	rows, err := r.db.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
 	if err != nil {
 		return nil, err
 	}
@@ -398,11 +430,11 @@ func scanBatch(row pgx.Row) (*domain.PayoutBatch, error) {
 }
 
 func (r *PayoutRepo) GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error) {
-	return scanBatch(r.pool.QueryRow(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE id=$1`, id))
+	return scanBatch(r.db.QueryRow(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE id=$1`, id))
 }
 
 func (r *PayoutRepo) ListBatchesByProperty(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutBatch, error) {
-	rows, err := r.pool.Query(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE property_id=$1 ORDER BY created_at DESC LIMIT 100`, propertyID)
+	rows, err := r.db.Query(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE property_id=$1 ORDER BY created_at DESC LIMIT 100`, propertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +591,7 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 // ApproveBatch transitions a draft batch to approved with the specified approver.
 func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.UUID) (*domain.PayoutBatch, error) {
 	now := time.Now().UTC()
-	row := r.pool.QueryRow(ctx, `
+	row := r.db.QueryRow(ctx, `
 		UPDATE payout_batches
 		SET status = 'approved', approved_by = $2, approved_at = $3, updated_at = $3
 		WHERE id = $1 AND status = 'draft'
@@ -716,7 +748,7 @@ func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.U
 
 // SetBatchDispatchUnknown sets batch status to dispatch_unknown on ambiguous 5xx or transport timeouts.
 func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		UPDATE payout_batches
 		SET status = 'dispatch_unknown',
 		    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
@@ -737,7 +769,7 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 	settledAt *time.Time,
 	failureReason *string,
 ) error {
-	var runner DBTX = r.pool
+	var runner DBTX = r.db
 	if tx != nil {
 		runner = tx
 	}
@@ -771,7 +803,7 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 // - Mixed terminal outcomes -> 'partially_failed'
 // - Any item in-flight (pending, processing, cashfree_approval_pending, retriable_failed) -> 'processing'
 func (r *PayoutRepo) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error) {
-	var runner DBTX = r.pool
+	var runner DBTX = r.db
 	if tx != nil {
 		runner = tx
 	}
@@ -868,7 +900,7 @@ type SettleDepartureResult struct {
 func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params SettleDepartureParams) (*SettleDepartureResult, error) {
 	// Unlocked read to resolve tenant_id and property_id
 	var tenantID, propertyID uuid.UUID
-	err := r.pool.QueryRow(ctx, `SELECT tenant_id, property_id FROM tenant_departures WHERE id = $1`, params.DepartureID).Scan(&tenantID, &propertyID)
+	err := r.db.QueryRow(ctx, `SELECT tenant_id, property_id FROM tenant_departures WHERE id = $1`, params.DepartureID).Scan(&tenantID, &propertyID)
 	if err != nil {
 		return nil, fmt.Errorf("lookup departure: %w", err)
 	}

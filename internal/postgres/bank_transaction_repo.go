@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -17,11 +16,15 @@ var (
 )
 
 type BankTransactionRepo struct {
-	pool *pgxpool.Pool
+	db DBTX
 }
 
-func NewBankTransactionRepo(pool *pgxpool.Pool) *BankTransactionRepo {
-	return &BankTransactionRepo{pool: pool}
+func NewBankTransactionRepo(db DBTX) *BankTransactionRepo {
+	return &BankTransactionRepo{db: db}
+}
+
+func (r *BankTransactionRepo) WithTx(tx pgx.Tx) *BankTransactionRepo {
+	return &BankTransactionRepo{db: tx}
 }
 
 // InsertTransaction inserts a new bank transaction. If a row with the same (property_id, dedup_hash)
@@ -83,7 +86,7 @@ func (r *BankTransactionRepo) InsertTransaction(ctx context.Context, tx pgx.Tx, 
 			txn.MatchedAt, txn.MatchedBy, txn.JournalEntryID,
 		)
 	} else {
-		row = r.pool.QueryRow(ctx, query,
+		row = r.db.QueryRow(ctx, query,
 			txn.ID, txn.PropertyID, txn.BankAccountID, txn.TxnID, txn.AmountPaise, txn.RowType, txn.TxnDate,
 			txn.Narration, txn.ClosingBalancePaise, txn.OccurrenceIndex, txn.DedupHash,
 			string(txn.Status), txn.Classification, txn.IsReversal, txn.IsInternalTransfer, txn.PayerPhone, txn.PayerVPA,
@@ -115,7 +118,7 @@ func (r *BankTransactionRepo) GetByID(ctx context.Context, id uuid.UUID) (*domai
 		FROM bank_transactions
 		WHERE id = $1
 	`
-	row := r.pool.QueryRow(ctx, query, id)
+	row := r.db.QueryRow(ctx, query, id)
 	return scanBankTransaction(row)
 }
 
@@ -131,7 +134,7 @@ func (r *BankTransactionRepo) GetByPropertyAndID(ctx context.Context, propertyID
 		FROM bank_transactions
 		WHERE property_id = $1 AND id = $2
 	`
-	row := r.pool.QueryRow(ctx, query, propertyID, id)
+	row := r.db.QueryRow(ctx, query, propertyID, id)
 	return scanBankTransaction(row)
 }
 
@@ -164,7 +167,7 @@ func (r *BankTransactionRepo) ListByProperty(ctx context.Context, propertyID uui
 
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM bank_transactions %s", whereSQL)
 	var total int
-	if err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("postgres: count bank_transactions: %w", err)
 	}
 
@@ -191,7 +194,7 @@ func (r *BankTransactionRepo) ListByProperty(ctx context.Context, propertyID uui
 	`, whereSQL, argIdx, argIdx+1)
 
 	args = append(args, limit, offset)
-	rows, err := r.pool.Query(ctx, query, args...)
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("postgres: list bank_transactions: %w", err)
 	}
@@ -228,7 +231,7 @@ func (r *BankTransactionRepo) UpdateStatus(ctx context.Context, tx pgx.Tx, id uu
 	if tx != nil {
 		_, err = tx.Exec(ctx, query, id, string(status), matchedDueID, matchedBy, matchedAt, journalEntryID)
 	} else {
-		_, err = r.pool.Exec(ctx, query, id, string(status), matchedDueID, matchedBy, matchedAt, journalEntryID)
+		_, err = r.db.Exec(ctx, query, id, string(status), matchedDueID, matchedBy, matchedAt, journalEntryID)
 	}
 	if err != nil {
 		return fmt.Errorf("postgres: update bank_transaction status: %w", err)
@@ -249,7 +252,7 @@ func (r *BankTransactionRepo) Reclassify(ctx context.Context, tx pgx.Tx, id uuid
 	if tx != nil {
 		_, err = tx.Exec(ctx, query, id, classification, journalEntryID)
 	} else {
-		_, err = r.pool.Exec(ctx, query, id, classification, journalEntryID)
+		_, err = r.db.Exec(ctx, query, id, classification, journalEntryID)
 	}
 	if err != nil {
 		return fmt.Errorf("postgres: reclassify bank_transaction: %w", err)

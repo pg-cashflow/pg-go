@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -286,6 +287,44 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+func maskOptionalPhone(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*p)
+	if len(s) <= 4 {
+		m := "****"
+		return &m
+	}
+	m := strings.Repeat("*", len(s)-4) + s[len(s)-4:]
+	return &m
+}
+
+func maskSensitiveRef(r *string) *string {
+	if r == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*r)
+	if len(s) <= 4 {
+		m := "****"
+		return &m
+	}
+	m := "ref_***" + s[len(s)-4:]
+	return &m
+}
+
+func maskAadhaarLast4(last4 *string) *string {
+	if last4 == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*last4)
+	if len(s) == 0 {
+		return nil
+	}
+	m := "XXXX-XXXX-" + s
+	return &m
+}
+
 func tenantResponse(t *domain.Tenant) gin.H {
 	resp := gin.H{
 		"id":                   t.ID,
@@ -293,7 +332,7 @@ func tenantResponse(t *domain.Tenant) gin.H {
 		"name":                 t.Name,
 		"phone":                t.Phone,
 		"room_number":          t.RoomNumber,
-		"aadhaar_last4":        t.AadhaarLast4,
+		"aadhaar_last4":        maskAadhaarLast4(t.AadhaarLast4),
 		"rent_amount":          t.RentAmount,
 		"due_day":              t.DueDay,
 		"notice_period_days":   t.NoticePeriodDays,
@@ -310,9 +349,9 @@ func tenantResponse(t *domain.Tenant) gin.H {
 		// Minor Protection & Guardian KYC (ADR migration 021, CONTRACT Rev 13 §1)
 		"majority_date":                t.MajorityDate,
 		"guardian_name":                t.GuardianName,
-		"guardian_phone":               t.GuardianPhone,
+		"guardian_phone":               maskOptionalPhone(t.GuardianPhone),
 		"guardian_relation":            t.GuardianRelation,
-		"guardian_kyc_reference_id":    t.GuardianKYCReferenceID,
+		"guardian_kyc_reference_id":    maskSensitiveRef(t.GuardianKYCReferenceID),
 		"guardian_consent_verified_at": t.GuardianConsentVerifiedAt,
 		"is_gamification_disabled":     t.IsGamificationDisabled,
 		"is_minor":                     t.IsMinor(time.Now().UTC()),

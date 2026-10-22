@@ -68,6 +68,34 @@ B costs one table, one middleware and an authz matrix. It buys per-manager contr
 
 1. [x] Migration 070: `manager_capabilities`, RLS, check constraint rejecting non-delegable names.
 2. [x] `RequireCapability` on `/manager` routes. Matrix test covers owner, manager with grant, and manager without grant. A nil store skips enforcement so existing suites stay green. `cmd/server` always sets the store.
-3. [ ] Lifecycle endpoints, audit events, cache invalidation test.
+3. [x] Lifecycle endpoints, audit events, cache invalidation test.
 4. [ ] Owner screen with presets ("Front desk", "Kitchen and maintenance", "Accounts-lite") and a manager "request access" action that creates an owner notification.
 5. [ ] Isolation tests: manager of property A cannot read or change anything in property B.
+
+---
+
+## Addendum (2026-10-22): Fail-Closed Authorization and Migration 084
+
+**Standard:** ASD-STE100  
+**Method:** First-Principles Verification  
+
+### 1. Problem Description
+- `CapabilityRepo.HasActive` previously checked if zero capability rows existed for a manager.
+- When zero rows existed, `HasActive` returned `true`. This permitted unconfigured managers full access.
+- `CapabilityRepo.ListActive` fabricated a default list of 8 capabilities when zero rows existed.
+- `OwnerCreateManager` ignored error returns from `Grant()` calls.
+- These conditions violated the fail-closed security invariant.
+
+### 2. Resolution
+1. **Migration 084:** 
+   - Backfills all 13 delegable capabilities for active managers with zero capability rows.
+   - Runs idempotently with `ON CONFLICT DO NOTHING`.
+2. **CapabilityRepo Hardening:**
+   - Removed all zero-row fallback logic from `HasActive` and `ListActive`.
+   - If a manager has zero rows, `HasActive` returns `false` and `ListActive` returns an empty slice.
+3. **API Handler Error Propagation:**
+   - `OwnerCreateManager` checks errors returned by `CapabilityStore.Grant()`.
+   - If a grant fails, the handler aborts and returns an error.
+4. **Test Verification:**
+   - Table-driven unit tests in `internal/postgres/capability_repo_test.go` assert fail-closed behavior.
+

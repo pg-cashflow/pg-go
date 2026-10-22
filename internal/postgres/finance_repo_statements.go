@@ -11,7 +11,7 @@ import (
 )
 
 func (r *FinanceRepo) GetTrialBalance(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.TrialBalanceLine, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT account_code, account_class, debit_paise, credit_paise, balance_paise
 		FROM ledger_trial_balance($1, $2)`, propertyID, to)
 	if err != nil {
@@ -30,7 +30,7 @@ func (r *FinanceRepo) GetTrialBalance(ctx context.Context, propertyID uuid.UUID,
 }
 
 func (r *FinanceRepo) GetIncomeStatement(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.StatementLine, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT section, account_code, amount_paise, sort_order
 		FROM ledger_income_statement($1, $2, $3)`, propertyID, from, to)
 	if err != nil {
@@ -49,7 +49,7 @@ func (r *FinanceRepo) GetIncomeStatement(ctx context.Context, propertyID uuid.UU
 }
 
 func (r *FinanceRepo) GetBalanceSheet(ctx context.Context, propertyID uuid.UUID, to time.Time) ([]domain.StatementLine, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT section, account_code, amount_paise, sort_order
 		FROM ledger_balance_sheet($1, $2)`, propertyID, to)
 	if err != nil {
@@ -68,7 +68,7 @@ func (r *FinanceRepo) GetBalanceSheet(ctx context.Context, propertyID uuid.UUID,
 }
 
 func (r *FinanceRepo) GetCashFlow(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.CashFlowLine, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT section, label, amount_paise, sort_order
 		FROM ledger_cash_flow($1, $2, $3)`, propertyID, from, to)
 	if err != nil {
@@ -91,7 +91,7 @@ func (r *FinanceRepo) GetReconcilingItems(ctx context.Context, propertyID *uuid.
 	if !asOf.IsZero() {
 		dateArg = asOf.Format("2006-01-02")
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT item_type, property_id, ref, amount_paise, originated_on::text, age_days, age_bucket, category, escalation
 		FROM ledger_reconciling_items($1, COALESCE($2::date, (now() AT TIME ZONE 'UTC')::date))`, propertyID, dateArg)
 	if err != nil {
@@ -132,7 +132,7 @@ func (r *FinanceRepo) UpsertDailyFinancialRollup(ctx context.Context, ro *domain
 		ro.CreatedAt = now
 	}
 	ro.UpdatedAt = now
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		INSERT INTO daily_financial_rollups (
 			id, property_id, rollup_date, collected_paise, due_paise, expense_paise,
 			net_cash_flow_paise, total_rooms, occupied_rooms, capacity_beds, occupied_beds,
@@ -157,7 +157,7 @@ func (r *FinanceRepo) UpsertDailyFinancialRollup(ctx context.Context, ro *domain
 }
 
 func (r *FinanceRepo) ListDailyFinancialRollups(ctx context.Context, propertyID uuid.UUID, from, to time.Time) ([]domain.DailyFinancialRollup, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, property_id, rollup_date, collected_paise, due_paise, expense_paise,
 		       net_cash_flow_paise, total_rooms, occupied_rooms, capacity_beds, occupied_beds,
 		       occupancy_rate_pct, created_at, updated_at
@@ -197,7 +197,7 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 	rollupDate := time.Date(dayIST.Year(), dayIST.Month(), dayIST.Day(), 0, 0, 0, 0, time.UTC)
 
 	var collectedPaise int64
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(p.amount), 0)
 		FROM payments p
 		LEFT JOIN dues d ON p.due_id = d.id
@@ -208,7 +208,7 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 	}
 
 	var duePaise int64
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount), 0)
 		FROM dues
 		WHERE property_id = $1
@@ -218,7 +218,7 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 	}
 
 	var expensePaise int64
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_paise), 0)
 		FROM expenses
 		WHERE property_id = $1
@@ -231,7 +231,7 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 
 	var totalRooms int
 	var capacityBeds int
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(capacity), 0)
 		FROM rooms
 		WHERE property_id = $1`,
@@ -241,7 +241,7 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 
 	var occupiedBeds int
 	var occupiedRooms int
-	if err := r.pool.QueryRow(ctx, `
+	if err := r.db.QueryRow(ctx, `
 		SELECT COUNT(*), COUNT(DISTINCT room_id)
 		FROM tenants
 		WHERE property_id = $1 AND status = 'active'`,

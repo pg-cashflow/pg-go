@@ -8,4 +8,4 @@ Use this list before enabling payouts in production.
 4. Run maker-checker test: manager cannot approve batches (owner only).
 5. Run step-up OTP test on solo-owner property (`POST .../approve/request-otp`).
 6. Verify `pgapp_worker` jobs use `DATABASE_WORKER_URL`.
-7. Complete R9-F3 and R9-F4 from `RLS_D1_STATUS.md` before multi-property production.
+7. [x] Complete R9-F3 and R9-F4 from `RLS_D1_STATUS.md` before multi-property production (completed: migrations 087, ScopedDB wiring, and isolation tests).

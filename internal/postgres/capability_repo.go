@@ -19,22 +19,7 @@ func (r *CapabilityRepo) HasActive(ctx context.Context, propertyID, userID uuid.
 			SELECT 1 FROM manager_capabilities
 			WHERE property_id = $1 AND user_id = $2 AND capability = $3 AND revoked_at IS NULL
 		)`, propertyID, userID, capability).Scan(&ok)
-	if err != nil || ok {
-		return ok, err
-	}
-
-	// Fallback for wardens with no explicit capability records configured yet:
-	var hasAnyRecords bool
-	_ = r.db.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM manager_capabilities
-			WHERE property_id = $1 AND user_id = $2
-		)`, propertyID, userID).Scan(&hasAnyRecords)
-	if !hasAnyRecords {
-		return true, nil
-	}
-
-	return false, nil
+	return ok, err
 }
 
 // ListActive returns unrevoked capability names for the user on the property.
@@ -55,21 +40,8 @@ func (r *CapabilityRepo) ListActive(ctx context.Context, propertyID, userID uuid
 		}
 		out = append(out, cap)
 	}
-	if len(out) == 0 {
-		var hasAnyRecords bool
-		_ = r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM manager_capabilities WHERE property_id = $1 AND user_id = $2)`, propertyID, userID).Scan(&hasAnyRecords)
-		if !hasAnyRecords {
-			return []string{
-				"slot_invites.create",
-				"tenants.view",
-				"dues.view",
-				"attendance.mark",
-				"inspections.write",
-				"meters.write",
-				"kitchen.headcount",
-				"expenses.post",
-			}, nil
-		}
+	if out == nil {
+		out = []string{}
 	}
 	return out, rows.Err()
 }

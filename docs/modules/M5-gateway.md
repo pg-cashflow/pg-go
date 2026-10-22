@@ -9,4 +9,5 @@ Implement bank account RLS and ScopedDB wiring per `RLS_D1_STATUS.md` during thi
 ## Gate 8
 
 - [x] Webhook and settlement routes on owner API
-- [ ] R9-F1/F2 closed with live isolation tests
+- [x] R9-F1 closed (`migrations/086_bank_accounts_rls.sql`, `BankAccountRepo` DBTX/ScopedDB, unit tests verified)
+- [x] R9-F2 closed (`BankTransactionRepo` DBTX/ScopedDB wiring in `bootstrap.go`, unit tests verified)

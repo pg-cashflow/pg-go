@@ -12,7 +12,7 @@ import (
 )
 
 func (r *FinanceRepo) InsertExpense(ctx context.Context, e *domain.Expense) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		INSERT INTO expenses (id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
 		e.ID, e.PropertyID, e.CategoryCode, nullIfEmpty(e.VendorName), nullIfEmpty(e.Description), e.AmountPaise, e.Status, e.Emergency, e.RoomID, e.CreatedBy, e.CreatedByRole, e.IdempotencyKey, e.OccurredAt)
@@ -349,7 +349,7 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 func (r *FinanceRepo) GetExpense(ctx context.Context, id uuid.UUID) (*domain.Expense, error) {
 	e := &domain.Expense{}
 	var vendor, desc *string
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT id, property_id, category_code, vendor_name, description, amount_paise, status, emergency, room_id, created_by, created_by_role, occurred_at, created_at
 		FROM expenses WHERE id=$1`, id).Scan(
 		&e.ID, &e.PropertyID, &e.CategoryCode, &vendor, &desc, &e.AmountPaise, &e.Status, &e.Emergency, &e.RoomID, &e.CreatedBy, &e.CreatedByRole, &e.OccurredAt, &e.CreatedAt)
@@ -386,7 +386,7 @@ func (r *FinanceRepo) ListExpensesPaginated(ctx context.Context, propertyID uuid
 	q += fmt.Sprintf(" ORDER BY occurred_at DESC, id DESC LIMIT $%d", argIdx)
 	args = append(args, limit)
 
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := r.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -407,12 +407,12 @@ func (r *FinanceRepo) ListExpenses(ctx context.Context, propertyID uuid.UUID) ([
 }
 
 func (r *FinanceRepo) UpdateExpenseStatus(ctx context.Context, id uuid.UUID, status domain.ExpenseStatus) error {
-	_, err := r.pool.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, id, status)
+	_, err := r.db.Exec(ctx, `UPDATE expenses SET status=$2 WHERE id=$1`, id, status)
 	return err
 }
 
 func (r *FinanceRepo) InsertExpensePayment(ctx context.Context, p *domain.ExpensePayment) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		INSERT INTO expense_payments (id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		p.ID, p.ExpenseID, p.PropertyID, p.AmountPaise, p.PayerRole, p.PayerUserID, p.Method, p.IdempotencyKey, p.OccurredAt)
@@ -423,7 +423,7 @@ func (r *FinanceRepo) InsertExpensePayment(ctx context.Context, p *domain.Expens
 }
 
 func (r *FinanceRepo) ListExpensePayments(ctx context.Context, expenseID uuid.UUID) ([]domain.ExpensePayment, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, expense_id, property_id, amount_paise, payer_role, payer_user_id, method, occurred_at
 		FROM expense_payments WHERE expense_id=$1 ORDER BY occurred_at ASC LIMIT 100`, expenseID)
 	if err != nil {
@@ -443,13 +443,13 @@ func (r *FinanceRepo) ListExpensePayments(ctx context.Context, expenseID uuid.UU
 
 func (r *FinanceRepo) SumExpensePayments(ctx context.Context, expenseID uuid.UUID) (int64, error) {
 	var s int64
-	err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments WHERE expense_id=$1`, expenseID).Scan(&s)
+	err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM expense_payments WHERE expense_id=$1`, expenseID).Scan(&s)
 	return s, err
 }
 
 func (r *FinanceRepo) SumManagerSpend(ctx context.Context, propertyID, managerID uuid.UUID, from, to time.Time) (int64, error) {
 	var s int64
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT (
 			COALESCE((SELECT SUM(amount_paise) FROM expense_payments
 			          WHERE property_id=$1 AND payer_user_id=$2 AND payer_role='manager'
@@ -467,7 +467,7 @@ func (r *FinanceRepo) SumManagerSpend(ctx context.Context, propertyID, managerID
 
 func (r *FinanceRepo) InsertAdvance(ctx context.Context, a *domain.ManagerAdvance) error {
 	key := a.ExpensePaymentID.String()
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		INSERT INTO manager_advances (id, property_id, manager_user_id, expense_payment_id, amount_paise, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		a.ID, a.PropertyID, a.ManagerUserID, a.ExpensePaymentID, a.AmountPaise, key, a.OccurredAt)
@@ -478,7 +478,7 @@ func (r *FinanceRepo) InsertAdvance(ctx context.Context, a *domain.ManagerAdvanc
 }
 
 func (r *FinanceRepo) InsertReimbursement(ctx context.Context, rm *domain.ManagerReimbursement) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		INSERT INTO manager_reimbursements (id, property_id, manager_user_id, amount_paise, recorded_by, idempotency_key, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		rm.ID, rm.PropertyID, rm.ManagerUserID, rm.AmountPaise, rm.RecordedBy, rm.IdempotencyKey, rm.OccurredAt)
@@ -540,10 +540,10 @@ func (r *FinanceRepo) InsertReimbursementAtomic(ctx context.Context, rm *domain.
 
 func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UUID) (int64, error) {
 	var adv, re int64
-	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1`, propertyID).Scan(&adv); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1`, propertyID).Scan(&adv); err != nil {
 		return 0, err
 	}
-	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1`, propertyID).Scan(&re); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1`, propertyID).Scan(&re); err != nil {
 		return 0, err
 	}
 	return adv - re, nil
@@ -551,17 +551,17 @@ func (r *FinanceRepo) AdvanceOutstanding(ctx context.Context, propertyID uuid.UU
 
 func (r *FinanceRepo) ManagerAdvanceOutstanding(ctx context.Context, propertyID, managerID uuid.UUID) (int64, error) {
 	var adv, re int64
-	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&adv); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_advances WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&adv); err != nil {
 		return 0, err
 	}
-	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&re); err != nil {
+	if err := r.db.QueryRow(ctx, `SELECT COALESCE(SUM(amount_paise),0) FROM manager_reimbursements WHERE property_id=$1 AND manager_user_id=$2`, propertyID, managerID).Scan(&re); err != nil {
 		return 0, err
 	}
 	return adv - re, nil
 }
 
 func (r *FinanceRepo) ListAdvances(ctx context.Context, propertyID uuid.UUID) ([]domain.ManagerAdvance, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT id, property_id, manager_user_id, expense_payment_id, amount_paise, occurred_at
 		FROM manager_advances WHERE property_id=$1 ORDER BY occurred_at DESC LIMIT 200`, propertyID)
 	if err != nil {
