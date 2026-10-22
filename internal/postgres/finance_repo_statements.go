@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -196,47 +197,57 @@ func (r *FinanceRepo) CollectDailyMetrics(ctx context.Context, propertyID uuid.U
 	rollupDate := time.Date(dayIST.Year(), dayIST.Month(), dayIST.Day(), 0, 0, 0, 0, time.UTC)
 
 	var collectedPaise int64
-	_ = r.pool.QueryRow(ctx, `
+	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(p.amount), 0)
 		FROM payments p
 		LEFT JOIN dues d ON p.due_id = d.id
 		WHERE (p.property_id = $1 OR d.property_id = $1)
 		  AND p.matched_at >= $2 AND p.matched_at < $3`,
-		propertyID, startUTC, endUTC).Scan(&collectedPaise)
+		propertyID, startUTC, endUTC).Scan(&collectedPaise); err != nil {
+		return nil, fmt.Errorf("collect daily metrics (payments): %w", err)
+	}
 
 	var duePaise int64
-	_ = r.pool.QueryRow(ctx, `
+	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount), 0)
 		FROM dues
 		WHERE property_id = $1
 		  AND due_date >= $2 AND due_date < $3`,
-		propertyID, startUTC, endUTC).Scan(&duePaise)
+		propertyID, startUTC, endUTC).Scan(&duePaise); err != nil {
+		return nil, fmt.Errorf("collect daily metrics (dues): %w", err)
+	}
 
 	var expensePaise int64
-	_ = r.pool.QueryRow(ctx, `
+	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(amount_paise), 0)
 		FROM expenses
 		WHERE property_id = $1
 		  AND occurred_at >= $2 AND occurred_at < $3`,
-		propertyID, startUTC, endUTC).Scan(&expensePaise)
+		propertyID, startUTC, endUTC).Scan(&expensePaise); err != nil {
+		return nil, fmt.Errorf("collect daily metrics (expenses): %w", err)
+	}
 
 	netCashFlow := collectedPaise - expensePaise
 
 	var totalRooms int
 	var capacityBeds int
-	_ = r.pool.QueryRow(ctx, `
+	if err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*), COALESCE(SUM(capacity), 0)
 		FROM rooms
 		WHERE property_id = $1`,
-		propertyID).Scan(&totalRooms, &capacityBeds)
+		propertyID).Scan(&totalRooms, &capacityBeds); err != nil {
+		return nil, fmt.Errorf("collect daily metrics (rooms): %w", err)
+	}
 
 	var occupiedBeds int
 	var occupiedRooms int
-	_ = r.pool.QueryRow(ctx, `
+	if err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*), COUNT(DISTINCT room_id)
 		FROM tenants
 		WHERE property_id = $1 AND status = 'active'`,
-		propertyID).Scan(&occupiedBeds, &occupiedRooms)
+		propertyID).Scan(&occupiedBeds, &occupiedRooms); err != nil {
+		return nil, fmt.Errorf("collect daily metrics (tenants): %w", err)
+	}
 
 	if capacityBeds == 0 && occupiedBeds > 0 {
 		capacityBeds = occupiedBeds
