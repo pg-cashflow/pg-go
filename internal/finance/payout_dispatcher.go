@@ -13,6 +13,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"golang.org/x/sync/errgroup"
 )
 
 // PayoutBatchDispatcher defines the worker interface for dispatching approved payout batches to Cashfree.
@@ -93,9 +94,12 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		// If query fails or returns not found, proceed to normal dispatch below
 	}
 
-	// Step 2: Ensure all beneficiaries are registered with derived IDs (hash-based cache invalidation)
-	transferEntries := make([]cashfree.BatchTransferEntry, 0, len(items))
+	// Step 2: Deduplicate payees and ensure all beneficiaries are registered with derived IDs
+	uniquePayees := make(map[uuid.UUID]*domain.PayoutPayee)
 	for _, it := range items {
+		if _, exists := uniquePayees[it.PayeeID]; exists {
+			continue
+		}
 		payee, err := d.repo.GetPayeeByID(ctx, it.PayeeID)
 		if err != nil {
 			return fmt.Errorf("payout dispatcher: get payee %s for item %s: %w", it.PayeeID, it.ID, err)
@@ -103,15 +107,32 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		if !payee.IsVerified {
 			return fmt.Errorf("payout dispatcher: payee %s for item %s is not verified", it.PayeeID, it.ID)
 		}
+		uniquePayees[it.PayeeID] = payee
+	}
 
+	// Concurrent bounded beneficiary registration (max 8 concurrent workers)
+	var g errgroup.Group
+	g.SetLimit(8)
+	for _, payee := range uniquePayees {
+		p := payee
+		beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
+		g.Go(func() error {
+			if bErr := d.ensureBeneficiary(ctx, p, beneID); bErr != nil {
+				slog.Warn("payout dispatcher: proactive beneficiary registration warning",
+					"payee_id", p.ID,
+					"beneficiary_id", beneID,
+					"err", bErr,
+				)
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+
+	transferEntries := make([]cashfree.BatchTransferEntry, 0, len(items))
+	for _, it := range items {
+		payee := uniquePayees[it.PayeeID]
 		beneID := cashfree.DeriveBeneficiaryID(payee.ID, payee.AccountNumberHash)
-		if err := d.ensureBeneficiary(ctx, payee, beneID); err != nil {
-			slog.Warn("payout dispatcher: proactive beneficiary registration warning",
-				"payee_id", payee.ID,
-				"beneficiary_id", beneID,
-				"err", err,
-			)
-		}
 
 		mode := "banktransfer"
 		if payee.UPIVPA != nil && strings.TrimSpace(*payee.UPIVPA) != "" {
@@ -153,13 +174,19 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		}
 
 		if errors.Is(err, cashfree.ErrBeneficiaryNotFound) {
-			// One retry after re-registering beneficiaries
-			for _, it := range items {
-				if payee, pErr := d.repo.GetPayeeByID(ctx, it.PayeeID); pErr == nil {
-					beneID := cashfree.DeriveBeneficiaryID(payee.ID, payee.AccountNumberHash)
-					_ = d.ensureBeneficiary(ctx, payee, beneID)
-				}
+			// One retry after re-registering beneficiaries with bounded concurrency
+			var rg errgroup.Group
+			rg.SetLimit(8)
+			for _, payee := range uniquePayees {
+				p := payee
+				beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
+				rg.Go(func() error {
+					_ = d.ensureBeneficiary(ctx, p, beneID)
+					return nil
+				})
 			}
+			_ = rg.Wait()
+
 			retryResp, retryErr := d.client.RequestBatchTransfer(ctx, req)
 			if retryErr != nil {
 				return fmt.Errorf("payout dispatcher: retry batch transfer after bene register: %w", retryErr)
