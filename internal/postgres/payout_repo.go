@@ -576,6 +576,33 @@ func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.
 	return b, nil
 }
 
+// TryLockBatchDispatch attempts to acquire an advisory lock for a payout batch dispatch.
+// Returns false if another worker or goroutine is currently dispatching the batch.
+func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID) (bool, func(), error) {
+	if r.pool == nil {
+		return true, func() {}, nil
+	}
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return false, nil, fmt.Errorf("acquire conn for batch lock: %w", err)
+	}
+	var acquired bool
+	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('payout_batch:' || $1::text))`, batchID).Scan(&acquired)
+	if err != nil {
+		conn.Release()
+		return false, nil, fmt.Errorf("try advisory lock: %w", err)
+	}
+	if !acquired {
+		conn.Release()
+		return false, func() {}, nil
+	}
+	unlock := func() {
+		defer conn.Release()
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('payout_batch:' || $1::text))`, batchID)
+	}
+	return true, unlock, nil
+}
+
 // InitiateBatchTransferTx atomically transitions an approved batch and its pending items to 'processing'
 // and enqueues a durable outbox event for asynchronous Cashfree dispatch.
 func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.UUID) (*domain.PayoutBatch, []domain.PayoutItem, error) {
@@ -716,11 +743,19 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 	}
 	_, err := runner.Exec(ctx, `
 		UPDATE payout_items
-		SET status = $2,
+		SET status = CASE
+		        -- Terminal immutable states: once succeeded, only allow reversal
+		        WHEN status = 'succeeded' AND $2 != 'reversed' THEN status
+		        WHEN status = 'reversed' THEN status
+		        ELSE $2
+		    END,
 		    cf_transfer_id = COALESCE($3, cf_transfer_id),
 		    utr = COALESCE($4, utr),
 		    settled_at = COALESCE($5, settled_at),
-		    failure_reason = COALESCE($6, failure_reason),
+		    failure_reason = CASE
+		        WHEN status IN ('succeeded', 'reversed') AND $2 != 'reversed' THEN failure_reason
+		        ELSE COALESCE($6, failure_reason)
+		    END,
 		    updated_at = NOW()
 		WHERE id = $1`,
 		itemID, status, cfTransferID, utr, settledAt, failureReason,

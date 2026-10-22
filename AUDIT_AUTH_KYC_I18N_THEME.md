@@ -18,10 +18,9 @@ Scope: static review of the supplied React/TypeScript PWA and Go backend archive
 - The language selector's header is hard-coded as a four-language string, which is inconsistent with a fully localized interface and with the single-locale UX. Move it into message catalogs.
 
 ### KYC and identity data
-- The backend enforces a 5 MiB upload limit in the handler and reads at most 5 MiB + 1 byte in the service. It also has tenant/property ownership checks for owner document retrieval and strips several fraud-sensitive fields from the tenant status response.
-- The upload handler trusts the multipart part's declared `Content-Type` and passes it to the KYC service; the service forwards file bytes and filename to the provider without validating file signatures in the inspected path. Client MIME and extension are attacker-controlled. Add server-side allowlisting based on detected file signature (PDF/JPEG/PNG only), reject empty/invalid files, sanitize filenames, and test polyglot/mislabeled payloads before production.
+- [RESOLVED] File signature validation on KYC uploads is implemented via magic-byte sniffing (`SniffDocumentMIME` in `docsniff.go`), restricting uploads and downloads to PDF/JPEG/PNG. Filenames are sanitized (`SanitizeDocumentFilename`) to prevent directory traversal and hostile characters.
 - The tenant rate limiter is PostgreSQL-backed in the production router, which is preferable to process-local rate limits for horizontal replicas. Validate database failure behavior and whether the limiter fails closed for identity-verification endpoints.
-- KYC document/photo responses should be checked for `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, a restrictive content disposition, and no shared/CDN caching. The inspected handler calls `c.Data` directly; verify these headers are set by middleware before exposing real identity documents.
+- [RESOLVED] KYC document/photo responses set `Cache-Control: no-store`, `Pragma: no-cache`, and `X-Content-Type-Options: nosniff` directly to protect sensitive identity documents.
 - KYC must be tested against real database migrations, Cashfree sandbox failure modes, webhook replay/out-of-order delivery, consent revocation races, expired leases, and property/tenant cross-tenant access attempts. Unit tests alone cannot establish those guarantees.
 
 ### Authentication/session boundaries

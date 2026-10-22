@@ -55,6 +55,18 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("payout client not configured")
 	}
 
+	if d.repo != nil {
+		acquired, unlock, lockErr := d.repo.TryLockBatchDispatch(ctx, batchID)
+		if lockErr != nil {
+			return fmt.Errorf("payout dispatcher: lock batch %s: %w", batchID, lockErr)
+		}
+		if !acquired {
+			slog.Info("payout dispatcher: batch already being dispatched by another worker, skipping", "batch_id", batchID)
+			return nil
+		}
+		defer unlock()
+	}
+
 	batch, err := d.repo.GetBatchByID(ctx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout dispatcher: get batch %s: %w", batchID, err)

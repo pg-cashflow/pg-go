@@ -522,6 +522,9 @@ func (s *Service) CompleteAadhaarOTP(
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: find aadhaar verification: %w", err)
 	}
+	if pending == nil || pending.TenantID != tenantID {
+		return nil, domain.ErrVerificationNotFound
+	}
 
 	if s.cashfree == nil {
 		return nil, ErrCashfreeUnavailable
