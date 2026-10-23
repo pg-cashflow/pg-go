@@ -429,7 +429,12 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		idempotencyKey = strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
 	}
 	if idempotencyKey == "" {
-		idempotencyKey = uuid.New().String()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header is required for refund operations"})
+		return
+	}
+	if len(idempotencyKey) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header cannot exceed 128 characters"})
+		return
 	}
 
 	// Unlocked Read 2: Check if already initiated/completed with this idempotency key

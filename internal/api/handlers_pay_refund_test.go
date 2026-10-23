@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -472,6 +473,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		buf, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "idem_test_002")
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 
@@ -634,6 +636,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		buf, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "idem_test_005")
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 
@@ -677,6 +680,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		buf, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "idem_test_006")
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 
@@ -745,6 +749,100 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		if len(gwRepo.refunds) != 0 {
 			t.Errorf("expected no refunds created in repo, got %d", len(gwRepo.refunds))
+		}
+	})
+
+	t.Run("rejects refund when Idempotency-Key is missing with 400", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     &fakeRefundTxRunner{gwRepo: gwRepo},
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 100000,
+			"reason":       "Missing idempotency key test",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		// Explicitly no Idempotency-Key or X-Idempotency-Key
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on missing idempotency key, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var errResp map[string]string
+		_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
+		if errResp["error"] != "Idempotency-Key header is required for refund operations" {
+			t.Errorf("expected missing idempotency key error, got %q", errResp["error"])
+		}
+		if cfClient.refundCalls != 0 {
+			t.Errorf("expected 0 calls to Cashfree, got %d", cfClient.refundCalls)
+		}
+	})
+
+	t.Run("rejects refund when Idempotency-Key exceeds 128 chars with 400", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     &fakeRefundTxRunner{gwRepo: gwRepo},
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 100000,
+			"reason":       "Oversized idempotency key test",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", strings.Repeat("x", 129))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on oversized idempotency key, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -906,6 +1004,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	buf1, _ := json.Marshal(body1)
 	req1 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf1))
 	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", "idem_live_round_1")
 	rec1 := httptest.NewRecorder()
 	r.ServeHTTP(rec1, req1)
 
@@ -945,6 +1044,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	buf2, _ := json.Marshal(body2)
 	req2 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf2))
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", "idem_live_round_2")
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
 
@@ -978,6 +1078,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	buf3, _ := json.Marshal(body3)
 	req3 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf3))
 	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("Idempotency-Key", "idem_live_round_3")
 	rec3 := httptest.NewRecorder()
 	r.ServeHTTP(rec3, req3)
 
@@ -1126,6 +1227,7 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 	buf, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idem_guard_a_1")
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
@@ -1156,6 +1258,7 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf))
 	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", "idem_guard_a_2")
 	r.ServeHTTP(rec2, req2)
 
 	if rec2.Code != http.StatusBadRequest {
