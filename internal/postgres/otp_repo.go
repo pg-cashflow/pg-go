@@ -15,6 +15,7 @@ import (
 var (
 	ErrOTPAlreadyUsed    = domain.ErrOTPAlreadyUsed
 	ErrTokenAlreadyUsed  = domain.ErrTokenAlreadyUsed
+	ErrOTPLocked         = errors.New("postgres: otp locked")
 	ErrPushEndpointOwned = errors.New("postgres: push endpoint is already registered to a different tenant")
 )
 
@@ -88,8 +89,14 @@ func (r *OTPRepo) LatestUnusedByPurpose(ctx context.Context, phone string, purpo
 }
 
 func (r *OTPRepo) IncrementAttempts(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `UPDATE otp_requests SET attempts = attempts + 1 WHERE id=$1`, id)
-	return err
+	tag, err := r.pool.Exec(ctx, `UPDATE otp_requests SET attempts = attempts + 1 WHERE id=$1 AND attempts < 5`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrOTPLocked
+	}
+	return nil
 }
 
 func (r *OTPRepo) MarkUsed(ctx context.Context, id uuid.UUID) error {

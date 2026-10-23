@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
@@ -117,7 +119,12 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository, users UserLook
 			var err error
 			tenant, err = tenantRepo.GetByID(c.Request.Context(), tenantID)
 			if err != nil {
-				apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+				if errors.Is(err, pgx.ErrNoRows) {
+					apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+					return
+				}
+				c.Header("Retry-After", "3")
+				apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
 				return
 			}
 			setCachedTenant(tenantID, tenant)
@@ -341,7 +348,16 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 	}
 
 	u, err := users.GetByID(c.Request.Context(), claims.UserID)
-	if err != nil || u == nil {
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return false
+		}
+		c.Header("Retry-After", "3")
+		apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
+		return false
+	}
+	if u == nil {
 		apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 		return false
 	}

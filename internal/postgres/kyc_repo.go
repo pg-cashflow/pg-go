@@ -919,6 +919,11 @@ func (r *KYCRepo) SubmitManualReviewTx(
 			return fmt.Errorf("kyc: encrypt document bytes: %w", err)
 		}
 
+		isDedupable := true
+		if maskedUID == "XXXX" || identityHash == "" {
+			isDedupable = false
+		}
+
 		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'pending_manual_review',
@@ -928,10 +933,11 @@ func (r *KYCRepo) SubmitManualReviewTx(
 				document_url = $5,
 				document_bytes = $6,
 				document_content_type = $7,
-				updated_at = $8
+				is_dedupable = $8,
+				updated_at = $9
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, ocrData, documentURL, encDocBytes, documentContentType, now))
+		`, verificationID, maskedUID, identityHash, ocrData, documentURL, encDocBytes, documentContentType, isDedupable, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
 		}

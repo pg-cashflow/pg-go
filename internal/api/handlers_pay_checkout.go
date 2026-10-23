@@ -142,12 +142,21 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 
 	snapshot, snapErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID)
 	if snapErr == nil && len(snapshot) > 1 {
+		allSettled := true
 		for _, item := range snapshot {
 			itemDedup := ""
 			if dedupKey != "" {
 				itemDedup = fmt.Sprintf("%s:%s", dedupKey, item.DueID)
 			}
-			_, _ = h.Payments.GatewaySettle(c.Request.Context(), item.DueID, item.AmountPaise, txn, itemDedup)
+			itemTxn := fmt.Sprintf("%s:due:%s", txn, item.DueID)
+			_, err = h.Payments.GatewaySettle(c.Request.Context(), item.DueID, item.AmountPaise, itemTxn, itemDedup)
+			if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
+				allSettled = false
+			}
+		}
+		if !allSettled {
+			c.JSON(http.StatusOK, gin.H{"paid": false})
+			return
 		}
 	} else {
 		if dedupKey != "" {

@@ -32,13 +32,12 @@ const (
 // Database errors fail closed with HTTP 503. Grants are cached for 30 seconds.
 // Memory is bounded to maxCapabilityCacheEntries with active eviction.
 func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.HandlerFunc {
+	if checker == nil {
+		panic("auth: RequireAnyCapability requires a non-nil CapabilityChecker")
+	}
 	var mu sync.Mutex
 	cache := make(map[string]capHit)
 	return func(c *gin.Context) {
-		if checker == nil {
-			c.Next()
-			return
-		}
 		claims, ok := ClaimsFromContext(c)
 		if !ok {
 			apierr.Abort(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)

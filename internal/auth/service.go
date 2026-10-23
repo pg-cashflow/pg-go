@@ -305,7 +305,10 @@ func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpo
 	}
 
 	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
-		_ = s.otp.IncrementAttempts(ctx, req.ID)
+		err := s.otp.IncrementAttempts(ctx, req.ID)
+		if errors.Is(err, postgres.ErrOTPLocked) || req.Attempts+1 >= OTPMaxAttempts {
+			return ErrOTPLocked
+		}
 		return ErrInvalidOTP
 	}
 
@@ -366,7 +369,10 @@ func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string)
 	}
 
 	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
-		_ = s.otp.IncrementAttempts(ctx, req.ID)
+		err := s.otp.IncrementAttempts(ctx, req.ID)
+		if errors.Is(err, postgres.ErrOTPLocked) || req.Attempts+1 >= OTPMaxAttempts {
+			return "", nil, ErrOTPLocked
+		}
 		return "", nil, ErrInvalidOTP
 	}
 
