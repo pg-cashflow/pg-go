@@ -440,6 +440,53 @@ func (h *Handlers) OwnerListUnbatchedPayoutItems(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+// OwnerListPayoutBatches handles GET /owner/payouts/batches.
+func (h *Handlers) OwnerListPayoutBatches(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+	batches, err := repo.ListBatchesByProperty(c.Request.Context(), pid)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"batches": batches})
+}
+
+// OwnerGetPayoutBatch handles GET /owner/payouts/batches/:id.
+func (h *Handlers) OwnerGetPayoutBatch(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	batchID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+	batch, err := repo.GetBatchByID(c.Request.Context(), batchID)
+	if err != nil || batch.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	items, err := repo.ListPayoutItemsByBatch(c.Request.Context(), batchID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"batch": batch, "items": items})
+}
+
 type createBatchBody struct {
 	Notes *string `json:"notes"`
 }

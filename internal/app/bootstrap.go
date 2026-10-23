@@ -231,6 +231,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			kycDocKey = decoded
 			logger.Info("kyc: document-bytes encryption enabled")
 		} else {
+			if cfg.AppEnv == "production" {
+				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP §8(5) requirement)")
+			}
 			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set — Aadhaar document bytes will be stored unencrypted (DPDP §8(5) gap)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)

@@ -148,6 +148,8 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
 	owner.GET("/payouts/payees", h.OwnerListPayees)
 	owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
+	owner.GET("/payouts/batches", h.OwnerListPayoutBatches)
+	owner.GET("/payouts/batches/:id", h.OwnerGetPayoutBatch)
 	owner.POST("/payouts/batches", h.OwnerCreatePayoutBatch)
 	owner.POST("/payouts/batches/:id/approve", h.OwnerApprovePayoutBatch)
 	owner.POST("/payouts/batches/:id/approve/request-otp", h.OwnerRequestPayoutBatchOTP)
