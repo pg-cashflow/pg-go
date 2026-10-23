@@ -14,4 +14,4 @@
 ## Gate 8 — Exit
 
 - [x] Tenant self-service profile PATCH
-- [ ] Authz matrix row for PATCH /tenant/me
+- [x] Authz matrix row for PATCH /tenant/me (verified via route_role_matrix_test.go & handlers_tenant_test.go)

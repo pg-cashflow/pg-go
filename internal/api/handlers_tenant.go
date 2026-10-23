@@ -9,6 +9,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/localization"
 )
 
 // TenantPatchMe handles PATCH /tenant/me (limited self-service profile fields).
@@ -39,12 +40,19 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 			t.GuardianPhone = &phone
 		}
 	}
-	if body.Locale != nil && h.PreferencesStore != nil {
-		claims, _ := auth.ClaimsFromContext(c)
-		if claims != nil {
-			locale := strings.TrimSpace(*body.Locale)
-			if locale != "" {
-				_, _ = h.PreferencesStore.Upsert(c.Request.Context(), claims.UserID, &locale, nil)
+	if body.Locale != nil {
+		locale := strings.TrimSpace(*body.Locale)
+		if !localization.IsValid(locale) {
+			respondErr(c, clientErrWithCode(http.StatusBadRequest, "unsupported locale", apierr.CodePreferencesInvalidLocale))
+			return
+		}
+		if h.PreferencesStore != nil {
+			claims, _ := auth.ClaimsFromContext(c)
+			if claims != nil {
+				if _, err := h.PreferencesStore.Upsert(c.Request.Context(), claims.UserID, &locale, nil); err != nil {
+					respondErr(c, err)
+					return
+				}
 			}
 		}
 	}
