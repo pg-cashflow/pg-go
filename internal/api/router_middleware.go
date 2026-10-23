@@ -77,10 +77,10 @@ func MaxBodyBytes(maxBytes int64) gin.HandlerFunc {
 }
 
 func legacyAppShellEnabled(d Deps) bool {
-	if !strings.EqualFold(d.AppEnv, "production") {
-		return true
+	if strings.EqualFold(d.AppEnv, "production") {
+		return false
 	}
-	return strings.TrimSpace(d.FrontendURL) == ""
+	return true
 }
 
 // CloudflareRealIP reads the CF-Connecting-IP header only when the peer matches

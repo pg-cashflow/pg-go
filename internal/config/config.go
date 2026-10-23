@@ -102,7 +102,7 @@ func Load() (*Config, error) {
 		AppEnv:                            envOr("APP_ENV", "development"),
 		CORSAllowedOrigins:                splitOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		TrustedProxies:                    splitOrigins(os.Getenv("TRUSTED_PROXIES")),
-		FrontendURL:                       os.Getenv("FRONTEND_URL"),
+		FrontendURL:                       envFirst("PUBLIC_APP_URL", "FRONTEND_URL"),
 		FirebaseProjectID:                 os.Getenv("FIREBASE_PROJECT_ID"),
 		FirebaseCredentials:               os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"),
 		CashfreePGAppID:                   envFirst("CASHFREE_PG_APP_ID", "CASHFREE_APP_ID"),

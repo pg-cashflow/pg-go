@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -196,11 +197,22 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	dispatchPub.Subscribe(waitlistConsumer.ProcessEventAsync)
 
 	var cfOrders collector.CashfreeOrders
+	var cfClient *cashfree.Client
 	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
 	if strings.TrimSpace(cfg.FrontendURL) != "" {
 		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/tenant/pay-return?order_id={order_id}"
 	} else {
-		cfCfg.ReturnURL = "/tenant/pay-return?order_id={order_id}"
+		baseURL := "http://localhost:8080"
+		if addr := strings.TrimSpace(cfg.HTTPAddr); addr != "" {
+			if strings.HasPrefix(addr, ":") {
+				baseURL = "http://localhost" + addr
+			} else if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+				baseURL = strings.TrimRight(addr, "/")
+			} else {
+				baseURL = "http://" + addr
+			}
+		}
+		cfCfg.ReturnURL = baseURL + "/tenant/pay-return?order_id={order_id}"
 	}
 	if cfCfg.Enabled() {
 		cfClient = cashfree.NewClient(cfCfg)

@@ -148,3 +148,19 @@ func TestRouterVerificationSuite(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyAppShellEnabled(t *testing.T) {
+	if legacyAppShellEnabled(Deps{AppEnv: "production"}) {
+		t.Fatal("expected legacyAppShellEnabled to be false in production")
+	}
+	if legacyAppShellEnabled(Deps{AppEnv: "Production"}) {
+		t.Fatal("expected legacyAppShellEnabled to be false in Production (case insensitive)")
+	}
+	if !legacyAppShellEnabled(Deps{AppEnv: "development"}) {
+		t.Fatal("expected legacyAppShellEnabled to be true in development")
+	}
+	if !legacyAppShellEnabled(Deps{AppEnv: ""}) {
+		t.Fatal("expected legacyAppShellEnabled to be true when AppEnv is empty")
+	}
+}
+

@@ -19,6 +19,7 @@ func validConfig() *Config {
 		CashfreeSecretKey:     "",
 		CashfreeWebhookSecret: "",
 		AdminEmail:            "admin@example.com",
+		FrontendURL:           "https://pg.example.com",
 		AppEnv:                "development",
 	}
 }
@@ -441,3 +442,53 @@ func TestValidateWarnings_DatabaseWorkerURL_Fallback(t *testing.T) {
 		t.Fatalf("expected warning for worker URL falling back to maint URL, got: %v", warns)
 	}
 }
+
+func TestValidateForRealDeployment_FrontendURL(t *testing.T) {
+	// In production, missing FrontendURL must fail
+	cfg := validConfig()
+	cfg.AppEnv = "production"
+	cfg.FrontendURL = ""
+	cfg.MetricsSecret = "metrics-secret-16b"
+	cfg.DatabaseWorkerURL = "postgres://worker@localhost/db"
+	cfg.DatabaseURL = "postgres://app@localhost/db"
+	cfg.DatabaseMaintURL = "postgres://maint@localhost/db"
+	err := cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "PUBLIC_APP_URL (or FRONTEND_URL) is required in production") {
+		t.Fatalf("expected error for missing FrontendURL in production, got: %v", err)
+	}
+
+	// In production, HTTP scheme must fail
+	cfg.FrontendURL = "http://pg.example.com"
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "must be a valid absolute HTTPS URL in production") {
+		t.Fatalf("expected error for http URL in production, got: %v", err)
+	}
+
+	// In production, relative URL must fail
+	cfg.FrontendURL = "/app"
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "must be a valid absolute HTTPS URL in production") {
+		t.Fatalf("expected error for relative URL in production, got: %v", err)
+	}
+
+	// In production, valid HTTPS URL must pass
+	cfg.FrontendURL = "https://pg.example.com"
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected valid https URL in production to pass, got: %v", err)
+	}
+
+	// In development, http URL must pass
+	cfg.AppEnv = "development"
+	cfg.FrontendURL = "http://localhost:5173"
+	if err := cfg.ValidateForRealDeployment(); err != nil {
+		t.Fatalf("expected http URL in development to pass, got: %v", err)
+	}
+
+	// In development, invalid URL format must fail
+	cfg.FrontendURL = "not-a-valid-url"
+	err = cfg.ValidateForRealDeployment()
+	if err == nil || !strings.Contains(err.Error(), "must be a valid absolute HTTP or HTTPS URL") {
+		t.Fatalf("expected error for malformed URL in development, got: %v", err)
+	}
+}
+
