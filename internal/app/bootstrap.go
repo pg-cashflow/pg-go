@@ -196,8 +196,12 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	dispatchPub.Subscribe(waitlistConsumer.ProcessEventAsync)
 
 	var cfOrders collector.CashfreeOrders
-	var cfClient *cashfree.Client
 	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
+	if strings.TrimSpace(cfg.FrontendURL) != "" {
+		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/tenant/pay-return?order_id={order_id}"
+	} else {
+		cfCfg.ReturnURL = "/tenant/pay-return?order_id={order_id}"
+	}
 	if cfCfg.Enabled() {
 		cfClient = cashfree.NewClient(cfCfg)
 		if cfg.CashfreePGBaseURL != "" {

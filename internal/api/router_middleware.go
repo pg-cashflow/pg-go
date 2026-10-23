@@ -81,3 +81,24 @@ func legacyAppShellEnabled(d Deps) bool {
 	}
 	return strings.TrimSpace(d.FrontendURL) == ""
 }
+
+// CloudflareRealIP reads the CF-Connecting-IP header set by Cloudflare and
+// overwrites the request's RemoteAddr so that Gin's c.ClientIP() returns the
+// real visitor IP rather than the cloudflared tunnel address (127.0.0.1).
+//
+// This middleware must run AFTER Gin's trusted-proxy list is configured.
+// In non-Cloudflare environments it is a no-op: requests without the header
+// are unaffected and the middleware adds < 1µs of overhead.
+//
+// Placement: register this immediately after gin.Recovery() in NewRouter.
+func CloudflareRealIP() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if cfIP := strings.TrimSpace(c.GetHeader("CF-Connecting-IP")); cfIP != "" {
+			// Preserve the existing port so that net.SplitHostPort works on
+			// RemoteAddr. We set a sentinel port ":0" — only the host part
+			// matters for rate-limiting and audit logging.
+			c.Request.RemoteAddr = cfIP + ":0"
+		}
+		c.Next()
+	}
+}

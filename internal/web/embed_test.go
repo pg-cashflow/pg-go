@@ -67,15 +67,21 @@ func TestDirectoryTraversal_StaysInsideDist(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Errorf("path %q: expected 200 OK fallback, got %d", p, w.Code)
+		// After the cache-header fix, paths containing a dot (e.g. go.mod, .env)
+		// that do not exist in the embed return 404 — a strictly better outcome
+		// than a 200 index.html fallback. Both 200 and 404 are acceptable here;
+		// the invariant is that no repository file content must leak.
+		if w.Code != http.StatusOK && w.Code != http.StatusNotFound {
+			t.Errorf("path %q: expected 200 or 404, got %d", p, w.Code)
 		}
-		body := w.Body.String()
-		if strings.Contains(body, "module github.com/pg-cashflow/pg-go") {
-			t.Errorf("path %q leaked repository go.mod!", p)
-		}
-		if strings.Contains(body, "DATABASE_URL=") {
-			t.Errorf("path %q leaked .env file!", p)
+		if w.Code == http.StatusOK {
+			body := w.Body.String()
+			if strings.Contains(body, "module github.com/pg-cashflow/pg-go") {
+				t.Errorf("path %q leaked repository go.mod!", p)
+			}
+			if strings.Contains(body, "DATABASE_URL=") {
+				t.Errorf("path %q leaked .env file!", p)
+			}
 		}
 	}
 }

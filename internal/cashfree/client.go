@@ -21,6 +21,7 @@ type Config struct {
 	APIVersion                 string // e.g. "2025-01-01"
 	OrderExpiryDuration        time.Duration
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
+	ReturnURL                  string
 }
 
 func (c Config) WebhookReplayWindow() int {
@@ -91,16 +92,21 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	}
 	exp := c.now().Add(expiryDur).UTC()
 
+	orderMeta := map[string]any{
+		"payment_methods":   "upi",
+		"order_expiry_time": exp.Format(time.RFC3339),
+	}
+	if c.cfg.ReturnURL != "" {
+		orderMeta["return_url"] = c.cfg.ReturnURL
+	}
+
 	body := createOrderBody{
 		OrderID:       orderID,
 		OrderAmount:   json.Number(FormatPaiseToRupees(amountPaise)),
 		OrderCurrency: "INR",
 		Customer:      map[string]any{"customer_id": orderID, "customer_phone": customerPhone},
-		OrderMeta: map[string]any{
-			"payment_methods":   "upi",
-			"order_expiry_time": exp.Format(time.RFC3339),
-		},
-		OrderNote: note,
+		OrderMeta:     orderMeta,
+		OrderNote:     note,
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint()+"/orders", bytes.NewReader(raw))

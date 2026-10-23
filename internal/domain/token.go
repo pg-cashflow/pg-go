@@ -17,6 +17,12 @@ var (
 	ErrRefreshTokenNotFound = errors.New("refresh token not found")
 	ErrReplayDetected       = errors.New("refresh token replay detected")
 	ErrRefreshTokenExpired  = errors.New("refresh token expired")
+	// ErrGraceWindow is returned by RotateTokenTx when a multi-tab race replays a
+	// token that was rotated within the last 15 seconds and the family is still
+	// valid. The caller must issue a new access token using the successor row's
+	// user data but MUST NOT update the refresh cookie — the browser's current
+	// cookie is already the valid successor token.
+	ErrGraceWindow = errors.New("refresh token grace window: access token refreshed, cookie unchanged")
 )
 
 const (

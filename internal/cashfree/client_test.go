@@ -104,6 +104,39 @@ func TestCreateUPIOrderRequiresPhone(t *testing.T) {
 	}
 }
 
+func TestCreateUPIOrderWithReturnURL(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"payment_session_id": "sess_return"})
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{
+		AppID:     "id",
+		SecretKey: "secret",
+		Env:       "sandbox",
+		ReturnURL: "https://example.com/tenant/pay-return?order_id={order_id}",
+	}).WithBaseURL(srv.URL)
+
+	sess, _, err := c.CreateUPIOrder(context.Background(), "order_ret_1", 10000, "9876543210", "Note")
+	if err != nil {
+		t.Fatalf("CreateUPIOrder failed: %v", err)
+	}
+	if sess != "sess_return" {
+		t.Fatalf("expected sess_return, got %s", sess)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(gotBody, &body); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := body["order_meta"].(map[string]any)
+	if meta["return_url"] != "https://example.com/tenant/pay-return?order_id={order_id}" {
+		t.Fatalf("expected return_url to be configured, got %v", meta["return_url"])
+	}
+}
+
 func TestCreateRefund(t *testing.T) {
 	var gotBody []byte
 	var gotIdempotency string

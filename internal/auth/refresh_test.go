@@ -12,15 +12,17 @@ import (
 )
 
 type memoryRefreshTokenRepo struct {
-	mu     sync.Mutex
-	tokens map[string]*domain.RefreshToken
-	byID   map[uuid.UUID]*domain.RefreshToken
+	mu         sync.Mutex
+	tokens     map[string]*domain.RefreshToken
+	byID       map[uuid.UUID]*domain.RefreshToken
+	replacedBy map[uuid.UUID]uuid.UUID
 }
 
 func newMemoryRefreshTokenRepo() *memoryRefreshTokenRepo {
 	return &memoryRefreshTokenRepo{
-		tokens: make(map[string]*domain.RefreshToken),
-		byID:   make(map[uuid.UUID]*domain.RefreshToken),
+		tokens:     make(map[string]*domain.RefreshToken),
+		byID:       make(map[uuid.UUID]*domain.RefreshToken),
+		replacedBy: make(map[uuid.UUID]uuid.UUID),
 	}
 }
 
@@ -170,18 +172,12 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 		}
 
 		// Grace window check (15 seconds, only if family is not already nuked)
-		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 15*time.Second {
-			// Issue fresh child token in the same family
-			newRT.ID = uuid.New()
-			newRT.UserID = oldRT.UserID
-			newRT.FamilyID = oldRT.FamilyID
-			newRT.FamilyStartedAt = familyStarted
-			newRT.CreatedAt = time.Now()
-			newRT.Revoked = false
-
-			m.tokens[newRT.TokenHash] = newRT
-			m.byID[newRT.ID] = newRT
-			return newRT, nil
+		successorID, hasSuccessor := m.replacedBy[oldRT.ID]
+		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 15*time.Second && hasSuccessor {
+			successor, exists := m.byID[successorID]
+			if exists && !successor.Revoked {
+				return successor, domain.ErrGraceWindow
+			}
 		}
 		// Grace window exceeded or family already nuked -> revoke family
 		now := time.Now()
@@ -218,6 +214,7 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 
 	m.tokens[newRT.TokenHash] = newRT
 	m.byID[newRT.ID] = newRT
+	m.replacedBy[oldRT.ID] = newRT.ID
 
 	return newRT, nil
 }
@@ -419,20 +416,22 @@ func TestRefreshTokenGraceWindowRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected grace window to tolerate retransmit, got error: %v", err)
 	}
-	if accTokenRetry == "" || refTokenRetry == "" {
-		t.Fatalf("expected non-empty tokens on grace window retry")
+	if accTokenRetry == "" {
+		t.Fatalf("expected non-empty access token on grace window retry")
 	}
-	if refTokenRetry == refToken1 {
-		t.Fatalf("expected fresh unrevoked child token, got old revoked token")
+	// refTokenRetry MUST be empty string to signal to AuthRefresh not to overwrite
+	// the browser's cookie with an orphaned token.
+	if refTokenRetry != "" {
+		t.Fatalf("expected empty refresh token string on grace window retry to prevent cookie orphan, got: %s", refTokenRetry)
 	}
 
-	// Step 4: Verify the fresh child token can itself be rotated cleanly
-	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refTokenRetry)
+	// Step 4: Verify the client's current cookie (refToken2) is still valid and can be rotated cleanly
+	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refToken2)
 	if err != nil {
-		t.Fatalf("expected fresh child token from retry to rotate successfully, got: %v", err)
+		t.Fatalf("expected successor token to rotate successfully, got: %v", err)
 	}
 	if accTokenNext == "" || refTokenNext == "" {
-		t.Fatalf("expected valid tokens after rotating retry child token")
+		t.Fatalf("expected valid tokens after rotating successor token")
 	}
 }
 

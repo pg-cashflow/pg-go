@@ -174,6 +174,13 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.SMTPHost) == "" {
 			return nil, fmt.Errorf("SMTP_HOST is required in production for payout step-up OTP delivery")
 		}
+		// TRUSTED_PROXIES must be set in production. cloudflared connects from
+		// 127.0.0.1; without a trusted-proxy list c.ClientIP() returns 127.0.0.1
+		// for every request, collapsing all users into one IP rate-limit bucket
+		// and recording 127.0.0.1 in every audit and consent log.
+		if len(cfg.TrustedProxies) == 0 {
+			return nil, fmt.Errorf("TRUSTED_PROXIES must be set in production (set to the cloudflared/load-balancer IP or CIDR, e.g. '127.0.0.1')")
+		}
 	}
 	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)
 	if cfAppID == "" {

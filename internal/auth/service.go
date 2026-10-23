@@ -755,6 +755,30 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 
 	rotatedRT, err := s.refreshRepo.RotateTokenTx(ctx, oldHash, newRT)
 	if err != nil {
+		if errors.Is(err, domain.ErrGraceWindow) && rotatedRT != nil {
+			// Multi-tab race: the token was already rotated within the last 15s.
+			// The successor row is still valid. Issue a fresh access token so the
+			// caller gets a new 15-minute window, but return an empty refresh-token
+			// string to signal that the cookie must NOT be rotated — the browser's
+			// cookie is already the correct successor plaintext.
+			graceUser, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
+			if uerr != nil {
+				return "", "", nil, fmt.Errorf("grace window: load user: %w", uerr)
+			}
+			if graceUser.TenantID != nil && s.tenants != nil {
+				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
+				if terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+					return "", "", nil, ErrTenantVacated
+				}
+			}
+			graceAccessToken, aerr := IssueAccessTokenWithFamily(s.jwtSecret, graceUser, &rotatedRT.FamilyID)
+			if aerr != nil {
+				return "", "", nil, fmt.Errorf("grace window: issue access token: %w", aerr)
+			}
+			setCachedTokenVersion(graceUser.ID, graceUser.TokenVersion)
+			// Empty refresh-token string signals AuthRefresh to skip setRefreshCookie.
+			return graceAccessToken, "", graceUser, nil
+		}
 		if errors.Is(err, domain.ErrRefreshTokenNotFound) {
 			return "", "", nil, ErrInvalidToken
 		}

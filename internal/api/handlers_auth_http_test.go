@@ -22,6 +22,7 @@ import (
 type fakeAuthRefreshService struct {
 	stubPIIAuthService
 	rotateErr         error
+	rotateEmptyRef    bool
 	otpErr            error
 	otpCalls          []string
 	sessionsToReturn  []domain.ActiveSession
@@ -34,6 +35,9 @@ func (s *fakeAuthRefreshService) RotateRefreshToken(_ context.Context, token str
 		return "", "", nil, s.rotateErr
 	}
 	user := &domain.User{ID: uuid.New(), Role: domain.RoleOwner}
+	if s.rotateEmptyRef {
+		return "grace-access-token", "", user, nil
+	}
 	return "fresh-access-token", "rotated-refresh-token", user, nil
 }
 
@@ -239,6 +243,49 @@ func TestAuthHandlers_T4d(t *testing.T) {
 		}
 		if !strings.Contains(w.Body.String(), string(apierr.CodeAuthAccessRevoked)) {
 			t.Fatalf("expected CodeAuthAccessRevoked in body, got: %s", w.Body.String())
+		}
+	})
+
+	t.Run("AuthRefresh: Transient error returns 503 and preserves cookie", func(t *testing.T) {
+		authSvc.rotateErr = errors.New("database connection timeout")
+		defer func() { authSvc.rotateErr = nil }()
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{
+			Name:  api.RefreshCookieName,
+			Value: "active-token-during-db-blip",
+		})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 for transient error, got %d body=%s", w.Code, w.Body.String())
+		}
+		cookieHeader := w.Header().Get("Set-Cookie")
+		if strings.Contains(cookieHeader, "Max-Age=0") || strings.Contains(cookieHeader, "expires=") {
+			t.Fatalf("cookie must not be cleared on transient error! got Set-Cookie: %s", cookieHeader)
+		}
+	})
+
+	t.Run("AuthRefresh: Grace window returns 200 with new access token and skips Set-Cookie", func(t *testing.T) {
+		authSvc.rotateEmptyRef = true
+		defer func() { authSvc.rotateEmptyRef = false }()
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+		req.AddCookie(&http.Cookie{
+			Name:  api.RefreshCookieName,
+			Value: "concurrent-tab-replayed-token",
+		})
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 on grace window hit, got %d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "grace-access-token") {
+			t.Fatalf("expected new access token in response body, got: %s", w.Body.String())
+		}
+		cookieHeader := w.Header().Get("Set-Cookie")
+		if cookieHeader != "" {
+			t.Fatalf("grace window must not set or overwrite refresh cookie, got Set-Cookie: %s", cookieHeader)
 		}
 	})
 

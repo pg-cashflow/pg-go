@@ -141,6 +141,7 @@ func NewRouter(d Deps) *gin.Engine {
 	r.Use(
 		RequestIDMiddleware(),
 		gin.Recovery(),
+		CloudflareRealIP(), // must be before any rate-limit or audit that reads c.ClientIP()
 		gin.LoggerWithConfig(gin.LoggerConfig{
 			Formatter: redactingLogFormatter,
 		}),

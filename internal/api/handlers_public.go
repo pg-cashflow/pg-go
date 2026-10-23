@@ -402,18 +402,38 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 
 	newAccessToken, newRefreshToken, user, err := h.Auth.RotateRefreshTokenWithClient(c.Request.Context(), cookie, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
-		h.clearRefreshCookie(c)
+		// Only clear the session cookie for definitive, permanent auth failures.
+		// Transient errors (DB timeouts, network blips) must not destroy the session.
+		isDefinitiveFailure := errors.Is(err, auth.ErrInvalidToken) ||
+			errors.Is(err, auth.ErrRefreshTokenExpired) ||
+			errors.Is(err, auth.ErrReplayDetected) ||
+			errors.Is(err, auth.ErrTenantVacated)
+
+		if isDefinitiveFailure {
+			h.clearRefreshCookie(c)
+		}
+
 		code := apierr.CodeAuthUnauthorized
 		msg := "invalid or expired refresh token"
 		status := http.StatusUnauthorized
-		if errors.Is(err, auth.ErrReplayDetected) {
+
+		switch {
+		case errors.Is(err, auth.ErrReplayDetected):
 			code = apierr.CodeAuthAccessRevoked
 			msg = "refresh token replay detected: session family revoked"
-		} else if errors.Is(err, auth.ErrTenantVacated) {
+		case errors.Is(err, auth.ErrTenantVacated):
 			code = apierr.CodeAuthAccessRevoked
 			msg = "tenant vacated"
 			status = http.StatusForbidden
+		case !isDefinitiveFailure:
+			// Transient server-side failure: client must retry, session is intact.
+			c.JSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{
+				Error: "refresh temporarily unavailable, please retry",
+				Code:  apierr.CodeAuthUnauthorized,
+			})
+			return
 		}
+
 		c.JSON(status, apierr.ErrorEnvelope{
 			Error: msg,
 			Code:  code,
@@ -421,7 +441,12 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 		return
 	}
 
-	h.setRefreshCookie(c, newRefreshToken, time.Now().Add(auth.RefreshTokenTTL))
+	// Grace-window path: service returned an empty refresh token to signal that
+	// the browser's current cookie is already the valid successor token.
+	// Issue only a new access token; do not rotate the cookie.
+	if newRefreshToken != "" {
+		h.setRefreshCookie(c, newRefreshToken, time.Now().Add(auth.RefreshTokenTTL))
+	}
 	h.attachUserLocale(c.Request.Context(), c.Request, user)
 	c.JSON(http.StatusOK, gin.H{"token": newAccessToken, "user": user})
 }

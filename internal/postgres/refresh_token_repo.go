@@ -223,7 +223,11 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 						return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
 					}
 				}
-				return &successor, nil
+				// Return the successor row together with ErrGraceWindow.
+				// The service layer MUST issue a new access token from successor.UserID
+				// and successor.FamilyID but MUST NOT rotate the refresh cookie — the
+				// browser's existing cookie is already the valid successor token.
+				return &successor, domain.ErrGraceWindow
 			}
 		}
 
