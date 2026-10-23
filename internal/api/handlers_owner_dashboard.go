@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -1065,6 +1066,8 @@ func (h *Handlers) OwnerUpdatePropertySettings(c *gin.Context) {
 		current.ReminderCatchUpDays = *in.ReminderCatchUpDays
 	}
 	if in.ActiveModules != nil {
+		// ADR-032 D6: KYC consent and payment matters are legal requirements and not toggleable.
+		in.ActiveModules["kyc"] = true
 		current.ActiveModules = in.ActiveModules
 	}
 	if in.AutoApplyCredit != nil {
@@ -1084,6 +1087,19 @@ func (h *Handlers) OwnerUpdatePropertySettings(c *gin.Context) {
 			respondErr(c, err)
 			return
 		}
+	}
+
+	if h.Events != nil {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"property_id":    pid.String(),
+			"active_modules": current.ActiveModules,
+			"payment_mode":   current.PaymentMode,
+		})
+		_ = h.Events.Publish(c.Request.Context(), domain.Event{
+			PropertyID: pid,
+			EventType:  domain.EvtPropertySettingsChanged,
+			Payload:    payload,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"settings": current})

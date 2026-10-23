@@ -5,4 +5,4 @@
 ## Gate 8
 
 - [x] Points, rewards, leaderboard routes
-- [ ] Enforce `active_modules` on referrals/leaderboard/meal_rsvp (ADR-032 D6)
+- [x] Enforce `active_modules` on referrals/leaderboard/meal_rsvp/menu_poll (ADR-032 D6)

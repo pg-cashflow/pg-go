@@ -64,6 +64,7 @@ const (
 	EvtManagerAdvanceReimbursed   EventType = "ManagerAdvanceReimbursed"
 	EvtManagerCapabilityChanged   EventType = "manager.capability.changed"
 	EvtManagerDeactivated         EventType = "manager.deactivated"
+	EvtPropertySettingsChanged    EventType = "property.settings.changed"
 	EvtBudgetChanged            EventType = "BudgetChanged"
 	EvtLeakageDetected          EventType = "LeakageDetected"
 	EvtRecommendationCreated    EventType = "RecommendationCreated"

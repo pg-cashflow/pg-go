@@ -5,4 +5,4 @@
 ## Gate 8
 
 - [x] Manager inspections, meters, hazards routes
-- [ ] Complaint box route if missing (ADR-032 `complaints.respond`)
+- [x] Complaint box route (ADR-032 `complaints.respond` wired to hazards/complaints routes)

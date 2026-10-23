@@ -107,3 +107,68 @@ func TestRequireCapability_DisallowedForbidden(t *testing.T) {
 		t.Fatalf("expected 403 forbidden, got %d", w.Code)
 	}
 }
+
+type multiCapChecker struct {
+	allowedCaps map[string]bool
+}
+
+func (m *multiCapChecker) HasActive(_ context.Context, _, _ uuid.UUID, capability string) (bool, error) {
+	return m.allowedCaps[capability], nil
+}
+
+func TestRequireAnyCapability(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+
+	checker := &multiCapChecker{
+		allowedCaps: map[string]bool{
+			"complaints.respond": true,
+			"inspections.write":  false,
+		},
+	}
+	handler := RequireAnyCapability(checker, "complaints.respond", "inspections.write")
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{
+			UserID:     userID,
+			Role:       domain.RoleManager,
+			PropertyID: &propID,
+		})
+		c.Next()
+	})
+	r.GET("/hazards", handler, func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/hazards", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for manager with complaints.respond, got %d", w.Code)
+	}
+
+	// Test manager without either capability gets 403
+	checkerNoCap := &multiCapChecker{allowedCaps: map[string]bool{}}
+	handlerNoCap := RequireAnyCapability(checkerNoCap, "complaints.respond", "inspections.write")
+	r2 := gin.New()
+	r2.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{
+			UserID:     userID,
+			Role:       domain.RoleManager,
+			PropertyID: &propID,
+		})
+		c.Next()
+	})
+	r2.GET("/hazards", handlerNoCap, func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/hazards", nil)
+	r2.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for manager with neither cap, got %d", w2.Code)
+	}
+}
+

@@ -15,6 +15,9 @@ func (h *Handlers) OwnerListReferrals(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, pid, "referrals") {
+		return
+	}
 	if h.Referrals == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "referrals unavailable"})
 		return
@@ -30,6 +33,9 @@ func (h *Handlers) OwnerListReferrals(c *gin.Context) {
 func (h *Handlers) OwnerCreateReferral(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, pid, "referrals") {
 		return
 	}
 	if h.Referrals == nil {

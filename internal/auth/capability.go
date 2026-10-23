@@ -27,11 +27,11 @@ const (
 	maxCapabilityCacheEntries = 1024
 )
 
-// RequireCapability allows the owner. A manager must hold the named grant.
+// RequireAnyCapability allows the owner. A manager must hold at least one of the named grants.
 // A nil checker does not enforce grants. cmd/server always sets a checker.
 // Database errors fail closed with HTTP 503. Grants are cached for 30 seconds.
 // Memory is bounded to maxCapabilityCacheEntries with active eviction.
-func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
+func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.HandlerFunc {
 	var mu sync.Mutex
 	cache := make(map[string]capHit)
 	return func(c *gin.Context) {
@@ -52,53 +52,60 @@ func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
 			return
 		}
-		key := claims.PropertyID.String() + "|" + claims.UserID.String() + "|" + cap
-		now := time.Now()
 
-		mu.Lock()
-		hit, found := cache[key]
-		if found && now.Sub(hit.at) < capabilityCacheTTL {
+		now := time.Now()
+		var allowed bool
+		for _, cap := range caps {
+			key := claims.PropertyID.String() + "|" + claims.UserID.String() + "|" + cap
+			mu.Lock()
+			hit, found := cache[key]
+			if found && now.Sub(hit.at) < capabilityCacheTTL {
+				mu.Unlock()
+				if hit.ok {
+					allowed = true
+					break
+				}
+				continue
+			}
 			mu.Unlock()
-			if !hit.ok {
-				apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
+
+			hasCap, err := checker.HasActive(c.Request.Context(), *claims.PropertyID, claims.UserID, cap)
+			if err != nil {
+				apierr.Abort(c, http.StatusServiceUnavailable, "capability lookup failed", apierr.CodeAuthForbidden)
 				return
 			}
-			c.Next()
-			return
-		}
-		mu.Unlock()
 
-		allowed, err := checker.HasActive(c.Request.Context(), *claims.PropertyID, claims.UserID, cap)
-		if err != nil {
-			apierr.Abort(c, http.StatusServiceUnavailable, "capability lookup failed", apierr.CodeAuthForbidden)
-			return
-		}
-
-		mu.Lock()
-		if len(cache) >= maxCapabilityCacheEntries {
-			for k, v := range cache {
-				if now.Sub(v.at) >= capabilityCacheTTL {
-					delete(cache, k)
-				}
-			}
+			mu.Lock()
 			if len(cache) >= maxCapabilityCacheEntries {
-				var oldestKey string
-				var oldestTime time.Time
-				first := true
 				for k, v := range cache {
-					if first || v.at.Before(oldestTime) {
-						oldestKey = k
-						oldestTime = v.at
-						first = false
+					if now.Sub(v.at) >= capabilityCacheTTL {
+						delete(cache, k)
 					}
 				}
-				if !first {
-					delete(cache, oldestKey)
+				if len(cache) >= maxCapabilityCacheEntries {
+					var oldestKey string
+					var oldestTime time.Time
+					first := true
+					for k, v := range cache {
+						if first || v.at.Before(oldestTime) {
+							oldestKey = k
+							oldestTime = v.at
+							first = false
+						}
+					}
+					if !first {
+						delete(cache, oldestKey)
+					}
 				}
 			}
+			cache[key] = capHit{ok: hasCap, at: now}
+			mu.Unlock()
+
+			if hasCap {
+				allowed = true
+				break
+			}
 		}
-		cache[key] = capHit{ok: allowed, at: now}
-		mu.Unlock()
 
 		if !allowed {
 			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
@@ -107,3 +114,9 @@ func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequireCapability allows the owner. A manager must hold the named grant.
+func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
+	return RequireAnyCapability(checker, cap)
+}
+

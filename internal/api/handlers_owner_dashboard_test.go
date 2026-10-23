@@ -1011,6 +1011,86 @@ func TestOwnerPropertySettings_GetAndPatch(t *testing.T) {
 	}
 }
 
+type mockDashboardEventsPublisher struct {
+	events []domain.Event
+}
+
+func (m *mockDashboardEventsPublisher) Publish(_ context.Context, e domain.Event) error {
+	m.events = append(m.events, e)
+	return nil
+}
+
+func TestOwnerUpdatePropertySettings_AuditAndKYCProtection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	jwtSecret := "test-secret-key-32-bytes-long!!"
+	ownerID := uuid.New()
+	ownerUser := &domain.User{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner}
+	token, _ := auth.IssueToken(jwtSecret, ownerUser)
+
+	propStore := &dashboardPropStore{
+		props: map[uuid.UUID]*domain.Property{
+			propID: {ID: propID, Name: "Test PG"},
+		},
+		settings: map[uuid.UUID]*domain.PropertySettings{
+			propID: {
+				PropertyID: propID,
+				ActiveModules: map[string]bool{
+					"gamification": true,
+					"kyc":          true,
+					"meal_rsvp":    true,
+				},
+			},
+		},
+	}
+	evPub := &mockDashboardEventsPublisher{}
+
+	d := Deps{
+		PropertyStore: propStore,
+		JWTSecret:     jwtSecret,
+		Events:        evPub,
+	}
+	r := NewRouter(d)
+
+	// Owner attempts to disable KYC and meal_rsvp
+	patchBody := `{"active_modules": {"kyc": false, "meal_rsvp": false}}`
+	reqPatch := httptest.NewRequest(http.MethodPatch, "/api/owner/settings", strings.NewReader(patchBody))
+	reqPatch.Header.Set("Authorization", "Bearer "+token)
+	reqPatch.Header.Set("Content-Type", "application/json")
+	wPatch := httptest.NewRecorder()
+	r.ServeHTTP(wPatch, reqPatch)
+
+	if wPatch.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK updating settings, got %d: %s", wPatch.Code, wPatch.Body.String())
+	}
+	var patchRes struct {
+		Settings domain.PropertySettings `json:"settings"`
+	}
+	if err := json.Unmarshal(wPatch.Body.Bytes(), &patchRes); err != nil {
+		t.Fatalf("unmarshal patch settings: %v", err)
+	}
+
+	// KYC must remain true per ADR-032 D6
+	if patchRes.Settings.ActiveModules["kyc"] != true {
+		t.Errorf("expected kyc module to remain true, got %v", patchRes.Settings.ActiveModules["kyc"])
+	}
+	// meal_rsvp must be disabled
+	if patchRes.Settings.ActiveModules["meal_rsvp"] != false {
+		t.Errorf("expected meal_rsvp module to be false, got %v", patchRes.Settings.ActiveModules["meal_rsvp"])
+	}
+
+	// Verify audit event published
+	if len(evPub.events) != 1 {
+		t.Fatalf("expected 1 audit event published, got %d", len(evPub.events))
+	}
+	if evPub.events[0].EventType != domain.EvtPropertySettingsChanged {
+		t.Errorf("expected event type %s, got %s", domain.EvtPropertySettingsChanged, evPub.events[0].EventType)
+	}
+	if evPub.events[0].PropertyID != propID {
+		t.Errorf("expected property ID %s, got %s", propID, evPub.events[0].PropertyID)
+	}
+}
+
 func TestOwnerPaymentModeAndCashfreeReadiness(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	propID := uuid.New()

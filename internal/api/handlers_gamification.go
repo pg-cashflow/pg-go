@@ -171,6 +171,9 @@ func (h *Handlers) TenantDisputeInspectionItem(c *gin.Context) {
 // TenantMealRSVP returns tomorrow's RSVP and allows confirmation.
 func (h *Handlers) TenantGetMealRSVP(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "meal_rsvp") {
+		return
+	}
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
 
 	b, _ := h.GamificationStore.GetTenantMealRSVP(c.Request.Context(), tenant.ID, tomorrow, "breakfast")
@@ -187,6 +190,9 @@ func (h *Handlers) TenantGetMealRSVP(c *gin.Context) {
 
 func (h *Handlers) TenantSubmitMealRSVP(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "meal_rsvp") {
+		return
+	}
 	var body struct {
 		Date      string `json:"date"` // YYYY-MM-DD
 		Slot      string `json:"slot"` // breakfast, lunch, dinner
@@ -215,6 +221,9 @@ func (h *Handlers) TenantSubmitMealRSVP(c *gin.Context) {
 // TenantMenuPoll gets active poll and casts vote.
 func (h *Handlers) TenantGetMenuPoll(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "menu_poll") {
+		return
+	}
 	monthYear := time.Now().UTC().Format("2006-01")
 
 	poll, err := h.GamificationStore.GetActiveMenuPoll(c.Request.Context(), tenant.PropertyID, monthYear)
@@ -233,6 +242,9 @@ func (h *Handlers) TenantGetMenuPoll(c *gin.Context) {
 
 func (h *Handlers) TenantVoteMenuPoll(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "menu_poll") {
+		return
+	}
 	var body struct {
 		PollID   string `json:"poll_id"`
 		OptionID string `json:"option_id"`
@@ -356,6 +368,9 @@ func (h *Handlers) TenantViolations(c *gin.Context) {
 // TenantLeaderboard returns top positive streaks.
 func (h *Handlers) TenantLeaderboard(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "leaderboard") {
+		return
+	}
 	streaks, err := h.GamificationStore.GetTopStreaks(c.Request.Context(), tenant.PropertyID, 10)
 	if err != nil {
 		respondErr(c, err)
@@ -374,6 +389,9 @@ func (h *Handlers) TenantLeaderboard(c *gin.Context) {
 // TenantReferrals handles tenant referral creation and tracking.
 func (h *Handlers) TenantReferrals(c *gin.Context) {
 	tenant := c.MustGet(auth.ContextTenantKey).(*domain.Tenant)
+	if !h.requirePropertyActiveModule(c, tenant.PropertyID, "referrals") {
+		return
+	}
 	if c.Request.Method == http.MethodPost {
 		var body struct {
 			Phone             string `json:"phone"`

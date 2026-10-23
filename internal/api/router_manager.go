@@ -6,8 +6,11 @@ import (
 )
 
 func registerManagerRoutes(manager *gin.RouterGroup, d Deps, h *Handlers) {
-	capOf := func(name string) gin.HandlerFunc {
-		return auth.RequireCapability(name, d.CapabilityStore)
+	capOf := func(name ...string) gin.HandlerFunc {
+		if len(name) == 1 {
+			return auth.RequireCapability(name[0], d.CapabilityStore)
+		}
+		return auth.RequireAnyCapability(d.CapabilityStore, name...)
 	}
 	manager.GET("/me/capabilities", h.ManagerMyCapabilities)
 	manager.GET("/onboarding-settings", h.ManagerGetOnboardingSettings)
@@ -23,8 +26,10 @@ func registerManagerRoutes(manager *gin.RouterGroup, d Deps, h *Handlers) {
 	manager.POST("/violations", capOf("inspections.write"), h.ManagerLogViolation)
 	manager.POST("/meter-readings", capOf("meters.write"), h.ManagerRecordMeterReading)
 	manager.GET("/kitchen/headcount", capOf("kitchen.headcount"), h.ManagerKitchenHeadcount)
-	manager.GET("/hazards", capOf("inspections.write"), h.ManagerListHazards)
-	manager.POST("/hazards/:id/resolve", capOf("inspections.write"), h.ManagerResolveHazard)
+	manager.GET("/hazards", capOf("complaints.respond", "inspections.write"), h.ManagerListHazards)
+	manager.POST("/hazards/:id/resolve", capOf("complaints.respond", "inspections.write"), h.ManagerResolveHazard)
+	manager.GET("/complaints", capOf("complaints.respond", "inspections.write"), h.ManagerListHazards)
+	manager.POST("/complaints/:id/resolve", capOf("complaints.respond", "inspections.write"), h.ManagerResolveHazard)
 	manager.POST("/vendor-inspections", capOf("inspections.write"), h.ManagerSubmitVendorInspection)
 	manager.GET("/finance/expenses", capOf("expenses.post"), h.ListExpenses)
 	manager.POST("/finance/expenses", capOf("expenses.post"), h.PostExpense)

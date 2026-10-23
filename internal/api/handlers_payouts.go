@@ -497,6 +497,9 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, pid, "payouts") {
+		return
+	}
 	uid, ok := userIDFromClaims(c)
 	if !ok {
 		return
@@ -940,6 +943,9 @@ func (h *Handlers) getPropertySettings(ctx context.Context, pid uuid.UUID) (*dom
 func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
 	if !ok {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, pid, "payouts") {
 		return
 	}
 	batchID, ok := ParseUUIDParam(c, "id")

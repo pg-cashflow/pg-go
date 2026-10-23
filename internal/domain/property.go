@@ -54,6 +54,10 @@ func DefaultPropertySettings(propertyID uuid.UUID) PropertySettings {
 			"payouts":      true,
 			"accounting":   true,
 			"calendar":     true,
+			"referrals":    true,
+			"leaderboard":  true,
+			"meal_rsvp":    true,
+			"menu_poll":    true,
 		},
 		AutoApplyCredit: true,
 	}

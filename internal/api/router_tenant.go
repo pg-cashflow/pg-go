@@ -49,6 +49,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	gated.GET("/menu-poll", h.TenantGetMenuPoll)
 	gated.POST("/menu-poll/vote", h.TenantVoteMenuPoll)
 	gated.POST("/hazards", h.TenantReportHazard)
+	gated.POST("/complaints", h.TenantReportHazard)
 	gated.GET("/violations", h.TenantViolations)
 	gated.GET("/leaderboard", h.TenantLeaderboard)
 	gated.GET("/referrals", h.TenantReferrals)
