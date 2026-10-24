@@ -117,6 +117,9 @@ func (s *Service) fireSettle(ctx context.Context, p *domain.Payment, dueID uuid.
 // return ErrRequiresConfirmation to prevent silent cross-attribution between identical due amounts.
 func (s *Service) MatchPayment(ctx context.Context, propertyID uuid.UUID, txnID string, amountPaise int64, txnDate time.Time, note string) (*domain.Payment, error) {
 	if txnID != "" {
+		if norm, nErr := domain.NormalizeUTR(txnID); nErr == nil {
+			txnID = norm
+		}
 		if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
 			return nil, ErrDuplicateTxn
 		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
