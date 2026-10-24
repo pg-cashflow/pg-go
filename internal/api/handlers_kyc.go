@@ -149,6 +149,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusServiceUnavailable, err.Error(), apierr.Code("kyc.cashfree_unavailable"))
 	case errors.Is(err, domain.ErrVerificationNotFound):
 		return clientErrWithCode(http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
+	case errors.Is(err, domain.ErrVerificationNotPending):
+		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.not_pending"))
 	default:
 		return err
 	}
@@ -170,7 +172,8 @@ func (h *Handlers) kycSvcOrErr(c *gin.Context) KYCService {
 type kycConsentBody struct {
 	Purpose        string `json:"purpose"         binding:"required"`
 	ConsentVersion string `json:"consent_version" binding:"required"`
-	ConsentText    string `json:"consent_text"    binding:"required"`
+	ConsentText    string `json:"consent_text"`
+	Locale         string `json:"locale"`
 }
 
 // TenantKYCConsent handles POST /api/tenant/kyc/consent.
@@ -190,8 +193,17 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 
 	var body kycConsentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "purpose, consent_version and consent_text are required", apierr.CodeRequestInvalidBody)
+		apierr.RespondBindErr(c, "purpose and consent_version are required", apierr.CodeRequestInvalidBody)
 		return
+	}
+
+	locale := body.Locale
+	if locale == "" {
+		locale = c.GetHeader("Accept-Language")
+	}
+	consentText := body.ConsentText
+	if consentText == "" {
+		consentText = kycsvc.ResolveConsentText(body.ConsentVersion, locale)
 	}
 
 	ip := c.ClientIP()
@@ -199,7 +211,7 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	actor := fmt.Sprintf("tenant:%s", t.ID)
 
 	consent, err := svc.RecordConsent(c.Request.Context(),
-		t.ID, body.Purpose, body.ConsentVersion, body.ConsentText, ip, ua, actor)
+		t.ID, body.Purpose, body.ConsentVersion, consentText, ip, ua, actor)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -387,7 +399,9 @@ func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
 	if err != nil {
 		var fail *kycsvc.AadhaarVerifyFailure
 		if errors.As(err, &fail) {
-			c.JSON(http.StatusOK, gin.H{
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":              fail.Error(),
+				"code":               "kyc.aadhaar_verify_failed",
 				"status":             "failed",
 				"reason_code":        fail.ReasonCode,
 				"retryable":          fail.Retryable,

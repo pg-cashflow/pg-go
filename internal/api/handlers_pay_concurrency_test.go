@@ -697,3 +697,144 @@ func TestH_ExactDecimalStringParser(t *testing.T) {
 		}
 	}
 }
+
+// TestI_VerifyFirstThenWebhook ensures that if TenantDuePayVerify runs first,
+// the subsequent Cashfree webhook safely deduplicates with HTTP 200 and zero duplicate settlements.
+func TestI_VerifyFirstThenWebhook(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dueID := uuid.New()
+	intentID := uuid.New()
+	orderID := "pg-ORD-V1"
+	cfPaymentID := "991001"
+	amount := int64(600000)
+
+	intent := &domain.PaymentIntent{
+		ID:              intentID,
+		DueID:           dueID,
+		ProviderOrderID: orderID,
+		AmountPaise:     amount,
+	}
+
+	intents := &stubIntentStore{
+		byOrder: map[string]*domain.PaymentIntent{orderID: intent},
+		byCF:    map[string]*domain.PaymentIntent{cfPaymentID: intent},
+	}
+	gwRepo := newThreadSafeGatewayRepo()
+	pay := &dedupStubPay{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "test_whsec",
+		IntentStore:        intents,
+		GatewayPaymentRepo: gwRepo,
+		Payments:           pay,
+	}}
+
+	// 1. Verify runs first (e.g. tenant browser polling)
+	err := h.SettleGatewayOrder(context.Background(), orderID, cfPaymentID, "BANK_REF_1", amount, intent, nil)
+	if err != nil {
+		t.Fatalf("verify SettleGatewayOrder failed: %v", err)
+	}
+
+	// 2. Webhook arrives second
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	body := fmt.Sprintf(`{
+		"type": "PAYMENT_SUCCESS_WEBHOOK",
+		"data": {
+			"order": { "order_id": "%s" },
+			"payment": {
+				"cf_payment_id": "%s",
+				"payment_amount": 6000.00,
+				"bank_reference": "BANK_REF_1"
+			}
+		}
+	}`, orderID, cfPaymentID)
+
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	sig := sign("test_whsec", ts+body)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", ts)
+	req.Header.Set("x-webhook-signature", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 on webhook arrival after verify, got %d", w.Code)
+	}
+	if pay.n != 1 {
+		t.Fatalf("expected exactly 1 settlement execution, got %d", pay.n)
+	}
+}
+
+// TestJ_WebhookFirstThenVerify ensures that if the Cashfree webhook runs first,
+// a subsequent TenantDuePayVerify execution safely deduplicates without duplicate payment or errors.
+func TestJ_WebhookFirstThenVerify(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dueID := uuid.New()
+	intentID := uuid.New()
+	orderID := "pg-ORD-W1"
+	cfPaymentID := "991002"
+	amount := int64(750000)
+
+	intent := &domain.PaymentIntent{
+		ID:              intentID,
+		DueID:           dueID,
+		ProviderOrderID: orderID,
+		AmountPaise:     amount,
+	}
+
+	intents := &stubIntentStore{
+		byOrder: map[string]*domain.PaymentIntent{orderID: intent},
+		byCF:    map[string]*domain.PaymentIntent{cfPaymentID: intent},
+	}
+	gwRepo := newThreadSafeGatewayRepo()
+	pay := &dedupStubPay{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:     "test_whsec",
+		IntentStore:        intents,
+		GatewayPaymentRepo: gwRepo,
+		Payments:           pay,
+	}}
+
+	// 1. Webhook arrives first
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	body := fmt.Sprintf(`{
+		"type": "PAYMENT_SUCCESS_WEBHOOK",
+		"data": {
+			"order": { "order_id": "%s" },
+			"payment": {
+				"cf_payment_id": "%s",
+				"payment_amount": 7500.00,
+				"bank_reference": "BANK_REF_2"
+			}
+		}
+	}`, orderID, cfPaymentID)
+
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	sig := sign("test_whsec", ts+body)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", ts)
+	req.Header.Set("x-webhook-signature", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 on webhook arrival, got %d", w.Code)
+	}
+
+	// 2. Verify runs second
+	err := h.SettleGatewayOrder(context.Background(), orderID, cfPaymentID, "BANK_REF_2", amount, intent, nil)
+	if err != nil {
+		t.Fatalf("verify SettleGatewayOrder failed: %v", err)
+	}
+
+	if pay.n != 1 {
+		t.Fatalf("expected exactly 1 settlement execution, got %d", pay.n)
+	}
+}

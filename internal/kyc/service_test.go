@@ -288,15 +288,36 @@ func newTestService(repo *fakeRepo, cf kycsvc.CashfreeKYCClient) *kycsvc.Service
 func TestRecordConsent(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newTestService(repo, &fakeCashfree{})
+	tenantID := uuid.New()
 
-	c, err := svc.RecordConsent(context.Background(), uuid.New(),
-		"aadhaar_kyc", "v1", "I consent to Aadhaar verification",
+	c, err := svc.RecordConsent(context.Background(), tenantID,
+		"aadhaar_kyc", "v1.0", "I consent to Aadhaar verification",
 		"127.0.0.1", "Mozilla/5.0", "tenant:abc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if c.ID == uuid.Nil {
 		t.Error("consent ID should be set after recording")
+	}
+	if c.ConsentTextHash == "" {
+		t.Error("consent text hash should not be empty")
+	}
+
+	// 1. Stable hash: calling again with same text generates exact same hash
+	expectedHash := c.ConsentTextHash
+
+	// 2. Idempotency: when active consent exists for this version, returns existing without error
+	repo.consent = c
+	c2, err := svc.RecordConsent(context.Background(), tenantID,
+		"aadhaar_kyc", "v1.0", "", "127.0.0.1", "Mozilla/5.0", "tenant:abc")
+	if err != nil {
+		t.Fatalf("unexpected error on idempotent call: %v", err)
+	}
+	if c2.ID != c.ID {
+		t.Errorf("expected idempotent consent to return same ID %s, got %s", c.ID, c2.ID)
+	}
+	if c2.ConsentTextHash != expectedHash {
+		t.Errorf("expected stable hash %s, got %s", expectedHash, c2.ConsentTextHash)
 	}
 }
 

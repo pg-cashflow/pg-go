@@ -16,7 +16,6 @@ JOBS=(
     "pg-billing-cycle"
     "pg-cashfree-poll"
     "pg-daily-rollup"
-    "pg-digilocker-reconcile"
     "pg-financial-summary"
     "pg-gamification-cycle"
     "pg-kpi-snapshot"

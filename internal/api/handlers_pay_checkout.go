@@ -1,8 +1,6 @@
 package api
 
 import (
-	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -12,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	"github.com/pg-cashflow/pg-go/internal/payment"
 )
 
 type verifyCacheEntry struct {
@@ -180,43 +177,10 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	if txn == "" {
 		txn = cfID
 	}
-	dedupKey := ""
-	if cfID != "" {
-		dedupKey = fmt.Sprintf("cashfree:pg:%s", cfID)
-	}
 
-	snapshot, snapErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID)
-	if snapErr == nil && len(snapshot) > 1 {
-		allSettled := true
-		for _, item := range snapshot {
-			itemDedup := ""
-			if dedupKey != "" {
-				itemDedup = fmt.Sprintf("%s:%s", dedupKey, item.DueID)
-			}
-			itemTxn := fmt.Sprintf("%s:due:%s", txn, item.DueID)
-			_, err = h.Payments.GatewaySettle(c.Request.Context(), item.DueID, item.AmountPaise, itemTxn, itemDedup)
-			if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
-				allSettled = false
-			}
-		}
-		if !allSettled {
-			c.JSON(http.StatusOK, gin.H{"paid": false})
-			return
-		}
-	} else {
-		if dedupKey != "" {
-			_, err = h.Payments.GatewaySettle(c.Request.Context(), due.ID, amount, txn, dedupKey)
-		} else {
-			_, err = h.Payments.GatewaySettle(c.Request.Context(), due.ID, amount, txn)
-		}
-		if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
-			c.JSON(http.StatusOK, gin.H{"paid": false})
-			return
-		}
-	}
-
-	if cfID != "" {
-		_ = h.IntentStore.MarkPaid(c.Request.Context(), intent.ID, cfID)
+	if err := h.SettleGatewayOrder(c.Request.Context(), intent.ProviderOrderID, cfID, txn, amount, intent, nil); err != nil {
+		c.JSON(http.StatusOK, gin.H{"paid": false})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"paid": true})

@@ -703,8 +703,8 @@ func TestTenantKYCAadhaarOTPVerify_FailureClassification(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp map[string]interface{}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -747,8 +747,8 @@ func TestTenantKYCAadhaarOTPVerify_FailureClassification(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp map[string]interface{}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

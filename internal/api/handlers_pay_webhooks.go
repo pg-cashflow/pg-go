@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -173,20 +174,54 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		return
 	}
 
-	// When Pool & GatewayPaymentRepo are wired, run atomic resolve-then-lock settlement:
+	txnID := succ.TxnID()
+	if err := h.SettleGatewayOrder(ctx, succ.OrderID, succ.CFPaymentID, txnID, succ.AmountPaise, intent, evtRecord.RawPayload); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
+		return
+	}
+
+	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
+	}
+	c.Status(http.StatusOK)
+}
+
+// SettleGatewayOrder executes canonical, idempotent settlement for a gateway payment.
+// It is shared by both CashfreeWebhook and TenantDuePayVerify to guarantee identical locking,
+// deduplication, multi-due allocation, and ledger outbox mirroring in both execution orders.
+func (h *Handlers) SettleGatewayOrder(
+	ctx context.Context,
+	orderID string,
+	cfPaymentID string,
+	txnID string,
+	amountPaise int64,
+	intent *domain.PaymentIntent,
+	rawPayload []byte,
+) error {
+	if intent == nil && h.IntentStore != nil {
+		var err error
+		intent, err = h.IntentStore.GetByOrderID(ctx, orderID)
+		if err != nil {
+			return err
+		}
+	}
+	if intent == nil {
+		return errors.New("payment intent unavailable")
+	}
+
 	if h.Pool != nil && h.GatewayPaymentRepo != nil {
-		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+		return postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			txDueRepo := postgres.NewDueRepo(tx)
 			txIntentRepo := postgres.NewPaymentIntentRepo(tx)
 
-			// Step 1: In-transaction deduplication
-			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_SETTLED", succ.CFPaymentID, "")
+			// Step 1: In-transaction deduplication on natural key (PAYMENT_SETTLED, cfPaymentID)
+			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_SETTLED", cfPaymentID, "")
 			if err != nil {
 				return err
 			}
 			if !firstSeen {
-				return nil // already processed
+				return nil // already processed by either webhook or verify
 			}
 
 			// Step 2: Dues snapshot from payment_intent_dues
@@ -198,7 +233,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				snapshot = []domain.PaymentIntentDue{{DueID: intent.DueID, AmountPaise: int64(intent.AmountPaise)}}
 			}
 
-			// Step 3: Resolve first due to determine tenantID
+			// Step 3: Resolve first due to determine tenantID and propertyID
 			due0, err := txDueRepo.GetByID(ctx, snapshot[0].DueID)
 			if err != nil {
 				return err
@@ -237,17 +272,21 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				return nil // already paid
 			}
 
-			txnID := succ.TxnID()
-			cfID := succ.CFPaymentID
 			at := time.Now().UTC()
 
 			if allClosed {
 				// UNAPPLIED / RACE LOSER BRANCH (e.g. cash paid offline or duplicate payment)
+				// Guard against duplicate insert if payment was already recorded
+				var existingCount int
+				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
+					return nil
+				}
+
 				failureReason := "due_already_settled"
 				if lockedIntent.Status == "superseded" {
 					failureReason = "session_superseded"
 				}
-				if err := txPayRepo.RecordUnmatchedReceipt(ctx, succ.OrderID, succ.CFPaymentID, &intent.ID, int64(succ.AmountPaise), failureReason, evtRecord.RawPayload); err != nil {
+				if err := txPayRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, failureReason, rawPayload); err != nil {
 					return err
 				}
 
@@ -256,8 +295,8 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					DueID:             snapshot[0].DueID,
 					TenantID:          tenantID,
 					UPITxnID:          &txnID,
-					CFPaymentID:       &cfID,
-					Amount:            succ.AmountPaise,
+					CFPaymentID:       &cfPaymentID,
+					Amount:            amountPaise,
 					MatchedBy:         domain.MatchedByCashfree,
 					MatchedAt:         at,
 					IsUnapplied:       true,
@@ -265,10 +304,13 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 					SkipOutboxEnqueue: true,
 				}
 				if err := txPayRepo.Create(ctx, p); err != nil {
+					if errors.Is(err, domain.ErrDuplicateTxn) {
+						return nil
+					}
 					return err
 				}
 
-				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
+				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfPaymentID); err != nil {
 					return err
 				}
 				if h.Finance != nil {
@@ -302,22 +344,31 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			}
 
 			// APPLIED TO OPEN DUES BRANCH
+			// Guard against duplicate insert if payment was already recorded
+			var existingCount int
+			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingCount); err == nil && existingCount > 0 {
+				return nil
+			}
+
 			p := &domain.Payment{
 				DueID:             snapshot[0].DueID,
 				TenantID:          tenantID,
 				UPITxnID:          &txnID,
-				CFPaymentID:       &cfID,
-				Amount:            succ.AmountPaise,
+				CFPaymentID:       &cfPaymentID,
+				Amount:            amountPaise,
 				MatchedBy:         domain.MatchedByCashfree,
 				MatchedAt:         at,
 				IsUnapplied:       false,
 				SkipOutboxEnqueue: true,
 			}
 			if err := txPayRepo.Create(ctx, p); err != nil {
+				if errors.Is(err, domain.ErrDuplicateTxn) {
+					return nil
+				}
 				return err
 			}
 
-			remainingPaise := int64(succ.AmountPaise)
+			remainingPaise := amountPaise
 			var allocations []finance.PaymentAllocationItem
 			for _, item := range snapshot {
 				if remainingPaise <= 0 {
@@ -361,7 +412,7 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				}
 			}
 
-			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfID); err != nil {
+			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfPaymentID); err != nil {
 				return err
 			}
 			if h.Finance != nil {
@@ -408,48 +459,45 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 			}
 			return nil
 		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
-			return
-		}
-
-		if evtRecord.ID != uuid.Nil {
-			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
-		}
-		c.Status(http.StatusOK)
-		return
 	}
 
 	// Legacy fallback path for test stubs without a pgxpool
-	var dedupKey string
-	if succ.CFPaymentID != "" {
-		dedupKey = fmt.Sprintf("cashfree:pg:%s", succ.CFPaymentID)
-		if existing, err := h.IntentStore.GetByCFPaymentID(ctx, succ.CFPaymentID); err == nil && existing != nil {
-			c.Status(http.StatusOK)
-			return
+	if h.GatewayPaymentRepo != nil && cfPaymentID != "" {
+		firstSeen, err := h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_SETTLED", cfPaymentID, "")
+		if err != nil {
+			return err
+		}
+		if !firstSeen {
+			return nil // already processed
 		}
 	}
-	txn := succ.TxnID()
-	if dedupKey != "" {
-		_, err = h.Payments.GatewaySettle(ctx, intent.DueID, succ.AmountPaise, txn, dedupKey)
-	} else {
-		_, err = h.Payments.GatewaySettle(ctx, intent.DueID, succ.AmountPaise, txn)
-	}
-	if err != nil {
-		if errors.Is(err, payment.ErrDuplicateTxn) || errors.Is(err, payment.ErrDueNotOpen) || errors.Is(err, payment.ErrEmptyTxnID) {
-			c.Status(http.StatusOK)
-			return
+	if cfPaymentID != "" && h.IntentStore != nil {
+		if existing, err := h.IntentStore.GetByCFPaymentID(ctx, cfPaymentID); err == nil && existing != nil && existing.Status == domain.IntentPaid {
+			return nil
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
-		return
 	}
-	if succ.CFPaymentID != "" {
-		_ = h.IntentStore.MarkPaid(ctx, intent.ID, succ.CFPaymentID)
+	if h.Payments != nil {
+		dedupKey := ""
+		if cfPaymentID != "" {
+			dedupKey = fmt.Sprintf("cashfree:pg:%s", cfPaymentID)
+		}
+		var err error
+		if dedupKey != "" {
+			_, err = h.Payments.GatewaySettle(ctx, intent.DueID, amountPaise, txnID, dedupKey)
+		} else {
+			_, err = h.Payments.GatewaySettle(ctx, intent.DueID, amountPaise, txnID)
+		}
+		if err != nil {
+			if errors.Is(err, payment.ErrDuplicateTxn) || errors.Is(err, payment.ErrDueNotOpen) || errors.Is(err, payment.ErrEmptyTxnID) {
+				return nil
+			}
+			return err
+		}
 	}
-	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
-		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
+	if cfPaymentID != "" && h.IntentStore != nil {
+		_ = h.IntentStore.MarkPaid(ctx, intent.ID, cfPaymentID)
 	}
-	c.Status(http.StatusOK)
+	return nil
 }
 
 func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent) {
@@ -585,35 +633,129 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 			// Financial ledger reversal upon successful refund
 			if strings.EqualFold(ref.RefundStatus, "SUCCESS") {
+				var mirrorAllocs []domain.RefundAllocationItemPayload
 				if p.IsUnapplied {
 					committedRefund = rfRow
 					committedDue = d
 					committedIsUnapp = true
 					committedRefAmt = ref.RefundAmount
 				} else {
-					if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-						RefundID:    rfRow.ID,
-						DueID:       &d.ID,
-						AmountPaise: ref.RefundAmount,
-					}); err != nil {
-						return err
-					}
-					if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
-						return err
-					}
 					committedRefund = rfRow
 					committedDue = d
 					committedIsUnapp = false
 					committedRefAmt = ref.RefundAmount
+
+					// Step A: Inspect existing refund allocations (pre-created by OwnerRefundPayment)
+					type allocItem struct {
+						dueID       uuid.UUID
+						amountPaise int64
+					}
+					var existingAllocs []allocItem
+					allocRows, qErr := tx.Query(ctx, `SELECT due_id, amount_paise FROM refund_allocations WHERE refund_id = $1`, rfRow.ID)
+					if qErr == nil {
+						for allocRows.Next() {
+							var item allocItem
+							if err := allocRows.Scan(&item.dueID, &item.amountPaise); err == nil && item.dueID != uuid.Nil {
+								existingAllocs = append(existingAllocs, item)
+							}
+						}
+						allocRows.Close()
+					}
+
+					if len(existingAllocs) > 0 {
+						// Existing allocations already set by OwnerRefundPayment: preserve them and recompute all touched dues
+						for _, item := range existingAllocs {
+							targetDue, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
+							if err == nil && targetDue != nil {
+								if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, targetDue); err != nil {
+									return err
+								}
+								mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+									AmountPaise: item.amountPaise,
+									DueKind:     string(targetDue.Kind),
+								})
+							}
+						}
+					} else {
+						// No pre-created allocations (e.g. gateway auto-refund or Cashfree dashboard refund)
+						// Fetch payment allocations linked to this payment and allocate LIFO across dues
+						pAllocRows, paErr := tx.Query(ctx, `
+							SELECT pa.due_id, pa.amount_paise, d.kind
+							FROM payment_allocations pa
+							JOIN dues d ON d.id = pa.due_id
+							WHERE pa.payment_id = $1
+							ORDER BY d.due_date DESC, d.id DESC`, p.ID)
+
+						type pAllocItem struct {
+							dueID       uuid.UUID
+							amountPaise int64
+							kind        domain.DueKind
+						}
+						var pAllocs []pAllocItem
+						if paErr == nil {
+							for pAllocRows.Next() {
+								var pa pAllocItem
+								if err := pAllocRows.Scan(&pa.dueID, &pa.amountPaise, &pa.kind); err == nil {
+									pAllocs = append(pAllocs, pa)
+								}
+							}
+							pAllocRows.Close()
+						}
+
+						if len(pAllocs) > 0 {
+							remRefund := ref.RefundAmount
+							for _, pa := range pAllocs {
+								if remRefund <= 0 {
+									break
+								}
+								allocAmt := remRefund
+								if allocAmt > pa.amountPaise {
+									allocAmt = pa.amountPaise
+								}
+								dueIDCopy := pa.dueID
+								if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+									RefundID:    rfRow.ID,
+									DueID:       &dueIDCopy,
+									AmountPaise: allocAmt,
+								}); err != nil {
+									return err
+								}
+								targetDue, err := txDueRepo.GetByIDForUpdate(ctx, pa.dueID)
+								if err == nil && targetDue != nil {
+									if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, targetDue); err != nil {
+										return err
+									}
+									mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+										AmountPaise: allocAmt,
+										DueKind:     string(pa.kind),
+									})
+								}
+								remRefund -= allocAmt
+							}
+						} else {
+							// Single due fallback
+							if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+								RefundID:    rfRow.ID,
+								DueID:       &d.ID,
+								AmountPaise: ref.RefundAmount,
+							}); err != nil {
+								return err
+							}
+							if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+								return err
+							}
+							mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+								AmountPaise: ref.RefundAmount,
+								DueKind:     string(d.Kind),
+							})
+						}
+					}
 				}
 
 				// Enqueue in-transaction refund outbox event (C-05)
-				var mirrorAllocs []domain.RefundAllocationItemPayload
-				if !committedIsUnapp {
-					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-						AmountPaise: committedRefAmt,
-						DueKind:     string(d.Kind),
-					})
+				dueKind := string(d.Kind)
+				if len(mirrorAllocs) > 0 {
+					dueKind = mirrorAllocs[0].DueKind
 				}
 				refundPayload := domain.RefundMirrorPayload{
 					PropertyID:  d.PropertyID,
@@ -622,7 +764,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 					AmountPaise: committedRefAmt,
 					IsUnapplied: committedIsUnapp,
 					Allocations: mirrorAllocs,
-					DueKind:     string(d.Kind),
+					DueKind:     dueKind,
 					OccurredAt:  time.Now().UTC(),
 				}
 				rawPayload, err := json.Marshal(refundPayload)

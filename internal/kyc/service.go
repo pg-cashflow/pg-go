@@ -11,6 +11,8 @@ package kyc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,15 +124,29 @@ func NewService(repo KYCRepo, cashfree CashfreeKYCClient, cfg Config) *Service {
 // --- Consent ------------------------------------------------------------------
 
 // RecordConsent persists the tenant's explicit DPDP consent before any
-// verification can proceed. Idempotent: calling it again just creates a new
-// consent record (older records remain and may be individually revoked).
+// RecordConsent persists the tenant's explicit DPDP consent before any
+// verification can proceed. Idempotent: if active consent exists for this version,
+// it returns the existing consent record without creating duplicates.
 func (s *Service) RecordConsent(
 	ctx context.Context,
 	tenantID uuid.UUID,
 	purpose, consentVersion, consentText,
 	ip, userAgent, actor string,
 ) (*domain.KYCConsent, error) {
-	hash := domain.ComputeAuditHash("", tenantID, actor, "consent_text", consentText, time.Now().UTC())
+	if existing, err := s.repo.GetActiveConsentByTenant(ctx, tenantID); err == nil && existing != nil {
+		if existing.ConsentVersion == consentVersion && existing.IsActive() {
+			return existing, nil
+		}
+	}
+
+	if consentText == "" {
+		consentText = "I agree to my identity details being verified and stored for PG occupancy records in compliance with the DPDP Act."
+	}
+
+	h := sha256.New()
+	h.Write([]byte(fmt.Sprintf("%s:%s", consentVersion, consentText)))
+	hash := hex.EncodeToString(h.Sum(nil))
+
 	c := &domain.KYCConsent{
 		TenantID:        tenantID,
 		Purpose:         purpose,
@@ -525,6 +541,9 @@ func (s *Service) CompleteAadhaarOTP(
 	if pending == nil || pending.TenantID != tenantID {
 		return nil, domain.ErrVerificationNotFound
 	}
+	if pending.Status != domain.KYCStatusPending {
+		return nil, domain.ErrVerificationNotPending
+	}
 
 	if s.cashfree == nil {
 		return nil, ErrCashfreeUnavailable
@@ -532,8 +551,6 @@ func (s *Service) CompleteAadhaarOTP(
 
 	res, err := s.cashfree.VerifyAadhaarOTP(ctx, refID, otp)
 	if err != nil {
-		_ = s.repo.FailVerificationTx(ctx, pending.ID, err.Error(), actor)
-
 		var httpStatus int
 		var msg string
 		var apiErr *cashfree.APIError
@@ -568,6 +585,10 @@ func (s *Service) CompleteAadhaarOTP(
 		retryable := class == cashfree.FailureRecoverable && attemptsRemaining > 0
 		if class == cashfree.FailureCooldown {
 			retryable = true
+		}
+
+		if class == cashfree.FailureTerminal || (!retryable && attemptsRemaining == 0) {
+			_ = s.repo.FailVerificationTx(ctx, pending.ID, err.Error(), actor)
 		}
 
 		return nil, &AadhaarVerifyFailure{
