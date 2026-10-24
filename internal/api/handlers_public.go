@@ -350,6 +350,10 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 			status = http.StatusForbidden
 			msg = "access revoked"
 			code = apierr.CodeAuthAccessRevoked
+		case errors.Is(err, auth.ErrAccountReLinkDenied):
+			status = http.StatusForbidden
+			msg = "account re-link denied: owner or manager requires verified Google email match"
+			code = apierr.CodeAuthForbidden
 		}
 		respondErr(c, clientErrWithCode(status, msg, code))
 		return

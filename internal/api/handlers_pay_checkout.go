@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -12,6 +14,22 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 )
+
+type verifyCacheEntry struct {
+	checkedAt time.Time
+	paid      bool
+	cfID      string
+	bankRef   string
+	amount    int64
+}
+
+var (
+	verifyCacheMu sync.Mutex
+	verifyCache   = make(map[string]verifyCacheEntry)
+)
+
+const verifyThrottleDuration = 3 * time.Second
+
 
 func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 	if due.Status == domain.DueStatusPaid || due.Status == domain.DueStatusWaived {
@@ -125,7 +143,34 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 		return
 	}
 
+	verifyCacheMu.Lock()
+	cached, hasCached := verifyCache[intent.ProviderOrderID]
+	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid {
+		verifyCacheMu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"paid": false})
+		return
+	}
+	verifyCacheMu.Unlock()
+
 	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), intent.ProviderOrderID)
+	now := time.Now()
+	verifyCacheMu.Lock()
+	if len(verifyCache) > 1000 {
+		for k, v := range verifyCache {
+			if now.Sub(v.checkedAt) > 2*time.Minute {
+				delete(verifyCache, k)
+			}
+		}
+	}
+	verifyCache[intent.ProviderOrderID] = verifyCacheEntry{
+		checkedAt: now,
+		paid:      ok && amount > 0,
+		cfID:      cfID,
+		bankRef:   bankRef,
+		amount:    amount,
+	}
+	verifyCacheMu.Unlock()
+
 	if err != nil || !ok || amount <= 0 {
 		c.JSON(http.StatusOK, gin.H{"paid": false})
 		return

@@ -14,13 +14,13 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	api.GET("/push/vapid-public-key", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})
 	})
-	api.GET("/join/invite/:code", ipRateLimit(10.0/60, 20), h.LookupInvite)
+	api.GET("/join/invite/:code", ipRateLimit(60.0/60, 100), h.LookupInvite)
 	api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
 
 	api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
 	api.POST("/auth/otp/verify", ipRateLimit(10.0/60, 20), h.OTPVerify)
-	api.POST("/auth/firebase", ipRateLimit(10.0/60, 15), h.FirebaseAuth)
-	api.POST("/auth/refresh", ipRateLimit(30.0/60, 60), h.AuthRefresh)
+	api.POST("/auth/firebase", ipRateLimit(60.0/60, 100), h.FirebaseAuth)
+	api.POST("/auth/refresh", cookieOrIPRateLimit(RefreshCookieName, 30.0/60, 60), h.AuthRefresh)
 	api.POST("/auth/logout", h.AuthLogout)
 	api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
 	api.GET("/auth/sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.GetActiveSessions)

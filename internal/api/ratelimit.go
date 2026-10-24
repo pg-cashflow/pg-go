@@ -110,3 +110,16 @@ func userOrIPRateLimitBounded(rps float64, burst int, maxEntries int, ttl time.D
 		return c.ClientIP()
 	})
 }
+
+// cookieOrIPRateLimit keys on the hash of the named cookie to prevent shared
+// Wi-Fi or carrier NAT IP collisions. If the cookie is not present, it keys on ClientIP.
+func cookieOrIPRateLimit(cookieName string, rps float64, burst int) gin.HandlerFunc {
+	return keyedRateLimitBounded(rps, burst, defaultMaxIPEntries, defaultEntryTTL, func(c *gin.Context) string {
+		cookie, err := c.Cookie(cookieName)
+		if err == nil && cookie != "" {
+			return "ck:" + auth.HashRefreshToken(cookie)
+		}
+		return "ip:" + c.ClientIP()
+	})
+}
+

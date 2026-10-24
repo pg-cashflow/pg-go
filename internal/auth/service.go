@@ -39,6 +39,7 @@ var (
 	ErrStaleAuthToken        = errors.New("auth token is stale: fresh re-authentication required")
 	ErrRefreshTokenExpired   = errors.New("refresh token expired")
 	ErrNoCurrentSession      = errors.New("cannot identify current session")
+	ErrAccountReLinkDenied   = errors.New("auth: account re-link denied")
 )
 
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
@@ -420,6 +421,22 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 	if ident.Phone != "" {
 		user, err = s.users.GetByPhone(ctx, ident.Phone)
 		if err == nil {
+			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
+				// Re-link attempt detected: phone matches, but Firebase UID differs.
+				// Protect owners and managers against SIM swaps and recycled phone numbers.
+				if user.IsManagerOrOwner() && user.Email != "" {
+					if !ident.EmailVerified || !strings.EqualFold(ident.Email, user.Email) {
+						return "", nil, ErrAccountReLinkDenied
+					}
+				}
+				// Revoke prior access and refresh tokens for security
+				_ = s.users.IncrementTokenVersion(ctx, user.ID)
+				InvalidateTokenVersionCache(user.ID)
+				user.TokenVersion++
+				if s.refreshRepo != nil {
+					_ = s.refreshRepo.RevokeUserTokens(ctx, user.ID)
+				}
+			}
 			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
 				return "", nil, fmt.Errorf("link firebase uid: %w", err)
 			}
@@ -439,6 +456,15 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		}
 		user, err = s.users.GetByEmail(ctx, ident.Email)
 		if err == nil {
+			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
+				// Invalidate all prior sessions when linking to a new Firebase UID
+				_ = s.users.IncrementTokenVersion(ctx, user.ID)
+				InvalidateTokenVersionCache(user.ID)
+				user.TokenVersion++
+				if s.refreshRepo != nil {
+					_ = s.refreshRepo.RevokeUserTokens(ctx, user.ID)
+				}
+			}
 			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
 				return "", nil, fmt.Errorf("link firebase uid: %w", err)
 			}

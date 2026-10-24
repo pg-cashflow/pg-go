@@ -502,3 +502,51 @@ func TestVerifyFirebaseTenantCreatedWith10DigitPhone(t *testing.T) {
 		t.Fatalf("expected property id %s, got %+v", pid, user.PropertyID)
 	}
 }
+
+func TestVerifyFirebaseReLinkGuards(t *testing.T) {
+	phone := "+919999888877"
+	email := "owner@pg.test"
+	pid := uuid.New()
+	initialUID := "uid-original"
+	attackerUID := "uid-attacker"
+
+	users := &stubUsers{
+		byPhone: map[string]*domain.User{
+			phone: {
+				ID:           uuid.New(),
+				Phone:        phone,
+				Email:        email,
+				Role:         domain.RoleOwner,
+				PropertyID:   &pid,
+				FirebaseUID:  &initialUID,
+				TokenVersion: 1,
+			},
+		},
+		byFirebase: map[string]*domain.User{},
+	}
+	users.byFirebase[initialUID] = users.byPhone[phone]
+	users.byEmail = map[string]*domain.User{email: users.byPhone[phone]}
+
+	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+
+	// 1. Attacker signs in with the same phone via phone OTP, getting a different UID without verified email
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: attackerUID, phone: phone})
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-attacker", "")
+	if !errors.Is(err, ErrAccountReLinkDenied) {
+		t.Fatalf("expected ErrAccountReLinkDenied, got %v", err)
+	}
+
+	// 2. Real owner signs in with Google (matching verified email) -> succeeds and bumps token version
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "uid-new-google", email: email, emailVerified: true})
+	token, u, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-google", "")
+	if err != nil {
+		t.Fatalf("expected success with verified email, got %v", err)
+	}
+	if token == "" || u == nil {
+		t.Fatal("expected valid token and user")
+	}
+	if u.TokenVersion <= 1 {
+		t.Fatalf("expected token version to be bumped, got %d", u.TokenVersion)
+	}
+}
+
