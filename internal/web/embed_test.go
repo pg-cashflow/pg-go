@@ -114,3 +114,49 @@ func TestAPIRouteFallback_Returns404JSON(t *testing.T) {
 	}
 }
 
+func TestHashedAssetRE(t *testing.T) {
+	positives := []string{
+		"assets/ActiveSessionsCard-QpflnB9r.js",
+		"assets/OtpInput-0Lmij3-_.js",
+		"assets/query-BJas__-u.js",
+		"assets/context-D3_YHPUS.js",
+		"assets/dues-Uzc8t-Em.js",
+		"assets/reconciliation--9T1NjzD.js",
+		"assets/sliders-vertical--nGP1mNm.js",
+		"assets/users--Cq63lO7.js",
+		"assets/finance-D-dpLbU-.js",
+		"assets/smartphone-7jpT-j-_.js",
+		"assets/shield-alert-Btu2yc2-.js",
+		"assets/index-BVn7UMoU.css",
+		"assets/index-D9P2rA_Q.js",
+	}
+
+	for _, p := range positives {
+		if !hashedAssetRE.MatchString(p) {
+			t.Errorf("expected positive match for %q, but regex did not match", p)
+		}
+	}
+
+	negatives := []string{
+		"favicon.svg",
+		"icons.svg",
+		"index.html",
+		"landing.html",
+		"manifest.webmanifest",
+		"pwa-192x192.png",
+		"pwa-512x512.png",
+		"registerSW.js",
+		"sw.js",
+		"assets/logo.png",
+		"assets/apple-touch-icon.png",
+		"assets/icon-1234.png", // too short
+		"other/ActiveSessionsCard-QpflnB9r.js", // not under assets/
+	}
+
+	for _, n := range negatives {
+		if hashedAssetRE.MatchString(n) {
+			t.Errorf("expected negative match for %q, but regex unexpectedly matched", n)
+		}
+	}
+}
+
