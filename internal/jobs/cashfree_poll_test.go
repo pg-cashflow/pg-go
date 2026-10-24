@@ -194,8 +194,8 @@ func TestCashfreePollReconcilesStuckRefund(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if refundRepo.updated == nil || refundRepo.updated.Status != "success" {
-		t.Fatalf("expected stuck refund to transition to success: %+v", refundRepo.updated)
+	if refundRepo.updated == nil || refundRepo.updated.Status != "succeeded" {
+		t.Fatalf("expected stuck refund to transition to succeeded: %+v", refundRepo.updated)
 	}
 }
 

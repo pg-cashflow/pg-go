@@ -269,7 +269,7 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 		return
 	}
 	var body struct {
-		RefundedPaise int64  `json:"refunded_amount_paise" binding:"required"`
+		RefundedPaise *int64 `json:"refunded_amount_paise" binding:"required"`
 		Reason        string `json:"reason"`
 		StepUpAuthInput
 	}
@@ -280,7 +280,7 @@ func (h *Handlers) TenantDepositSettle(c *gin.Context) {
 	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, body.StepUpAuthInput); !ok {
 		return
 	}
-	if err := h.Payments.SettleDeposit(c.Request.Context(), id, body.RefundedPaise, body.Reason); err != nil {
+	if err := h.Payments.SettleDeposit(c.Request.Context(), id, *body.RefundedPaise, body.Reason); err != nil {
 		respondErr(c, paymentClientErr(err))
 		return
 	}

@@ -51,7 +51,8 @@ func CalculateMonthlyWage(params CalculationParams) (*domain.WageCalculation, er
 	}
 
 	// Check if staff was active during this cycle
-	if windowStart.After(cycleEnd) || windowEnd.Before(cycleStart) || windowStart.After(windowEnd) || params.Staff.Status == domain.StaffInactive && params.Staff.EffectiveTo != nil && params.Staff.EffectiveTo.Before(cycleStart) {
+	isInactiveBeforeCycle := params.Staff.Status == domain.StaffInactive && (params.Staff.EffectiveTo == nil || params.Staff.EffectiveTo.Before(cycleStart))
+	if windowStart.After(cycleEnd) || windowEnd.Before(cycleStart) || windowStart.After(windowEnd) || isInactiveBeforeCycle {
 		return &domain.WageCalculation{
 			PropertyID:            params.Staff.PropertyID,
 			StaffID:               params.Staff.ID,

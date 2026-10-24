@@ -565,12 +565,16 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			if ref.IsAutoRefund {
 				source = "cashfree_auto"
 			}
+			dbRefundStatus := strings.ToLower(strings.TrimSpace(ref.RefundStatus))
+			if dbRefundStatus == "success" {
+				dbRefundStatus = "succeeded"
+			}
 			rfRow := &domain.GatewayRefund{
 				PaymentID:       p.ID,
 				CFRefundID:      &ref.CFRefundID,
 				RefundReference: &ref.RefundID,
 				AmountPaise:     ref.RefundAmount,
-				Status:          strings.ToLower(ref.RefundStatus),
+				Status:          dbRefundStatus,
 				Source:          source,
 				Reason:          ref.RefundReason,
 				RawPayload:      evtRecord.RawPayload,
@@ -661,12 +665,16 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		if ref.IsAutoRefund {
 			source = "cashfree_auto"
 		}
+		dbRefundStatus := strings.ToLower(strings.TrimSpace(ref.RefundStatus))
+		if dbRefundStatus == "success" {
+			dbRefundStatus = "succeeded"
+		}
 		rfRow := &domain.GatewayRefund{
 			PaymentID:       p.ID,
 			CFRefundID:      &ref.CFRefundID,
 			RefundReference: &ref.RefundID,
 			AmountPaise:     ref.RefundAmount,
-			Status:          strings.ToUpper(strings.TrimSpace(ref.RefundStatus)),
+			Status:          dbRefundStatus,
 			Source:          source,
 			Reason:          ref.RefundReason,
 			RawPayload:      evtRecord.RawPayload,

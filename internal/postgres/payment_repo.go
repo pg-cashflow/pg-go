@@ -512,6 +512,16 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 	return out, rows.Err()
 }
 
+func (r *PaymentRepo) GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID) (string, error) {
+	var orderID string
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(
+			(SELECT pi.provider_order_id FROM payments p JOIN payment_intents pi ON pi.due_id = p.due_id WHERE p.id = $1 LIMIT 1),
+			''
+		)`, paymentID).Scan(&orderID)
+	return orderID, err
+}
+
 func (r *PaymentRepo) HasCorrection(ctx context.Context, paymentID uuid.UUID) (bool, error) {
 	var exists bool
 	err := r.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM financial_corrections WHERE original_payment_id = $1)`, paymentID).Scan(&exists)

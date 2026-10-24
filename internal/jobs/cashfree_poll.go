@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -40,6 +41,10 @@ type GatewaySettler interface {
 type RefundStaleRepo interface {
 	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
 	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
+}
+
+type PaymentOrderResolver interface {
+	GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID) (string, error)
 }
 
 type RefundStatusFetcher interface {
@@ -165,19 +170,46 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		if refundID == "" {
 			continue
 		}
-		details, err := j.RefundClient.FetchRefundStatus(ctx, "", refundID)
+		orderID := ""
+		if len(ref.RawPayload) > 0 {
+			var rawMap map[string]any
+			if err := json.Unmarshal(ref.RawPayload, &rawMap); err == nil {
+				if oid, ok := rawMap["order_id"].(string); ok && oid != "" {
+					orderID = oid
+				} else if data, ok := rawMap["data"].(map[string]any); ok {
+					if rdata, ok := data["refund"].(map[string]any); ok {
+						if oid, ok := rdata["order_id"].(string); ok && oid != "" {
+							orderID = oid
+						}
+					}
+				}
+			}
+		}
+		if orderID == "" {
+			if resolver, ok := j.Refunds.(PaymentOrderResolver); ok {
+				if oid, err := resolver.GetPaymentOrderID(ctx, ref.PaymentID); err == nil && oid != "" {
+					orderID = oid
+				}
+			}
+		}
+		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
-			log.Error("cashfree poll refund fetch", "refund_id", refundID, "err", err)
+			log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "err", err)
 			continue
 		}
 		if details == nil {
 			continue
 		}
-		newStatus := strings.ToLower(details.RefundStatus)
+		newStatus := strings.ToLower(strings.TrimSpace(details.RefundStatus))
+		if newStatus == "success" {
+			newStatus = "succeeded"
+		}
 		if newStatus != ref.Status {
 			ref.Status = newStatus
 			ref.UpdatedAt = time.Now().UTC()
-			_ = j.Refunds.CreateOrUpdateRefund(ctx, &ref)
+			if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
+				log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
+			}
 		}
 	}
 	return nil

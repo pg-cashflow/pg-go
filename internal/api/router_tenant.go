@@ -35,6 +35,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	gated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	gated.GET("/dues/:id/qr", h.TenantDueQR)
 	gated.GET("/dues/:id/pay", h.TenantDuePay)
+	gated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
 	gated.POST("/dues/:id/reports", h.TenantSubmitReport)
 	gated.GET("/payments", h.TenantPayments)
 	gated.GET("/payments/:id/receipt", h.TenantPaymentReceipt)

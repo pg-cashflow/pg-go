@@ -53,9 +53,19 @@ func (h *Handlers) ImportStatements(c *gin.Context) {
 
 	var bankAccountID *uuid.UUID
 	if acctStr := strings.TrimSpace(c.Request.FormValue("bank_account_id")); acctStr != "" {
-		if parsedID, err := uuid.Parse(acctStr); err == nil {
-			bankAccountID = &parsedID
+		parsedID, err := uuid.Parse(acctStr)
+		if err != nil {
+			respondErr(c, clientErr(http.StatusBadRequest, "invalid bank_account_id"))
+			return
 		}
+		if h.BankAccountRepo != nil {
+			acct, err := h.BankAccountRepo.GetByID(c.Request.Context(), parsedID)
+			if err != nil || acct == nil || acct.PropertyID != pid {
+				respondErr(c, clientErr(http.StatusNotFound, "bank account not found"))
+				return
+			}
+		}
+		bankAccountID = &parsedID
 	}
 
 	var ledger bankimport.Ledger
