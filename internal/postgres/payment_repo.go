@@ -97,6 +97,9 @@ case domain.MatchedByCash:
 			dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt, p.PropertyID,
 		).Scan(&p.ID)
 		if err != nil {
+			if isUnique(err) {
+				return domain.ErrDuplicateTxn
+			}
 			return err
 		}
 		if p.DueID != uuid.Nil && p.Amount > 0 && !p.IsUnapplied {

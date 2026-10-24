@@ -19,7 +19,7 @@ import (
 
 var (
 	ErrCashPartialNotAllowed = errors.New("payment: cash must equal remaining due amount (D2)")
-	ErrDuplicateTxn          = errors.New("payment: duplicate upi txn id")
+	ErrDuplicateTxn          = domain.ErrDuplicateTxn
 	ErrDueNotOpen            = errors.New("payment: due is not open for payment")
 	ErrNoDepositDue          = errors.New("payment: no deposit due for tenant")
 	ErrEmptyTxnID            = errors.New("payment: upi txn id is required")
@@ -334,9 +334,12 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 		var corrUTRPtr *string
 		if normUTR != "" {
 			corrUTRPtr = &normUTR
-		} else {
-			corrUTRPtr = orig.UPITxnID
 		}
+		// NOTE: When normUTR == "", corrUTRPtr remains nil. Reusing orig.UPITxnID causes
+		// a PostgreSQL unique-violation (23505) because payments.upi_txn_id has a table-wide
+		// UNIQUE constraint, and the original payment record remains in the table.
+		// The original UTR is permanently preserved on the original record and linked via
+		// financial_corrections(original_payment_id).
 		corrected := &domain.Payment{
 			PropertyID: &due.PropertyID,
 			DueID:      orig.DueID,

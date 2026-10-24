@@ -22,13 +22,16 @@ func (s *correctionStubPayments) Create(_ context.Context, p *domain.Payment) er
 		p.ID = uuid.New()
 	}
 	cp := *p
-	s.created = append(s.created, &cp)
 	if p.UPITxnID != nil {
 		if s.byTxn == nil {
 			s.byTxn = map[string]*domain.Payment{}
 		}
+		if _, exists := s.byTxn[*p.UPITxnID]; exists {
+			return domain.ErrDuplicateTxn
+		}
 		s.byTxn[*p.UPITxnID] = &cp
 	}
+	s.created = append(s.created, &cp)
 	return nil
 }
 
@@ -299,6 +302,59 @@ func TestCorrectPayment(t *testing.T) {
 		updatedDue, _ := dues.GetByID(ctx, dueID)
 		if updatedDue.Status != domain.DueStatusPartial || updatedDue.Amount != 100000 {
 			t.Fatalf("expected due to be partial with 100000 paise remaining, got status: %s, amount: %d", updatedDue.Status, updatedDue.Amount)
+		}
+	})
+
+	t.Run("successful correction without new UTR leaves UPITxnID nil and avoids duplicate collision", func(t *testing.T) {
+		dueID2 := uuid.New()
+		paymentID2 := uuid.New()
+		utr2 := "ORIGINAL456"
+		origPayment2 := &domain.Payment{
+			ID:         paymentID2,
+			DueID:      dueID2,
+			TenantID:   tenantID,
+			Amount:     600000,
+			UPITxnID:   &utr2,
+			MatchedBy:  domain.MatchedByManual,
+			RecordedBy: &user,
+		}
+		due2 := &domain.Due{
+			ID:             dueID2,
+			PropertyID:     propID,
+			TenantID:       tenantID,
+			DueCode:        "DUE-02",
+			Amount:         0,
+			OriginalAmount: 600000,
+			Status:         domain.DueStatusPaid,
+		}
+		dues2 := &stubDues{byID: map[uuid.UUID]*domain.Due{dueID2: due2}}
+		pays2 := &correctionStubPayments{
+			created: []*domain.Payment{origPayment2},
+			byTxn:   map[string]*domain.Payment{utr2: origPayment2},
+		}
+		tenants2 := &stubTenants{byID: map[uuid.UUID]*domain.Tenant{tenantID: {ID: tenantID, PropertyID: propID}}}
+		svc2 := NewService(dues2, pays2, tenants2, nil, pub)
+
+		corr, err := svc2.CorrectPayment(ctx, CorrectPaymentInput{
+			PropertyID:      propID,
+			PaymentID:       paymentID2,
+			CorrectedAmount: 500000,
+			CorrectedUTR:    "", // empty UTR: amount-only correction
+			Reason:          "Correction without changing UTR",
+			CorrectedBy:     user,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if corr == nil {
+			t.Fatal("expected correction record returned")
+		}
+		if len(pays2.created) != 3 {
+			t.Fatalf("expected 3 payments in history, got %d", len(pays2.created))
+		}
+		corrected := pays2.created[2]
+		if corrected.UPITxnID != nil {
+			t.Fatalf("expected corrected payment UPITxnID to be nil to prevent UTR collision, got %s", *corrected.UPITxnID)
 		}
 	})
 }

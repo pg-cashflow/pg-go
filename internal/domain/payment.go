@@ -102,7 +102,9 @@ type WebhookEvent struct {
 var (
 	ErrInvalidUTRFormat = errors.New("invalid UTR format: must be 6-50 alphanumeric characters")
 	ErrEmptyUTR         = errors.New("UTR cannot be empty")
+	ErrDuplicateTxn     = errors.New("payment: duplicate upi txn id")
 )
+
 
 var utrRegex = regexp.MustCompile(`^[A-Z0-9]{6,50}$`)
 
