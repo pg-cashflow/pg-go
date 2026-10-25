@@ -37,7 +37,19 @@ func (h *Handlers) ListProperties(c *gin.Context) {
 			email = u.Email
 		}
 	}
-	all, err := h.PropertyStore.List(c.Request.Context())
+	var all []domain.Property
+	var err error
+	if lister, ok := h.PropertyStore.(interface {
+		ListByOwner(ctx context.Context, phone, email string) ([]domain.Property, error)
+	}); ok && (phone != "" || email != "") {
+		all, err = lister.ListByOwner(c.Request.Context(), phone, email)
+	} else if phone == "" && email == "" && claims.PropertyID != nil {
+		if p, getErr := h.PropertyStore.GetByID(c.Request.Context(), *claims.PropertyID); getErr == nil && p != nil {
+			all = []domain.Property{*p}
+		}
+	} else {
+		all, err = h.PropertyStore.List(c.Request.Context())
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return

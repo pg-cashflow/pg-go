@@ -172,3 +172,59 @@ func TestRequireAnyCapability(t *testing.T) {
 	}
 }
 
+func TestRequireAnyCapability_NilCheckerFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+
+	handler := RequireAnyCapability(nil, "inspections.write")
+
+	// 1. Anonymous caller receives 401
+	rAnon := gin.New()
+	rAnon.GET("/test", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+	wAnon := httptest.NewRecorder()
+	rAnon.ServeHTTP(wAnon, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if wAnon.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for anonymous caller, got %d", wAnon.Code)
+	}
+
+	// 2. Tenant caller receives 403
+	rTenant := gin.New()
+	rTenant.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{UserID: userID, Role: domain.RoleTenant, PropertyID: &propID})
+		c.Next()
+	})
+	rTenant.GET("/test", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+	wTenant := httptest.NewRecorder()
+	rTenant.ServeHTTP(wTenant, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if wTenant.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for tenant caller, got %d", wTenant.Code)
+	}
+
+	// 3. Manager caller with nil checker fails closed with 503
+	rMgr := gin.New()
+	rMgr.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{UserID: userID, Role: domain.RoleManager, PropertyID: &propID})
+		c.Next()
+	})
+	rMgr.GET("/test", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+	wMgr := httptest.NewRecorder()
+	rMgr.ServeHTTP(wMgr, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if wMgr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for manager with nil checker, got %d", wMgr.Code)
+	}
+
+	// 4. Owner caller succeeds with 200
+	rOwner := gin.New()
+	rOwner.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{UserID: userID, Role: domain.RoleOwner, PropertyID: &propID})
+		c.Next()
+	})
+	rOwner.GET("/test", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+	wOwner := httptest.NewRecorder()
+	rOwner.ServeHTTP(wOwner, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if wOwner.Code != http.StatusOK {
+		t.Fatalf("expected 200 for owner caller, got %d", wOwner.Code)
+	}
+}
+

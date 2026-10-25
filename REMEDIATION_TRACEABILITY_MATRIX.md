@@ -8,40 +8,40 @@ This document operationalizes the **Evidence-Driven Engineering and Acceptance F
 
 | Requirement ID | Audit Ref | Severity | Classification | Description | Code Scope | Test Target | Gate Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **REQ-FIN-001** | `P0-01` | P0 | Critical Integrity | Uniform 64-bit signed integer paise across DB & Go | `migrations/046_...`, `domain/*.go` | DB schema & range tests | `FAIL` (Ready to Fix) |
-| **REQ-SEC-001** | `P0-02` | P0 | Critical Confidentiality | AES-256-GCM Envelope Encryption for Payout Accounts | `internal/api/handlers_payouts.go`, `domain/payout.go` | Crypto ciphertext & key rotation test | `FAIL` (Ready to Fix) |
-| **REQ-EXP-001** | `P0-03` | P0 | Critical Atomicity | Atomic Expense Creation & Journaling | `internal/finance/service.go:114-195` | Failure injection (journal fail -> rollback) | `FAIL` (Ready to Fix) |
-| **REQ-EXP-002** | `P0-04` | P0 | Critical Concurrency | Expense Overpayment Prevention under Concurrency | `internal/finance/service.go:218-299` | 50+ concurrent payment attempts | `FAIL` (Ready to Fix) |
-| **REQ-EXP-003** | `P0-05` | P0 | Critical Concurrency | Manager Spend Limits Concurrency Enforcement | `internal/finance/service.go:131-140` | 50+ concurrent expense creation races | `FAIL` (Ready to Fix) |
-| **REQ-TEN-001** | `P0-06` | P0 | Critical Concurrency | Atomic SQL Tenant Credit Mutation | `internal/payment/service.go:617`, `internal/tenant/service.go:545` | 50+ concurrent credit updates | `FAIL` (Ready to Fix) |
-| **REQ-PAY-001** | `P0-07` | P0 | Critical Atomicity | Atomic Payment-Report Verification & Settlement | `internal/api/handlers_pay_reports.go:235` | Injected failure & report lock test | `FAIL` (Ready to Fix) |
-| **REQ-FIN-002** | `P0-08` | P0 | Critical Idempotency | Single-Correction Invariant per Payment | `internal/payment/service.go:234`, `migrations/046_...` | Concurrent duplicate correction attempt | `FAIL` (Ready to Fix) |
-| **REQ-PAY-002** | `P1-09` | P1 | High Integrity | Fail-Closed Integer Parsing for Cashfree Gateway | `internal/cashfree/settlement.go:301-345` | Malformed & negative float input test | `FAIL` (Ready to Fix) |
-| **REQ-FIN-003** | `P1-10` | P1 | High Integrity | Elimination of Floating Point in Real Money Paths | `internal/qr/upi.go`, `internal/api/handlers_owner.go` | Precision & formatted string unit test | `FAIL` (Ready to Fix) |
-| **REQ-PAY-003** | `P1-11` | P1 | High Integrity | Mandatory `payments.property_id` Population & Constraints | `internal/postgres/payment_repo.go`, `migrations/046_...` | Null check & composite constraint test | `FAIL` (Ready to Fix) |
-| **REQ-EXP-004** | `P1-12` | P1 | High Security | Expense Room Must Belong to Same Property | `internal/finance/service.go`, DB FK constraint | Cross-property room submission test | `FAIL` (Ready to Fix) |
-| **REQ-SEC-002** | `P1-13` | P1 | High Security | PostgreSQL Row Level Security (RLS) for Financial Tables | `migrations/047_rls.sql` | Cross-tenant/cross-property query block | `FAIL` (Ready to Fix) |
-| **REQ-DASH-001**| `P1-14` | P1 | High Availability | Fail-Safe Dashboard Error Reporting (No Fake ₹0) | `internal/api/handlers_owner_dashboard.go:403` | Injected query failure -> 500 error | `FAIL` (Ready to Fix) |
-| **REQ-DASH-002**| `P1-15` | P1 | High Integrity | Pure Direct Cash Flow vs Operating Accrual Distinction | `internal/api/handlers_owner_dashboard.go:640` | Financial formula reconciliation test | `FAIL` (Ready to Fix) |
-| **REQ-OPS-001** | `P1-16` | P1 | High Reliability | Active Distributed Scheduling for Background Jobs | `cmd/server/main.go`, `.github/workflows` | Double-execution lock test | `FAIL` (Ready to Fix) |
-| **REQ-EXP-005** | `P1-17` | P1 | High Atomicity | Atomic Approval and Reimbursement State Machine | `internal/finance/service.go:302-378` | Intermediate failure rollback test | `FAIL` (Ready to Fix) |
-| **REQ-OPS-002** | `P1-33` | P1 | High Governance | Automated Pull-Request & Main Branch CI Gates | `.github/workflows/ci.yml` | CI execution on PR with race detector | `FAIL` (Ready to Fix) |
-| **REQ-OPS-003** | `P1-34` | P1 | Toolchain Standard | Pin Valid Go Toolchain & Enable Offline Compilation | `go.mod` (`go 1.23.2`) | Local `go build ./...` test | `FAIL` (Ready to Fix) |
-| **REQ-PERF-001**| `P2-18` | P2 | Medium Scalability| Owner Dashboard SQL Aggregation Read-Model | `internal/api/handlers_owner_dashboard.go:94` | Query plan EXPLAIN & latency benchmark | `FAIL` (Ready to Fix) |
-| **REQ-PERF-002**| `P2-19` | P2 | Medium Scalability| Dashboard Trend Path Consumes Daily Rollups | `internal/api/handlers_owner_dashboard.go` | Historical 6-month query count check | `FAIL` (Ready to Fix) |
-| **REQ-PERF-003**| `P2-20` | P2 | Medium Scalability| Stable Cursor Pagination for Expenses (Max 50) | `internal/postgres/finance_repo.go:281` | Deep page & sort stability test | `FAIL` (Ready to Fix) |
-| **REQ-PERF-004**| `P2-21` | P2 | Medium Scalability| Cursor Pagination for Dues (Eliminating OFFSET) | `internal/postgres/due_repo.go:84` | Performance & concurrency page shift test| `FAIL` (Ready to Fix) |
-| **REQ-PERF-005**| `P2-22` | P2 | Medium Scalability| Unique Tie-Breaker in Payment Cursor `(matched_at, id)`| `internal/postgres/payment_repo.go` | Duplicate timestamp boundary test | `FAIL` (Ready to Fix) |
-| **REQ-PERF-006**| `P2-23` | P2 | Medium Scalability| Enforce Hard Limits on Unbounded List Endpoints | `internal/api/handlers_*.go` | Max limit check across list APIs | `FAIL` (Ready to Fix) |
-| **REQ-SEC-003** | `P2-24` | P2 | Medium Confidentiality| Protect Public Operational Telemetry (`/metrics`) | `internal/api/router.go:155` | Unauthenticated probe returns 401/403 | `FAIL` (Ready to Fix) |
-| **REQ-SEC-004** | `P2-25` | P2 | Medium Confidentiality| Calendar Feed Token Expiry & Revocation | `internal/api/handlers_owner_dashboard.go` | Expired/revoked feed URL test | `FAIL` (Ready to Fix) |
-| **REQ-SEC-005** | `P2-26` | P2 | Medium Robustness | Strict RFC 5545 iCalendar Text Escaping | `internal/api/handlers_owner_dashboard.go:777` | CRLF/special character injection test | `FAIL` (Ready to Fix) |
-| **REQ-SEC-006** | `P2-27` | P2 | Medium Privacy | Remove Account Hash from Public Payout Payee DTOs | `domain/payout.go`, `internal/api/handlers_payouts.go`| Serialization schema verification | `FAIL` (Ready to Fix) |
-| **REQ-SEC-007** | `P2-28` | P2 | Medium Security | Explicit Beneficiary Lifecycle & Cooling-Off Period | `internal/api/handlers_payouts.go` | Instant payout rejection on new payee | `FAIL` (Ready to Fix) |
-| **REQ-SEC-008** | `P2-29` | P2 | Medium Security | Dedicated Payout Checksum Secret (No JWT Fallback)| `internal/api/handlers_payouts.go:getChecksumSecret`| Startup failure on missing secret test | `FAIL` (Ready to Fix) |
-| **REQ-SEC-009** | `P2-30` | P2 | Medium Robustness | Centralized Error Mapping (Zero Raw DB Error Leaks)| `internal/api/handlers_owner.go:1439` | Error response payload sanitization test | `FAIL` (Ready to Fix) |
-| **REQ-TIME-001**| `P2-31` | P2 | Medium Correctness | Business Timezone (IST) for Billing Period Calculation| `internal/api/handlers_finance.go:Now()` | Month-boundary rollover unit tests | `FAIL` (Ready to Fix) |
-| **REQ-FIN-004** | `P2-32` | P2 | Medium Correctness | Canonical Due Status Derivation & Cache Reconciliation| `internal/domain/due.go`, `dues.status` | Reconciliation discrepancy check | `FAIL` (Ready to Fix) |
+| **REQ-FIN-001** | `P0-01` | P0 | Critical Integrity | Uniform 64-bit signed integer paise across DB & Go | `migrations/046_...`, `domain/*.go` | DB schema & range tests | `PASS` |
+| **REQ-SEC-001** | `P0-02` | P0 | Critical Confidentiality | AES-256-GCM Envelope Encryption for Payout Accounts | `internal/api/handlers_payouts.go`, `domain/payout.go` | Crypto ciphertext & key rotation test | `PASS` |
+| **REQ-EXP-001** | `P0-03` | P0 | Critical Atomicity | Atomic Expense Creation & Journaling | `internal/finance/service.go:114-195` | Failure injection (journal fail -> rollback) | `PASS` |
+| **REQ-EXP-002** | `P0-04` | P0 | Critical Concurrency | Expense Overpayment Prevention under Concurrency | `internal/finance/service.go:218-299` | 50+ concurrent payment attempts | `PASS` |
+| **REQ-EXP-003** | `P0-05` | P0 | Critical Concurrency | Manager Spend Limits Concurrency Enforcement | `internal/finance/service.go:131-140` | 50+ concurrent expense creation races | `PASS` |
+| **REQ-TEN-001** | `P0-06` | P0 | Critical Concurrency | Atomic SQL Tenant Credit Mutation | `internal/payment/service.go:617`, `internal/tenant/service.go:545` | 50+ concurrent credit updates | `PASS` |
+| **REQ-PAY-001** | `P0-07` | P0 | Critical Atomicity | Atomic Payment-Report Verification & Settlement | `internal/api/handlers_pay_reports.go:235` | Injected failure & report lock test | `PASS` |
+| **REQ-FIN-002** | `P0-08` | P0 | Critical Idempotency | Single-Correction Invariant per Payment | `internal/payment/service.go:234`, `migrations/046_...` | Concurrent duplicate correction attempt | `PASS` |
+| **REQ-PAY-002** | `P1-09` | P1 | High Integrity | Fail-Closed Integer Parsing for Cashfree Gateway | `internal/cashfree/settlement.go:301-345` | Malformed & negative float input test | `PASS` |
+| **REQ-FIN-003** | `P1-10` | P1 | High Integrity | Elimination of Floating Point in Real Money Paths | `internal/qr/upi.go`, `internal/api/handlers_owner.go` | Precision & formatted string unit test | `PASS` |
+| **REQ-PAY-003** | `P1-11` | P1 | High Integrity | Mandatory `payments.property_id` Population & Constraints | `internal/postgres/payment_repo.go`, `migrations/046_...` | Null check & composite constraint test | `PASS` |
+| **REQ-EXP-004** | `P1-12` | P1 | High Security | Expense Room Must Belong to Same Property | `internal/finance/service.go`, DB FK constraint | Cross-property room submission test | `PASS` |
+| **REQ-SEC-002** | `P1-13` | P1 | High Security | PostgreSQL Row Level Security (RLS) for Financial Tables | `migrations/047_rls.sql` | Cross-tenant/cross-property query block | `PASS` |
+| **REQ-DASH-001**| `P1-14` | P1 | High Availability | Fail-Safe Dashboard Error Reporting (No Fake ₹0) | `internal/api/handlers_owner_dashboard.go:403` | Injected query failure -> 500 error | `PASS` |
+| **REQ-DASH-002**| `P1-15` | P1 | High Integrity | Pure Direct Cash Flow vs Operating Accrual Distinction | `internal/api/handlers_owner_dashboard.go:640` | Financial formula reconciliation test | `PASS` |
+| **REQ-OPS-001** | `P1-16` | P1 | High Reliability | Active Distributed Scheduling for Background Jobs | `cmd/server/main.go`, `.github/workflows` | Double-execution lock test | `PASS` |
+| **REQ-EXP-005** | `P1-17` | P1 | High Atomicity | Atomic Approval and Reimbursement State Machine | `internal/finance/service.go:302-378` | Intermediate failure rollback test | `PASS` |
+| **REQ-OPS-002** | `P1-33` | P1 | High Governance | Automated Pull-Request & Main Branch CI Gates | `.github/workflows/ci.yml` | CI execution on PR with race detector | `PASS` |
+| **REQ-OPS-003** | `P1-34` | P1 | Toolchain Standard | Pin Valid Go Toolchain & Enable Offline Compilation | `go.mod` (`go 1.23.2`) | Local `go build ./...` test | `PASS` |
+| **REQ-PERF-001**| `P2-18` | P2 | Medium Scalability| Owner Dashboard SQL Aggregation Read-Model | `internal/api/handlers_owner_dashboard.go:94` | Query plan EXPLAIN & latency benchmark | `PASS` |
+| **REQ-PERF-002**| `P2-19` | P2 | Medium Scalability| Dashboard Trend Path Consumes Daily Rollups | `internal/api/handlers_owner_dashboard.go` | Historical 6-month query count check | `PASS` |
+| **REQ-PERF-003**| `P2-20` | P2 | Medium Scalability| Stable Cursor Pagination for Expenses (Max 50) | `internal/postgres/finance_repo.go:281` | Deep page & sort stability test | `PASS` |
+| **REQ-PERF-004**| `P2-21` | P2 | Medium Scalability| Cursor Pagination for Dues (Eliminating OFFSET) | `internal/postgres/due_repo.go:84` | Performance & concurrency page shift test| `PASS` |
+| **REQ-PERF-005**| `P2-22` | P2 | Medium Scalability| Unique Tie-Breaker in Payment Cursor `(matched_at, id)`| `internal/postgres/payment_repo.go` | Duplicate timestamp boundary test | `PASS` |
+| **REQ-PERF-006**| `P2-23` | P2 | Medium Scalability| Enforce Hard Limits on Unbounded List Endpoints | `internal/api/handlers_*.go` | Max limit check across list APIs | `PASS` |
+| **REQ-SEC-003** | `P2-24` | P2 | Medium Confidentiality| Protect Public Operational Telemetry (`/metrics`) | `internal/api/router.go:155` | Unauthenticated probe returns 401/403 | `PASS` |
+| **REQ-SEC-004** | `P2-25` | P2 | Medium Confidentiality| Calendar Feed Token Expiry & Revocation | `internal/api/handlers_owner_dashboard.go` | Expired/revoked feed URL test | `PASS` |
+| **REQ-SEC-005** | `P2-26` | P2 | Medium Robustness | Strict RFC 5545 iCalendar Text Escaping | `internal/api/handlers_owner_dashboard.go:777` | CRLF/special character injection test | `PASS` |
+| **REQ-SEC-006** | `P2-27` | P2 | Medium Privacy | Remove Account Hash from Public Payout Payee DTOs | `domain/payout.go`, `internal/api/handlers_payouts.go`| Serialization schema verification | `PASS` |
+| **REQ-SEC-007** | `P2-28` | P2 | Medium Security | Explicit Beneficiary Lifecycle & Cooling-Off Period | `internal/api/handlers_payouts.go` | Instant payout rejection on new payee | `PASS` |
+| **REQ-SEC-008** | `P2-29` | P2 | Medium Security | Dedicated Payout Checksum Secret (No JWT Fallback)| `internal/api/handlers_payouts.go:getChecksumSecret`| Startup failure on missing secret test | `PASS` |
+| **REQ-SEC-009** | `P2-30` | P2 | Medium Robustness | Centralized Error Mapping (Zero Raw DB Error Leaks)| `internal/api/handlers_owner.go:1439` | Error response payload sanitization test | `PASS` |
+| **REQ-TIME-001**| `P2-31` | P2 | Medium Correctness | Business Timezone (IST) for Billing Period Calculation| `internal/api/handlers_finance.go:Now()` | Month-boundary rollover unit tests | `PASS` |
+| **REQ-FIN-004** | `P2-32` | P2 | Medium Correctness | Canonical Due Status Derivation & Cache Reconciliation| `internal/domain/due.go`, `dues.status` | Reconciliation discrepancy check | `PASS` |
 
 ---
 

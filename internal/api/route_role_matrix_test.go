@@ -171,13 +171,14 @@ func (f *matrixFixture) newRouter() *gin.Engine {
 		f.pendingUser.ID: f.pendingUser,
 	}}
 	return NewRouter(Deps{
-		JWTSecret:      f.secret,
-		MagicLink:      &stubRouterMagicLink{},
-		PropertyStore:  propertyStore,
-		UserStore:      userStore,
-		AuthTenantRepo: matrixTenantRepo{tenantID: f.tenantID, propertyID: f.propA},
-		AuthUserRepo:   userStore,
-		KYCSvc:         verifiedKYCSvc(),
+		JWTSecret:       f.secret,
+		MagicLink:       &stubRouterMagicLink{},
+		PropertyStore:   propertyStore,
+		UserStore:       userStore,
+		AuthTenantRepo:  matrixTenantRepo{tenantID: f.tenantID, propertyID: f.propA},
+		AuthUserRepo:    userStore,
+		KYCSvc:          verifiedKYCSvc(),
+		CapabilityStore: &stubCapabilityStore{allActive: true},
 	})
 }
 

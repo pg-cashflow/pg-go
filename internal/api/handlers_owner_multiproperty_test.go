@@ -42,6 +42,24 @@ func (m *multiPropMemStore) List(_ context.Context) ([]domain.Property, error) {
 	return out, nil
 }
 
+func (m *multiPropMemStore) ListByOwner(_ context.Context, phone, email string) ([]domain.Property, error) {
+	cleanPhone := strings.TrimSpace(phone)
+	cleanEmail := strings.ToLower(strings.TrimSpace(email))
+	var out []domain.Property
+	for _, p := range m.props {
+		match := false
+		if cleanPhone != "" && p.OwnerPhone == cleanPhone {
+			match = true
+		} else if cleanEmail != "" && strings.EqualFold(p.OwnerEmail, cleanEmail) {
+			match = true
+		}
+		if match {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
 func (m *multiPropMemStore) GetByOwnerPhone(_ context.Context, phone string) (*domain.Property, error) {
 	for _, p := range m.props {
 		if p.OwnerPhone == phone {

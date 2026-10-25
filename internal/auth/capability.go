@@ -28,13 +28,10 @@ const (
 )
 
 // RequireAnyCapability allows the owner. A manager must hold at least one of the named grants.
-// A nil checker does not enforce grants. cmd/server always sets a checker.
+// A nil checker fails closed with HTTP 503 for managers. cmd/server always sets a checker.
 // Database errors fail closed with HTTP 503. Grants are cached for 30 seconds.
 // Memory is bounded to maxCapabilityCacheEntries with active eviction.
 func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.HandlerFunc {
-	if checker == nil {
-		return func(c *gin.Context) { c.Next() }
-	}
 	var mu sync.Mutex
 	cache := make(map[string]capHit)
 	return func(c *gin.Context) {
@@ -49,6 +46,10 @@ func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.Handler
 		}
 		if claims.Role != domain.RoleManager || claims.PropertyID == nil {
 			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
+			return
+		}
+		if checker == nil {
+			apierr.Abort(c, http.StatusServiceUnavailable, "capability store unavailable", apierr.CodeAuthForbidden)
 			return
 		}
 

@@ -116,10 +116,14 @@ func TestManagerCreateSlotInvite_RequiresCapability(t *testing.T) {
 }
 
 type stubCapabilityStore struct {
-	active map[string]bool
+	active    map[string]bool
+	allActive bool
 }
 
 func (s *stubCapabilityStore) HasActive(_ context.Context, _ uuid.UUID, _ uuid.UUID, capability string) (bool, error) {
+	if s.allActive {
+		return true, nil
+	}
 	return s.active[capability], nil
 }
 
