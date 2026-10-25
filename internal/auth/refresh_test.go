@@ -176,18 +176,7 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 15*time.Second && hasSuccessor {
 			successor, exists := m.byID[successorID]
 			if exists && !successor.Revoked {
-				now := time.Now()
-				successor.Revoked = true
-				successor.RevokedAt = &now
-				successor.ReplacedBy = &newToken.ID
-				newToken.FamilyID = successor.FamilyID
-				newToken.FamilyStartedAt = successor.FamilyStartedAt
-				newToken.UserID = successor.UserID
-				m.tokens = append(m.tokens, newToken)
-				m.byHash[newToken.TokenHash] = newToken
-				m.byID[newToken.ID] = newToken
-				m.replacedBy[successor.ID] = newToken.ID
-				return newToken, nil
+				return successor, domain.ErrGraceWindow
 			}
 		}
 		// Grace window exceeded or family already nuked -> revoke family
@@ -430,19 +419,19 @@ func TestRefreshTokenGraceWindowRetry(t *testing.T) {
 	if accTokenRetry == "" {
 		t.Fatalf("expected non-empty access token on grace window retry")
 	}
-	// refTokenRetry must be a fresh non-empty token rotated from the successor row
-	// so the browser receives a fresh cookie and avoids cookie desync.
-	if refTokenRetry == "" {
-		t.Fatalf("expected non-empty refresh token string on grace window retry, got empty")
+	// refTokenRetry MUST be empty string to signal to AuthRefresh not to overwrite
+	// the browser's cookie with an orphaned token.
+	if refTokenRetry != "" {
+		t.Fatalf("expected empty refresh token string on grace window retry to prevent cookie orphan, got: %s", refTokenRetry)
 	}
 
-	// Step 4: Verify the fresh token (refTokenRetry) can be rotated cleanly
-	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refTokenRetry)
+	// Step 4: Verify the client's current cookie (refToken2) is still valid and can be rotated cleanly
+	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refToken2)
 	if err != nil {
-		t.Fatalf("expected fresh retry token to rotate successfully, got: %v", err)
+		t.Fatalf("expected successor token to rotate successfully, got: %v", err)
 	}
 	if accTokenNext == "" || refTokenNext == "" {
-		t.Fatalf("expected valid tokens after rotating retry token")
+		t.Fatalf("expected valid tokens after rotating successor token")
 	}
 }
 

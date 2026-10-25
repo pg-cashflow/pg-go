@@ -735,10 +735,19 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		_ = gwRepo.Create(context.Background(), basePayment)
 
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, DueCode: "DUE1", Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
 		h := &Handlers{Deps: Deps{
 			GatewayPaymentRepo: gwRepo,
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
 			// Both Pool and RefundTxRunner are nil
 		}}
 

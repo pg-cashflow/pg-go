@@ -205,9 +205,14 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				}
 			}
 		}
+		if orderID == "" {
+			log.Error("cashfree poll refund missing order_id; cannot verify gateway status, leaving initiated",
+				"refund_id", refundID, "payment_id", ref.PaymentID)
+			continue
+		}
 		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
-			isNotFound := strings.Contains(err.Error(), "404") || strings.Contains(strings.ToLower(err.Error()), "not found") || orderID == ""
+			isNotFound := strings.Contains(err.Error(), "404") || strings.Contains(strings.ToLower(err.Error()), "not found")
 			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute {
 				log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
 					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)

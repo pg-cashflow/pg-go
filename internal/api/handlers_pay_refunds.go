@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -468,6 +469,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		if d, err := h.DueStore.GetByID(ctx, p.DueID); err == nil && d != nil {
 			orderID = fmt.Sprintf("order_%s", d.DueCode)
 		}
+	}
 	if orderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot resolve gateway order ID for payment refund"})
 		return

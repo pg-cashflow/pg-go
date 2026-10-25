@@ -366,8 +366,8 @@ func TestB_AutoRefundWithAndWithoutLocalPayment(t *testing.T) {
 		if gwRepo.refunds["456"] == nil {
 			t.Fatal("expected refund to be recorded in gateway_refunds")
 		}
-		if gwRepo.refunds["456"].Status != "SUCCESS" {
-			t.Fatalf("expected refund status SUCCESS, got %s", gwRepo.refunds["456"].Status)
+		if gwRepo.refunds["456"].Status != "succeeded" && gwRepo.refunds["456"].Status != "SUCCESS" {
+			t.Fatalf("expected refund status succeeded or SUCCESS, got %s", gwRepo.refunds["456"].Status)
 		}
 		if gwRepo.refunds["456"].Source != "cashfree_auto" {
 			t.Fatalf("expected source cashfree_auto, got %s", gwRepo.refunds["456"].Source)

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -158,9 +159,13 @@ func (s *stubRefundStale) CreateOrUpdateRefund(_ context.Context, ref *domain.Ga
 
 type stubRefundFetch struct {
 	details *cashfree.RefundDetails
+	err     error
 }
 
 func (s stubRefundFetch) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.details, nil
 }
 
@@ -171,6 +176,7 @@ func TestCashfreePollReconcilesStuckRefund(t *testing.T) {
 		ID:              uuid.New(),
 		CFRefundID:      &cfRefID,
 		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_stuck_1"}`),
 		Status:          "pending", // stuck!
 		AmountPaise:     550000,
 	}
@@ -206,6 +212,7 @@ func TestCashfreePollReconcilesOnHoldRefund(t *testing.T) {
 		ID:              uuid.New(),
 		CFRefundID:      &cfRefID,
 		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_hold_1"}`),
 		Status:          "initiated",
 		AmountPaise:     550000,
 	}
@@ -291,6 +298,7 @@ func TestCashfreePollReconcilesStuckRefundWithReconciler(t *testing.T) {
 		ID:              refID,
 		CFRefundID:      &cfRefID,
 		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_rec_1"}`),
 		Status:          "pending",
 		AmountPaise:     550000,
 	}
@@ -332,6 +340,7 @@ func TestCashfreePollReconcilesStuckRefundClawsBackReferral(t *testing.T) {
 		PaymentID:       paymentID,
 		CFRefundID:      &cfRefID,
 		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_rec_2"}`),
 		Status:          "pending",
 		AmountPaise:     550000,
 	}
@@ -372,6 +381,7 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
 	staleRef := domain.GatewayRefund{
 		ID:              refID,
 		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_orphan_1"}`),
 		Status:          "initiated",
 		AmountPaise:     200000,
 		CreatedAt:       staleCreatedAt,
@@ -395,6 +405,40 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
 
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
 		t.Fatalf("expected orphan initiated refund to reconcile to failed, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
+func TestCashfreePollLeavesInitiatedRefundWhenOrderIDEmpty(t *testing.T) {
+	refRef := "rf_no_order_1"
+	refID := uuid.New()
+	staleCreatedAt := time.Now().UTC().Add(-45 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		Status:          "initiated",
+		AmountPaise:     200000,
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	refundClient := stubRefundFetch{
+		err: errors.New("cashfree fetch refund: 404 Not Found"),
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != uuid.Nil || refundRepo.reconciledStatus != "" {
+		t.Fatalf("refund with empty orderID must not be marked failed, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }
