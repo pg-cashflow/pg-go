@@ -268,6 +268,21 @@ func (s *stubRefundReconciler) ReconcileRefundTransition(_ context.Context, ref 
 	return nil
 }
 
+func (s *stubRefundReconciler) GetRefundDueIDs(_ context.Context, refundID uuid.UUID) ([]uuid.UUID, error) {
+	return []uuid.UUID{uuid.MustParse("00000000-0000-0000-0000-000000000010")}, nil
+}
+
+type stubReferralClawback struct {
+	reversedDueID     uuid.UUID
+	reversedPaymentID uuid.UUID
+}
+
+func (s *stubReferralClawback) ReverseFirstRentPayment(_ context.Context, dueID, paymentID uuid.UUID) error {
+	s.reversedDueID = dueID
+	s.reversedPaymentID = paymentID
+	return nil
+}
+
 func TestCashfreePollReconcilesStuckRefundWithReconciler(t *testing.T) {
 	cfRefID := "cf_rf_rec_1"
 	refRef := "rf_rec_1"
@@ -303,6 +318,50 @@ func TestCashfreePollReconcilesStuckRefundWithReconciler(t *testing.T) {
 
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "succeeded" {
 		t.Fatalf("expected ReconcileRefundTransition to be called with succeeded for %s, got id=%s status=%s", refID, refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
+func TestCashfreePollReconcilesStuckRefundClawsBackReferral(t *testing.T) {
+	cfRefID := "cf_rf_rec_2"
+	refRef := "rf_rec_2"
+	refID := uuid.New()
+	paymentID := uuid.New()
+	expectedDueID := uuid.MustParse("00000000-0000-0000-0000-000000000010")
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		PaymentID:       paymentID,
+		CFRefundID:      &cfRefID,
+		RefundReference: &refRef,
+		Status:          "pending",
+		AmountPaise:     550000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "SUCCESS",
+			AmountPaise:  550000,
+		},
+	}
+	referralTracker := &stubReferralClawback{}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Referrals:    referralTracker,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if referralTracker.reversedDueID != expectedDueID || referralTracker.reversedPaymentID != paymentID {
+		t.Fatalf("expected referral reversal for due %s payment %s, got due=%s payment=%s",
+			expectedDueID, paymentID, referralTracker.reversedDueID, referralTracker.reversedPaymentID)
 	}
 }
 

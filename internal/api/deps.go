@@ -276,6 +276,7 @@ type GatewayPaymentRepo interface {
 	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
 	CreateRefundAllocation(ctx context.Context, alloc *domain.RefundAllocation) error
 	GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error)
+	GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error)
 	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
 }
 

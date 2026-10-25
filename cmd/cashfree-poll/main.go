@@ -14,6 +14,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/referral"
 )
 
 // Polls stale Cashfree payment_intents and settles successful captures.
@@ -50,6 +51,8 @@ func main() {
 	paymentRepo := postgres.NewPaymentRepo(pool)
 	tenantRepo := postgres.NewTenantRepo(pool)
 	eventRepo := postgres.NewEventRepo(pool)
+	referralRepo := postgres.NewReferralRepo(pool)
+	referralSvc := referral.NewService(referralRepo)
 	paySvc := payment.NewServiceWithPool(pool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(pool))
 
 	cfClient := cashfree.NewClient(cfCfg)
@@ -60,6 +63,7 @@ func main() {
 		Settle:       paySvc,
 		Refunds:      paymentRepo,
 		RefundClient: cfClient,
+		Referrals:    referralSvc,
 		Log:          slog.Default(),
 	}
 	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "cashfree_poll")

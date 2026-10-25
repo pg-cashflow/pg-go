@@ -565,7 +565,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		return
 	}
 
-	if h.DueStore != nil {
+	if h.DueStore != nil && p.DueID != uuid.Nil {
 		_, err := h.DueStore.GetByID(ctx, p.DueID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "due lookup failed"})
@@ -580,6 +580,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			committedDue     *domain.Due
 			committedIsUnapp bool
 			committedRefAmt  int64
+			committedDueIDs  []uuid.UUID
 		)
 
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
@@ -602,9 +603,12 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			if lockErr := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); lockErr != nil {
 				return fmt.Errorf("lock tenant for refund webhook: %w", lockErr)
 			}
-			d, err := txDueRepo.GetByIDForUpdate(ctx, p.DueID)
-			if err != nil {
-				return err
+			var d *domain.Due
+			if p.DueID != uuid.Nil {
+				d, err = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
+				if err != nil {
+					return err
+				}
 			}
 			if lockErr := tx.QueryRow(ctx, `SELECT id FROM payments WHERE id=$1 FOR UPDATE`, p.ID).Scan(&dummy); lockErr != nil {
 				return fmt.Errorf("lock payment for refund webhook: %w", lockErr)
@@ -644,17 +648,12 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			// Financial ledger reversal upon successful refund
 			if strings.EqualFold(ref.RefundStatus, "SUCCESS") {
 				var mirrorAllocs []domain.RefundAllocationItemPayload
-				if p.IsUnapplied {
-					committedRefund = rfRow
-					committedDue = d
-					committedIsUnapp = true
-					committedRefAmt = ref.RefundAmount
-				} else {
-					committedRefund = rfRow
-					committedDue = d
-					committedIsUnapp = false
-					committedRefAmt = ref.RefundAmount
+				committedRefund = rfRow
+				committedDue = d
+				committedIsUnapp = p.IsUnapplied
+				committedRefAmt = ref.RefundAmount
 
+				if !p.IsUnapplied {
 					// Step A: Inspect existing refund allocations (pre-created by OwnerRefundPayment)
 					type allocItem struct {
 						dueID       uuid.UUID
@@ -684,6 +683,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 									AmountPaise: item.amountPaise,
 									DueKind:     string(targetDue.Kind),
 								})
+								committedDueIDs = append(committedDueIDs, item.dueID)
 							}
 						}
 					} else {
@@ -718,9 +718,28 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 								if remRefund <= 0 {
 									break
 								}
+								prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, pa.dueID, rfRow.ID)
+								if err != nil {
+									return err
+								}
+								remAlloc := pa.amountPaise - prevRefunded
+								if remAlloc <= 0 {
+									continue
+								}
+								netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, pa.dueID)
+								if err != nil {
+									return err
+								}
+								maxAlloc := remAlloc
+								if netPaid < maxAlloc {
+									maxAlloc = netPaid
+								}
+								if maxAlloc <= 0 {
+									continue
+								}
 								allocAmt := remRefund
-								if allocAmt > pa.amountPaise {
-									allocAmt = pa.amountPaise
+								if allocAmt > maxAlloc {
+									allocAmt = maxAlloc
 								}
 								dueIDCopy := pa.dueID
 								if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
@@ -739,36 +758,68 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 										AmountPaise: allocAmt,
 										DueKind:     string(pa.kind),
 									})
+									committedDueIDs = append(committedDueIDs, pa.dueID)
 								}
 								remRefund -= allocAmt
 							}
-						} else {
+						} else if d != nil {
 							// Single due fallback
-							if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-								RefundID:    rfRow.ID,
-								DueID:       &d.ID,
-								AmountPaise: ref.RefundAmount,
-							}); err != nil {
+							prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, d.ID, rfRow.ID)
+							if err != nil {
 								return err
 							}
-							if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+							netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.ID)
+							if err != nil {
 								return err
 							}
-							mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-								AmountPaise: ref.RefundAmount,
-								DueKind:     string(d.Kind),
-							})
+							maxAlloc := p.Amount - prevRefunded
+							if netPaid < maxAlloc {
+								maxAlloc = netPaid
+							}
+							allocAmt := ref.RefundAmount
+							if allocAmt > maxAlloc {
+								allocAmt = maxAlloc
+							}
+							if allocAmt > 0 {
+								if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+									RefundID:    rfRow.ID,
+									DueID:       &d.ID,
+									AmountPaise: allocAmt,
+								}); err != nil {
+									return err
+								}
+								if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
+									return err
+								}
+								mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+									AmountPaise: allocAmt,
+									DueKind:     string(d.Kind),
+								})
+								committedDueIDs = append(committedDueIDs, d.ID)
+							}
 						}
 					}
 				}
 
 				// Enqueue in-transaction refund outbox event (C-05)
-				dueKind := string(d.Kind)
+				propID := uuid.Nil
+				if existingRef != nil && existingRef.PropertyID != uuid.Nil {
+					propID = existingRef.PropertyID
+				}
+				if propID == uuid.Nil && d != nil {
+					propID = d.PropertyID
+				}
+				if propID == uuid.Nil && p.PropertyID != nil {
+					propID = *p.PropertyID
+				}
+				dueKind := string(domain.DueKindRent)
 				if len(mirrorAllocs) > 0 {
 					dueKind = mirrorAllocs[0].DueKind
+				} else if d != nil {
+					dueKind = string(d.Kind)
 				}
 				refundPayload := domain.RefundMirrorPayload{
-					PropertyID:  d.PropertyID,
+					PropertyID:  propID,
 					RefundID:    rfRow.ID,
 					PaymentID:   p.ID,
 					AmountPaise: committedRefAmt,
@@ -786,7 +837,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 					INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
 					VALUES ($1, $2, $3, $4, $5, NOW())
 					ON CONFLICT (idempotency_key) DO NOTHING`,
-					domain.LedgerOutboxRefund, d.PropertyID, rfRow.ID, rawPayload, outboxKey,
+					domain.LedgerOutboxRefund, propID, rfRow.ID, rawPayload, outboxKey,
 				)
 				if err != nil {
 					return fmt.Errorf("enqueue refund outbox: %w", err)
@@ -799,17 +850,39 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			return
 		}
 
-		if h.Finance != nil && committedRefund != nil && committedDue != nil {
+		if h.Finance != nil && committedRefund != nil && (committedDue != nil || committedIsUnapp) {
 			now := time.Now().UTC()
-			if mirrorErr := h.Finance.MirrorRefund(ctx, committedDue.PropertyID, committedRefund.ID, committedRefAmt, committedIsUnapp, committedDue.Kind, now); mirrorErr != nil {
-				// Ledger-gap: refund row is committed but the reversal journal failed.
-				// Log at ERROR for operator alerting; do NOT roll back the refund record.
-				slog.Default().Error("LEDGER GAP: MirrorRefund failed after refund committed",
-					"refund_id", committedRefund.ID,
-					"property_id", committedDue.PropertyID,
-					"amount_paise", committedRefAmt,
-					"err", mirrorErr,
-				)
+			propID := uuid.Nil
+			if committedDue != nil {
+				propID = committedDue.PropertyID
+			} else if p.PropertyID != nil {
+				propID = *p.PropertyID
+			}
+			dueKind := domain.DueKindRent
+			if committedDue != nil {
+				dueKind = committedDue.Kind
+			}
+			if propID != uuid.Nil {
+				if mirrorErr := h.Finance.MirrorRefund(ctx, propID, committedRefund.ID, committedRefAmt, committedIsUnapp, dueKind, now); mirrorErr != nil {
+					// Ledger-gap: refund row is committed but the reversal journal failed.
+					// Log at ERROR for operator alerting; do NOT roll back the refund record.
+					slog.Default().Error("LEDGER GAP: MirrorRefund failed after refund committed",
+						"refund_id", committedRefund.ID,
+						"property_id", propID,
+						"amount_paise", committedRefAmt,
+						"err", mirrorErr,
+					)
+				}
+			}
+		}
+
+		if h.Referrals != nil && len(committedDueIDs) > 0 {
+			for _, dueID := range committedDueIDs {
+				if dueID != uuid.Nil {
+					if err := h.Referrals.ReverseFirstRentPayment(ctx, dueID, p.ID); err != nil {
+						slog.Warn("referral reverse on refund webhook failed", "due_id", dueID, "payment_id", p.ID, "err", err)
+					}
+				}
 			}
 		}
 	} else if h.GatewayPaymentRepo != nil {

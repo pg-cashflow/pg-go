@@ -165,11 +165,19 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 			remRefund := req.AmountPaise
 			for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
 				d := duesList[i]
+				prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, d.dueID, rfRow.ID)
+				if err != nil {
+					return fmt.Errorf("get payment due refunded: %w", err)
+				}
+				remAlloc := d.allocatedPaise - prevRefunded
+				if remAlloc <= 0 {
+					continue
+				}
 				netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.dueID)
 				if err != nil {
 					return fmt.Errorf("get due net paid: %w", err)
 				}
-				maxAlloc := d.allocatedPaise
+				maxAlloc := remAlloc
 				if netPaid < maxAlloc {
 					maxAlloc = netPaid
 				}

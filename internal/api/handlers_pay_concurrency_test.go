@@ -146,6 +146,9 @@ func (s *threadSafeGatewayRepo) CreateRefundAllocation(ctx context.Context, allo
 func (s *threadSafeGatewayRepo) GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error) {
 	return 0, nil
 }
+func (s *threadSafeGatewayRepo) GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error) {
+	return 0, nil
+}
 func (s *threadSafeGatewayRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error) {
 	return nil, nil
 }

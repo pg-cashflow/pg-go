@@ -46,6 +46,14 @@ type RefundReconciler interface {
 	ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error
 }
 
+type RefundDueLister interface {
+	GetRefundDueIDs(ctx context.Context, refundID uuid.UUID) ([]uuid.UUID, error)
+}
+
+type ReferralClawback interface {
+	ReverseFirstRentPayment(ctx context.Context, dueID, paymentID uuid.UUID) error
+}
+
 type PaymentOrderResolver interface {
 	GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID) (string, error)
 }
@@ -62,6 +70,7 @@ type CashfreePollJob struct {
 	Settle           GatewaySettler
 	Refunds          RefundStaleRepo
 	RefundClient     RefundStatusFetcher
+	Referrals        ReferralClawback
 	StaleAfter       time.Duration
 	RefundStaleAfter time.Duration
 	Now              func() time.Time
@@ -214,6 +223,19 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				ref.UpdatedAt = time.Now().UTC()
 				if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
 					log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
+				}
+			}
+			if newStatus == "succeeded" && j.Referrals != nil {
+				if dueLister, ok := j.Refunds.(RefundDueLister); ok {
+					if dueIDs, err := dueLister.GetRefundDueIDs(ctx, ref.ID); err == nil {
+						for _, dueID := range dueIDs {
+							if dueID != uuid.Nil {
+								if err := j.Referrals.ReverseFirstRentPayment(ctx, dueID, ref.PaymentID); err != nil {
+									log.Warn("cashfree poll referral reverse failed", "due_id", dueID, "payment_id", ref.PaymentID, "err", err)
+								}
+							}
+						}
+					}
 				}
 			}
 		}

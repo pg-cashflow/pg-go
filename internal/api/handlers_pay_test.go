@@ -311,6 +311,9 @@ func (s *stubGatewayRepo) CreateRefundAllocation(context.Context, *domain.Refund
 func (s *stubGatewayRepo) GetDueNetPaidPaise(context.Context, uuid.UUID) (int64, error) {
 	return 0, nil
 }
+func (s *stubGatewayRepo) GetPaymentDueRefundedPaise(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (int64, error) {
+	return 0, nil
+}
 func (s *stubGatewayRepo) ListStaleNonTerminalRefunds(context.Context, time.Time) ([]domain.GatewayRefund, error) {
 	return nil, nil
 }

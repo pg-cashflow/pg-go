@@ -492,6 +492,36 @@ func (r *PaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (
 	return netPaid, err
 }
 
+func (r *PaymentRepo) GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error) {
+	var refunded int64
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(ra.amount_paise), 0)
+		FROM refund_allocations ra
+		JOIN gateway_refunds gr ON gr.id = ra.refund_id
+		WHERE ra.due_id = $1 AND gr.payment_id = $2 AND gr.id != $3 AND gr.status = 'succeeded'`,
+		dueID, paymentID, excludeRefundID).Scan(&refunded)
+	return refunded, err
+}
+
+func (r *PaymentRepo) GetRefundDueIDs(ctx context.Context, refundID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT due_id 
+		FROM refund_allocations 
+		WHERE refund_id = $1 AND due_id IS NOT NULL`, refundID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil && id != uuid.Nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
+}
+
 func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT `+refundCols+`
@@ -606,9 +636,28 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 					if remRefund <= 0 {
 						break
 					}
+					prevRefunded, err := txRepo.GetPaymentDueRefundedPaise(ctx, p.ID, pa.dueID, ref.ID)
+					if err != nil {
+						return err
+					}
+					remAlloc := pa.amountPaise - prevRefunded
+					if remAlloc <= 0 {
+						continue
+					}
+					netPaid, err := txRepo.GetDueNetPaidPaise(ctx, pa.dueID)
+					if err != nil {
+						return err
+					}
+					maxAlloc := remAlloc
+					if netPaid < maxAlloc {
+						maxAlloc = netPaid
+					}
+					if maxAlloc <= 0 {
+						continue
+					}
 					allocAmt := remRefund
-					if allocAmt > pa.amountPaise {
-						allocAmt = pa.amountPaise
+					if allocAmt > maxAlloc {
+						allocAmt = maxAlloc
 					}
 					dueIDCopy := pa.dueID
 					if err := txRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
@@ -633,25 +682,46 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 			}
 
 			if len(mirrorAllocs) == 0 && primaryDue != nil && !p.IsUnapplied {
-				if err := txRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-					RefundID:    ref.ID,
-					DueID:       &primaryDue.ID,
-					AmountPaise: ref.AmountPaise,
-				}); err != nil {
+				prevRefunded, err := txRepo.GetPaymentDueRefundedPaise(ctx, p.ID, primaryDue.ID, ref.ID)
+				if err != nil {
 					return err
 				}
-				if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, primaryDue); err != nil {
+				netPaid, err := txRepo.GetDueNetPaidPaise(ctx, primaryDue.ID)
+				if err != nil {
 					return err
 				}
-				mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-					AmountPaise: ref.AmountPaise,
-					DueKind:     string(primaryDue.Kind),
-				})
+				maxAlloc := p.Amount - prevRefunded
+				if netPaid < maxAlloc {
+					maxAlloc = netPaid
+				}
+				allocAmt := ref.AmountPaise
+				if allocAmt > maxAlloc {
+					allocAmt = maxAlloc
+				}
+				if allocAmt > 0 {
+					if err := txRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+						RefundID:    ref.ID,
+						DueID:       &primaryDue.ID,
+						AmountPaise: allocAmt,
+					}); err != nil {
+						return err
+					}
+					if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, primaryDue); err != nil {
+						return err
+					}
+					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+						AmountPaise: allocAmt,
+						DueKind:     string(primaryDue.Kind),
+					})
+				}
 			}
 
 			propID := ref.PropertyID
 			if propID == uuid.Nil && primaryDue != nil {
 				propID = primaryDue.PropertyID
+			}
+			if propID == uuid.Nil && p.PropertyID != nil {
+				propID = *p.PropertyID
 			}
 			dueKind := string(domain.DueKindRent)
 			if len(mirrorAllocs) > 0 {

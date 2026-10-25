@@ -247,6 +247,22 @@ func (m *mockRefundPaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uu
 	}
 	return totalPaid - totalRefunded, nil
 }
+func (m *mockRefundPaymentRepo) GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var totalRefunded int64
+	for _, ra := range m.refAllocs {
+		if ra.DueID != nil && *ra.DueID == dueID && ra.RefundID != excludeRefundID {
+			for _, r := range m.refunds {
+				if r.ID == ra.RefundID && r.PaymentID == paymentID && r.Status == "succeeded" {
+					totalRefunded += ra.AmountPaise
+					break
+				}
+			}
+		}
+	}
+	return totalRefunded, nil
+}
 func (m *mockRefundPaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error) {
 	return nil, nil
 }
