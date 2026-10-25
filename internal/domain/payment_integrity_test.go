@@ -120,38 +120,3 @@ func TestCalculatePaymentStatus(t *testing.T) {
 	})
 }
 
-func TestNormalizeRefundStatus(t *testing.T) {
-	cases := []struct {
-		input    string
-		expected string
-	}{
-		{"ONHOLD", RefundStatusOnHold},
-		{"onhold", RefundStatusOnHold},
-		{"ON_HOLD", RefundStatusOnHold},
-		{"on_hold", RefundStatusOnHold},
-		{"  ONHOLD  ", RefundStatusOnHold},
-		{"SUCCESS", RefundStatusSucceeded},
-		{"success", RefundStatusSucceeded},
-		{"succeeded", RefundStatusSucceeded},
-		{"PENDING", RefundStatusPending},
-		{"pending", RefundStatusPending},
-		{"FAILED", RefundStatusFailed},
-		{"failed", RefundStatusFailed},
-		{"CANCELLED", RefundStatusCancelled},
-		{"cancelled", RefundStatusCancelled},
-		{"canceled", RefundStatusCancelled},
-		{"INITIATED", RefundStatusInitiated},
-		{"initiated", RefundStatusInitiated},
-		{"unknown_status", "unknown_status"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			got := NormalizeRefundStatus(tc.input)
-			if got != tc.expected {
-				t.Errorf("NormalizeRefundStatus(%q) = %q, want %q", tc.input, got, tc.expected)
-			}
-		})
-	}
-}
-

@@ -153,7 +153,9 @@ func NormalizeRefundStatus(raw string) string {
 	case "initiated":
 		return RefundStatusInitiated
 	default:
-		return s
+		// Safe fallback: map unknown or in-progress gateway states to pending
+		// so database check constraints do not abort the transaction.
+		return RefundStatusPending
 	}
 }
 
