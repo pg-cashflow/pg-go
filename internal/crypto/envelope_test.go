@@ -170,3 +170,55 @@ func TestKeyRing_VersionedRotation(t *testing.T) {
 		t.Fatalf("expected ErrInvalidKeyVersion for missing key version, got %v", err)
 	}
 }
+
+func TestDeriveKeyHKDF(t *testing.T) {
+	secret := []byte("high-entropy-master-secret-seed")
+	salt := []byte("kyc-payout-salt-v1")
+	info := "pg-cashflow/payout-encryption/v1"
+
+	k1, err := DeriveKeyHKDF(secret, salt, info)
+	if err != nil {
+		t.Fatalf("DeriveKeyHKDF failed: %v", err)
+	}
+	if len(k1) != 32 {
+		t.Fatalf("expected 32-byte key, got %d", len(k1))
+	}
+
+	// Deterministic derivation check
+	k2, err := DeriveKeyHKDF(secret, salt, info)
+	if err != nil {
+		t.Fatalf("second DeriveKeyHKDF failed: %v", err)
+	}
+	if !bytes.Equal(k1, k2) {
+		t.Fatal("DeriveKeyHKDF must be deterministic for identical inputs")
+	}
+
+	// Domain separation check: different info must yield different key
+	kDifferentInfo, err := DeriveKeyHKDF(secret, salt, "pg-cashflow/kyc-document/v1")
+	if err != nil {
+		t.Fatalf("DeriveKeyHKDF with different info failed: %v", err)
+	}
+	if bytes.Equal(k1, kDifferentInfo) {
+		t.Fatal("different info parameter must produce distinct keys")
+	}
+
+	// Empty secret check
+	if _, err := DeriveKeyHKDF(nil, salt, info); err == nil {
+		t.Fatal("expected error for empty secret")
+	}
+
+	// Roundtrip encryption test using HKDF key
+	plaintext := []byte("test-aadhaar-123456789012")
+	ciphertext, err := Encrypt(k1, plaintext)
+	if err != nil {
+		t.Fatalf("Encrypt with HKDF key failed: %v", err)
+	}
+	decrypted, _, err := Decrypt(k1, ciphertext)
+	if err != nil {
+		t.Fatalf("Decrypt with HKDF key failed: %v", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Fatalf("decrypted %s does not match plaintext %s", decrypted, plaintext)
+	}
+}
+

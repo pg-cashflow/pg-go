@@ -199,6 +199,41 @@ func TestCashfreePollReconcilesStuckRefund(t *testing.T) {
 	}
 }
 
+func TestCashfreePollReconcilesOnHoldRefund(t *testing.T) {
+	cfRefID := "cf_rf_hold_1"
+	refRef := "rf_dup_hold"
+	staleRef := domain.GatewayRefund{
+		ID:              uuid.New(),
+		CFRefundID:      &cfRefID,
+		RefundReference: &refRef,
+		Status:          "initiated",
+		AmountPaise:     550000,
+	}
+	refundRepo := &stubRefundStale{list: []domain.GatewayRefund{staleRef}}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "ONHOLD",
+			AmountPaise:  550000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.updated == nil || refundRepo.updated.Status != domain.RefundStatusOnHold {
+		t.Fatalf("expected ONHOLD refund to transition to %s, got: %+v", domain.RefundStatusOnHold, refundRepo.updated)
+	}
+}
+
 func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	dueID := uuid.New()
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{

@@ -123,3 +123,37 @@ func NormalizeUTR(raw string) (string, error) {
 	}
 	return normalized, nil
 }
+
+// Canonical refund status values matching the database check constraint:
+// CHECK (status IN ('initiated', 'pending', 'on_hold', 'succeeded', 'failed', 'cancelled'))
+const (
+	RefundStatusInitiated = "initiated"
+	RefundStatusPending   = "pending"
+	RefundStatusOnHold    = "on_hold"
+	RefundStatusSucceeded = "succeeded"
+	RefundStatusFailed    = "failed"
+	RefundStatusCancelled = "cancelled"
+)
+
+// NormalizeRefundStatus normalizes provider refund status strings (such as Cashfree "ONHOLD" or "SUCCESS")
+// to database-compliant status enum values.
+func NormalizeRefundStatus(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case "success", "succeeded":
+		return RefundStatusSucceeded
+	case "onhold", "on_hold":
+		return RefundStatusOnHold
+	case "pending":
+		return RefundStatusPending
+	case "failed":
+		return RefundStatusFailed
+	case "cancelled", "canceled":
+		return RefundStatusCancelled
+	case "initiated":
+		return RefundStatusInitiated
+	default:
+		return s
+	}
+}
+

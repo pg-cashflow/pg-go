@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -25,9 +26,33 @@ var (
 )
 
 // DeriveKey derives a deterministic 32-byte AES-256 key from a secret string using SHA-256.
+// Note: For new integrations or passwords with variable entropy, prefer DeriveKeyHKDF.
 func DeriveKey(secret string) []byte {
 	hash := sha256.Sum256([]byte(secret))
 	return hash[:]
+}
+
+// DeriveKeyHKDF derives a cryptographically strong 32-byte AES-256 key using HKDF-SHA256 (RFC 5869)
+// with domain separation info and an optional salt.
+func DeriveKeyHKDF(secret []byte, salt []byte, info string) ([]byte, error) {
+	if len(secret) == 0 {
+		return nil, errors.New("crypto: secret cannot be empty")
+	}
+	// HKDF-Extract: PRK = HMAC-Hash(salt, IKM)
+	if len(salt) == 0 {
+		salt = make([]byte, sha256.Size) // zero-filled salt per RFC 5869 §2.2
+	}
+	hExtract := hmac.New(sha256.New, salt)
+	hExtract.Write(secret)
+	prk := hExtract.Sum(nil)
+
+	// HKDF-Expand: OKM = HMAC-Hash(PRK, info || 0x01) for 32-byte AES key
+	hExpand := hmac.New(sha256.New, prk)
+	hExpand.Write([]byte(info))
+	hExpand.Write([]byte{0x01})
+	okm := hExpand.Sum(nil)
+
+	return okm[:32], nil
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM authenticated envelope encryption:

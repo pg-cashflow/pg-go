@@ -309,8 +309,8 @@ func (h *Handlers) getRefundTxRunner() RefundTxRunner {
 }
 
 func isTerminalRefund(status string) bool {
-	s := strings.ToLower(strings.TrimSpace(status))
-	return s == "success" || s == "succeeded" || s == "failed" || s == "cancelled"
+	s := domain.NormalizeRefundStatus(status)
+	return s == domain.RefundStatusSucceeded || s == domain.RefundStatusFailed || s == domain.RefundStatusCancelled
 }
 
 func RecomputeDueStatusMath(netPaid int64, contractualCeiling int64) (domain.DueStatus, int64) {
@@ -517,10 +517,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 
 	// Update status and provider IDs from gateway response
-	respStatus := strings.ToLower(strings.TrimSpace(cfResp.RefundStatus))
-	if respStatus == "success" {
-		respStatus = "succeeded"
-	}
+	respStatus := domain.NormalizeRefundStatus(cfResp.RefundStatus)
 	rfRow.Status = respStatus
 	rfRow.CFRefundID = &cfResp.CFRefundID
 	rfRow.ProviderRefundID = &cfResp.CFRefundID

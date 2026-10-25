@@ -200,10 +200,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		if details == nil {
 			continue
 		}
-		newStatus := strings.ToLower(strings.TrimSpace(details.RefundStatus))
-		if newStatus == "success" {
-			newStatus = "succeeded"
-		}
+		newStatus := domain.NormalizeRefundStatus(details.RefundStatus)
 		if newStatus != ref.Status {
 			ref.Status = newStatus
 			ref.UpdatedAt = time.Now().UTC()

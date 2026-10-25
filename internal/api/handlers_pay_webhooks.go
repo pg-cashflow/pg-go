@@ -613,10 +613,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			if ref.IsAutoRefund {
 				source = "cashfree_auto"
 			}
-			dbRefundStatus := strings.ToLower(strings.TrimSpace(ref.RefundStatus))
-			if dbRefundStatus == "success" {
-				dbRefundStatus = "succeeded"
-			}
+			dbRefundStatus := domain.NormalizeRefundStatus(ref.RefundStatus)
 			rfRow := &domain.GatewayRefund{
 				PaymentID:       p.ID,
 				CFRefundID:      &ref.CFRefundID,
@@ -807,10 +804,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		if ref.IsAutoRefund {
 			source = "cashfree_auto"
 		}
-		dbRefundStatus := strings.ToLower(strings.TrimSpace(ref.RefundStatus))
-		if dbRefundStatus == "success" {
-			dbRefundStatus = "succeeded"
-		}
+		dbRefundStatus := domain.NormalizeRefundStatus(ref.RefundStatus)
 		rfRow := &domain.GatewayRefund{
 			PaymentID:       p.ID,
 			CFRefundID:      &ref.CFRefundID,
