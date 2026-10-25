@@ -50,14 +50,14 @@ func metricsAuth(jwtSecret, metricsSecret string) gin.HandlerFunc {
 	}
 }
 
-// SecurityHeaders adds baseline HTTP security headers (nosniff, frame denial, referrer policy, CSP Report-Only, HSTS).
+// SecurityHeaders adds baseline HTTP security headers (nosniff, frame denial, referrer policy, CSP, HSTS).
 func SecurityHeaders(appEnv string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
 		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		c.Header("Content-Security-Policy-Report-Only", "default-src 'self'; script-src 'self' 'unsafe-inline' https://sdk.cashfree.com https://apis.google.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://sandbox.cashfree.com https://api.cashfree.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com; frame-src 'self' https://sdk.cashfree.com https://api.cashfree.com https://www.google.com/recaptcha/ https://recaptcha.google.com https://*.firebaseapp.com;")
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://sdk.cashfree.com https://apis.google.com https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' https://sandbox.cashfree.com https://api.cashfree.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.googleapis.com; frame-src 'self' https://sdk.cashfree.com https://api.cashfree.com https://www.google.com/recaptcha/ https://recaptcha.google.com https://*.firebaseapp.com;")
 
 		if strings.EqualFold(appEnv, "production") {
 			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
