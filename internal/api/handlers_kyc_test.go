@@ -176,6 +176,7 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	{
 		tenant_g.POST("/consent", h.TenantKYCConsent)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
+		tenant_g.POST("/qr/verify", h.TenantKYCSecureQRVerify)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)
 		tenant_g.POST("/aadhaar/otp/verify", h.TenantKYCAadhaarOTPVerify)
 		tenant_g.POST("/revoke", h.TenantKYCRevoke)
@@ -317,6 +318,101 @@ func TestTenantKYCStatus_NoRecords(t *testing.T) {
 	}
 	if resp["has_verification"] != false {
 		t.Errorf("expected has_verification=false when no records, got %v", resp["has_verification"])
+	}
+}
+
+// ---- TenantKYCSecureQRVerify ------------------------------------------------
+
+func TestTenantKYCSecureQRVerify_OK(t *testing.T) {
+	now := time.Now()
+	masked := "1234"
+	svc := &fakeKYCSvc{
+		qrFn: func(_ context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error) {
+			if rawQR != "valid_qr_payload" {
+				return nil, fmt.Errorf("unexpected payload: %s", rawQR)
+			}
+			return &domain.KYCVerification{
+				ID:         uuid.New(),
+				TenantID:   tenantID,
+				Status:     domain.KYCStatusVerified,
+				Method:     domain.KYCMethodQR,
+				MaskedUID:  &masked,
+				VerifiedAt: &now,
+			}, nil
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	body, _ := json.Marshal(map[string]string{
+		"qr_payload": "valid_qr_payload",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "verified" {
+		t.Errorf("expected status verified, got %v", resp["status"])
+	}
+	if resp["masked_uid"] != "1234" {
+		t.Errorf("expected masked_uid 1234, got %v", resp["masked_uid"])
+	}
+}
+
+func TestTenantKYCSecureQRVerify_MissingPayload(t *testing.T) {
+	r := kycTestTenantRouter(&fakeKYCSvc{}, "")
+
+	body := []byte(`{}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for missing qr_payload, got %d", w.Code)
+	}
+}
+
+func TestTenantKYCSecureQRVerify_InvalidSignature(t *testing.T) {
+	svc := &fakeKYCSvc{
+		qrFn: func(_ context.Context, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
+			return nil, kycsvc.ErrQRSignatureInvalid
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	body, _ := json.Marshal(map[string]string{"qr_payload": "corrupted_payload"})
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for invalid signature, got %d", w.Code)
+	}
+}
+
+func TestTenantKYCSecureQRVerify_NoConsent(t *testing.T) {
+	svc := &fakeKYCSvc{
+		qrFn: func(_ context.Context, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
+			return nil, kycsvc.ErrNoActiveConsent
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	body, _ := json.Marshal(map[string]string{"qr_payload": "valid_payload_no_consent"})
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for missing consent, got %d", w.Code)
 	}
 }
 

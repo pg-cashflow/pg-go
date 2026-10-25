@@ -334,6 +334,43 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
 }
 
+type secureQRVerifyBody struct {
+	QRPayload string `json:"qr_payload" binding:"required"`
+}
+
+// TenantKYCSecureQRVerify handles POST /api/tenant/kyc/qr/verify.
+// Offline Aadhaar Secure QR verification: the UIDAI RSA-SHA256 signature is checked
+// in-process (no network call to Cashfree/UIDAI), so this completes synchronously and
+// is the lowest-latency KYC path available — lower than Aadhaar OTP, which depends on
+// SMS delivery, and lower than document upload, which depends on manual review.
+func (h *Handlers) TenantKYCSecureQRVerify(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	var body secureQRVerifyBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "qr_payload is required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+
+	v, err := svc.VerifySecureQR(c.Request.Context(), t.ID, body.QRPayload, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
+}
+
 type aadhaarOTPRequestBody struct {
 	AadhaarNumber string `json:"aadhaar_number" binding:"required"`
 }
