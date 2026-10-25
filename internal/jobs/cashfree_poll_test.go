@@ -365,5 +365,40 @@ func TestCashfreePollReconcilesStuckRefundClawsBackReferral(t *testing.T) {
 	}
 }
 
+func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
+	refRef := "rf_orphan_1"
+	refID := uuid.New()
+	staleCreatedAt := time.Now().UTC().Add(-45 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		Status:          "initiated",
+		AmountPaise:     200000,
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	refundClient := stubRefundFetch{
+		err: errors.New("cashfree fetch refund: 404 Not Found"),
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
+		t.Fatalf("expected orphan initiated refund to reconcile to failed, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
 var _ GatewaySettler = (*payment.Service)(nil)
+
 

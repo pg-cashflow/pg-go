@@ -35,8 +35,14 @@ func TestSecurityHeaders(t *testing.T) {
 	if got := w.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
 		t.Errorf("expected Referrer-Policy: strict-origin-when-cross-origin, got %q", got)
 	}
+	if got := w.Header().Get("Permissions-Policy"); !strings.Contains(got, "camera=(self)") {
+		t.Errorf("expected Permissions-Policy to permit camera=(self), got %q", got)
+	}
 	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
 		t.Errorf("expected CSP header with default-src 'self', got %q", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
+		t.Errorf("expected CSP script-src to omit 'unsafe-inline', got %q", got)
 	}
 	if got := w.Header().Get("Strict-Transport-Security"); !strings.Contains(got, "max-age=31536000") {
 		t.Errorf("expected HSTS header in production, got %q", got)

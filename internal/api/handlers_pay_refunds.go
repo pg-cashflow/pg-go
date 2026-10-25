@@ -468,9 +468,9 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		if d, err := h.DueStore.GetByID(ctx, p.DueID); err == nil && d != nil {
 			orderID = fmt.Sprintf("order_%s", d.DueCode)
 		}
-	}
 	if orderID == "" {
-		orderID = fmt.Sprintf("order_%s", p.ID.String()[:8])
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot resolve gateway order ID for payment refund"})
+		return
 	}
 
 	// Deterministic 35-character refund reference: rf_<32_char_hex_uuid>

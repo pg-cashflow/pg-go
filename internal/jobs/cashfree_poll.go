@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -206,7 +207,18 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		}
 		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
-			log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "err", err)
+			isNotFound := strings.Contains(err.Error(), "404") || strings.Contains(strings.ToLower(err.Error()), "not found") || orderID == ""
+			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute {
+				log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
+					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
+				if reconciler, ok := j.Refunds.(RefundReconciler); ok {
+					if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, "failed"); recErr != nil {
+						log.Error("cashfree poll reconcile failed refund error", "refund_id", refundID, "err", recErr)
+					}
+				}
+			} else {
+				log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "err", err)
+			}
 			continue
 		}
 		if details == nil {
