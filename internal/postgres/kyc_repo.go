@@ -18,6 +18,7 @@ import (
 type KYCRepo struct {
 	pool      *pgxpool.Pool
 	cryptoKey []byte
+	keyRing   *crypto.KeyRing
 }
 
 func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
@@ -25,16 +26,40 @@ func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
 	if len(cryptoKey) > 0 {
 		key = cryptoKey[0]
 	}
-	return &KYCRepo{pool: pool, cryptoKey: key}
+	r := &KYCRepo{pool: pool, cryptoKey: key}
+	if len(key) == 32 {
+		if kr, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, key); err == nil {
+			r.keyRing = kr
+		}
+	}
+	return r
 }
 
 func (r *KYCRepo) SetCryptoKey(key []byte) {
 	r.cryptoKey = key
+	if len(key) == 32 {
+		if kr, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, key); err == nil {
+			r.keyRing = kr
+		}
+	} else {
+		r.keyRing = nil
+	}
+}
+
+// SetKeyRing sets the versioned key ring for encrypting and decrypting KYC documents.
+func (r *KYCRepo) SetKeyRing(kr *crypto.KeyRing) {
+	r.keyRing = kr
+	if kr != nil && len(kr.PrimaryKey()) == 32 {
+		r.cryptoKey = kr.PrimaryKey()
+	}
 }
 
 func (r *KYCRepo) encryptBytes(plaintext []byte) ([]byte, error) {
 	if len(plaintext) == 0 {
 		return plaintext, nil
+	}
+	if r.keyRing != nil {
+		return crypto.EncryptWithKeyRing(r.keyRing, plaintext)
 	}
 	// No key configured: encryption is intentionally disabled (warn path is in bootstrap).
 	if len(r.cryptoKey) == 0 {
@@ -70,17 +95,24 @@ func (r *KYCRepo) decryptBytes(ciphertext []byte) ([]byte, error) {
 		return ciphertext, nil
 	}
 	// No key configured: data was stored without encryption, return as-is.
-	if len(r.cryptoKey) == 0 {
+	if len(r.cryptoKey) == 0 && r.keyRing == nil {
 		return ciphertext, nil
 	}
 	// Key present but wrong length: fail loud — same invariant as encryptBytes.
-	if len(r.cryptoKey) != 32 {
+	if r.keyRing == nil && len(r.cryptoKey) != 32 {
 		return nil, fmt.Errorf("kyc: decrypt: key is present but %d bytes (must be 32): configuration error", len(r.cryptoKey))
 	}
 	// Option B safe dual-read: if data matches legacy unencrypted document magic bytes,
 	// return as-is so existing unencrypted rows remain readable without failing closed.
 	if isLegacyPlaintextDoc(ciphertext) {
 		return ciphertext, nil
+	}
+	if r.keyRing != nil {
+		dec, _, err := crypto.DecryptWithKeyRing(r.keyRing, ciphertext)
+		if err != nil {
+			return nil, fmt.Errorf("kyc: decrypt: AEAD authentication failed (wrong key, corrupt data, or tampered bytes): %w", err)
+		}
+		return dec, nil
 	}
 	dec, _, err := crypto.Decrypt(r.cryptoKey, ciphertext)
 	if err != nil {

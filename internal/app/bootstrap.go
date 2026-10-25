@@ -253,6 +253,13 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set — Aadhaar document bytes will be stored unencrypted (DPDP §8(5) gap)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
+		if len(kycDocKey) == 32 {
+			kycKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey)
+			if err != nil {
+				return nil, fmt.Errorf("kyc: failed to initialize key ring: %w", err)
+			}
+			kycRepo.SetKeyRing(kycKeyRing)
+		}
 		var cfKYCAdapter kycsvc.CashfreeKYCClient
 		if cfg.CashfreeKYCAppID != "" && cfg.CashfreeKYCSecretKey != "" {
 			cfKYCClient := cashfree.NewClient(cashfree.Config{
