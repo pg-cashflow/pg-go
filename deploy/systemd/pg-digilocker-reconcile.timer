@@ -1,10 +1,2 @@
-[Unit]
-Description=Run pg-app digilocker reconcile hourly
-
-[Timer]
-OnCalendar=*:20:00
-Persistent=true
-RandomizedDelaySec=30
-
-[Install]
-WantedBy=timers.target
+# DEPRECATED AND RETIRED: This timer was removed when DigiLocker was deprecated in favor of Aadhaar OTP and UIDAI Secure QR.
+# Do not install or enable this unit.

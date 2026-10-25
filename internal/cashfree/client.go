@@ -22,6 +22,7 @@ type Config struct {
 	OrderExpiryDuration        time.Duration
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
 	ReturnURL                  string
+	MockKYC                    bool // opt-in mock for offline Aadhaar OTP testing in non-production
 }
 
 func (c Config) WebhookReplayWindow() int {
@@ -276,9 +277,13 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree create refund: %s %s", resp.Status, string(b))
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
 	}
-	var raw struct {
+	type refundRaw struct {
 		CFRefundID   json.Number `json:"cf_refund_id"`
 		RefundID     string      `json:"refund_id"`
 		OrderID      string      `json:"order_id"`
@@ -288,8 +293,14 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 		RefundType   string      `json:"refund_type"`
 		RefundReason string      `json:"refund_reason"`
 	}
+	var raw refundRaw
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, fmt.Errorf("cashfree create refund json: %w", err)
+		var rawList []refundRaw
+		if errList := json.Unmarshal(b, &rawList); errList == nil && len(rawList) > 0 {
+			raw = rawList[0]
+		} else {
+			return nil, fmt.Errorf("cashfree create refund json: %w", err)
+		}
 	}
 	parsedAmount, err := ParseRupeesToPaise(raw.RefundAmount.String())
 	if err != nil {

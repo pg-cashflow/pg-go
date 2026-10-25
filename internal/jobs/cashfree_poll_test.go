@@ -254,4 +254,57 @@ func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	}
 }
 
+type stubRefundReconciler struct {
+	stubRefundStale
+	reconciledID     uuid.UUID
+	reconciledStatus string
+}
+
+func (s *stubRefundReconciler) ReconcileRefundTransition(_ context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	s.reconciledID = ref.ID
+	s.reconciledStatus = newStatus
+	ref.Status = newStatus
+	s.updated = ref
+	return nil
+}
+
+func TestCashfreePollReconcilesStuckRefundWithReconciler(t *testing.T) {
+	cfRefID := "cf_rf_rec_1"
+	refRef := "rf_rec_1"
+	refID := uuid.New()
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		CFRefundID:      &cfRefID,
+		RefundReference: &refRef,
+		Status:          "pending",
+		AmountPaise:     550000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "SUCCESS",
+			AmountPaise:  550000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "succeeded" {
+		t.Fatalf("expected ReconcileRefundTransition to be called with succeeded for %s, got id=%s status=%s", refID, refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
 var _ GatewaySettler = (*payment.Service)(nil)
+

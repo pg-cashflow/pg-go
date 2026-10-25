@@ -42,6 +42,10 @@ type RefundStaleRepo interface {
 	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
 }
 
+type RefundReconciler interface {
+	ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error
+}
+
 type PaymentOrderResolver interface {
 	GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID) (string, error)
 }
@@ -201,10 +205,16 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		}
 		newStatus := domain.NormalizeRefundStatus(details.RefundStatus)
 		if newStatus != ref.Status {
-			ref.Status = newStatus
-			ref.UpdatedAt = time.Now().UTC()
-			if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
-				log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
+			if reconciler, ok := j.Refunds.(RefundReconciler); ok {
+				if err := reconciler.ReconcileRefundTransition(ctx, &ref, newStatus); err != nil {
+					log.Error("cashfree poll reconcile refund failed", "refund_id", refundID, "status", newStatus, "err", err)
+				}
+			} else {
+				ref.Status = newStatus
+				ref.UpdatedAt = time.Now().UTC()
+				if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
+					log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
+				}
 			}
 		}
 	}

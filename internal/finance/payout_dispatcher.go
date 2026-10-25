@@ -89,7 +89,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("payout dispatcher: batch %s has no items", batchID)
 	}
 
-	batchTransferID := fmt.Sprintf("pgo_%s", batch.ID)
+	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
 
 	// Step 1: Ambiguity Resolver — if batch is in dispatch_unknown, query Cashfree status first!
 	if batch.Status == domain.BatchDispatchUnknown {
@@ -157,7 +157,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		}
 
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
-			TransferID:      fmt.Sprintf("pgo_%s", it.ID),
+			TransferID:      fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", "")),
 			TransferAmount:  json.Number(cashfree.FormatPaiseToRupees(it.AmountPaise)),
 			TransferMode:    mode,
 			FundsourceID:    d.fundsourceID,
@@ -268,7 +268,7 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 ) error {
 	itemMap := make(map[string]domain.PayoutItem, len(items))
 	for _, it := range items {
-		itemMap[fmt.Sprintf("pgo_%s", it.ID)] = it
+		itemMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", ""))] = it
 	}
 
 	// Update items from Cashfree status

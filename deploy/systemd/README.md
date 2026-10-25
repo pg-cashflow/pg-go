@@ -1,6 +1,6 @@
 # pg-app Background Job Scheduling (Linux systemd Timers)
 
-This directory contains the production `systemd` service and timer definitions for all 12 background jobs running on the self-managed PG-LIVE host.
+This directory contains the production `systemd` service and timer definitions for all 11 background jobs running on the self-managed PG-LIVE host.
 
 ## Job Schedule Overview
 
@@ -9,7 +9,6 @@ This directory contains the production `systemd` service and timer definitions f
 | `pg-billing-cycle` | Daily | 00:05 IST | `18:35 UTC` (prev) | Monthly due generation, credit auto-application, overdue status |
 | `pg-cashfree-poll` | Every 15 min | `*:00,15,30,45` | `*:00,15,30,45` | Fallback polling for unconfirmed/pending payment intents |
 | `pg-daily-rollup` | Daily | 23:55 IST | `18:25 UTC` | Writes per-property daily collected/due/expense/occupancy rollups (current IST day) |
-| `pg-digilocker-reconcile`| Hourly | `*:20:00` | `*:20:00` | Polls pending DigiLocker KYC requests and marks verification |
 | `pg-financial-summary` | Daily | 23:45 IST | `18:15 UTC` | Generates daily owner financial digests and tie-outs |
 | `pg-gamification-cycle` | Monthly | 1st @ 01:00 IST | `*-*-01 19:30 UTC` | Monthly gamification tier recalculation, streaks, badges |
 | `pg-kpi-snapshot` | Daily | 02:00 IST | `20:30 UTC` (prev) | Captures daily occupancy, revenue, and collection KPIs |

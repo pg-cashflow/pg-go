@@ -174,11 +174,11 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		for _, tr := range receivedTransfers {
 			amountMap[tr.TransferID] = tr.TransferAmount.String()
 		}
-		if amountMap[fmt.Sprintf("pgo_%s", item1.ID)] != "5000.00" {
-			t.Errorf("expected 5000.00 for item 1, got %s", amountMap[fmt.Sprintf("pgo_%s", item1.ID)])
+		if amountMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(item1.ID.String(), "-", ""))] != "5000.00" {
+			t.Errorf("expected 5000.00 for item 1, got %s", amountMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(item1.ID.String(), "-", ""))])
 		}
-		if amountMap[fmt.Sprintf("pgo_%s", item2.ID)] != "2500.00" {
-			t.Errorf("expected 2500.00 for item 2, got %s", amountMap[fmt.Sprintf("pgo_%s", item2.ID)])
+		if amountMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(item2.ID.String(), "-", ""))] != "2500.00" {
+			t.Errorf("expected 2500.00 for item 2, got %s", amountMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(item2.ID.String(), "-", ""))])
 		}
 	})
 

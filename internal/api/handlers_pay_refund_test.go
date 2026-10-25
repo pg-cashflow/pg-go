@@ -596,9 +596,12 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 	})
 
 	// 5. Gateway Error Fallback
-	t.Run("gateway error marks refund failed and returns 502", func(t *testing.T) {
+	t.Run("gateway 4xx rejection marks refund failed and returns 502", func(t *testing.T) {
 		gwRepo := newMockRefundPaymentRepo()
-		cfClient := &mockCFClient{failRefund: true}
+		cfClient := &mockCFClient{
+			failRefund: true,
+			refundErr:  &cashfree.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Body: "gateway rejected refund: insufficient balance"},
+		}
 		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
 		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
 			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
@@ -642,6 +645,58 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 
 		if rec.Code != http.StatusBadGateway {
 			t.Fatalf("expected 502 Bad Gateway on gateway failure, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("gateway timeout keeps refund initiated and returns 202", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{
+			failRefund: true,
+			refundErr:  errors.New("gateway timeout: network deadline exceeded"),
+		}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 200000,
+			"reason":       "Timing out refund",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "idem_test_005_timeout")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted on ambiguous gateway timeout, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 

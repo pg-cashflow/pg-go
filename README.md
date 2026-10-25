@@ -29,7 +29,6 @@ Or use `make migrate` / `make server` (see [Makefile](Makefile)).
 | `cmd/reminder` | Daily reminders D-3/D-0/D+1/D+7 (09:00 IST) |
 | `cmd/cashfree-poll` | Missed Cashfree webhook settle (no-op if keys unset) |
 | `cmd/daily-rollup` | Daily rollup job |
-| `cmd/digilocker-reconcile` | DigiLocker reconciliation sweep |
 | `cmd/financial-summary` | `--cadence=monthly\|yearly` collections and finance digest email |
 | `cmd/gamification-cycle` | Gamification periodic job |
 | `cmd/kpi-snapshot` | Daily KPI and ROI snapshot |

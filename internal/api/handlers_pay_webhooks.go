@@ -538,7 +538,13 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 	}
 
 	// Step 1: Unlocked ancestry resolution
-	existingRef, _ := h.GatewayPaymentRepo.GetRefundByCFRefundID(ctx, ref.CFRefundID)
+	var existingRef *domain.GatewayRefund
+	if ref.RefundID != "" {
+		existingRef, _ = h.GatewayPaymentRepo.GetRefundByReference(ctx, ref.RefundID)
+	}
+	if existingRef == nil && ref.CFRefundID != "" {
+		existingRef, _ = h.GatewayPaymentRepo.GetRefundByCFRefundID(ctx, ref.CFRefundID)
+	}
 	var p *domain.Payment
 	if existingRef != nil {
 		p, _ = h.GatewayPaymentRepo.GetByID(ctx, existingRef.PaymentID)
@@ -623,6 +629,13 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				Source:          source,
 				Reason:          ref.RefundReason,
 				RawPayload:      evtRecord.RawPayload,
+			}
+			if existingRef != nil {
+				rfRow.ID = existingRef.ID
+				rfRow.PropertyID = existingRef.PropertyID
+				rfRow.IdempotencyKey = existingRef.IdempotencyKey
+				rfRow.InitiatedBy = existingRef.InitiatedBy
+				rfRow.CreatedAt = existingRef.CreatedAt
 			}
 			if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
 				return err

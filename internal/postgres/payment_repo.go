@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -493,7 +494,7 @@ func (r *PaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (
 
 func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, payment_id, cf_refund_id, refund_reference, amount_paise, status, source, initiated_by, reason, raw_response, created_at, updated_at
+		SELECT `+refundCols+`
 		FROM gateway_refunds
 		WHERE status IN ('initiated', 'pending', 'on_hold') AND created_at < $1
 		ORDER BY created_at ASC`, olderThan)
@@ -503,13 +504,221 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 	defer rows.Close()
 	var out []domain.GatewayRefund
 	for rows.Next() {
-		var ref domain.GatewayRefund
-		if err := rows.Scan(&ref.ID, &ref.PaymentID, &ref.CFRefundID, &ref.RefundReference, &ref.AmountPaise, &ref.Status, &ref.Source, &ref.InitiatedBy, &ref.Reason, &ref.RawPayload, &ref.CreatedAt, &ref.UpdatedAt); err != nil {
+		ref, err := scanRefund(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, ref)
+		out = append(out, *ref)
 	}
 	return out, rows.Err()
+}
+
+func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	reconcile := func(txRepo *PaymentRepo, tx pgx.Tx) error {
+		p, err := txRepo.GetByID(ctx, ref.PaymentID)
+		if err != nil || p == nil {
+			return fmt.Errorf("reconcile refund payment lookup: %w", err)
+		}
+
+		var dummy uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock tenant for refund reconcile: %w", err)
+		}
+
+		txDueRepo := NewDueRepo(tx)
+		var primaryDue *domain.Due
+		if p.DueID != uuid.Nil {
+			primaryDue, _ = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
+		}
+
+		if err := tx.QueryRow(ctx, `SELECT id FROM payments WHERE id = $1 FOR UPDATE`, p.ID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock payment for refund reconcile: %w", err)
+		}
+
+		if err := tx.QueryRow(ctx, `SELECT id FROM gateway_refunds WHERE id = $1 FOR UPDATE`, ref.ID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock gateway refund for reconcile: %w", err)
+		}
+
+		ref.Status = newStatus
+		ref.UpdatedAt = time.Now().UTC()
+		if err := txRepo.CreateOrUpdateRefund(ctx, ref); err != nil {
+			return fmt.Errorf("update refund status in reconcile: %w", err)
+		}
+
+		switch newStatus {
+		case "succeeded":
+			type allocItem struct {
+				dueID       uuid.UUID
+				amountPaise int64
+			}
+			var existingAllocs []allocItem
+			allocRows, qErr := tx.Query(ctx, `SELECT due_id, amount_paise FROM refund_allocations WHERE refund_id = $1`, ref.ID)
+			if qErr == nil {
+				for allocRows.Next() {
+					var item allocItem
+					if err := allocRows.Scan(&item.dueID, &item.amountPaise); err == nil && item.dueID != uuid.Nil {
+						existingAllocs = append(existingAllocs, item)
+					}
+				}
+				allocRows.Close()
+			}
+
+			var mirrorAllocs []domain.RefundAllocationItemPayload
+			if len(existingAllocs) > 0 {
+				for _, item := range existingAllocs {
+					targetDue, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
+					if err == nil && targetDue != nil {
+						if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
+							return err
+						}
+						mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+							AmountPaise: item.amountPaise,
+							DueKind:     string(targetDue.Kind),
+						})
+					}
+				}
+			} else if !p.IsUnapplied {
+				pAllocRows, paErr := tx.Query(ctx, `
+					SELECT pa.due_id, pa.amount_paise, d.kind
+					FROM payment_allocations pa
+					JOIN dues d ON d.id = pa.due_id
+					WHERE pa.payment_id = $1
+					ORDER BY d.due_date DESC, d.id DESC`, p.ID)
+
+				type pAllocItem struct {
+					dueID       uuid.UUID
+					amountPaise int64
+					kind        domain.DueKind
+				}
+				var pAllocs []pAllocItem
+				if paErr == nil {
+					for pAllocRows.Next() {
+						var pa pAllocItem
+						if err := pAllocRows.Scan(&pa.dueID, &pa.amountPaise, &pa.kind); err == nil {
+							pAllocs = append(pAllocs, pa)
+						}
+					}
+					pAllocRows.Close()
+				}
+
+				remRefund := ref.AmountPaise
+				for _, pa := range pAllocs {
+					if remRefund <= 0 {
+						break
+					}
+					allocAmt := remRefund
+					if allocAmt > pa.amountPaise {
+						allocAmt = pa.amountPaise
+					}
+					dueIDCopy := pa.dueID
+					if err := txRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+						RefundID:    ref.ID,
+						DueID:       &dueIDCopy,
+						AmountPaise: allocAmt,
+					}); err != nil {
+						return err
+					}
+					targetDue, err := txDueRepo.GetByIDForUpdate(ctx, pa.dueID)
+					if err == nil && targetDue != nil {
+						if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
+							return err
+						}
+						mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+							AmountPaise: allocAmt,
+							DueKind:     string(pa.kind),
+						})
+					}
+					remRefund -= allocAmt
+				}
+			}
+
+			if len(mirrorAllocs) == 0 && primaryDue != nil && !p.IsUnapplied {
+				if err := txRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+					RefundID:    ref.ID,
+					DueID:       &primaryDue.ID,
+					AmountPaise: ref.AmountPaise,
+				}); err != nil {
+					return err
+				}
+				if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, primaryDue); err != nil {
+					return err
+				}
+				mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+					AmountPaise: ref.AmountPaise,
+					DueKind:     string(primaryDue.Kind),
+				})
+			}
+
+			propID := ref.PropertyID
+			if propID == uuid.Nil && primaryDue != nil {
+				propID = primaryDue.PropertyID
+			}
+			dueKind := string(domain.DueKindRent)
+			if len(mirrorAllocs) > 0 {
+				dueKind = mirrorAllocs[0].DueKind
+			} else if primaryDue != nil {
+				dueKind = string(primaryDue.Kind)
+			}
+			refundPayload := domain.RefundMirrorPayload{
+				PropertyID:  propID,
+				RefundID:    ref.ID,
+				PaymentID:   p.ID,
+				AmountPaise: ref.AmountPaise,
+				IsUnapplied: p.IsUnapplied,
+				Allocations: mirrorAllocs,
+				DueKind:     dueKind,
+				OccurredAt:  time.Now().UTC(),
+			}
+			rawPayload, err := json.Marshal(refundPayload)
+			if err != nil {
+				return fmt.Errorf("marshal refund mirror outbox: %w", err)
+			}
+			outboxKey := fmt.Sprintf("refund_mirror:%s", ref.ID)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+				VALUES ($1, $2, $3, $4, $5, NOW())
+				ON CONFLICT (idempotency_key) DO NOTHING`,
+				domain.LedgerOutboxRefund, propID, ref.ID, rawPayload, outboxKey,
+			)
+			if err != nil {
+				return fmt.Errorf("enqueue refund ledger outbox in reconcile: %w", err)
+			}
+
+		case "failed", "cancelled":
+			if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, ref.ID); err != nil {
+				return fmt.Errorf("delete refund allocations in reconcile: %w", err)
+			}
+		}
+		return nil
+	}
+
+	if pool, ok := r.db.(*pgxpool.Pool); ok {
+		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
+			return reconcile(r.WithTx(tx), tx)
+		})
+	}
+	if tx, ok := r.db.(pgx.Tx); ok {
+		return reconcile(r, tx)
+	}
+	return errors.New("database connection does not support transactions")
+}
+
+func (r *PaymentRepo) recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *DueRepo, d *domain.Due) error {
+	netPaid, err := r.GetDueNetPaidPaise(ctx, d.ID)
+	if err != nil {
+		return err
+	}
+	ceiling := d.OriginalAmount
+	if d.ContractualCeilingPaise != nil && *d.ContractualCeilingPaise > 0 {
+		ceiling = *d.ContractualCeilingPaise
+	}
+	newStatus, newAmount := domain.RecomputeDueStatusMath(netPaid, ceiling)
+	d.Status = newStatus
+	d.Amount = newAmount
+	if d.Status != domain.DueStatusPaid {
+		d.PaidAt = nil
+	}
+	return txDueRepo.Update(ctx, d)
 }
 
 func (r *PaymentRepo) GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID) (string, error) {

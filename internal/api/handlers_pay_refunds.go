@@ -340,7 +340,7 @@ func recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *postgres.DueRep
 
 type OwnerRefundRequest struct {
 	AmountPaise int64  `json:"amount_paise" binding:"required,gt=0"`
-	Reason      string `json:"reason" binding:"required"`
+	Reason      string `json:"reason" binding:"required,min=3,max=100"`
 	StepUpAuthInput
 }
 
@@ -503,16 +503,35 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 
 	// Step C: External Gateway Call (ZERO row locks held during external I/O)
-	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, refundRef, req.AmountPaise, req.Reason, idempotencyKey)
+	cfIdempotencyKey := idempotencyKey
+	if _, err := uuid.Parse(idempotencyKey); err != nil {
+		cfIdempotencyKey = uuid.NewSHA1(uuid.NameSpaceURL, []byte(idempotencyKey)).String()
+	}
+	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, refundRef, req.AmountPaise, req.Reason, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
-		rfRow.Status = "failed"
-		// Best-effort cleanup: mark refund as failed and release allocations.
-		// Propagate the cleanup error only to logs; the gateway failure is the primary error.
-		if cleanupErr := runner.CleanupFailedRefund(ctx, rfRow); cleanupErr != nil {
-			slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
+
+		var apiErr *cashfree.APIError
+		isDefinite4xx := errors.As(cfErr, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
+
+		if isDefinite4xx {
+			rfRow.Status = "failed"
+			// Use context.WithoutCancel so client disconnect does not abort cleanup
+			dbCtx := context.WithoutCancel(ctx)
+			if cleanupErr := runner.CleanupFailedRefund(dbCtx, rfRow); cleanupErr != nil {
+				slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
+			}
+			respondErr(c, clientErr(http.StatusBadGateway, fmt.Sprintf("gateway refund rejected: %s", apiErr.Error())))
+			return
 		}
-		respondErr(c, clientErr(http.StatusBadGateway, "gateway refund failed"))
+
+		// Ambiguous gateway failure (timeout, dropped connection, 5xx, or 429).
+		// Keep refund row in 'initiated' status and retain pre-allocated dues.
+		// Return 202 Accepted; the reconciler job or webhook will finalize the status.
+		c.JSON(http.StatusAccepted, gin.H{
+			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
+			"refund":  rfRow,
+		})
 		return
 	}
 
@@ -522,8 +541,9 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	rfRow.CFRefundID = &cfResp.CFRefundID
 	rfRow.ProviderRefundID = &cfResp.CFRefundID
 
-	// Settle or finalize in DB
-	if settleErr := runner.SettleRefund(ctx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
+	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
+	dbCtx := context.WithoutCancel(ctx)
+	if settleErr := runner.SettleRefund(dbCtx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
 		slog.Error("refund post-settlement failed", "error", settleErr, "refund_id", rfRow.ID)
 		respondErr(c, fmt.Errorf("post-settlement transaction failed: %w", settleErr))
 		return
