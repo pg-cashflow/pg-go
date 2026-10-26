@@ -209,6 +209,13 @@ func (h *Handlers) SettleGatewayOrder(
 		return errors.New("payment intent unavailable")
 	}
 
+	if amountPaise != intent.AmountPaise {
+		if h.GatewayPaymentRepo != nil {
+			_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, "amount_mismatch", rawPayload)
+		}
+		return fmt.Errorf("settle amount mismatch: expected %d paise, got %d paise", intent.AmountPaise, amountPaise)
+	}
+
 	if h.Pool != nil && h.GatewayPaymentRepo != nil {
 		return postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)

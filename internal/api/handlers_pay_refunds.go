@@ -116,6 +116,15 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 			return fmt.Errorf("lock gateway refunds: %w", err)
 		}
 
+		// Locked Idempotency Guard: check if an identical refund was already initiated while waiting for locks
+		if rfRow.IdempotencyKey != nil && *rfRow.IdempotencyKey != "" {
+			existing, err := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
+			if err == nil && existing != nil {
+				*rfRow = *existing
+				return nil
+			}
+		}
+
 		// Guard A: Settlement Terminal Boundary Guard
 		var settledDepartureExists bool
 		err = tx.QueryRow(ctx, `
@@ -521,6 +530,12 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 			return
 		}
 		respondErr(c, err)
+		return
+	}
+
+	// If this refund was already finalized or has provider ID from a racing request
+	if isTerminalRefund(rfRow.Status) || (rfRow.CFRefundID != nil && *rfRow.CFRefundID != "") {
+		c.JSON(http.StatusOK, rfRow)
 		return
 	}
 

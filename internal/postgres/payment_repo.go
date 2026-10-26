@@ -452,7 +452,7 @@ func (r *PaymentRepo) CreateOrUpdateRefund(ctx context.Context, ref *domain.Gate
 	if ref.ID == uuid.Nil {
 		ref.ID = uuid.New()
 	}
-	return r.db.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		INSERT INTO gateway_refunds (id, payment_id, property_id, provider, provider_refund_id, cf_refund_id, refund_reference, idempotency_key, amount_paise, status, source, initiated_by, reason, raw_response, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET
@@ -467,6 +467,13 @@ func (r *PaymentRepo) CreateOrUpdateRefund(ctx context.Context, ref *domain.Gate
 		ref.RefundReference, ref.IdempotencyKey, ref.AmountPaise, ref.Status, ref.Source,
 		ref.InitiatedBy, ref.Reason, ref.RawPayload, ref.CreatedAt, ref.UpdatedAt,
 	).Scan(&ref.ID)
+	if err != nil && ref.IdempotencyKey != nil && *ref.IdempotencyKey != "" {
+		if existing, getErr := r.GetRefundByPaymentAndIdempotency(ctx, ref.PaymentID, *ref.IdempotencyKey); getErr == nil && existing != nil {
+			*ref = *existing
+			return nil
+		}
+	}
+	return err
 }
 
 func (r *PaymentRepo) CreateRefundAllocation(ctx context.Context, alloc *domain.RefundAllocation) error {

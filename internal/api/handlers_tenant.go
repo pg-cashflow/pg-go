@@ -18,6 +18,9 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 	if t == nil {
 		return
 	}
+	cloned := *t
+	updatedTenant := &cloned
+
 	var body struct {
 		Name          *string `json:"name"`
 		GuardianPhone *string `json:"guardian_phone"`
@@ -28,16 +31,17 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 		return
 	}
 	if body.Name != nil {
-		t.Name = strings.TrimSpace(*body.Name)
-		if t.Name == "" {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "name cannot be empty"})
 			return
 		}
+		updatedTenant.Name = name
 	}
 	if body.GuardianPhone != nil {
 		phone := strings.TrimSpace(*body.GuardianPhone)
 		if phone != "" {
-			t.GuardianPhone = &phone
+			updatedTenant.GuardianPhone = &phone
 		}
 	}
 	if body.Locale != nil {
@@ -57,12 +61,13 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 		}
 	}
 	if h.TenantStore != nil {
-		if err := h.TenantStore.Update(c.Request.Context(), t); err != nil {
+		if err := h.TenantStore.Update(c.Request.Context(), updatedTenant); err != nil {
 			respondErr(c, err)
 			return
 		}
 	}
-	c.JSON(http.StatusOK, tenantResponse(t))
+	auth.InvalidateTenantCache(t.ID)
+	c.JSON(http.StatusOK, tenantResponse(updatedTenant))
 }
 
 // TenantMe handles GET /tenant/me.
@@ -315,6 +320,7 @@ func (h *Handlers) TenantAadhaar(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 				return
 			}
+			auth.InvalidateTenantCache(t.ID)
 		}
 	}
 

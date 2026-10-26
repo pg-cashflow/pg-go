@@ -18,7 +18,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.PATCH("/me", h.TenantPatchMe)
 	tenant.GET("/lifecycle", h.TenantLifecycle)
 	tenant.POST("/push/subscribe", h.TenantPushSubscribe)
-	tenant.POST("/aadhaar", h.TenantAadhaar)
+	tenant.POST("/aadhaar", h.TenantIDRateLimit(10.0/60, 5), h.TenantAadhaar)
 
 	tenant.POST("/kyc/consent", h.TenantKYCConsent)
 	tenant.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
@@ -33,11 +33,15 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 
 	gated.GET("/dues", h.TenantDues)
 	gated.GET("/dues/options", h.TenantDuesOptions)
-	gated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	gated.GET("/dues/:id/qr", h.TenantDueQR)
-	gated.GET("/dues/:id/pay", h.TenantDuePay)
-	gated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
-	gated.POST("/dues/:id/reports", h.TenantSubmitReport)
+
+	// payment routes enforce property KYC policy if enabled
+	payGated := gated.Group("", h.RequireKYCIfPolicyEnforced())
+	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
+	payGated.GET("/dues/:id/pay", h.TenantDuePay)
+	payGated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
+	payGated.POST("/dues/:id/reports", h.TenantSubmitReport)
+
 	gated.GET("/payments", h.TenantPayments)
 	gated.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
 

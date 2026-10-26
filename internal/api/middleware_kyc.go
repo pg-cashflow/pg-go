@@ -72,7 +72,11 @@ func (h *Handlers) RequireKYCIfPolicyEnforced() gin.HandlerFunc {
 		requireKYC := false
 		if h.OnboardingSettings != nil {
 			s, err := h.OnboardingSettings.Get(c.Request.Context(), t.PropertyID)
-			if err == nil && s != nil {
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{Error: "onboarding settings unavailable"})
+				return
+			}
+			if s != nil {
 				requireKYC = s.RequireKYCBeforePay
 			}
 		}

@@ -134,6 +134,7 @@ func (h *Handlers) UpdateTenant(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	auth.InvalidateTenantCache(id)
 	c.JSON(http.StatusOK, tenantResponse(t))
 }
 

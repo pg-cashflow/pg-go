@@ -795,6 +795,17 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		LastUsedAt: now,
 	}
 
+	// Pre-validate user existence and status before committing rotation transaction
+	if existingRT, err := s.refreshRepo.GetRefreshTokenByHash(ctx, oldHash); err == nil && existingRT != nil {
+		if preUser, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && preUser != nil {
+			if preUser.TenantID != nil && s.tenants != nil {
+				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+					return "", "", nil, ErrTenantVacated
+				}
+			}
+		}
+	}
+
 	rotatedRT, err := s.refreshRepo.RotateTokenTx(ctx, oldHash, newRT)
 	if err != nil {
 		if errors.Is(err, domain.ErrGraceWindow) && rotatedRT != nil {
