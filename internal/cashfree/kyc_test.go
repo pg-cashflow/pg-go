@@ -141,6 +141,27 @@ func TestClassifyAadhaarError(t *testing.T) {
 			expectedCls:  FailureSystemFault,
 		},
 		{
+			name:         "Cashfree 503 error with cooldown message is system fault",
+			httpStatus:   503,
+			msg:          "Otp generated for this aadhaar, please try after some time",
+			expectedCode: "PROVIDER_ERROR",
+			expectedCls:  FailureSystemFault,
+		},
+		{
+			name:         "Cashfree 403 IP not whitelisted (system fault)",
+			httpStatus:   403,
+			msg:          "IP address not whitelisted",
+			expectedCode: "PROVIDER_AUTH_ERROR",
+			expectedCls:  FailureSystemFault,
+		},
+		{
+			name:         "Cashfree 401 Unauthorized (system fault)",
+			httpStatus:   401,
+			msg:          "Unauthorized request",
+			expectedCode: "PROVIDER_AUTH_ERROR",
+			expectedCls:  FailureSystemFault,
+		},
+		{
 			name:         "Unrecognized failure fails open to recoverable",
 			httpStatus:   400,
 			msg:          "Unexpected format error",

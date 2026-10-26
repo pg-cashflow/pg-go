@@ -95,6 +95,10 @@ func TestCreateUPIOrderUPIOnlyExactRupees(t *testing.T) {
 	if meta["payment_methods"] != "upi" {
 		t.Fatalf("payment_methods=%v", meta["payment_methods"])
 	}
+	cust, _ := body["customer_details"].(map[string]any)
+	if cust["customer_id"] != "cust_9999999999" {
+		t.Fatalf("customer_id=%v want cust_9999999999", cust["customer_id"])
+	}
 }
 
 func TestCreateUPIOrderRequiresPhone(t *testing.T) {

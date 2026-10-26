@@ -46,6 +46,7 @@ func (c Config) baseURL() string {
 type Client struct {
 	cfg          Config
 	http         *http.Client
+	kycHTTP      *http.Client
 	now          func() time.Time
 	baseOverride string
 }
@@ -57,8 +58,20 @@ func (c *Client) endpoint() string {
 	return c.cfg.baseURL()
 }
 
+func (c *Client) kycClient() *http.Client {
+	if c.kycHTTP != nil {
+		return c.kycHTTP
+	}
+	return c.http
+}
+
 func NewClient(cfg Config) *Client {
-	return &Client{cfg: cfg, http: &http.Client{Timeout: 15 * time.Second}, now: time.Now}
+	return &Client{
+		cfg:     cfg,
+		http:    &http.Client{Timeout: 15 * time.Second},
+		kycHTTP: &http.Client{Timeout: 35 * time.Second},
+		now:     time.Now,
+	}
 }
 
 // WithBaseURL overrides the Cashfree API base endpoint (e.g. for local test harness or fake gateway).
@@ -101,11 +114,16 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 		orderMeta["return_url"] = c.cfg.ReturnURL
 	}
 
+	customerID := orderID
+	if customerPhone != "" {
+		customerID = "cust_" + strings.TrimPrefix(customerPhone, "+")
+	}
+
 	body := createOrderBody{
 		OrderID:       orderID,
 		OrderAmount:   json.Number(FormatPaiseToRupees(amountPaise)),
 		OrderCurrency: "INR",
-		Customer:      map[string]any{"customer_id": orderID, "customer_phone": customerPhone},
+		Customer:      map[string]any{"customer_id": customerID, "customer_phone": customerPhone},
 		OrderMeta:     orderMeta,
 		OrderNote:     note,
 	}

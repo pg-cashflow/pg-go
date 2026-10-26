@@ -550,3 +550,35 @@ func TestVerifyFirebaseReLinkGuards(t *testing.T) {
 	}
 }
 
+func TestVerifyFirebaseAndIssueToken_OwnerWithoutEmailDeniedRelink(t *testing.T) {
+	phone := "+919876543210"
+	initialUID := "uid-owner-initial"
+	attackerUID := "uid-attacker"
+	pid := uuid.New()
+
+	users := &stubUserRepo{
+		byPhone: map[string]*domain.User{
+			phone: {
+				ID:           uuid.New(),
+				Phone:        phone,
+				Email:        "", // No email on file
+				Role:         domain.RoleOwner,
+				PropertyID:   &pid,
+				FirebaseUID:  &initialUID,
+				TokenVersion: 1,
+			},
+		},
+		byFirebase: map[string]*domain.User{},
+	}
+	users.byFirebase[initialUID] = users.byPhone[phone]
+
+	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+
+	// Attacker tries to relink using the phone with a new Firebase UID
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: attackerUID, phone: phone})
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-attacker", "")
+	if !errors.Is(err, ErrAccountReLinkDenied) {
+		t.Fatalf("expected ErrAccountReLinkDenied for owner without email, got %v", err)
+	}
+}
+

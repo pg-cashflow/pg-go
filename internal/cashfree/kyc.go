@@ -117,7 +117,7 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 	c.sign(req)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	resp, err := c.http.Do(req)
+	resp, err := c.kycClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 	c.sign(req)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.kycClient().Do(req)
 	if err != nil {
 		if !strings.EqualFold(c.cfg.Env, "production") && c.cfg.MockKYC {
 			last4 := "9999"
@@ -295,7 +295,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	c.sign(req)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.kycClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -350,11 +350,15 @@ const (
 	FailureSystemFault AadhaarFailureClass = "system_fault"
 )
 
-// ClassifyAadhaarError maps Cashfree and UIDAI response codes/messages to a failure class.
-// Matching is substring-based because Cashfree message text may vary slightly across versions.
 func ClassifyAadhaarError(httpStatus int, message string) (code string, class AadhaarFailureClass) {
 	m := strings.ToLower(message)
 	switch {
+	case httpStatus == 401 || httpStatus == 403 || strings.Contains(m, "unauthorized") || strings.Contains(m, "ip not whitelisted"):
+		return "PROVIDER_AUTH_ERROR", FailureSystemFault
+	case httpStatus >= 500:
+		return "PROVIDER_ERROR", FailureSystemFault
+	case httpStatus == 422 || strings.Contains(m, "insufficient balance"):
+		return "PROVIDER_BALANCE", FailureSystemFault
 	case strings.Contains(m, "does not have mobile number"),
 		strings.Contains(m, "not linked to mobile"),
 		strings.Contains(m, "mobile number not registered"):
@@ -372,10 +376,6 @@ func ClassifyAadhaarError(httpStatus int, message string) (code string, class Aa
 		return "COOLDOWN_ACTIVE", FailureCooldown
 	case strings.Contains(m, "invalid aadhaar"):
 		return "INVALID_AADHAAR", FailureRecoverable // Upgraded to terminal on repeat in service layer
-	case httpStatus == 422, strings.Contains(m, "insufficient balance"):
-		return "PROVIDER_BALANCE", FailureSystemFault
-	case httpStatus >= 500:
-		return "PROVIDER_ERROR", FailureSystemFault
 	default:
 		return "UNKNOWN", FailureRecoverable // Fail open to recoverable to prevent accidental lockouts
 	}

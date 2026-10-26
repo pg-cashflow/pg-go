@@ -609,6 +609,21 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		if cfClient.refundCalls != 1 {
 			t.Fatalf("expected exactly 1 call to Cashfree, got %d", cfClient.refundCalls)
 		}
+
+		// Third call with SAME key but DIFFERENT amount must return 409 Conflict
+		bodyConflict := map[string]any{
+			"amount_paise": 300000,
+			"reason":       "Idempotent partial refund with different amount",
+		}
+		bufConflict, _ := json.Marshal(bodyConflict)
+		req3 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(bufConflict))
+		req3.Header.Set("Content-Type", "application/json")
+		req3.Header.Set("X-Idempotency-Key", "idem_replay_key_999")
+		rec3 := httptest.NewRecorder()
+		r.ServeHTTP(rec3, req3)
+		if rec3.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict on idempotency key mismatch, got %d: %s", rec3.Code, rec3.Body.String())
+		}
 	})
 
 	// 5. Gateway Error Fallback

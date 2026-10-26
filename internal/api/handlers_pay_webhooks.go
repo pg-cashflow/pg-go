@@ -509,7 +509,7 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 			if err != nil || !firstSeen {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1`, fail.OrderID); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded')`, fail.OrderID); err != nil {
 				return err
 			}
 			return nil

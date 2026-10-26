@@ -61,6 +61,9 @@ func (m *mockOTPRepo) IncrementAttempts(_ context.Context, id uuid.UUID) error {
 	defer m.mu.Unlock()
 	for _, r := range m.requests {
 		if r.ID == id {
+			if r.Attempts >= 5 {
+				return postgres.ErrOTPLocked
+			}
 			r.Attempts++
 			return nil
 		}
@@ -627,6 +630,42 @@ func TestRequestStepUpOTP_NoopMailerFailsClosed(t *testing.T) {
 		}
 		if ch != "email" || len(mm.sentTo) != 1 {
 			t.Fatalf("expected one real email send, got channel=%q sent=%v", ch, mm.sentTo)
+		}
+	})
+
+	t.Run("atomic attempt quota locks after 5 attempts", func(t *testing.T) {
+		otpRepo := &mockOTPRepo{}
+		svc := NewService(otpRepo, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret")
+		reqID := uuid.New()
+		validOTP := "123456"
+		otpHash := HashOTP(secret, validOTP)
+
+		otpRepo.requests = append(otpRepo.requests, &postgres.OTPRequest{
+			ID:          reqID,
+			Phone:       phone,
+			OTPHash:     otpHash,
+			Attempts:    0,
+			ExpiresAt:   time.Now().UTC().Add(5 * time.Minute),
+			Used:        false,
+			Purpose:     "payout_approval",
+			BatchID:     &batchID,
+			Channel:     "sms",
+			Destination: phone,
+			CreatedAt:   time.Now().UTC(),
+		})
+
+		// Make 5 wrong attempts
+		for i := 0; i < 5; i++ {
+			err := svc.VerifyStepUpOTPSpecific(ctx, phone, "000000", "payout_approval", &batchID)
+			if !errors.Is(err, ErrInvalidOTP) && !errors.Is(err, ErrOTPLocked) {
+				t.Fatalf("attempt %d: expected ErrInvalidOTP or ErrOTPLocked, got %v", i+1, err)
+			}
+		}
+
+		// 6th attempt with the CORRECT OTP must be blocked with ErrOTPLocked
+		err := svc.VerifyStepUpOTPSpecific(ctx, phone, validOTP, "payout_approval", &batchID)
+		if !errors.Is(err, ErrOTPLocked) {
+			t.Fatalf("expected ErrOTPLocked on 6th attempt with valid OTP, got %v", err)
 		}
 	})
 }

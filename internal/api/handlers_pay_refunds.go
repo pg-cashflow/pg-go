@@ -449,6 +449,13 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	// Unlocked Read 2: Check if already initiated/completed with this idempotency key
 	existingRef, err := h.GatewayPaymentRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, idempotencyKey)
 	if err == nil && existingRef != nil {
+		if existingRef.AmountPaise != req.AmountPaise || existingRef.Reason != req.Reason {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "idempotency key conflict: refund already exists with different amount or reason",
+				"code":  "IDEMPOTENCY_CONFLICT",
+			})
+			return
+		}
 		c.JSON(http.StatusOK, existingRef)
 		return
 	}
@@ -479,6 +486,10 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	cleanUUID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	refundRef := fmt.Sprintf("rf_%s", cleanUUID)
 
+	orderPayload, _ := json.Marshal(map[string]any{
+		"order_id": orderID,
+	})
+
 	rfRow := &domain.GatewayRefund{
 		ID:              uuid.New(),
 		PaymentID:       p.ID,
@@ -491,6 +502,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		Source:          "owner",
 		InitiatedBy:     &uid,
 		Reason:          req.Reason,
+		RawPayload:      orderPayload,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}

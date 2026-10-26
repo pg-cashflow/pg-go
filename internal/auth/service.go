@@ -305,11 +305,15 @@ func (s *Service) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpo
 		return ErrOTPLocked
 	}
 
-	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
-		err := s.otp.IncrementAttempts(ctx, req.ID)
-		if errors.Is(err, postgres.ErrOTPLocked) || req.Attempts+1 >= OTPMaxAttempts {
+	// Atomically consume attempt quota before comparing guess to prevent parallel bypass
+	if err := s.otp.IncrementAttempts(ctx, req.ID); err != nil {
+		if errors.Is(err, postgres.ErrOTPLocked) {
 			return ErrOTPLocked
 		}
+		return fmt.Errorf("increment otp attempts: %w", err)
+	}
+
+	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
 		return ErrInvalidOTP
 	}
 
@@ -369,11 +373,15 @@ func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string)
 		return "", nil, ErrOTPLocked
 	}
 
-	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
-		err := s.otp.IncrementAttempts(ctx, req.ID)
-		if errors.Is(err, postgres.ErrOTPLocked) || req.Attempts+1 >= OTPMaxAttempts {
+	// Atomically consume attempt quota before comparing guess to prevent parallel bypass
+	if err := s.otp.IncrementAttempts(ctx, req.ID); err != nil {
+		if errors.Is(err, postgres.ErrOTPLocked) {
 			return "", nil, ErrOTPLocked
 		}
+		return "", nil, fmt.Errorf("increment otp attempts: %w", err)
+	}
+
+	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
 		return "", nil, ErrInvalidOTP
 	}
 
@@ -424,10 +432,12 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
 				// Re-link attempt detected: phone matches, but Firebase UID differs.
 				// Protect owners and managers against SIM swaps and recycled phone numbers.
-				if user.IsManagerOrOwner() && user.Email != "" {
-					if !ident.EmailVerified || !strings.EqualFold(ident.Email, user.Email) {
+				if user.IsManagerOrOwner() {
+					if user.Email == "" || !ident.EmailVerified || !strings.EqualFold(ident.Email, user.Email) {
 						return "", nil, ErrAccountReLinkDenied
 					}
+				} else if user.Email != "" && ident.Email != "" && !strings.EqualFold(ident.Email, user.Email) {
+					return "", nil, ErrAccountReLinkDenied
 				}
 				// Revoke prior access and refresh tokens for security
 				_ = s.users.IncrementTokenVersion(ctx, user.ID)

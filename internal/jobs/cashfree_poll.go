@@ -184,15 +184,18 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 			continue
 		}
 		orderID := ""
+		hasVerifiedOrderID := false
 		if len(ref.RawPayload) > 0 {
 			var rawMap map[string]any
 			if err := json.Unmarshal(ref.RawPayload, &rawMap); err == nil {
 				if oid, ok := rawMap["order_id"].(string); ok && oid != "" {
 					orderID = oid
+					hasVerifiedOrderID = true
 				} else if data, ok := rawMap["data"].(map[string]any); ok {
 					if rdata, ok := data["refund"].(map[string]any); ok {
 						if oid, ok := rdata["order_id"].(string); ok && oid != "" {
 							orderID = oid
+							hasVerifiedOrderID = true
 						}
 					}
 				}
@@ -213,7 +216,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
 			isNotFound := strings.Contains(err.Error(), "404") || strings.Contains(strings.ToLower(err.Error()), "not found")
-			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute {
+			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute && hasVerifiedOrderID {
 				log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
 					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
 				if reconciler, ok := j.Refunds.(RefundReconciler); ok {
@@ -222,7 +225,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 					}
 				}
 			} else {
-				log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "err", err)
+				log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "has_verified_order_id", hasVerifiedOrderID, "err", err)
 			}
 			continue
 		}

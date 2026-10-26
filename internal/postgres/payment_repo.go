@@ -795,7 +795,16 @@ func (r *PaymentRepo) GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID
 	var orderID string
 	err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(
-			(SELECT pi.provider_order_id FROM payments p JOIN payment_intents pi ON pi.due_id = p.due_id WHERE p.id = $1 LIMIT 1),
+			(SELECT pi.provider_order_id 
+			 FROM payments p 
+			 JOIN payment_intents pi ON (
+				 (p.cf_payment_id IS NOT NULL AND pi.cf_payment_id = p.cf_payment_id)
+				 OR (p.provider_payment_id IS NOT NULL AND pi.cf_payment_id = p.provider_payment_id)
+				 OR (p.due_id IS NOT NULL AND pi.due_id = p.due_id)
+			 )
+			 WHERE p.id = $1 
+			 ORDER BY pi.created_at DESC 
+			 LIMIT 1),
 			''
 		)`, paymentID).Scan(&orderID)
 	return orderID, err
