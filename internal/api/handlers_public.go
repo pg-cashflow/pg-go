@@ -72,6 +72,12 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pay rent — {{.PropertyName}}</title>
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Pay ₹{{.AmountRupees}} — {{.PropertyName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}">
+  <meta property="og:description" content="Rent payment due for {{.PropertyName}}. Pay directly via UPI to {{.OwnerName}}.">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Pay ₹{{.AmountRupees}} — {{.PropertyName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}">
+  <meta name="twitter:description" content="Rent payment due for {{.PropertyName}}. Pay directly via UPI to {{.OwnerName}}.">
   <style>
     body{font-family:system-ui,sans-serif;margin:0;padding:1.5rem;background:#f7f7f5;color:#1a1a1a}
     main{max-width:28rem;margin:0 auto}
