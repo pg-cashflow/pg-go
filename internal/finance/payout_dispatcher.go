@@ -91,11 +91,11 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
 
-	// Step 1: Ambiguity Resolver — if batch is in dispatch_unknown, query Cashfree status first!
-	if batch.Status == domain.BatchDispatchUnknown {
+	// Step 1: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
+	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
 		statusResp, err := d.client.GetBatchTransferStatus(ctx, batchTransferID)
-		if err == nil && statusResp != nil {
-			slog.Info("cashfree batch transfer recovered from dispatch_unknown via status poll",
+		if err == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+			slog.Info("cashfree batch transfer recovered via status poll",
 				"batch_id", batch.ID,
 				"cf_batch_id", statusResp.CFBatchTransferID,
 				"status", statusResp.Status,
@@ -201,10 +201,18 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 			retryResp, retryErr := d.client.RequestBatchTransfer(ctx, req)
 			if retryErr != nil {
+				if errors.Is(retryErr, cashfree.ErrDispatchUnknown) {
+					_ = d.repo.SetBatchDispatchUnknown(ctx, batch.ID, retryErr.Error())
+				}
 				return fmt.Errorf("payout dispatcher: retry batch transfer after bene register: %w", retryErr)
 			}
 			resp = retryResp
 		} else {
+			if strings.Contains(strings.ToLower(err.Error()), "already exists") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				if statusResp, sErr := d.client.GetBatchTransferStatus(ctx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+					return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+				}
+			}
 			return fmt.Errorf("payout dispatcher: request batch transfer: %w", err)
 		}
 	}
@@ -284,8 +292,8 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			if st.UTR != nil {
 				utr = *st.UTR
 			}
-			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
-				return fmt.Errorf("update payout item succeeded status: %w", err)
+			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
+				return fmt.Errorf("reconcile payout item succeeded status: %w", err)
 			}
 		case "FAILED":
 			reason := st.StatusDescription
@@ -305,8 +313,8 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			}
 		case "REVERSED":
 			reason := "transfer reversed by bank"
-			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
-				return fmt.Errorf("update payout item reversed status: %w", err)
+			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
+				return fmt.Errorf("reconcile payout item reversed status: %w", err)
 			}
 		}
 	}

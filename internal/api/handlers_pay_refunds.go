@@ -436,6 +436,9 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	// 180-day eligibility window check
 	now := time.Now().UTC()
 	paymentTime := p.CreatedAt
+	if !p.MatchedAt.IsZero() {
+		paymentTime = p.MatchedAt
+	}
 	if now.Sub(paymentTime) > 180*24*time.Hour {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "payment is older than 180 days and cannot be refunded via gateway"})
 		return
@@ -479,11 +482,6 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	if orderID == "" && p.ProviderPaymentID != nil && *p.ProviderPaymentID != "" && h.IntentStore != nil {
 		if intent, err := h.IntentStore.GetByCFPaymentID(ctx, *p.ProviderPaymentID); err == nil && intent != nil {
 			orderID = intent.ProviderOrderID
-		}
-	}
-	if orderID == "" && p.DueID != uuid.Nil && h.DueStore != nil {
-		if d, err := h.DueStore.GetByID(ctx, p.DueID); err == nil && d != nil {
-			orderID = fmt.Sprintf("order_%s", d.DueCode)
 		}
 	}
 	if orderID == "" {
@@ -590,40 +588,6 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		for _, item := range allocationsToCreate {
 			if err := h.Referrals.ReverseFirstRentPayment(c.Request.Context(), item.dueID, p.ID); err != nil {
 				slog.Warn("referral reverse on refund failed", "due_id", item.dueID, "payment_id", p.ID, "err", err)
-			}
-		}
-	}
-
-	// Post financial ledger reversal outside row locks
-	if rfRow.Status == "succeeded" && h.Finance != nil {
-		finTime := time.Now().UTC()
-		if p.IsUnapplied {
-			if mirrorErr := h.Finance.MirrorRefund(ctx, pid, rfRow.ID, req.AmountPaise, true, domain.DueKindRent, finTime); mirrorErr != nil {
-				// Ledger-gap: refund row is committed but the reversal journal failed.
-				// Log at ERROR for operator alerting; the refund record is authoritative.
-				slog.Error("LEDGER GAP: MirrorRefund (unapplied) failed after manual refund committed",
-					"refund_id", rfRow.ID,
-					"property_id", pid,
-					"amount_paise", req.AmountPaise,
-					"err", mirrorErr,
-				)
-			}
-		} else {
-			items := make([]finance.RefundAllocationItem, 0, len(allocationsToCreate))
-			for _, item := range allocationsToCreate {
-				items = append(items, finance.RefundAllocationItem{
-					AmountPaise: item.amountPaise,
-					DueKind:     item.dueKind,
-				})
-			}
-			if mirrorErr := h.Finance.MirrorRefundAllocations(ctx, pid, rfRow.ID, items, finTime); mirrorErr != nil {
-				// Ledger-gap: refund row is committed but the reversal journal failed.
-				// Log at ERROR for operator alerting; the refund record is authoritative.
-				slog.Error("LEDGER GAP: MirrorRefundAllocations failed after manual refund committed",
-					"refund_id", rfRow.ID,
-					"property_id", pid,
-					"err", mirrorErr,
-				)
 			}
 		}
 	}
