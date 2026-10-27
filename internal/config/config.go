@@ -45,11 +45,19 @@ type Config struct {
 	OrderPollerBufferDuration         time.Duration
 	WebhookAPIVersion                 string
 	AadhaarQRPublicKeyPEM             string
-	KYCIdentitySecret                 string
+	KYCIdentitySecret string
+	// KYCIdentitySecrets holds versioned HMAC-SHA256 keys for identity_hash rotation
+	// (version number → secret string). Populated from KYC_IDENTITY_SECRETS env var,
+	// format identical to PAYOUT_ENCRYPTION_KEYS: "1:secret-v1,2:secret-v2,...".
+	// When set, the highest version is the active key; the service must verify against
+	// any version still stored on a row (via hash_key_version). The legacy
+	// KYCIdentitySecret (single key, version 1) is used as a fallback when this map
+	// is empty, so existing deployments are unaffected.
+	KYCIdentitySecrets map[int16]string
 	// KYCDocCryptoKey is the hex-encoded 32-byte AES-256 key used to encrypt
 	// Aadhaar document bytes (document_bytes, attested_photo_bytes) at rest.
 	// Set via KYC_DOC_CRYPTO_KEY. Empty = encryption disabled (dev/CI safe).
-	KYCDocCryptoKey                   string
+	KYCDocCryptoKey string
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
 	CashfreePayoutAPIVersion          string
@@ -134,6 +142,9 @@ func Load() (*Config, error) {
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)
+	}
+	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
+		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
@@ -230,6 +241,28 @@ func parseVersionedKeys(s string) map[byte]string {
 				out[byte(ver)] = parts[1]
 			}
 		}
+	}
+	return out
+}
+
+// parseVersionedSecrets16 parses a comma-separated "version:secret" string into a
+// map[int16]string. The key type is int16 to match the hash_key_version column in
+// kyc_verification and the hashKeyVersion parameters throughout the KYC repo and
+// service layers. Valid version range: 1–32767 (int16 max; version 0 is reserved).
+// Malformed pairs and out-of-range version numbers are silently skipped — the
+// caller (validate.go) reports them after Load() returns.
+func parseVersionedSecrets16(s string) map[int16]string {
+	out := make(map[int16]string)
+	for _, p := range strings.Split(s, ",") {
+		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ver, err := strconv.Atoi(parts[0])
+		if err != nil || ver < 1 || ver > 32767 {
+			continue
+		}
+		out[int16(ver)] = parts[1]
 	}
 	return out
 }

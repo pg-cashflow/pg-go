@@ -492,3 +492,77 @@ func TestValidateForRealDeployment_FrontendURL(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// KYCIdentitySecrets validation tests
+// ---------------------------------------------------------------------------
+
+func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
+	cases := []struct {
+		name    string
+		secrets map[int16]string
+		wantSub string // non-empty → expect error containing this substring
+	}{
+		{
+			name:    "nil map (env var unset) passes — KYC dormant",
+			secrets: nil,
+			wantSub: "",
+		},
+		{
+			name:    "single valid secret passes",
+			secrets: map[int16]string{1: "this-is-a-valid-kyc-identity-v1-secret-32ch"},
+			wantSub: "",
+		},
+		{
+			name:    "two distinct valid secrets pass",
+			secrets: map[int16]string{1: "this-is-a-valid-kyc-identity-v1-secret-32ch", 2: "this-is-a-valid-kyc-identity-v2-secret-32ch"},
+			wantSub: "",
+		},
+		{
+			name:    "short secret rejected",
+			secrets: map[int16]string{1: "short"},
+			wantSub: "KYC_IDENTITY_SECRETS[1] must be at least 32 characters",
+		},
+		{
+			name:    "placeholder secret rejected",
+			secrets: map[int16]string{1: "change-me-kyc-identity-v1-placeholder-val"},
+			wantSub: "KYC_IDENTITY_SECRETS[1] must not be a placeholder value",
+		},
+		{
+			name: "duplicate value across versions rejected",
+			secrets: map[int16]string{
+				1: "same-secret-both-versions-long-enough-abc",
+				2: "same-secret-both-versions-long-enough-abc",
+			},
+			wantSub: "must be distinct secrets (rotation requires unique keys per version)",
+		},
+		{
+			name: "mixed: one valid, one short — both errors surface",
+			secrets: map[int16]string{
+				1: "this-is-a-valid-kyc-identity-v1-secret-32ch",
+				2: "short",
+			},
+			wantSub: "KYC_IDENTITY_SECRETS[2] must be at least 32 characters",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.KYCIdentitySecrets = tc.secrets
+			err := cfg.ValidateForRealDeployment()
+			if tc.wantSub == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantSub, err)
+			}
+		})
+	}
+}
+

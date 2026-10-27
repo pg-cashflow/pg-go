@@ -572,3 +572,170 @@ func TestLoad_PublicAppURL(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// parseVersionedSecrets16 unit tests
+// ---------------------------------------------------------------------------
+
+func TestParseVersionedSecrets16(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  map[int16]string
+	}{
+		{
+			name:  "empty string produces empty map",
+			input: "",
+			want:  map[int16]string{},
+		},
+		{
+			name:  "single valid entry",
+			input: "1:secret-v1-long-enough-for-hmac",
+			want:  map[int16]string{1: "secret-v1-long-enough-for-hmac"},
+		},
+		{
+			name:  "two valid entries",
+			input: "1:secret-v1-hmac-key,2:secret-v2-hmac-key",
+			want: map[int16]string{
+				1: "secret-v1-hmac-key",
+				2: "secret-v2-hmac-key",
+			},
+		},
+		{
+			name:  "whitespace around the outer pair is trimmed; interior whitespace in version field causes skip",
+			// TrimSpace("  1 : secret-v1 ") → "1 : secret-v1 "
+			// SplitN("1 : secret-v1 ", ":", 2) → ["1 ", " secret-v1 "]
+			// Atoi("1 ") fails (trailing space) → pair skipped.
+			// Only pairs with no whitespace between version digits and colon are parsed.
+			input: "  1 : secret-v1 , 2 : secret-v2 ",
+			want:  map[int16]string{}, // all three pairs skipped due to interior whitespace
+		},
+		{
+			name:  "version 0 is rejected (reserved)",
+			input: "0:secret-v0,1:secret-v1",
+			want:  map[int16]string{1: "secret-v1"},
+		},
+		{
+			name:  "negative version is rejected",
+			input: "-1:secret-v-neg,1:secret-v1",
+			want:  map[int16]string{1: "secret-v1"},
+		},
+		{
+			name:  "version above int16 max (32767) is rejected",
+			input: "32768:secret-too-big,1:secret-v1",
+			want:  map[int16]string{1: "secret-v1"},
+		},
+		{
+			name:  "version at int16 max boundary (32767) is accepted",
+			input: "32767:secret-at-max",
+			want:  map[int16]string{32767: "secret-at-max"},
+		},
+		{
+			name:  "malformed pair (no colon) is skipped",
+			input: "1secret-v1,2:secret-v2",
+			want:  map[int16]string{2: "secret-v2"},
+		},
+		{
+			name:  "non-numeric version is skipped",
+			input: "abc:secret-v-abc,1:secret-v1",
+			want:  map[int16]string{1: "secret-v1"},
+		},
+		{
+			name:  "empty value is accepted (validation catches it, not parser)",
+			input: "1:",
+			want:  map[int16]string{1: ""},
+		},
+		{
+			name:  "colon in secret value is preserved (SplitN 2)",
+			input: "1:secret:with:colons",
+			want:  map[int16]string{1: "secret:with:colons"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseVersionedSecrets16(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len mismatch: got %d entries %v, want %d entries %v", len(got), got, len(tc.want), tc.want)
+			}
+			for ver, wantSec := range tc.want {
+				if gotSec, ok := got[ver]; !ok {
+					t.Errorf("missing version %d in result", ver)
+				} else if gotSec != wantSec {
+					t.Errorf("version %d: got %q, want %q", ver, gotSec, wantSec)
+				}
+			}
+		})
+	}
+}
+
+func TestLoad_KYCIdentitySecrets_Wiring(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"KYC_IDENTITY_SECRET", "KYC_IDENTITY_SECRETS",
+	}
+	prev := map[string]string{}
+	for _, k := range keys {
+		prev[k] = os.Getenv(k)
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, v := range prev {
+			if v == "" {
+				_ = os.Unsetenv(k)
+			} else {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+
+	// Case 1: KYC_IDENTITY_SECRETS unset → field is nil, not an empty map
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.KYCIdentitySecrets != nil {
+		t.Fatalf("expected nil KYCIdentitySecrets when env var unset, got %v", cfg.KYCIdentitySecrets)
+	}
+
+	// Case 2: single versioned secret is parsed into the map
+	_ = os.Setenv("KYC_IDENTITY_SECRETS", "1:secret-v1-min-32-chars-long-abc-ok")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.KYCIdentitySecrets) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %v", len(cfg.KYCIdentitySecrets), cfg.KYCIdentitySecrets)
+	}
+	if cfg.KYCIdentitySecrets[1] != "secret-v1-min-32-chars-long-abc-ok" {
+		t.Fatalf("version 1 secret mismatch: %q", cfg.KYCIdentitySecrets[1])
+	}
+
+	// Case 3: two versioned secrets
+	_ = os.Setenv("KYC_IDENTITY_SECRETS", "1:secret-v1-min-32-chars-long-abc-ok,2:secret-v2-min-32-chars-long-abc-ok")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.KYCIdentitySecrets) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(cfg.KYCIdentitySecrets))
+	}
+
+	// Case 4: KYCIdentitySecret (singular legacy) and KYCIdentitySecrets coexist independently
+	_ = os.Setenv("KYC_IDENTITY_SECRET", "legacy-single-secret-min-32-chars-ok")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.KYCIdentitySecret != "legacy-single-secret-min-32-chars-ok" {
+		t.Fatalf("KYCIdentitySecret not loaded: %q", cfg.KYCIdentitySecret)
+	}
+	if len(cfg.KYCIdentitySecrets) != 2 {
+		t.Fatalf("KYCIdentitySecrets not independently loaded: %v", cfg.KYCIdentitySecrets)
+	}
+}
+

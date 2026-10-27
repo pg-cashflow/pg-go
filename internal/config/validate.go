@@ -44,6 +44,9 @@ func (c *Config) ValidateForRealDeployment() error {
 	for ver, sec := range c.PayoutEncryptionKeys {
 		secrets = append(secrets, secretCheck{fmt.Sprintf("PAYOUT_ENCRYPTION_KEYS[%d]", ver), sec})
 	}
+	for ver, sec := range c.KYCIdentitySecrets {
+		secrets = append(secrets, secretCheck{fmt.Sprintf("KYC_IDENTITY_SECRETS[%d]", ver), sec})
+	}
 	for _, s := range secrets {
 		if strings.HasPrefix(s.val, "change-me") {
 			errs = append(errs, fmt.Sprintf("%s must not be a placeholder value (starts with 'change-me')", s.name))
@@ -63,6 +66,22 @@ func (c *Config) ValidateForRealDeployment() error {
 	}
 	if c.OTPHMACSecret != "" && c.MagicLinkHMACSecret != "" && c.OTPHMACSecret == c.MagicLinkHMACSecret {
 		errs = append(errs, "OTP_HMAC_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct secrets")
+	}
+
+	// Invariant: no two versioned KYC identity secrets may share the same value.
+	// A copy-paste error (same secret under two version numbers) defeats rotation.
+	if len(c.KYCIdentitySecrets) > 1 {
+		seen := make(map[string]int16, len(c.KYCIdentitySecrets))
+		for ver, sec := range c.KYCIdentitySecrets {
+			if prev, dup := seen[sec]; dup {
+				errs = append(errs, fmt.Sprintf(
+					"KYC_IDENTITY_SECRETS[%d] and KYC_IDENTITY_SECRETS[%d] must be distinct secrets (rotation requires unique keys per version)",
+					prev, ver,
+				))
+			} else {
+				seen[sec] = ver
+			}
+		}
 	}
 
 	// --- Cashfree PG and KYC key pairs must be fully provided if either is set ---
