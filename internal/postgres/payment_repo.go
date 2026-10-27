@@ -456,17 +456,20 @@ func (r *PaymentRepo) CreateOrUpdateRefund(ctx context.Context, ref *domain.Gate
 		INSERT INTO gateway_refunds (id, payment_id, property_id, provider, provider_refund_id, cf_refund_id, refund_reference, idempotency_key, amount_paise, status, source, initiated_by, reason, raw_response, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET
-			status = EXCLUDED.status,
+			status = CASE 
+				WHEN gateway_refunds.status IN ('succeeded', 'failed', 'cancelled') THEN gateway_refunds.status
+				ELSE EXCLUDED.status
+			END,
 			cf_refund_id = COALESCE(EXCLUDED.cf_refund_id, gateway_refunds.cf_refund_id),
 			provider_refund_id = COALESCE(EXCLUDED.provider_refund_id, gateway_refunds.provider_refund_id),
 			amount_paise = EXCLUDED.amount_paise,
 			raw_response = COALESCE(EXCLUDED.raw_response, gateway_refunds.raw_response),
 			updated_at = NOW()
-		RETURNING id`,
+		RETURNING id, status`,
 		ref.ID, ref.PaymentID, ref.PropertyID, ref.Provider, ref.ProviderRefundID, ref.CFRefundID,
 		ref.RefundReference, ref.IdempotencyKey, ref.AmountPaise, ref.Status, ref.Source,
 		ref.InitiatedBy, ref.Reason, ref.RawPayload, ref.CreatedAt, ref.UpdatedAt,
-	).Scan(&ref.ID)
+	).Scan(&ref.ID, &ref.Status)
 	if err != nil && ref.IdempotencyKey != nil && *ref.IdempotencyKey != "" {
 		if existing, getErr := r.GetRefundByPaymentAndIdempotency(ctx, ref.PaymentID, *ref.IdempotencyKey); getErr == nil && existing != nil {
 			*ref = *existing

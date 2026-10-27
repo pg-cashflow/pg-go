@@ -496,8 +496,9 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		"order_id": orderID,
 	})
 
+	originalRefundID := uuid.New()
 	rfRow := &domain.GatewayRefund{
-		ID:              uuid.New(),
+		ID:              originalRefundID,
 		PaymentID:       p.ID,
 		PropertyID:      pid,
 		Provider:        "cashfree",
@@ -530,9 +531,24 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	// If this refund was already finalized or has provider ID from a racing request
-	if isTerminalRefund(rfRow.Status) || (rfRow.CFRefundID != nil && *rfRow.CFRefundID != "") {
-		c.JSON(http.StatusOK, rfRow)
+	// Always resolve canonical refund reference from rfRow
+	targetRefundRef := refundRef
+	if rfRow.RefundReference != nil && *rfRow.RefundReference != "" {
+		targetRefundRef = *rfRow.RefundReference
+	}
+
+	// If this refund row was adopted from a racing or existing request
+	if rfRow.ID != originalRefundID {
+		if isTerminalRefund(rfRow.Status) || (rfRow.CFRefundID != nil && *rfRow.CFRefundID != "") {
+			c.JSON(http.StatusOK, rfRow)
+			return
+		}
+		// Adopted row in non-terminal state without gateway ID: return 202.
+		// Do not call gateway again to avoid race and empty allocations.
+		c.JSON(http.StatusAccepted, gin.H{
+			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
+			"refund":  rfRow,
+		})
 		return
 	}
 
@@ -541,7 +557,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	if _, err := uuid.Parse(idempotencyKey); err != nil {
 		cfIdempotencyKey = uuid.NewSHA1(uuid.NameSpaceURL, []byte(idempotencyKey)).String()
 	}
-	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, refundRef, req.AmountPaise, req.Reason, cfIdempotencyKey)
+	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, req.Reason, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
 

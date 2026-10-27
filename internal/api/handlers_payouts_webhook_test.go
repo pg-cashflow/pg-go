@@ -168,6 +168,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			TransferID:   fmt.Sprintf("pgo_%s", itemA.ID),
 			CFTransferID: "cf_tr_111",
 			Status:       "SUCCESS",
+			StatusCode:   "COMPLETED",
 			UTR:          ptr("UTR88888888"),
 		}
 		payload.Data, _ = json.Marshal(data)
@@ -463,6 +464,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			TransferID:        fmt.Sprintf("pgo_%s", itemE.ID),
 			CFTransferID:      "cf_tr_555",
 			Status:            "SUCCESS",
+			StatusCode:        "COMPLETED",
 			UTR:               ptr("UTR99999999"),
 			StatusDescription: "Transfer successful via outbox fallback",
 		}
@@ -645,6 +647,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			TransferID:   fmt.Sprintf("pgo_%s", itemID),
 			CFTransferID: "cf_tr_unit_1",
 			Status:       "SUCCESS",
+			StatusCode:   "COMPLETED",
 		}
 		dataBytes, _ := json.Marshal(data)
 		return PayoutWebhookEnvelope{
@@ -939,6 +942,52 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 		if updateCalled {
 			t.Fatal("expected status update NOT to be called when outbox fallback fails")
+		}
+	})
+
+	t.Run("transfer_success_without_completed_status_code_is_ignored", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: itemID, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		unconfirmedEnv := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_SUCCESS",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		unconfirmedData := PayoutWebhookData{
+			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID: "cf_tr_unconfirmed",
+			Status:       "SUCCESS",
+			StatusCode:   "WAIT_TIME_EXCEEDED",
+		}
+		unconfirmedEnv.Data, _ = json.Marshal(unconfirmedData)
+
+		req := createTestSignedWebhookReq(secret, unconfirmedEnv)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when status_code is not COMPLETED")
 		}
 	})
 }

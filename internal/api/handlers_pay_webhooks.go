@@ -641,7 +641,13 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				return fmt.Errorf("lock payment for refund webhook: %w", lockErr)
 			}
 
-			// Forward-only state transition check
+			// Forward-only state transition check under lock
+			if existingRef != nil {
+				var currentStatus string
+				if err := tx.QueryRow(ctx, `SELECT status FROM gateway_refunds WHERE id=$1 FOR UPDATE`, existingRef.ID).Scan(&currentStatus); err == nil {
+					existingRef.Status = currentStatus
+				}
+			}
 			if existingRef != nil && isTerminalRefund(existingRef.Status) && !isTerminalRefund(ref.RefundStatus) {
 				return nil // reject regression from terminal status
 			}

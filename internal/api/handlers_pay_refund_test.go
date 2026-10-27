@@ -952,6 +952,173 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			t.Fatalf("expected 400 Bad Request on oversized idempotency key, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
+
+	t.Run("concurrent retry adopting non-terminal refund returns 202 without calling gateway", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		existingRefID := uuid.New()
+		existingRefStr := "rf_canonical_existing_123"
+		idemKey := "idem_racing_retry"
+		existingRow := &domain.GatewayRefund{
+			ID:              existingRefID,
+			PaymentID:       basePayment.ID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &existingRefStr,
+			IdempotencyKey:  &idemKey,
+			AmountPaise:     200000,
+			Status:          "initiated",
+			Reason:          "First request in flight",
+		}
+
+		runner := &adoptingRefundTxRunner{
+			adoptedRow: existingRow,
+		}
+
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     runner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 200000,
+			"reason":       "First request in flight",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", idemKey)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted on adopted initiated refund, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if cfClient.refundCalls != 0 {
+			t.Fatalf("expected 0 gateway calls when adopting initiated refund, got %d", cfClient.refundCalls)
+		}
+	})
+
+	t.Run("concurrent retry adopting terminal refund returns 200 OK without calling gateway", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		existingRefID := uuid.New()
+		existingRefStr := "rf_canonical_existing_456"
+		idemKey := "idem_racing_terminal"
+		existingRow := &domain.GatewayRefund{
+			ID:              existingRefID,
+			PaymentID:       basePayment.ID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &existingRefStr,
+			IdempotencyKey:  &idemKey,
+			AmountPaise:     200000,
+			Status:          "succeeded",
+			Reason:          "Already succeeded",
+		}
+
+		runner := &adoptingRefundTxRunner{
+			adoptedRow: existingRow,
+		}
+
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     runner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"amount_paise": 200000,
+			"reason":       "Already succeeded",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", idemKey)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK on adopted terminal refund, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if cfClient.refundCalls != 0 {
+			t.Fatalf("expected 0 gateway calls when adopting terminal refund, got %d", cfClient.refundCalls)
+		}
+	})
+}
+
+type adoptingRefundTxRunner struct {
+	adoptedRow *domain.GatewayRefund
+}
+
+func (a *adoptingRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error) {
+	if a.adoptedRow != nil {
+		*rfRow = *a.adoptedRow
+	}
+	return nil, nil
+}
+
+func (a *adoptingRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {
+	return nil
+}
+
+func (a *adoptingRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	return nil
 }
 
 // ---------------------------------------------------------------------------

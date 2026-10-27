@@ -288,6 +288,15 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		cfID := st.CFTransferID
 		switch st.Status {
 		case "SUCCESS":
+			// Cashfree Transfers V2: Transfer is settled only when status is SUCCESS and status_code is COMPLETED.
+			if !strings.EqualFold(st.StatusCode, "COMPLETED") {
+				slog.Warn("payout batch reconcile: status is SUCCESS but status_code is not COMPLETED; keeping pending",
+					"transfer_id", st.TransferID,
+					"status", st.Status,
+					"status_code", st.StatusCode,
+				)
+				continue
+			}
 			utr := ""
 			if st.UTR != nil {
 				utr = *st.UTR

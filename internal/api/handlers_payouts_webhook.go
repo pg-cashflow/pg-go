@@ -225,6 +225,20 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 
 	switch evtType {
 	case "TRANSFER_SUCCESS":
+		// Cashfree Transfers V2: A transfer is settled only when status is SUCCESS and status_code is COMPLETED.
+		if !strings.EqualFold(data.Status, "SUCCESS") || !strings.EqualFold(data.StatusCode, "COMPLETED") {
+			slog.Warn("payout webhook TRANSFER_SUCCESS unconfirmed: status or status_code not completed",
+				"item_id", item.ID,
+				"status", data.Status,
+				"status_code", data.StatusCode,
+			)
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "ignored_unconfirmed", nil)
+			}
+			c.Status(http.StatusOK)
+			return
+		}
+
 		// Idempotency: If already succeeded, return 200 without duplicate ledger mirror
 		if item.Status == domain.PayoutSucceeded {
 			if evtRecord.ID != uuid.Nil {
