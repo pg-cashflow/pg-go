@@ -747,6 +747,33 @@ func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.U
 	return batch, items, nil
 }
 
+// ListStaleInFlightBatchIDs returns IDs of batches that were handed to Cashfree (processing or
+// dispatch_unknown) and have not changed for at least olderThan. Used by the payout poller to
+// recover from missed or ignored webhooks. Oldest first, bounded by limit.
+func (r *PayoutRepo) ListStaleInFlightBatchIDs(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT id FROM payout_batches
+		WHERE status IN ('processing', 'dispatch_unknown') AND updated_at < $1
+		ORDER BY updated_at ASC
+		LIMIT $2`, olderThan, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // SetBatchDispatchUnknown sets batch status to dispatch_unknown on ambiguous 5xx or transport timeouts.
 func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
 	_, err := r.db.Exec(ctx, `

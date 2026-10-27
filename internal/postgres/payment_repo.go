@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -456,13 +457,20 @@ func (r *PaymentRepo) CreateOrUpdateRefund(ctx context.Context, ref *domain.Gate
 		INSERT INTO gateway_refunds (id, payment_id, property_id, provider, provider_refund_id, cf_refund_id, refund_reference, idempotency_key, amount_paise, status, source, initiated_by, reason, raw_response, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET
-			status = CASE 
-				WHEN gateway_refunds.status IN ('succeeded', 'failed', 'cancelled') THEN gateway_refunds.status
+			-- Mirrors domain.MergeRefundStatus: succeeded is final; failed/cancelled may only
+			-- be upgraded to succeeded (the gateway is the source of truth for money movement).
+			status = CASE
+				WHEN gateway_refunds.status = 'succeeded' THEN gateway_refunds.status
+				WHEN gateway_refunds.status IN ('failed', 'cancelled') AND EXCLUDED.status <> 'succeeded' THEN gateway_refunds.status
 				ELSE EXCLUDED.status
 			END,
 			cf_refund_id = COALESCE(EXCLUDED.cf_refund_id, gateway_refunds.cf_refund_id),
 			provider_refund_id = COALESCE(EXCLUDED.provider_refund_id, gateway_refunds.provider_refund_id),
-			amount_paise = EXCLUDED.amount_paise,
+			amount_paise = CASE
+				WHEN gateway_refunds.status = 'succeeded' THEN gateway_refunds.amount_paise
+				WHEN gateway_refunds.status IN ('failed', 'cancelled') AND EXCLUDED.status <> 'succeeded' THEN gateway_refunds.amount_paise
+				ELSE EXCLUDED.amount_paise
+			END,
 			raw_response = COALESCE(EXCLUDED.raw_response, gateway_refunds.raw_response),
 			updated_at = NOW()
 		RETURNING id, status`,
@@ -579,13 +587,25 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 			return fmt.Errorf("lock gateway refund for reconcile: %w", err)
 		}
 
+		prevStatus := ref.Status
 		ref.Status = newStatus
 		ref.UpdatedAt = time.Now().UTC()
 		if err := txRepo.CreateOrUpdateRefund(ctx, ref); err != nil {
 			return fmt.Errorf("update refund status in reconcile: %w", err)
 		}
+		// CreateOrUpdateRefund returns the persisted status. Side effects follow what is stored,
+		// never what was merely requested, so a rejected regression cannot touch dues or ledger.
+		if ref.Status != newStatus {
+			slog.Warn("refund reconcile: requested status rejected by forward-only merge",
+				"refund_id", ref.ID, "requested", newStatus, "persisted", ref.Status)
+		}
+		if newStatus == domain.RefundStatusSucceeded && ref.Status == domain.RefundStatusSucceeded &&
+			(prevStatus == domain.RefundStatusFailed || prevStatus == domain.RefundStatusCancelled) {
+			slog.Error("CRITICAL: refund previously marked failed/cancelled was confirmed succeeded by gateway; verify books",
+				"refund_id", ref.ID, "payment_id", ref.PaymentID, "previous_status", prevStatus)
+		}
 
-		switch newStatus {
+		switch ref.Status {
 		case "succeeded":
 			type allocItem struct {
 				dueID       uuid.UUID

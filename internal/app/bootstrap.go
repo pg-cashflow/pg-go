@@ -581,6 +581,37 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		ledgerWorker.SetPayoutDispatcher(bg.payoutDispatch)
 	}
 
+	if bg.payoutDispatch != nil {
+		payoutLister := postgres.NewPayoutRepo(bg.maintPool)
+		bg.logger.Info("payout status poller started", "interval", "5m", "stale_after", "10m")
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "payout_status_poller")
+					if err != nil {
+						bg.logger.Error("payout poller lock failed", "err", err)
+						continue
+					}
+					if !acquired {
+						continue
+					}
+					n, err := bg.payoutDispatch.PollStaleBatches(ctx, payoutLister, 10*time.Minute, 50)
+					_ = release(ctx)
+					if err != nil && !errors.Is(err, context.Canceled) {
+						bg.logger.Error("payout poller finished with errors", "polled", n, "err", err)
+					} else if n > 0 {
+						bg.logger.Info("payout poller reconciled batches", "count", n)
+					}
+				}
+			}
+		}()
+	}
+
 	bg.logger.Info("ledger outbox worker started", "poll_interval", "30s", "batch_size", 50)
 
 	go func() {

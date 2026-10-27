@@ -31,3 +31,28 @@ func TestNormalizeRefundStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeRefundStatus(t *testing.T) {
+	cases := []struct{ cur, in, want string }{
+		{RefundStatusInitiated, RefundStatusPending, RefundStatusPending},
+		{RefundStatusPending, RefundStatusSucceeded, RefundStatusSucceeded},
+		{RefundStatusPending, RefundStatusFailed, RefundStatusFailed},
+		{RefundStatusOnHold, RefundStatusPending, RefundStatusPending},
+		{RefundStatusSucceeded, RefundStatusPending, RefundStatusSucceeded},
+		{RefundStatusSucceeded, RefundStatusFailed, RefundStatusSucceeded},
+		{RefundStatusSucceeded, RefundStatusSucceeded, RefundStatusSucceeded},
+		{RefundStatusFailed, RefundStatusPending, RefundStatusFailed},
+		{RefundStatusFailed, RefundStatusCancelled, RefundStatusFailed},
+		{RefundStatusFailed, RefundStatusSucceeded, RefundStatusSucceeded},
+		{RefundStatusCancelled, RefundStatusInitiated, RefundStatusCancelled},
+		{RefundStatusCancelled, RefundStatusSucceeded, RefundStatusSucceeded},
+	}
+	for _, c := range cases {
+		if got := MergeRefundStatus(c.cur, c.in); got != c.want {
+			t.Errorf("Merge(%q,%q)=%q want %q", c.cur, c.in, got, c.want)
+		}
+	}
+	if IsTerminalRefundStatus(RefundStatusPending) || !IsTerminalRefundStatus(RefundStatusFailed) {
+		t.Error("IsTerminalRefundStatus wrong")
+	}
+}

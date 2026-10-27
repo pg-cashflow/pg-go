@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -225,6 +226,69 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	)
 
 	return nil
+}
+
+// StaleBatchLister lists in-flight payout batches that have not progressed recently.
+type StaleBatchLister interface {
+	ListStaleInFlightBatchIDs(ctx context.Context, olderThan time.Time, limit int) ([]uuid.UUID, error)
+}
+
+// PollBatch refreshes an in-flight batch from Cashfree's batch status endpoint and reconciles items.
+// It NEVER creates a new transfer: on any lookup failure it returns an error and leaves state as is.
+func (d *PayoutDispatcher) PollBatch(ctx context.Context, batchID uuid.UUID) error {
+	if d.client == nil {
+		return fmt.Errorf("payout client not configured")
+	}
+	acquired, unlock, err := d.repo.TryLockBatchDispatch(ctx, batchID)
+	if err != nil {
+		return fmt.Errorf("payout poll: lock batch %s: %w", batchID, err)
+	}
+	if !acquired {
+		return nil
+	}
+	defer unlock()
+
+	batch, err := d.repo.GetBatchByID(ctx, batchID)
+	if err != nil || batch == nil {
+		return fmt.Errorf("payout poll: get batch %s: %w", batchID, err)
+	}
+	if batch.Status != domain.BatchProcessing && batch.Status != domain.BatchDispatchUnknown {
+		return nil
+	}
+	items, err := d.repo.ListPayoutItemsByBatch(ctx, batchID)
+	if err != nil {
+		return fmt.Errorf("payout poll: list items for batch %s: %w", batchID, err)
+	}
+	statusResp, err := d.client.GetBatchTransferStatus(ctx, fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", "")))
+	if err != nil {
+		return fmt.Errorf("payout poll: batch status %s: %w", batchID, err)
+	}
+	if statusResp == nil || statusResp.CFBatchTransferID == "" {
+		return fmt.Errorf("payout poll: batch %s unknown at gateway; manual review required", batchID)
+	}
+	return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+}
+
+// PollStaleBatches polls every in-flight batch older than staleAfter. Failures on one batch do not
+// stop the others; the first error is returned after all are attempted.
+func (d *PayoutDispatcher) PollStaleBatches(ctx context.Context, lister StaleBatchLister, staleAfter time.Duration, limit int) (int, error) {
+	ids, err := lister.ListStaleInFlightBatchIDs(ctx, time.Now().UTC().Add(-staleAfter), limit)
+	if err != nil {
+		return 0, err
+	}
+	var firstErr error
+	polled := 0
+	for _, id := range ids {
+		if err := d.PollBatch(ctx, id); err != nil {
+			slog.Error("payout poll failed", "batch_id", id, "err", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		polled++
+	}
+	return polled, firstErr
 }
 
 func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.PayoutPayee, beneID string) error {

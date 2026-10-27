@@ -674,12 +674,25 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				rfRow.InitiatedBy = existingRef.InitiatedBy
 				rfRow.CreatedAt = existingRef.CreatedAt
 			}
+			prevStatus := ""
+			if existingRef != nil {
+				prevStatus = existingRef.Status
+			}
 			if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
 				return err
 			}
+			if rfRow.Status != dbRefundStatus {
+				slog.Warn("refund webhook: status rejected by forward-only merge",
+					"refund_id", rfRow.ID, "incoming", dbRefundStatus, "persisted", rfRow.Status)
+			}
+			if dbRefundStatus == domain.RefundStatusSucceeded && rfRow.Status == domain.RefundStatusSucceeded &&
+				(prevStatus == domain.RefundStatusFailed || prevStatus == domain.RefundStatusCancelled) {
+				slog.Error("CRITICAL: refund previously marked failed/cancelled was confirmed succeeded by gateway; verify books",
+					"refund_id", rfRow.ID, "payment_id", p.ID, "previous_status", prevStatus)
+			}
 
-			// Financial ledger reversal upon successful refund
-			if strings.EqualFold(ref.RefundStatus, "SUCCESS") {
+			// Financial ledger reversal only when the persisted status is succeeded.
+			if strings.EqualFold(ref.RefundStatus, "SUCCESS") && rfRow.Status == domain.RefundStatusSucceeded {
 				var mirrorAllocs []domain.RefundAllocationItemPayload
 
 				if !p.IsUnapplied {
