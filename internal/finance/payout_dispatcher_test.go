@@ -141,6 +141,10 @@ func TestLivePayoutDispatcher(t *testing.T) {
 				return
 			}
 			if r.URL.Path == "/transfers/batch" {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
 				var req cashfree.BatchTransferRequest
 				_ = json.NewDecoder(r.Body).Decode(&req)
 				receivedTransfers = req.Transfers
@@ -190,6 +194,10 @@ func TestLivePayoutDispatcher(t *testing.T) {
 				return
 			}
 			if r.URL.Path == "/transfers/batch" {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
 				http.Error(w, "server error", http.StatusInternalServerError)
 				return
 			}

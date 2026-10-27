@@ -209,7 +209,7 @@ func (h *Handlers) SettleGatewayOrder(
 		return errors.New("payment intent unavailable")
 	}
 
-	if amountPaise != intent.AmountPaise {
+	if intent.AmountPaise > 0 && amountPaise != intent.AmountPaise {
 		if h.GatewayPaymentRepo != nil {
 			_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, "amount_mismatch", rawPayload)
 		}
@@ -484,21 +484,47 @@ func (h *Handlers) SettleGatewayOrder(
 		}
 	}
 	if h.Payments != nil {
-		dedupKey := ""
-		if cfPaymentID != "" {
-			dedupKey = fmt.Sprintf("cashfree:pg:%s", cfPaymentID)
+		var duesToSettle []domain.PaymentIntentDue
+		if h.IntentStore != nil {
+			duesToSettle, _ = h.IntentStore.GetDuesSnapshot(ctx, intent.ID)
 		}
-		var err error
-		if dedupKey != "" {
-			_, err = h.Payments.GatewaySettle(ctx, intent.DueID, amountPaise, txnID, dedupKey)
-		} else {
-			_, err = h.Payments.GatewaySettle(ctx, intent.DueID, amountPaise, txnID)
+		if len(duesToSettle) == 0 {
+			duesToSettle = []domain.PaymentIntentDue{{DueID: intent.DueID, AmountPaise: amountPaise}}
 		}
-		if err != nil {
-			if errors.Is(err, payment.ErrDuplicateTxn) || errors.Is(err, payment.ErrDueNotOpen) || errors.Is(err, payment.ErrEmptyTxnID) {
-				return nil
+		var settledCount int
+		for _, item := range duesToSettle {
+			itemTxn := txnID
+			if len(duesToSettle) > 1 {
+				itemTxn = fmt.Sprintf("%s:due:%s", txnID, item.DueID)
 			}
-			return err
+			dedupKey := ""
+			if cfPaymentID != "" {
+				if len(duesToSettle) > 1 {
+					dedupKey = fmt.Sprintf("cashfree:pg:%s:due:%s", cfPaymentID, item.DueID)
+				} else {
+					dedupKey = fmt.Sprintf("cashfree:pg:%s", cfPaymentID)
+				}
+			}
+			var err error
+			if dedupKey != "" {
+				_, err = h.Payments.GatewaySettle(ctx, item.DueID, item.AmountPaise, itemTxn, dedupKey)
+			} else {
+				_, err = h.Payments.GatewaySettle(ctx, item.DueID, item.AmountPaise, itemTxn)
+			}
+			if err != nil {
+				if errors.Is(err, payment.ErrDuplicateTxn) {
+					settledCount++
+					continue
+				}
+				if errors.Is(err, payment.ErrDueNotOpen) || errors.Is(err, payment.ErrEmptyTxnID) {
+					continue
+				}
+				return err
+			}
+			settledCount++
+		}
+		if settledCount == 0 {
+			return nil
 		}
 	}
 	if cfPaymentID != "" && h.IntentStore != nil {

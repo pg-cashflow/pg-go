@@ -59,6 +59,14 @@ func seedLiveTenantFixture(t *testing.T, h *liveHarness, dueAmount int64) *liveT
 	mustExec(`INSERT INTO users (id, phone, role, property_id, tenant_id) VALUES ($1, $2, 'tenant', $3, $4)`,
 		tenantUserID, tenantPhone, propID, tenantID)
 
+	consentID := uuid.New()
+	mustExec(`INSERT INTO kyc_consent (id, tenant_id, purpose, consent_text, consent_text_hash)
+		VALUES ($1, $2, 'tenant_verification', 'consent text', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef')`,
+		consentID, tenantID)
+	mustExec(`INSERT INTO kyc_verification (id, tenant_id, consent_id, vendor_reference_id, method, status, masked_uid, identity_hash, verified_at, expires_at)
+		VALUES ($1, $2, $3, $4, 'aadhaar_otp', 'verified', '1234', 'mockhash', NOW(), NOW() + interval '365 days')`,
+		uuid.New(), tenantID, consentID, "VR"+uuid.New().String()[:8])
+
 	now := istNow()
 	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	mustExec(`INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
