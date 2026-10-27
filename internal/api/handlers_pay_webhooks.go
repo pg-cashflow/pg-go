@@ -582,13 +582,7 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 	// Step 2: Lock hierarchy and forward-only status transition
 	if h.Pool != nil {
-		var (
-			committedRefund  *domain.GatewayRefund
-			committedDue     *domain.Due
-			committedIsUnapp bool
-			committedRefAmt  int64
-			committedDueIDs  []uuid.UUID
-		)
+		var committedDueIDs []uuid.UUID
 
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
@@ -655,10 +649,6 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			// Financial ledger reversal upon successful refund
 			if strings.EqualFold(ref.RefundStatus, "SUCCESS") {
 				var mirrorAllocs []domain.RefundAllocationItemPayload
-				committedRefund = rfRow
-				committedDue = d
-				committedIsUnapp = p.IsUnapplied
-				committedRefAmt = ref.RefundAmount
 
 				if !p.IsUnapplied {
 					// Step A: Inspect existing refund allocations (pre-created by OwnerRefundPayment)
@@ -829,8 +819,8 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 					PropertyID:  propID,
 					RefundID:    rfRow.ID,
 					PaymentID:   p.ID,
-					AmountPaise: committedRefAmt,
-					IsUnapplied: committedIsUnapp,
+					AmountPaise: ref.RefundAmount,
+					IsUnapplied: p.IsUnapplied,
 					Allocations: mirrorAllocs,
 					DueKind:     dueKind,
 					OccurredAt:  time.Now().UTC(),
@@ -857,31 +847,6 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			return
 		}
 
-		if h.Finance != nil && committedRefund != nil && (committedDue != nil || committedIsUnapp) {
-			now := time.Now().UTC()
-			propID := uuid.Nil
-			if committedDue != nil {
-				propID = committedDue.PropertyID
-			} else if p.PropertyID != nil {
-				propID = *p.PropertyID
-			}
-			dueKind := domain.DueKindRent
-			if committedDue != nil {
-				dueKind = committedDue.Kind
-			}
-			if propID != uuid.Nil {
-				if mirrorErr := h.Finance.MirrorRefund(ctx, propID, committedRefund.ID, committedRefAmt, committedIsUnapp, dueKind, now); mirrorErr != nil {
-					// Ledger-gap: refund row is committed but the reversal journal failed.
-					// Log at ERROR for operator alerting; do NOT roll back the refund record.
-					slog.Default().Error("LEDGER GAP: MirrorRefund failed after refund committed",
-						"refund_id", committedRefund.ID,
-						"property_id", propID,
-						"amount_paise", committedRefAmt,
-						"err", mirrorErr,
-					)
-				}
-			}
-		}
 
 		if h.Referrals != nil && len(committedDueIDs) > 0 {
 			for _, dueID := range committedDueIDs {

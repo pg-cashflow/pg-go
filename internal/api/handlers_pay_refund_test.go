@@ -553,6 +553,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
 			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
 		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
 
 		basePayment := &domain.Payment{
 			ID:                uuid.New(),
@@ -575,6 +578,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
 			DueStore:           dueStore,
+			IntentStore:        intentStore,
 		}}
 
 		r := setupRefundRouter(h, propID, userID)
@@ -637,6 +641,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
 			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
 		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
 
 		basePayment := &domain.Payment{
 			ID:                uuid.New(),
@@ -659,6 +666,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
 			DueStore:           dueStore,
+			IntentStore:        intentStore,
 		}}
 
 		r := setupRefundRouter(h, propID, userID)
@@ -689,6 +697,9 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
 			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
 		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
 
 		basePayment := &domain.Payment{
 			ID:                uuid.New(),
@@ -711,6 +722,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			CashfreeClient:     cfClient,
 			TenantStore:        tenantStore,
 			DueStore:           dueStore,
+			IntentStore:        intentStore,
 		}}
 
 		r := setupRefundRouter(h, propID, userID)
