@@ -94,6 +94,9 @@
     - *Dependencies*: None.
     - *Status*: Workflow `.github/workflows/sandbox-smoke.yml` written with fail-closed secret verification and PostgreSQL service. Schedule commented out pending manual run with `CASHFREE_PG_APP_ID`, `CASHFREE_PG_SECRET_KEY`, and `CASHFREE_PG_WEBHOOK_SECRET` configured as repository secrets.
     - *Target*: Automated weekly scheduled run of `cmd/sandbox-smoke` isolated from PR gates.
+15. [Track S.01 (Ticket 31): Post-Audit Minor Findings and Technical Debt Checklist](file:///c:/Users/divak/Downloads/pg-go/docs/wayfinder/tickets/track_s01_audit_findings_checklist.md) `[Closed]`
+    - *Dependencies*: None.
+    - *Scope*: 5 verified minor findings across `pg-go` (KYC docstring, deprecated `IssueToken` test calls) and `pg-react` (`data-theme` attribute, font preloading, pre-paint `lang` initialization). All 5 items remediated.
 
 
 ## Out of scope

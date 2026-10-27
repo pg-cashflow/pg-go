@@ -1,11 +1,12 @@
 // Package kyc orchestrates the Aadhaar identity verification lifecycle:
-// consent recording, DigiLocker flow initiation, completion via Cashfree webhook,
-// offline Secure QR fallback, DPDP consent revocation, and duplicate-flag clearance.
+// consent recording, UIDAI Aadhaar OTP verification, Cashfree Smart OCR document
+// verification, offline Secure QR verification, DPDP consent revocation, and
+// duplicate-flag clearance.
 //
 // ADR-004 invariants enforced here:
-//   - Network calls (Cashfree document fetch) always precede DB transactions.
+//   - Network calls (Cashfree document upload, UIDAI OTP request) always precede DB transactions.
 //   - Consent must be active before any verification can be initiated or QR verified.
-//   - Webhook processing is idempotent: terminal-state verifications are no-ops.
+//   - Verification processing is idempotent: terminal-state verifications are no-ops.
 package kyc
 
 import (
@@ -713,8 +714,8 @@ func (s *Service) GetOwnerView(ctx context.Context, tenantID uuid.UUID) (*domain
 	return v, logs, nil
 }
 
-// GetVerificationByVendorRefID is exposed so the webhook handler can perform
-// the idempotency check before invoking ProcessDigiLockerCompletion.
+// GetVerificationByVendorRefID retrieves a verification record by its vendor
+// reference ID (e.g. for Aadhaar OTP or OCR flow reconciliation).
 func (s *Service) GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
 	return s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
 }

@@ -39,9 +39,9 @@ func TestRequireTenant_VacatedReturns403(t *testing.T) {
 		TenantID:   &tenantID,
 		PropertyID: &propID,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	repo := &mockTenantRepo{
@@ -81,9 +81,9 @@ func TestRequireTenant_ActivePasses(t *testing.T) {
 		TenantID:   &tenantID,
 		PropertyID: &propID,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	repo := &mockTenantRepo{
@@ -120,9 +120,9 @@ func TestRequireTenant_PendingAllocationPasses(t *testing.T) {
 		TenantID:   &tenantID,
 		PropertyID: &propID,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 	repo := &mockTenantRepo{
 		tenant: &domain.Tenant{ID: tenantID, Status: domain.TenantStatusPendingAllocation},
@@ -150,9 +150,9 @@ func TestRequireTenant_PendingJoinForbidden(t *testing.T) {
 		Role:       domain.RoleTenant,
 		PropertyID: &propID,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 	r := gin.New()
 	r.GET("/me", RequireTenant(secret, &mockTenantRepo{}, nil), func(c *gin.Context) {
@@ -189,9 +189,9 @@ func TestRequireOwner_StaleTokenVersionReturns403(t *testing.T) {
 		PropertyID:   &propID,
 		TokenVersion: 1,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 	live := *user
 	live.TokenVersion = 2
@@ -221,9 +221,9 @@ func TestRequireOwner_MatchingTokenVersionPasses(t *testing.T) {
 		PropertyID:   &propID,
 		TokenVersion: 1,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 	r := gin.New()
 	r.GET("/owner", RequireOwner(secret, &mockUserLookup{user: user}), func(c *gin.Context) {
@@ -292,7 +292,7 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 			TenantID:   &tenantID,
 			PropertyID: &propID,
 		}
-		token, _ := IssueToken(secret, user)
+		token, _ := IssueAccessToken(secret, user)
 		repo := &mockTenantRepo{
 			tenant: &domain.Tenant{ID: tenantID, Status: domain.TenantStatusVacated},
 		}
@@ -312,7 +312,7 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 			Role:       domain.RoleTenant,
 			PropertyID: &propID,
 		}
-		token, _ := IssueToken(secret, tenantUser)
+		token, _ := IssueAccessToken(secret, tenantUser)
 		r := gin.New()
 		r.GET("/guarded", RequireOwner(secret, nil), func(c *gin.Context) {})
 		w := httptest.NewRecorder()
@@ -330,7 +330,7 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 			PropertyID: &propID,
 			TenantID:   nil, // incomplete profile
 		}
-		token, _ := IssueToken(secret, incompleteUser)
+		token, _ := IssueAccessToken(secret, incompleteUser)
 		r := gin.New()
 		r.GET("/guarded", RequireTenant(secret, &mockTenantRepo{}, nil), func(c *gin.Context) {})
 		w := httptest.NewRecorder()
@@ -348,7 +348,7 @@ func TestMiddlewareGuards_AllSixCodes(t *testing.T) {
 			TenantID:   &tenantID, // already has tenant row
 			PropertyID: &propID,
 		}
-		token, _ := IssueToken(secret, activeUser)
+		token, _ := IssueAccessToken(secret, activeUser)
 		r := gin.New()
 		r.GET("/guarded", RequirePendingJoin(secret, nil), func(c *gin.Context) {})
 		w := httptest.NewRecorder()
@@ -382,9 +382,9 @@ func TestTokenVersionCache_HitAvoidsDBRoundTrip(t *testing.T) {
 		PropertyID:   &propID,
 		TokenVersion: 1,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	lookup := &countingUserLookup{user: user}
@@ -446,9 +446,9 @@ func TestTokenVersionCache_RevocationAfterInvalidation(t *testing.T) {
 		PropertyID:   &propID,
 		TokenVersion: 1,
 	}
-	token, err := IssueToken(secret, user)
+	token, err := IssueAccessToken(secret, user)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("IssueAccessToken: %v", err)
 	}
 
 	lookupUser := *user
