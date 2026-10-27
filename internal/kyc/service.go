@@ -76,8 +76,8 @@ type KYCRepo interface {
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 
 	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string) (*domain.KYCVerification, error)
-	ApproveManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
-	RejectManualReviewTx(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	ApproveManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	RejectManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
 	GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error)
 	GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error)
@@ -638,14 +638,19 @@ func (s *Service) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) 
 	return s.repo.ListPendingReviews(ctx, propertyID)
 }
 
-// ApproveManualReview approves a pending manual review.
-func (s *Service) ApproveManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
-	return s.repo.ApproveManualReviewTx(ctx, verificationID, reviewerID, actor)
+// ApproveManualReview approves a pending manual review. propertyID scopes the
+// operation to the calling owner's property — the repo must reject (not found)
+// if verificationID resolves to a tenant on a different property.
+func (s *Service) ApproveManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	return s.repo.ApproveManualReviewTx(ctx, verificationID, propertyID, reviewerID, actor)
 }
 
 // RejectManualReview rejects a pending manual review with a human reason.
-func (s *Service) RejectManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
-	return s.repo.RejectManualReviewTx(ctx, verificationID, reviewerID, reason, actor)
+// propertyID scopes the operation to the calling owner's property — the repo
+// must reject (not found) if verificationID resolves to a tenant on a
+// different property.
+func (s *Service) RejectManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+	return s.repo.RejectManualReviewTx(ctx, verificationID, propertyID, reviewerID, reason, actor)
 }
 
 

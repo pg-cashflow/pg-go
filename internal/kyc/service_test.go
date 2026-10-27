@@ -184,7 +184,7 @@ func (f *fakeRepo) GetKYCDocument(_ context.Context, _ uuid.UUID) ([]byte, strin
 func (f *fakeRepo) VerifyPropertyOwnership(_ context.Context, _, _ uuid.UUID) (bool, error) {
 	return true, nil
 }
-func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, reviewerID uuid.UUID, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, _, reviewerID uuid.UUID, _ string) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
 	v := &domain.KYCVerification{
 		ID:         id,
@@ -196,7 +196,7 @@ func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, reviewerID uuid.
 	f.latestVerif = v
 	return v, nil
 }
-func (f *fakeRepo) RejectManualReviewTx(_ context.Context, id, reviewerID uuid.UUID, reason, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) RejectManualReviewTx(_ context.Context, id, _, reviewerID uuid.UUID, reason, _ string) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
 	v := &domain.KYCVerification{
 		ID:              id,
@@ -397,7 +397,7 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 
 	// Owner approves the manual review
 	reviewerID := uuid.New()
-	approved, err := svc.ApproveManualReview(context.Background(), v.ID, reviewerID, "owner:admin")
+	approved, err := svc.ApproveManualReview(context.Background(), v.ID, uuid.New(), reviewerID, "owner:admin")
 	if err != nil {
 		t.Fatalf("approve manual review error: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestRejectManualReview_Success(t *testing.T) {
 	svc := newTestService(repo, &fakeCashfree{})
 
 	reviewerID := uuid.New()
-	rejected, err := svc.RejectManualReview(context.Background(), verifID, reviewerID, "Blurry document", "owner:admin")
+	rejected, err := svc.RejectManualReview(context.Background(), verifID, uuid.New(), reviewerID, "Blurry document", "owner:admin")
 	if err != nil {
 		t.Fatalf("unexpected error rejecting: %v", err)
 	}

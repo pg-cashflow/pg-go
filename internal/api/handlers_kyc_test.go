@@ -37,6 +37,8 @@ type fakeKYCSvc struct {
 	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
 	photoFn      func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
+	approveFn           func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	rejectFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 }
 
 func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error) {
@@ -117,7 +119,10 @@ func (f *fakeKYCSvc) CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID,
 func (f *fakeKYCSvc) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
 	return nil, nil
 }
-func (f *fakeKYCSvc) ApproveManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+func (f *fakeKYCSvc) ApproveManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	if f.approveFn != nil {
+		return f.approveFn(ctx, verificationID, propertyID, reviewerID, actor)
+	}
 	now := time.Now()
 	return &domain.KYCVerification{
 		ID:         verificationID,
@@ -125,7 +130,10 @@ func (f *fakeKYCSvc) ApproveManualReview(ctx context.Context, verificationID, re
 		VerifiedAt: &now,
 	}, nil
 }
-func (f *fakeKYCSvc) RejectManualReview(ctx context.Context, verificationID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+func (f *fakeKYCSvc) RejectManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+	if f.rejectFn != nil {
+		return f.rejectFn(ctx, verificationID, propertyID, reviewerID, reason, actor)
+	}
 	return &domain.KYCVerification{
 		ID:              verificationID,
 		Status:          domain.KYCStatusRejected,
@@ -1061,6 +1069,92 @@ func TestOwnerRecordGuardianConsent_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOwnerKYCApprove_PropertyIsolation(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+
+	var capturedPropID uuid.UUID
+	mockSvc := &fakeKYCSvc{
+		approveFn: func(ctx context.Context, vID, pID, rID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+			capturedPropID = pID
+			if pID != propertyID {
+				return nil, domain.ErrVerificationNotFound
+			}
+			now := time.Now()
+			return &domain.KYCVerification{ID: vID, Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
+		},
+	}
+
+	h := &Handlers{Deps: Deps{KYCSvc: mockSvc}}
+	r.POST("/api/owner/kyc/:id/approve", h.OwnerKYCApprove)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/kyc/"+verifID.String()+"/approve", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if capturedPropID != propertyID {
+		t.Fatalf("expected captured propertyID %s, got %s", propertyID, capturedPropID)
+	}
+}
+
+func TestOwnerKYCReject_PropertyIsolation(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	verifID := uuid.New()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+
+	var capturedPropID uuid.UUID
+	mockSvc := &fakeKYCSvc{
+		rejectFn: func(ctx context.Context, vID, pID, rID uuid.UUID, reason, actor string) (*domain.KYCVerification, error) {
+			capturedPropID = pID
+			if pID != propertyID {
+				return nil, domain.ErrVerificationNotFound
+			}
+			return &domain.KYCVerification{ID: vID, Status: domain.KYCStatusRejected, RejectionReason: &reason}, nil
+		},
+	}
+
+	h := &Handlers{Deps: Deps{KYCSvc: mockSvc}}
+	r.POST("/api/owner/kyc/:id/reject", h.OwnerKYCReject)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/kyc/"+verifID.String()+"/reject", strings.NewReader(`{"reason":"Fraudulent document"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if capturedPropID != propertyID {
+		t.Fatalf("expected captured propertyID %s, got %s", propertyID, capturedPropID)
 	}
 }
 

@@ -747,13 +747,17 @@ func (h *Handlers) OwnerKYCApprove(c *gin.Context) {
 		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
 		return
 	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	verificationID, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return
 	}
 
 	actor := fmt.Sprintf("owner:%s", claims.UserID)
-	v, err := svc.ApproveManualReview(c.Request.Context(), verificationID, claims.UserID, actor)
+	v, err := svc.ApproveManualReview(c.Request.Context(), verificationID, propertyID, claims.UserID, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
 		return
@@ -777,6 +781,10 @@ func (h *Handlers) OwnerKYCReject(c *gin.Context) {
 		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
 		return
 	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
 	verificationID, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return
@@ -789,7 +797,7 @@ func (h *Handlers) OwnerKYCReject(c *gin.Context) {
 	}
 
 	actor := fmt.Sprintf("owner:%s", claims.UserID)
-	v, err := svc.RejectManualReview(c.Request.Context(), verificationID, claims.UserID, body.Reason, actor)
+	v, err := svc.RejectManualReview(c.Request.Context(), verificationID, propertyID, claims.UserID, body.Reason, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
 		return

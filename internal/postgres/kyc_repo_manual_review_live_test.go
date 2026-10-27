@@ -115,7 +115,7 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	}
 
 	// 5. Reject manual review
-	rejected, err := repo.RejectManualReviewTx(ctx, verif.ID, reviewerID, "Blurry document", "owner:"+reviewerID.String())
+	rejected, err := repo.RejectManualReviewTx(ctx, verif.ID, propID, reviewerID, "Blurry document", "owner:"+reviewerID.String())
 	if err != nil {
 		t.Fatalf("reject manual review: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit second manual review: %v", err)
 	}
-	approved, err := repo.ApproveManualReviewTx(ctx, verif2.ID, reviewerID, "owner:"+reviewerID.String())
+	approved, err := repo.ApproveManualReviewTx(ctx, verif2.ID, propID, reviewerID, "owner:"+reviewerID.String())
 	if err != nil {
 		t.Fatalf("approve manual review: %v", err)
 	}

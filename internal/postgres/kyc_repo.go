@@ -1059,7 +1059,7 @@ func (r *KYCRepo) VerifyPropertyOwnership(ctx context.Context, verificationID, p
 // ApproveManualReviewTx promotes a pending_manual_review verification to verified.
 func (r *KYCRepo) ApproveManualReviewTx(
 	ctx context.Context,
-	verificationID, reviewerID uuid.UUID,
+	verificationID, propertyID, reviewerID uuid.UUID,
 	actor string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
@@ -1068,7 +1068,12 @@ func (r *KYCRepo) ApproveManualReviewTx(
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		err := tx.QueryRow(ctx, `
+			SELECT kv.tenant_id
+			FROM kyc_verification kv
+			JOIN tenants t ON t.id = kv.tenant_id
+			WHERE kv.id = $1 AND t.property_id = $2
+		`, verificationID, propertyID).Scan(&tenantID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ErrVerificationNotFound
@@ -1077,8 +1082,11 @@ func (r *KYCRepo) ApproveManualReviewTx(
 		}
 
 		var exists int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 AND property_id = $2 FOR UPDATE`, tenantID, propertyID).Scan(&exists)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
@@ -1163,7 +1171,7 @@ func (r *KYCRepo) ApproveManualReviewTx(
 // RejectManualReviewTx rejects a pending_manual_review verification with a human reason.
 func (r *KYCRepo) RejectManualReviewTx(
 	ctx context.Context,
-	verificationID, reviewerID uuid.UUID,
+	verificationID, propertyID, reviewerID uuid.UUID,
 	reason, actor string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
@@ -1171,7 +1179,12 @@ func (r *KYCRepo) RejectManualReviewTx(
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		err := tx.QueryRow(ctx, `
+			SELECT kv.tenant_id
+			FROM kyc_verification kv
+			JOIN tenants t ON t.id = kv.tenant_id
+			WHERE kv.id = $1 AND t.property_id = $2
+		`, verificationID, propertyID).Scan(&tenantID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ErrVerificationNotFound
@@ -1180,8 +1193,11 @@ func (r *KYCRepo) RejectManualReviewTx(
 		}
 
 		var exists int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 AND property_id = $2 FOR UPDATE`, tenantID, propertyID).Scan(&exists)
 		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 

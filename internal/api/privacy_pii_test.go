@@ -128,10 +128,10 @@ func (s *stubPIIKYCService) CompleteAadhaarOTP(_ context.Context, _ uuid.UUID, _
 func (s *stubPIIKYCService) ListPendingReviews(_ context.Context, _ uuid.UUID) ([]domain.KYCVerification, error) {
 	return nil, nil
 }
-func (s *stubPIIKYCService) ApproveManualReview(_ context.Context, _, _ uuid.UUID, _ string) (*domain.KYCVerification, error) {
+func (s *stubPIIKYCService) ApproveManualReview(_ context.Context, _, _, _ uuid.UUID, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
 }
-func (s *stubPIIKYCService) RejectManualReview(_ context.Context, _, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
+func (s *stubPIIKYCService) RejectManualReview(_ context.Context, _, _, _ uuid.UUID, _, _ string) (*domain.KYCVerification, error) {
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusRejected}, nil
 }
 func (s *stubPIIKYCService) RecordGuardianConsent(_ context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, _ string) (*domain.Tenant, error) {
