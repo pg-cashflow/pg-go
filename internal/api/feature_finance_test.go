@@ -62,10 +62,11 @@ func newFinanceFixture(t *testing.T) *financeFixture {
 	f.managerA = issue(&domain.User{ID: uuid.New(), Role: domain.RoleManager, PropertyID: &pa})
 	f.ownerB = issue(&domain.User{ID: uuid.New(), Role: domain.RoleOwner, PropertyID: &pb})
 	f.router = NewRouter(Deps{
-		JWTSecret:      f.secret,
-		Finance:        finance.NewService(f.store, nil),
-		FinanceEnabled: true,
-		Payments:       tieOutPayments{},
+		JWTSecret:       f.secret,
+		Finance:         finance.NewService(f.store, nil),
+		FinanceEnabled:  true,
+		Payments:        tieOutPayments{},
+		CapabilityStore: &stubCapabilityStore{allActive: true},
 	})
 	return f
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -103,15 +104,15 @@ func (h *Handlers) verifyDualControlOrStepUp(
 		}
 		if err := h.Auth.VerifyStepUpOTPSpecific(c.Request.Context(), phone, candidateOTP, purpose, authInput.BatchID); err != nil {
 			if errors.Is(err, auth.ErrInvalidOTP) {
-				respondErr(c, clientErr(http.StatusUnauthorized, "invalid payout approval code"))
+				respondErr(c, clientErrWithCode(http.StatusUnauthorized, "invalid payout approval code", apierr.CodeAuthInvalidOtp))
 				return "", false
 			}
 			if errors.Is(err, auth.ErrOTPExpired) {
-				respondErr(c, clientErr(http.StatusUnauthorized, "payout approval code has expired; please request a new code"))
+				respondErr(c, clientErrWithCode(http.StatusUnauthorized, "payout approval code has expired; please request a new code", apierr.CodeAuthOtpExpired))
 				return "", false
 			}
 			if errors.Is(err, auth.ErrOTPLocked) {
-				respondErr(c, clientErr(http.StatusUnauthorized, "payout approval code locked due to too many failed attempts; please request a new code"))
+				respondErr(c, clientErrWithCode(http.StatusUnauthorized, "payout approval code locked due to too many failed attempts; please request a new code", apierr.CodeAuthOtpLocked))
 				return "", false
 			}
 			respondErr(c, clientErr(http.StatusUnauthorized, fmt.Sprintf("step-up authentication failed: %v", err)))

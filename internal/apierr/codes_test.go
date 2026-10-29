@@ -58,7 +58,7 @@ func TestAbort(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 
-	Abort(c, http.StatusUnauthorized, "token expired", CodeAuthOtpExpired)
+	Abort(c, http.StatusUnauthorized, "invalid token", CodeAuthInvalidToken)
 
 	if !c.IsAborted() {
 		t.Error("expected context to be aborted")
@@ -71,7 +71,7 @@ func TestAbort(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatalf("failed to parse response JSON: %v", err)
 	}
-	if env.Error != "token expired" || env.Code != CodeAuthOtpExpired {
+	if env.Error != "invalid token" || env.Code != CodeAuthInvalidToken {
 		t.Errorf("unexpected envelope content: %+v", env)
 	}
 }

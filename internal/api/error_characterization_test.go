@@ -318,68 +318,22 @@ func (s *stubAuthService) RevokeOtherSessions(_ context.Context, _ uuid.UUID, _ 
 
 func TestOTPVerifyCharacterization(t *testing.T) {
 	cases := []struct {
-		name       string
-		body       any
-		stubErr    error
-		wantStatus int
-		wantMsg    string
-		wantCode   apierr.Code
+		name string
+		body any
 	}{
-		{
-			name:       "invalid body - empty",
-			body:       map[string]string{},
-			wantStatus: http.StatusBadRequest,
-			wantMsg:    "phone and otp required",
-			wantCode:   apierr.CodeRequestInvalidBody,
-		},
-		{
-			name:       "account not found",
-			body:       map[string]string{"phone": "+919876543210", "otp": "123456"},
-			stubErr:    auth.ErrNoAccount,
-			wantStatus: http.StatusNotFound,
-			wantMsg:    auth.ErrNoAccount.Error(),
-			wantCode:   apierr.CodeAuthNoAccount,
-		},
-		{
-			name:       "tenant vacated",
-			body:       map[string]string{"phone": "+919876543210", "otp": "123456"},
-			stubErr:    auth.ErrTenantVacated,
-			wantStatus: http.StatusForbidden,
-			wantMsg:    auth.ErrTenantVacated.Error(),
-			wantCode:   apierr.CodeAuthAccessRevoked,
-		},
-		{
-			name:       "otp expired",
-			body:       map[string]string{"phone": "+919876543210", "otp": "123456"},
-			stubErr:    auth.ErrOTPExpired,
-			wantStatus: http.StatusUnauthorized,
-			wantMsg:    auth.ErrOTPExpired.Error(),
-			wantCode:   apierr.CodeAuthOtpExpired,
-		},
-		{
-			name:       "otp locked",
-			body:       map[string]string{"phone": "+919876543210", "otp": "123456"},
-			stubErr:    auth.ErrOTPLocked,
-			wantStatus: http.StatusUnauthorized,
-			wantMsg:    auth.ErrOTPLocked.Error(),
-			wantCode:   apierr.CodeAuthOtpLocked,
-		},
-		{
-			name:       "invalid otp",
-			body:       map[string]string{"phone": "+919876543210", "otp": "000000"},
-			stubErr:    auth.ErrInvalidOTP,
-			wantStatus: http.StatusUnauthorized,
-			wantMsg:    auth.ErrInvalidOTP.Error(),
-			wantCode:   apierr.CodeAuthInvalidOtp,
-		},
+		{name: "invalid body - empty", body: map[string]string{}},
+		{name: "with credentials", body: map[string]string{"phone": "+919876543210", "otp": "123456"}},
+		{name: "nil body", body: nil},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stub := &stubAuthService{verifyOTPErr: tc.stubErr}
-			h := &Handlers{Deps: Deps{Auth: stub}}
+			h := &Handlers{}
 
-			bodyBytes, _ := json.Marshal(tc.body)
+			var bodyBytes []byte
+			if tc.body != nil {
+				bodyBytes, _ = json.Marshal(tc.body)
+			}
 			req := httptest.NewRequest(http.MethodPost, "/auth/otp/verify", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
@@ -388,19 +342,16 @@ func TestOTPVerifyCharacterization(t *testing.T) {
 
 			h.OTPVerify(c)
 
-			if w.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d (body: %s)", w.Code, tc.wantStatus, w.Body.String())
+			if w.Code != http.StatusGone {
+				t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusGone, w.Body.String())
 			}
 
 			var env apierr.ErrorEnvelope
 			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 				t.Fatalf("failed to decode error envelope: %v", err)
 			}
-			if env.Error != tc.wantMsg {
-				t.Errorf("error = %q, want %q", env.Error, tc.wantMsg)
-			}
-			if env.Code != tc.wantCode {
-				t.Errorf("code = %q, want %q", env.Code, tc.wantCode)
+			if env.Code != apierr.CodeAuthEndpointDisabled {
+				t.Errorf("code = %q, want %q", env.Code, apierr.CodeAuthEndpointDisabled)
 			}
 		})
 	}

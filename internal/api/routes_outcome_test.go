@@ -214,6 +214,7 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 		Billing:             outcomeBillingStub{},
 		Tenants:             outcomeTenantStub{},
 		KYCSvc:              outcomeKYCStub{},
+		CapabilityStore:     &stubCapabilityStore{allActive: true},
 	})
 
 	doReq := func(method, path, token string, body any, headers map[string]string) *httptest.ResponseRecorder {

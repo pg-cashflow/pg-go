@@ -133,7 +133,7 @@ func respondErr(c *gin.Context, err error) {
 		return
 	}
 	slog.Error("unhandled internal error", "path", c.FullPath(), "method", c.Request.Method, "err", err)
-	c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: err.Error()})
+	c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
 }
 
 // gamificationClientErr wraps a gamification service error as a ClientError.

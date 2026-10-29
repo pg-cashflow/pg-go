@@ -259,6 +259,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set â€” Aadhaar document bytes will be stored unencrypted (DPDP Â§8(5) gap)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
+		kycRepo.SetVerificationValidityDays(0)
 		if len(kycDocKey) == 32 {
 			kycKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey)
 			if err != nil {
@@ -284,7 +285,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
 			IdentitySecret:           cfg.KYCIdentitySecret,
 			HashKeyVersion:           1,
-			VerificationValidityDays: 365,
+			VerificationValidityDays: 0,
 		})
 	} else {
 		logger.Info("kyc service dormant (KYC_IDENTITY_SECRET not set)")

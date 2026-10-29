@@ -16,9 +16,16 @@ import (
 )
 
 type KYCRepo struct {
-	pool      *pgxpool.Pool
-	cryptoKey []byte
-	keyRing   *crypto.KeyRing
+	pool                     *pgxpool.Pool
+	cryptoKey                []byte
+	keyRing                  *crypto.KeyRing
+	verificationValidityDays int
+}
+
+// SetVerificationValidityDays configures how many days a verification remains valid.
+// A value of 0 or negative means verifications never expire.
+func (r *KYCRepo) SetVerificationValidityDays(days int) {
+	r.verificationValidityDays = days
 }
 
 func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
@@ -490,6 +497,10 @@ func (r *KYCRepo) CompleteVerificationTx(
 		if err != nil {
 			return fmt.Errorf("kyc: encrypt attested photo: %w", err)
 		}
+		var expiresAtParam any
+		if !expiresAt.IsZero() {
+			expiresAtParam = expiresAt
+		}
 		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
@@ -507,7 +518,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 				updated_at = $13
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, qrStatus, nameMismatch, encPhotoBytes, photoStored, verifiedAt, expiresAt, now))
+		`, verificationID, maskedUID, identityHash, isDedupable, duplicateDetected, hashKeyVersion, qrStatus, nameMismatch, encPhotoBytes, photoStored, verifiedAt, expiresAtParam, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to verified: %w", err)
 		}
@@ -1063,7 +1074,10 @@ func (r *KYCRepo) ApproveManualReviewTx(
 	actor string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
-	expiresAt := now.Add(365 * 24 * time.Hour)
+	var expiresAtParam any
+	if r.verificationValidityDays > 0 {
+		expiresAtParam = now.AddDate(0, 0, r.verificationValidityDays)
+	}
 	var updated *domain.KYCVerification
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
@@ -1114,7 +1128,7 @@ func (r *KYCRepo) ApproveManualReviewTx(
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, reviewerID, now, expiresAt))
+		`, verificationID, reviewerID, now, expiresAtParam))
 		if err != nil {
 			return fmt.Errorf("kyc: approve manual verification: %w", err)
 		}

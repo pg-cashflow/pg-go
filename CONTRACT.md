@@ -46,6 +46,8 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `auth.invalidFirebaseToken`     | 401         | Auth        | Invalid Firebase ID token or verification failed                                 |
 | `auth.unauthorized`             | 401         | Auth        | Unauthorized request (missing claims/user)                                       |
 | `auth.noPropertyScope`          | 403         | Auth        | Missing required property scope                                                  |
+| `auth.noDeliveryChannel`        | 422         | Auth        | No delivery channel available for payout approval                                |
+| `auth.endpointDisabled`         | 410         | Auth        | Legacy authentication endpoint is permanently retired                            |
 | `join.invalidInvite`            | 404         | Join        | Invalid invite code                                                              |
 | `join.noPendingRequest`         | 404         | Join        | No pending join request found                                                    |
 | `join.notFound`                 | 404         | Join        | Join request not found                                                           |
@@ -61,8 +63,9 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `waitlist.roomOpen`             | 409         | Join        | Room still has normal bed capacity; use a slot invite instead                    |
 | `waitlist.duplicate`            | 409         | Join        | Phone is already queued for this room                                            |
 | `slot.boundPhoneMismatch`       | 403         | Join        | Slot invite is bound to a different phone                                        |
-| `slot.room_full`                | 409         | Join        | No normal or over-capacity bed available for slot invite                         |
+| `slot.roomFull`                 | 409         | Join        | No normal or over-capacity bed available for slot invite                         |
 | `slot.inviteNotOpen`            | 409         | Join        | Slot invite is not open                                                          |
+| `onboarding.roomMasterMissing`  | 422         | Join        | Create floors and rooms before issuing slot invites                              |
 | `onboarding.settingsInvalid`    | 422         | Join        | Onboarding settings patch failed validation (bps, due_day, etc.)                 |
 | `payment.duplicateTxn`          | 409         | Payment     | Duplicate transaction ID                                                         |
 | `payment.cashPartialNotAllowed` | 400         | Payment     | Cash payment must match due amount exactly                                       |
@@ -93,11 +96,14 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `finance.invalidSettings`       | 400         | Finance     | Invalid property finance settings or approval policy                             |
 | `request.invalidBody`           | 400         | Request     | Request payload is malformed or missing required fields                          |
 | `request.invalidId`             | 400         | Request     | UUID URL parameter is malformed                                                  |
+| `request.notFound`              | 404         | Request     | Requested resource not found                                                     |
 | `request.dueDayInvalid`         | 400         | Request     | Due day must be an integer between 1 and 28                                      |
 | `request.imageTooLarge`         | 400         | Request     | Uploaded image exceeds maximum allowed size (2MB)                                |
 | `request.imageReadFailed`       | 400         | Request     | Server failed to read uploaded multipart file stream                             |
 | `preferences.localeRequired`    | 400         | Preferences | Locale field is required                                                         |
 | `preferences.invalidLocale`     | 400         | Preferences | Unsupported or invalid locale                                                    |
+| `preferences.invalidTheme`      | 400         | Preferences | Invalid theme setting (must be system, light, or dark)                           |
+| `preferences.noFields`          | 400         | Preferences | At least one preference field (locale or theme) is required                      |
 | `push.endpointInvalid`          | 400         | Push        | Untrusted or invalid push endpoint URL                                           |
 | `push.endpointConflict`         | 409         | Push        | Push endpoint is already registered to another tenant                            |
 | `kyc.no_consent`                | 409         | KYC         | No active DPDP consent recorded for tenant                                       |
@@ -959,6 +965,8 @@ Validation & error responses:
 | **Auth**        | `auth.invalidFirebaseToken`     | 401         | Firebase ID token verification failed                                                         |
 | **Auth**        | `auth.unauthorized`             | 401         | Request claims do not contain a valid user ID                                                 |
 | **Auth**        | `auth.noPropertyScope`          | 403         | Claims do not contain a valid property scope                                                  |
+| **Auth**        | `auth.noDeliveryChannel`        | 422         | No delivery channel available for payout approval                                             |
+| **Auth**        | `auth.endpointDisabled`         | 410         | Legacy authentication endpoint is permanently retired                                         |
 | **Join**        | `join.invalidInvite`            | 404         | Invite code not found for join request                                                        |
 | **Join**        | `join.noPendingRequest`         | 404         | No pending join request found for tenant                                                      |
 | **Join**        | `join.notFound`                 | 404         | Join request record not found                                                                 |
@@ -970,6 +978,14 @@ Validation & error responses:
 | **Join**        | `join.profileIncomplete`        | 400         | Join profile missing mandatory fields before activation                                       |
 | **Join**        | `join.requestNotPending`        | 400         | Join request is not in pending state                                                          |
 | **Join**        | `join.notAwaitingAssignment`    | 400         | Join request is not awaiting room/rent assignment                                             |
+| **Join**        | `waitlist.disabled`             | 422         | Waitlist is disabled for this property                                                        |
+| **Join**        | `waitlist.roomOpen`             | 409         | Room still has normal bed capacity; use a slot invite instead                                 |
+| **Join**        | `waitlist.duplicate`            | 409         | Phone is already queued for this room                                                         |
+| **Join**        | `slot.boundPhoneMismatch`       | 403         | Slot invite is bound to a different phone                                                     |
+| **Join**        | `slot.roomFull`                 | 409         | No normal or over-capacity bed available for slot invite                                      |
+| **Join**        | `slot.inviteNotOpen`            | 409         | Slot invite is not open                                                                       |
+| **Join**        | `onboarding.roomMasterMissing`  | 422         | Create floors and rooms before issuing slot invites                                           |
+| **Join**        | `onboarding.settingsInvalid`    | 422         | Onboarding settings patch failed validation (bps, due_day, etc.)                              |
 | **Payment**     | `payment.duplicateTxn`          | 409         | UPI transaction ID or UTR already recorded                                                    |
 | **Payment**     | `payment.cashPartialNotAllowed` | 400         | Cash payments must match the exact remaining due balance                                      |
 | **Payment**     | `payment.dueNotOpen`            | 400         | Due is already paid, waived, or not payable                                                   |
@@ -999,11 +1015,14 @@ Validation & error responses:
 | **Finance**     | `finance.invalidSettings`       | 400         | Settings or policy limits are negative, exceed maximum thresholds, or have invalid fiscal day |
 | **Request**     | `request.invalidBody`           | 400         | Request JSON payload malformed or missing required fields                                     |
 | **Request**     | `request.invalidId`             | 400         | UUID URL parameter is malformed                                                               |
+| **Request**     | `request.notFound`              | 404         | Requested resource not found                                                                  |
 | **Request**     | `request.dueDayInvalid`         | 400         | Due day must be an integer between 1 and 28                                                   |
 | **Request**     | `request.imageTooLarge`         | 400         | Uploaded image exceeds maximum allowed size (2MB)                                             |
 | **Request**     | `request.imageReadFailed`       | 400         | Server failed to read uploaded multipart file stream                                          |
 | **Preferences** | `preferences.localeRequired`    | 400         | Missing locale field in preferences payload                                                   |
 | **Preferences** | `preferences.invalidLocale`     | 400         | Locale tag not supported or failed database check constraint                                  |
+| **Preferences** | `preferences.invalidTheme`      | 400         | Invalid theme setting (must be system, light, or dark)                                         |
+| **Preferences** | `preferences.noFields`          | 400         | At least one preference field (locale or theme) is required                                    |
 | **Push**        | `push.endpointInvalid`          | 400         | Push endpoint URL failed validation (must be HTTPS on allowlisted push service)               |
 | **Push**        | `push.endpointConflict`         | 409         | Push endpoint is already registered to a different tenant                                     |
 | **KYC**         | `kyc.no_consent`                | 409         | No active DPDP consent recorded for tenant prior to initiating verification                   |

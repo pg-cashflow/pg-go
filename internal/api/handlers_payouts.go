@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -605,11 +606,11 @@ func (h *Handlers) OwnerRequestPayoutBatchOTP(c *gin.Context) {
 	channel, destination, err := h.Auth.RequestStepUpOTPWithChannel(c.Request.Context(), phone, "payout_approval", &batchID)
 	if err != nil {
 		if errors.Is(err, auth.ErrRateLimited) {
-			respondErr(c, clientErr(http.StatusTooManyRequests, "otp rate limit exceeded; please wait before requesting another code"))
+			respondErr(c, clientErrWithCode(http.StatusTooManyRequests, "otp rate limit exceeded; please wait before requesting another code", apierr.CodeAuthRateLimited))
 			return
 		}
 		if errors.Is(err, auth.ErrNoDeliveryChannel) {
-			respondErr(c, clientErr(http.StatusUnprocessableEntity, "no delivery channel available for payout approval; please register a verified email or phone"))
+			respondErr(c, clientErrWithCode(http.StatusUnprocessableEntity, "no delivery channel available for payout approval; please register a verified email or phone", apierr.CodeAuthNoDeliveryChannel))
 			return
 		}
 		respondErr(c, fmt.Errorf("dispatch approval otp: %w", err))

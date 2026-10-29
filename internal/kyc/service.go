@@ -236,7 +236,10 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 
 	// 6. Immediately complete (synchronous — no async webhook).
 	now := time.Now().UTC()
-	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	var expiresAt time.Time
+	if s.cfg.VerificationValidityDays > 0 {
+		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	}
 	qrStatus := domain.QRStatusSecure
 	majorityDate, _ := domain.MajorityDateFromDOB(canonicalDOB)
 	verified, err := s.repo.CompleteVerificationTx(ctx,
@@ -619,7 +622,10 @@ func (s *Service) CompleteAadhaarOTP(
 	nameMismatch := !domain.IsNameMatch(tenantName, res.Name)
 
 	now := time.Now().UTC()
-	expiresAt := now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	var expiresAt time.Time
+	if s.cfg.VerificationValidityDays > 0 {
+		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+	}
 
 	// AUTO-VERIFIED: Government authenticated via direct UIDAI OTP
 	verified, err := s.repo.CompleteVerificationTx(ctx,

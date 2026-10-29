@@ -157,6 +157,9 @@ func TestAPIContract_ErrorEnvelopeSchema(t *testing.T) {
 		"kyc.",
 		"billing.",
 		"push.",
+		"slot.",
+		"onboarding.",
+		"waitlist.",
 	}
 
 	for _, code := range apierr.AllCodes {

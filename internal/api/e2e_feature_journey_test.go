@@ -150,6 +150,7 @@ func TestE2E_FullFeatureLifecycleJourney(t *testing.T) {
 		FinanceEnabled:     true,
 		Pool:               pool,
 		LedgerOutboxRepo:   outboxRepo,
+		KYCSvc:             verifiedKYCSvc(),
 	}
 	router := NewRouter(deps)
 

@@ -46,6 +46,10 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 	}
 	if body.Locale != nil {
 		locale := strings.TrimSpace(*body.Locale)
+		if locale == "" {
+			respondErr(c, clientErrWithCode(http.StatusBadRequest, "locale cannot be empty", apierr.CodePreferencesLocaleRequired))
+			return
+		}
 		if !localization.IsValid(locale) {
 			respondErr(c, clientErrWithCode(http.StatusBadRequest, "unsupported locale", apierr.CodePreferencesInvalidLocale))
 			return
@@ -66,6 +70,7 @@ func (h *Handlers) TenantPatchMe(c *gin.Context) {
 			return
 		}
 	}
+	*t = *updatedTenant
 	auth.InvalidateTenantCache(t.ID)
 	c.JSON(http.StatusOK, tenantResponse(updatedTenant))
 }

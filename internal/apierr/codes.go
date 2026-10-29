@@ -40,8 +40,8 @@ const (
 	CodeJoinRequestNotPending     Code = "join.requestNotPending"
 	CodeJoinNotAwaitingAssignment Code = "join.notAwaitingAssignment"
 
-	CodeSlotRoomFull                Code = "slot.room_full"
-	CodeOnboardingRoomMasterMissing Code = "onboarding.room_master_missing"
+	CodeSlotRoomFull                Code = "slot.roomFull"
+	CodeOnboardingRoomMasterMissing Code = "onboarding.roomMasterMissing"
 	CodeOnboardingSettingsInvalid   Code = "onboarding.settingsInvalid"
 	CodeSlotInviteNotOpen           Code = "slot.inviteNotOpen"
 	CodeWaitlistDisabled            Code = "waitlist.disabled"
