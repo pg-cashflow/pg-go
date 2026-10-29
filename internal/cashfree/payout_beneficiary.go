@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -116,6 +117,15 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 		return existing, nil
 	}
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
+			"status", resp.StatusCode,
+			"path", resp.Request.URL.Path,
+			"body", string(bodyBytes),
+		)
+		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cashfree payout: create beneficiary failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
@@ -149,6 +159,14 @@ func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: read beneficiary: %w", err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
+			"status", resp.StatusCode,
+			"path", resp.Request.URL.Path,
+			"body", string(body),
+		)
+		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("cashfree payout: get beneficiary HTTP %d", resp.StatusCode)

@@ -186,3 +186,77 @@ func TestLivePostgres_TokenRepo_MarkUsed_AtomicRace(t *testing.T) {
 		t.Errorf("expected ErrTokenAlreadyUsed on replay, got: %v", err)
 	}
 }
+
+func TestLivePostgres_OTPRepo_CreateWithQuota_ConcurrentAdvisoryLock(t *testing.T) {
+	pool, _ := setupLiveTestPool(t, 15*time.Second)
+	if pool == nil {
+		return
+	}
+
+	repo := NewOTPRepo(pool)
+	ctx := context.Background()
+
+	testPhone := fmt.Sprintf("+9199999%05d", time.Now().UnixNano()%100000)
+	purpose := "login"
+
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM otp_requests WHERE phone=$1`, testPhone)
+	})
+
+	const numWorkers = 20
+	const maxQuota = 3
+	var wg sync.WaitGroup
+	startBarrier := make(chan struct{})
+
+	var successCount int64
+	var rateLimitedCount int64
+	var unexpectedErrCount int64
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		idx := i
+		go func() {
+			defer wg.Done()
+			<-startBarrier
+
+			req := &OTPRequest{
+				Phone:     testPhone,
+				OTPHash:   fmt.Sprintf("hash_%d", idx),
+				Attempts:  0,
+				ExpiresAt: time.Now().UTC().Add(5 * time.Minute),
+				Used:      false,
+				Purpose:   purpose,
+			}
+
+			err := repo.CreateWithQuota(ctx, req, 10*time.Minute, maxQuota, 0)
+			if err == nil {
+				atomic.AddInt64(&successCount, 1)
+			} else if errors.Is(err, ErrRateLimited) {
+				atomic.AddInt64(&rateLimitedCount, 1)
+			} else {
+				atomic.AddInt64(&unexpectedErrCount, 1)
+			}
+		}()
+	}
+
+	close(startBarrier)
+	wg.Wait()
+
+	if successCount != maxQuota {
+		t.Errorf("expected exactly %d successes, got %d", maxQuota, successCount)
+	}
+	if rateLimitedCount != int64(numWorkers-maxQuota) {
+		t.Errorf("expected %d rate-limited errors, got %d", numWorkers-maxQuota, rateLimitedCount)
+	}
+	if unexpectedErrCount != 0 {
+		t.Errorf("unexpected errors encountered: %d", unexpectedErrCount)
+	}
+
+	var rowCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM otp_requests WHERE phone=$1`, testPhone).Scan(&rowCount); err != nil {
+		t.Fatalf("count otp_requests: %v", err)
+	}
+	if rowCount != maxQuota {
+		t.Errorf("expected exactly %d rows in DB, got %d", maxQuota, rowCount)
+	}
+}

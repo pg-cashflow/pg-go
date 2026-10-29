@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -231,9 +232,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
 		//
 		// Security invariants (both enforced in KYCRepo.encryptBytes / decryptBytes):
-		//   - Absent key (empty string): encryption intentionally disabled — documents stored as
+		//   - Absent key (empty string): encryption intentionally disabled â€” documents stored as
 		//     plaintext. This is the opted-out path; warn only.
-		//   - Present but malformed key: FATAL — the repo hard-errors on any encrypt/decrypt call
+		//   - Present but malformed key: FATAL â€” the repo hard-errors on any encrypt/decrypt call
 		//     rather than silently storing Aadhaar documents in plaintext. Fail at startup here to
 		//     surface this misconfiguration immediately.
 		var kycDocKey []byte
@@ -248,9 +249,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			logger.Info("kyc: document-bytes encryption enabled")
 		} else {
 			if cfg.AppEnv == "production" {
-				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP §8(5) requirement)")
+				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP Â§8(5) requirement)")
 			}
-			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set — Aadhaar document bytes will be stored unencrypted (DPDP §8(5) gap)")
+			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set â€” Aadhaar document bytes will be stored unencrypted (DPDP Â§8(5) gap)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
 		if len(kycDocKey) == 32 {
@@ -401,11 +402,21 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
+		var pubKey *rsa.PublicKey
+		if strings.EqualFold(cfg.CashfreePayoutAuthMode, "signature") && cfg.CashfreePayoutPublicKeyPEM != "" {
+			var err error
+			pubKey, err = cashfree.ParseRSAPublicKeyOrCertificate([]byte(cfg.CashfreePayoutPublicKeyPEM))
+			if err != nil {
+				return nil, fmt.Errorf("bootstrap payout public key: %w", err)
+			}
+		}
 		payoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
 			ClientID:     cfg.CashfreePayoutClientID,
 			ClientSecret: cfg.CashfreePayoutClientSecret,
 			APIVersion:   cfg.CashfreePayoutAPIVersion,
 			Env:          cfg.CashfreePayoutEnv,
+			AuthMode:     cfg.CashfreePayoutAuthMode,
+			PublicKey:    pubKey,
 		})
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		payoutDispatcher.SetKeyRing(payoutKeyRing)

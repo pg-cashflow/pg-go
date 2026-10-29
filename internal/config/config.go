@@ -47,7 +47,7 @@ type Config struct {
 	AadhaarQRPublicKeyPEM             string
 	KYCIdentitySecret string
 	// KYCIdentitySecrets holds versioned HMAC-SHA256 keys for identity_hash rotation
-	// (version number → secret string). Populated from KYC_IDENTITY_SECRETS env var,
+	// (version number â†’ secret string). Populated from KYC_IDENTITY_SECRETS env var,
 	// format identical to PAYOUT_ENCRYPTION_KEYS: "1:secret-v1,2:secret-v2,...".
 	// When set, the highest version is the active key; the service must verify against
 	// any version still stored on a row (via hash_key_version). The legacy
@@ -65,6 +65,8 @@ type Config struct {
 	CashfreePayoutWebhookSecret       string
 	CashfreePayoutEnv                 string
 	CashfreePayoutAutoDispatchEnabled bool
+	CashfreePayoutAuthMode            string // "signature" | "ip"
+	CashfreePayoutPublicKeyPEM        string // PEM-encoded RSA public key or X.509 certificate for 2FA signature
 	FinanceEnabled                    bool
 	IntelligenceEnabled               bool
 	AdminEmail                        string
@@ -130,6 +132,8 @@ func Load() (*Config, error) {
 		CashfreePayoutWebhookSecret:       os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
 		CashfreePayoutEnv:                 envOr("CF_PAYOUT_ENV", "sandbox"),
 		CashfreePayoutAutoDispatchEnabled: envBoolDefaultFalse("CF_PAYOUT_AUTO_DISPATCH_ENABLED"),
+		CashfreePayoutAuthMode:            strings.ToLower(strings.TrimSpace(os.Getenv("CF_PAYOUT_AUTH_MODE"))),
+		CashfreePayoutPublicKeyPEM:        loadPayoutPublicKeyPEM(),
 		WebhookTimestampToleranceSec:      envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
 		OrderExpiryDuration:               envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
 		OrderPollerBufferDuration:         envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
@@ -181,12 +185,12 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutEncryptionSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_ENCRYPTION_SECRET is required in production (must not reuse JWT_SECRET)")
 		}
-		// REQ-SEC-008: checksum secret must be independently keyed — never fall through to JWTSecret.
+		// REQ-SEC-008: checksum secret must be independently keyed â€” never fall through to JWTSecret.
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
 		// Step-up OTP (payout_approval) is email-only by architectural contract
-		// (docs/specs/auth-frontend-backend-contract.md §1.2). Without SMTP,
+		// (docs/specs/auth-frontend-backend-contract.md Â§1.2). Without SMTP,
 		// auth.Service silently falls back to mailer.NoopMailer, which reports
 		// success while sending nothing. Fail at boot, not at an owner's
 		// payout-approval request.
@@ -256,8 +260,8 @@ func parseVersionedKeys(s string) map[byte]string {
 // parseVersionedSecrets16 parses a comma-separated "version:secret" string into a
 // map[int16]string. The key type is int16 to match the hash_key_version column in
 // kyc_verification and the hashKeyVersion parameters throughout the KYC repo and
-// service layers. Valid version range: 1–32767 (int16 max; version 0 is reserved).
-// Malformed pairs and out-of-range version numbers are silently skipped — the
+// service layers. Valid version range: 1â€“32767 (int16 max; version 0 is reserved).
+// Malformed pairs and out-of-range version numbers are silently skipped â€” the
 // caller (validate.go) reports them after Load() returns.
 func parseVersionedSecrets16(s string) map[int16]string {
 	out := make(map[int16]string)
@@ -377,4 +381,17 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func loadPayoutPublicKeyPEM() string {
+	if raw := strings.TrimSpace(os.Getenv("CF_PAYOUT_PUBLIC_KEY")); raw != "" {
+		return raw
+	}
+	if path := strings.TrimSpace(os.Getenv("CF_PAYOUT_PUBLIC_KEY_PATH")); path != "" {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
 }

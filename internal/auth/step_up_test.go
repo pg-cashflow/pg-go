@@ -32,6 +32,51 @@ func (m *mockOTPRepo) Create(_ context.Context, req *postgres.OTPRequest) error 
 	return nil
 }
 
+func (m *mockOTPRepo) CreateWithQuota(_ context.Context, req *postgres.OTPRequest, window time.Duration, max int, cooldown time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now().UTC()
+	if cooldown > 0 {
+		cooldownSince := now.Add(-cooldown)
+		for _, r := range m.requests {
+			if r.Phone == req.Phone && (req.Purpose == "" || r.Purpose == req.Purpose) && !r.CreatedAt.Before(cooldownSince) {
+				rem := cooldown - now.Sub(r.CreatedAt)
+				if rem < time.Second {
+					rem = time.Second
+				}
+				return &RateLimitError{Message: ErrRateLimited.Error(), RetryAfter: rem}
+			}
+		}
+	}
+
+	since := now.Add(-window)
+	count := 0
+	var oldest time.Time
+	for _, r := range m.requests {
+		if r.Phone == req.Phone && (req.Purpose == "" || r.Purpose == req.Purpose) && !r.CreatedAt.Before(since) {
+			if count == 0 {
+				oldest = r.CreatedAt
+			}
+			count++
+		}
+	}
+	if count >= max {
+		rem := window - now.Sub(oldest)
+		if rem < time.Second {
+			rem = time.Second
+		}
+		return &RateLimitError{Message: ErrRateLimited.Error(), RetryAfter: rem}
+	}
+
+	req.ID = uuid.New()
+	if req.CreatedAt.IsZero() {
+		req.CreatedAt = now
+	}
+	m.requests = append(m.requests, req)
+	return nil
+}
+
 func (m *mockOTPRepo) LatestUnused(_ context.Context, phone string) (*postgres.OTPRequest, error) {
 	return m.LatestUnusedByPurpose(context.Background(), phone, "", nil)
 }
@@ -578,7 +623,7 @@ func TestRequestStepUpOTP_CooldownEnforced(t *testing.T) {
 // is unset) rather than the pre-fix test fixture state, which only ever
 // left s.mailer as Go nil (never calling SetMailer at all). A nil mailer
 // was already caught by the old "s.mailer != nil" check; an explicitly-set
-// NoopMailer was not — that gap is what let delivery fail silently while
+// NoopMailer was not â€” that gap is what let delivery fail silently while
 // the API reported 200 OK.
 //
 // It also covers a non-payout_approval purpose, because the original

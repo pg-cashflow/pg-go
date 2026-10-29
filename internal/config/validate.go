@@ -5,10 +5,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 )
 
 // ValidateForRealDeployment enforces security invariants that must hold
-// whenever real credentials are present — regardless of APP_ENV.
+// whenever real credentials are present â€” regardless of APP_ENV.
 //
 // Rationale (ADR-2, Batch 1): checks keyed on APP_ENV == "production" create
 // a class of bugs where staging/dev servers with real credentials bypass guards.
@@ -57,7 +59,7 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 	}
 
-	// Invariant: key separation — distinct components must not share HMAC keys
+	// Invariant: key separation â€” distinct components must not share HMAC keys
 	if c.JWTSecret != "" && c.OTPHMACSecret != "" && c.JWTSecret == c.OTPHMACSecret {
 		errs = append(errs, "JWT_SECRET and OTP_HMAC_SECRET must be distinct secrets")
 	}
@@ -122,6 +124,20 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 		if strings.TrimSpace(c.CashfreePayoutFundsourceID) == "" {
 			errs = append(errs, "CF_PAYOUT_FUNDSOURCE_ID is required whenever CF_PAYOUT_CLIENT_ID is set (Cashfree Transfers V2 requires debit fund source)")
+		}
+		authMode := strings.ToLower(strings.TrimSpace(c.CashfreePayoutAuthMode))
+		if authMode == "" {
+			errs = append(errs, "CF_PAYOUT_AUTH_MODE is required whenever CF_PAYOUT_CLIENT_ID is set (must be 'signature' or 'ip')")
+		} else if authMode != "signature" && authMode != "ip" {
+			errs = append(errs, fmt.Sprintf("CF_PAYOUT_AUTH_MODE must be either 'signature' or 'ip' (got %q)", c.CashfreePayoutAuthMode))
+		} else if authMode == "signature" {
+			if strings.TrimSpace(c.CashfreePayoutPublicKeyPEM) == "" {
+				errs = append(errs, "CF_PAYOUT_PUBLIC_KEY is required when CF_PAYOUT_AUTH_MODE is 'signature'")
+			} else {
+				if _, err := cashfree.ParseRSAPublicKeyOrCertificate([]byte(c.CashfreePayoutPublicKeyPEM)); err != nil {
+					errs = append(errs, fmt.Sprintf("CF_PAYOUT_PUBLIC_KEY must be a valid PEM-encoded RSA public key or certificate: %v", err))
+				}
+			}
 		}
 	}
 
@@ -197,17 +213,17 @@ func (c *Config) ValidateWarnings() []string {
 
 	// L3: sandbox mode with Cashfree keys active
 	if cashfreeEnabled && !strings.EqualFold(c.CashfreeEnv, "production") {
-		warns = append(warns, "Cashfree is in sandbox mode (CASHFREE_ENV != production) — payments are not real")
+		warns = append(warns, "Cashfree is in sandbox mode (CASHFREE_ENV != production) â€” payments are not real")
 	}
 
 	// KYC enabled without Cashfree (Aadhaar OTP unavailable)
 	if strings.TrimSpace(c.KYCIdentitySecret) != "" && !cashfreeEnabled {
-		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured — Aadhaar OTP verification will return 503")
+		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured â€” Aadhaar OTP verification will return 503")
 	}
 
 	// Admin email unset warning in non-production
 	if strings.TrimSpace(c.AdminEmail) == "" {
-		warns = append(warns, "ADMIN_EMAIL is not configured — outbox dead-letter alerts and operator failure notices will only be logged locally")
+		warns = append(warns, "ADMIN_EMAIL is not configured â€” outbox dead-letter alerts and operator failure notices will only be logged locally")
 	}
 
 	// Non-production worker URL fallback warning (ADR-030)

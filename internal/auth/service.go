@@ -42,6 +42,23 @@ var (
 	ErrAccountReLinkDenied   = errors.New("auth: account re-link denied")
 )
 
+// RateLimitError conveys the remaining duration until retry is permitted.
+type RateLimitError struct {
+	Message    string
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return ErrRateLimited.Error()
+}
+
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimited
+}
+
 // FirebaseTokenVerifier validates Firebase ID tokens (implemented by FirebaseVerifier).
 type FirebaseTokenVerifier interface {
 	IdentityFromIDToken(ctx context.Context, idToken string) (FirebaseIdentity, error)
@@ -148,26 +165,7 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		return "", "", nil
 	}
 
-	// Canonical identity rate limit check:
-	if s.cooldownWindow > 0 {
-		cooldownSince := time.Now().UTC().Add(-s.cooldownWindow)
-		recentCooldown, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, cooldownSince)
-		if err != nil {
-			return "", "", fmt.Errorf("count recent otp cooldown: %w", err)
-		}
-		if recentCooldown > 0 {
-			return "", "", ErrRateLimited
-		}
-	}
 
-	since := time.Now().UTC().Add(-OTPRateWindow)
-	n, err := s.otp.CountRecentByPurpose(ctx, phone, purpose, since)
-	if err != nil {
-		return "", "", fmt.Errorf("count recent otp: %w", err)
-	}
-	if n >= OTPMaxPerWindow {
-		return "", "", ErrRateLimited
-	}
 
 	// Check if user has an email on file:
 	var userEmail string
@@ -187,7 +185,7 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 	// so "!= nil" alone cannot distinguish "configured" from "discarding
 	// silently" for either provider. Treating that distinction correctly
 	// for SMS but not for the mailer was the root cause of REQ-SEC note
-	// (silent step-up OTP loss) — keep them symmetric.
+	// (silent step-up OTP loss) â€” keep them symmetric.
 	smsAvailable := s.gateway != nil
 	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
 		smsAvailable = false
@@ -229,8 +227,20 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		Channel:     channel,
 		Destination: destination,
 	}
-	if err := s.otp.Create(ctx, req); err != nil {
-		return "", "", fmt.Errorf("store otp: %w", err)
+	// Atomically enforce cooldown and window rate limits under transactional advisory lock.
+	if err := s.otp.CreateWithQuota(ctx, req, OTPRateWindow, OTPMaxPerWindow, s.cooldownWindow); err != nil {
+		if errors.Is(err, postgres.ErrRateLimited) || errors.Is(err, ErrRateLimited) {
+			var pgRLE *postgres.RateLimitError
+			if errors.As(err, &pgRLE) {
+				return "", "", &RateLimitError{Message: ErrRateLimited.Error(), RetryAfter: pgRLE.RetryAfter}
+			}
+			var authRLE *RateLimitError
+			if errors.As(err, &authRLE) {
+				return "", "", authRLE
+			}
+			return "", "", ErrRateLimited
+		}
+		return "", "", fmt.Errorf("store otp with quota: %w", err)
 	}
 
 	if channel == "email" {
@@ -800,6 +810,9 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		if preUser, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && preUser != nil {
 			if preUser.TenantID != nil && s.tenants != nil {
 				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+					if s.refreshRepo != nil {
+						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
+					}
 					return "", "", nil, ErrTenantVacated
 				}
 			}
@@ -812,7 +825,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			// Multi-tab race: the token was already rotated within the last 15s.
 			// The successor row is still valid. Issue a fresh access token so the
 			// caller gets a new 15-minute window, but return an empty refresh-token
-			// string to signal that the cookie must NOT be rotated — the browser's
+			// string to signal that the cookie must NOT be rotated â€” the browser's
 			// cookie is already the correct successor plaintext.
 			graceUser, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
 			if uerr != nil {
@@ -821,6 +834,9 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			if graceUser.TenantID != nil && s.tenants != nil {
 				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
 				if terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+					if s.refreshRepo != nil {
+						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+					}
 					return "", "", nil, ErrTenantVacated
 				}
 			}
@@ -853,6 +869,9 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	if user.TenantID != nil && s.tenants != nil {
 		t, err := s.tenants.GetByID(ctx, *user.TenantID)
 		if err == nil && t != nil && t.Status == domain.TenantStatusVacated {
+			if s.refreshRepo != nil {
+				_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+			}
 			return "", "", nil, ErrTenantVacated
 		}
 	}

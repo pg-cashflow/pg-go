@@ -1,9 +1,16 @@
 package config
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validConfig() *Config {
@@ -272,6 +279,7 @@ func TestValidateForRealDeployment_PayoutCredentialsRequirePayoutSecrets(t *test
 	cfg.CashfreePayoutClientSecret = "CF_TEST_PAYOUT_CLIENT_SECRET"
 	cfg.CashfreePayoutFundsourceID = "FUND_SOURCE_123"
 	cfg.CashfreePayoutWebhookSecret = "this-is-a-valid-payout-webhook-secret-32ch"
+	cfg.CashfreePayoutAuthMode = "ip"
 
 	// Missing PayoutEncryptionSecret and PayoutExportChecksumSecret
 	err := cfg.ValidateForRealDeployment()
@@ -353,6 +361,7 @@ func TestValidateForRealDeployment_PayoutWebhookSecret_ExemptFrom32Chars(t *test
 	cfg.PayoutEncryptionSecret = "this-is-a-valid-payout-encryption-secret-32"
 	cfg.PayoutExportChecksumSecret = "this-is-a-valid-payout-checksum-secret-32ch"
 	cfg.CashfreePayoutWebhookSecret = "twenty-char-secret!!" // exactly 20 characters
+	cfg.CashfreePayoutAuthMode = "ip"
 
 	if err := cfg.ValidateForRealDeployment(); err != nil {
 		t.Fatalf("expected 20-character payout webhook secret to pass, got: %v", err)
@@ -500,10 +509,10 @@ func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
 	cases := []struct {
 		name    string
 		secrets map[int16]string
-		wantSub string // non-empty → expect error containing this substring
+		wantSub string // non-empty â†’ expect error containing this substring
 	}{
 		{
-			name:    "nil map (env var unset) passes — KYC dormant",
+			name:    "nil map (env var unset) passes â€” KYC dormant",
 			secrets: nil,
 			wantSub: "",
 		},
@@ -536,7 +545,7 @@ func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
 			wantSub: "must be distinct secrets (rotation requires unique keys per version)",
 		},
 		{
-			name: "mixed: one valid, one short — both errors surface",
+			name: "mixed: one valid, one short â€” both errors surface",
 			secrets: map[int16]string{
 				1: "this-is-a-valid-kyc-identity-v1-secret-32ch",
 				2: "short",
@@ -564,5 +573,117 @@ func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateForRealDeployment_PayoutAuthMode(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate test rsa key: %v", err)
+	}
+
+	pkixBytes, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal pkix: %v", err)
+	}
+	pkixPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pkixBytes}))
+
+	pkcs1Bytes := x509.MarshalPKCS1PublicKey(&priv.PublicKey)
+	pkcs1PEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: pkcs1Bytes}))
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-cert"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatalf("create test cert: %v", err)
+	}
+	certPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+
+	baseCfg := func() *Config {
+		cfg := validConfig()
+		cfg.CashfreePayoutClientID = "CF_TEST_PAYOUT_CLIENT_ID"
+		cfg.CashfreePayoutClientSecret = "CF_TEST_PAYOUT_CLIENT_SECRET"
+		cfg.CashfreePayoutFundsourceID = "FUND_SOURCE_123"
+		cfg.PayoutEncryptionSecret = "this-is-a-valid-payout-encryption-secret-32"
+		cfg.PayoutExportChecksumSecret = "this-is-a-valid-payout-checksum-secret-32ch"
+		cfg.CashfreePayoutWebhookSecret = "twenty-char-secret!!"
+		return cfg
+	}
+
+	t.Run("missing auth mode fails", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = ""
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_AUTH_MODE is required") {
+			t.Fatalf("expected error for missing CF_PAYOUT_AUTH_MODE, got: %v", err)
+		}
+	})
+
+	t.Run("invalid auth mode fails", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "invalid_mode"
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_AUTH_MODE must be either 'signature' or 'ip'") {
+			t.Fatalf("expected error for invalid CF_PAYOUT_AUTH_MODE, got: %v", err)
+		}
+	})
+
+	t.Run("ip mode passes without public key", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "ip"
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected ip mode to pass, got: %v", err)
+		}
+	})
+
+	t.Run("signature mode requires public key", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "signature"
+		cfg.CashfreePayoutPublicKeyPEM = ""
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_PUBLIC_KEY is required") {
+			t.Fatalf("expected error for missing public key, got: %v", err)
+		}
+	})
+
+	t.Run("signature mode rejects corrupt key", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "signature"
+		cfg.CashfreePayoutPublicKeyPEM = "-----BEGIN PUBLIC KEY-----\nNOT_A_VALID_KEY\n-----END PUBLIC KEY-----"
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "CF_PAYOUT_PUBLIC_KEY must be a valid PEM-encoded") {
+			t.Fatalf("expected error for corrupt public key, got: %v", err)
+		}
+	})
+
+	t.Run("signature mode accepts PKIX public key", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "signature"
+		cfg.CashfreePayoutPublicKeyPEM = pkixPEM
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected PKIX public key to pass, got: %v", err)
+		}
+	})
+
+	t.Run("signature mode accepts PKCS1 public key", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "signature"
+		cfg.CashfreePayoutPublicKeyPEM = pkcs1PEM
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected PKCS#1 public key to pass, got: %v", err)
+		}
+	})
+
+	t.Run("signature mode accepts X.509 certificate", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.CashfreePayoutAuthMode = "signature"
+		cfg.CashfreePayoutPublicKeyPEM = certPEM
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected X.509 certificate to pass, got: %v", err)
+		}
+	})
 }
 

@@ -2,12 +2,18 @@ package cashfree
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -288,5 +294,97 @@ func TestGetBatchTransferStatusV2(t *testing.T) {
 	}
 	if st.Status != "SUCCESS" || len(st.Transfers) != 1 || *st.Transfers[0].UTR != "UTR123456789" {
 		t.Fatalf("unexpected response: %+v", st)
+	}
+}
+
+func TestPayoutSignature_RSAOAEP_SHA1(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+
+	fixedTime := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	clientID := "CF_MOCK_CLIENT_ID_123"
+
+	cfg := PayoutConfig{
+		ClientID:     clientID,
+		ClientSecret: "mock_secret",
+		FundsourceID: "fund_01",
+		AuthMode:     "signature",
+		PublicKey:    &privKey.PublicKey,
+		Now:          func() time.Time { return fixedTime },
+	}
+
+	client := NewPayoutClient(cfg)
+
+	var capturedSignature string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSignature = r.Header.Get("X-Cf-Signature")
+		if capturedSignature == "" {
+			http.Error(w, "missing signature", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(BatchTransferStatusResponse{
+			BatchTransferID: "batch_1",
+			Status:          "SUCCESS",
+		})
+	}))
+	defer srv.Close()
+	client.SetBaseOverride(srv.URL)
+
+	_, err = client.GetBatchTransferStatus(context.Background(), "batch_1")
+	if err != nil {
+		t.Fatalf("unexpected error calling with signature: %v", err)
+	}
+
+	if capturedSignature == "" {
+		t.Fatal("expected X-Cf-Signature header to be set")
+	}
+
+	// Verify decryptability using RSA-OAEP with SHA-1
+	sigBytes, err := base64.StdEncoding.DecodeString(capturedSignature)
+	if err != nil {
+		t.Fatalf("signature is not valid base64: %v", err)
+	}
+
+	decryptedBytes, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, privKey, sigBytes, nil)
+	if err != nil {
+		t.Fatalf("failed to decrypt signature with RSA-OAEP SHA-1: %v", err)
+	}
+
+	expectedPlaintext := fmt.Sprintf("%s.%d", clientID, fixedTime.Unix())
+	if string(decryptedBytes) != expectedPlaintext {
+		t.Fatalf("decrypted signature mismatch: got %q, want %q", string(decryptedBytes), expectedPlaintext)
+	}
+}
+
+func TestPayoutClient_AuthRejected_401_403(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"message": "ip not whitelisted or invalid signature", "code": "ip_validation_failed"}`))
+			}))
+			defer srv.Close()
+
+			client := NewPayoutClient(PayoutConfig{
+				ClientID:     "test_cid",
+				ClientSecret: "test_sec",
+				FundsourceID: "fund_01",
+			})
+			client.SetBaseOverride(srv.URL)
+
+			_, err := client.GetBatchTransferStatus(context.Background(), "batch_1")
+			if err == nil {
+				t.Fatalf("expected error for status %d, got nil", code)
+			}
+			if !errors.Is(err, ErrPayoutAuthRejected) {
+				t.Fatalf("expected ErrPayoutAuthRejected, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "ip_validation_failed") {
+				t.Fatalf("expected response body error code in error message, got %v", err)
+			}
+		})
 	}
 }

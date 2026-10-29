@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,7 +18,21 @@ var (
 	ErrTokenAlreadyUsed  = domain.ErrTokenAlreadyUsed
 	ErrOTPLocked         = errors.New("postgres: otp locked")
 	ErrPushEndpointOwned = errors.New("postgres: push endpoint is already registered to a different tenant")
+	ErrRateLimited       = errors.New("postgres: otp rate limited")
 )
+
+// RateLimitError conveys the remaining duration until retry is permitted.
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("postgres: otp rate limited (retry after %v)", e.RetryAfter)
+}
+
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimited
+}
 
 type OTPRepo struct{ pool *pgxpool.Pool }
 
@@ -53,6 +68,109 @@ func (r *OTPRepo) Create(ctx context.Context, req *OTPRequest) error {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
 		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.Purpose, req.BatchID, req.Channel, req.Destination, req.CreatedAt,
 	).Scan(&req.ID)
+}
+
+// CreateWithQuota atomically checks rate limits and inserts an OTP row under a transaction-scoped advisory lock.
+// Using pg_advisory_xact_lock ensures full compatibility with transaction-pooling modes (e.g. PgBouncer),
+// auto-releasing on commit or rollback.
+func (r *OTPRepo) CreateWithQuota(ctx context.Context, req *OTPRequest, window time.Duration, maxPerWindow int, cooldownWindow time.Duration) error {
+	req.CreatedAt = time.Now().UTC()
+	if req.Purpose == "" {
+		req.Purpose = "login"
+	}
+	if req.Channel == "" {
+		req.Channel = "sms"
+	}
+	if req.Destination == "" {
+		req.Destination = req.Phone
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin otp quota tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Explicit ::text casts for PgBouncer / simple-protocol parameter binding:
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2::text, 0))`, req.Phone, req.Purpose)
+	if err != nil {
+		return fmt.Errorf("acquire otp advisory lock: %w", err)
+	}
+
+	now := time.Now().UTC()
+
+	// 1. Enforce cooldown window
+	if cooldownWindow > 0 {
+		cooldownSince := now.Add(-cooldownWindow)
+		var lastCreatedAt time.Time
+		err := tx.QueryRow(ctx, `
+			SELECT created_at FROM otp_requests
+			WHERE phone = $1::text
+			  AND ($2::text = '' OR purpose = $2::text)
+			  AND created_at >= $3
+			ORDER BY created_at DESC LIMIT 1`, req.Phone, req.Purpose, cooldownSince).Scan(&lastCreatedAt)
+		if err == nil {
+			remaining := cooldownWindow - now.Sub(lastCreatedAt)
+			if remaining < time.Second {
+				remaining = time.Second
+			}
+			return &RateLimitError{RetryAfter: remaining}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check otp cooldown: %w", err)
+		}
+	}
+
+	// 2. Enforce window quota
+	since := now.Add(-window)
+	var count int
+	var oldestInWindow time.Time
+	rows, err := tx.Query(ctx, `
+		SELECT created_at FROM otp_requests
+		WHERE phone = $1::text
+		  AND ($2::text = '' OR purpose = $2::text)
+		  AND created_at >= $3
+		ORDER BY created_at ASC`, req.Phone, req.Purpose, since)
+	if err != nil {
+		return fmt.Errorf("query otp window count: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ca time.Time
+		if err := rows.Scan(&ca); err != nil {
+			return fmt.Errorf("scan otp created_at: %w", err)
+		}
+		if count == 0 {
+			oldestInWindow = ca
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate otp created_at: %w", err)
+	}
+
+	if count >= maxPerWindow {
+		remaining := window - now.Sub(oldestInWindow)
+		if remaining < time.Second {
+			remaining = time.Second
+		}
+		return &RateLimitError{RetryAfter: remaining}
+	}
+
+	// 3. Insert OTP row
+	err = tx.QueryRow(ctx, `
+		INSERT INTO otp_requests (phone, otp_hash, attempts, expires_at, used, purpose, batch_id, channel, destination, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		req.Phone, req.OTPHash, req.Attempts, req.ExpiresAt, req.Used, req.Purpose, req.BatchID, req.Channel, req.Destination, req.CreatedAt,
+	).Scan(&req.ID)
+	if err != nil {
+		return fmt.Errorf("insert otp request: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit otp quota tx: %w", err)
+	}
+	return nil
 }
 
 func (r *OTPRepo) LatestUnused(ctx context.Context, phone string) (*OTPRequest, error) {

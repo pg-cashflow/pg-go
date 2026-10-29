@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -117,6 +118,15 @@ func (c *PayoutClient) RequestBatchTransfer(ctx context.Context, req BatchTransf
 		return nil, fmt.Errorf("%w: %s", ErrBeneficiaryNotFound, string(bodyBytes))
 	}
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
+			"status", resp.StatusCode,
+			"path", resp.Request.URL.Path,
+			"body", string(bodyBytes),
+		)
+		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cashfree payout: batch transfer failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
@@ -160,6 +170,15 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 		return nil, fmt.Errorf("%w: HTTP 404: %s", ErrBatchNotFound, string(bodyBytes))
 	}
 
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
+			"status", resp.StatusCode,
+			"path", resp.Request.URL.Path,
+			"body", string(bodyBytes),
+		)
+		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cashfree payout: get batch status failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}
@@ -197,6 +216,15 @@ func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string)
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: read transfer status response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
+			"status", resp.StatusCode,
+			"path", resp.Request.URL.Path,
+			"body", string(bodyBytes),
+		)
+		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

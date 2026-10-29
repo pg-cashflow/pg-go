@@ -269,6 +269,15 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	// Step 3: Dispatch batch to Cashfree Transfers V2
 	resp, err := d.client.RequestBatchTransfer(ctx, req)
 	if err != nil {
+		if errors.Is(err, cashfree.ErrPayoutAuthRejected) {
+			slog.Error("CASHFREE BATCH TRANSFER AUTHENTICATION REJECTED - CONFIGURATION ERROR (NON-RETRYABLE UNTIL CONFIG FIXED)",
+				"batch_id", batch.ID,
+				"err", err,
+			)
+			// Non-retryable configuration error: leave batch in approved/pending_dispatch, do not alter batch or ledger status
+			return err
+		}
+
 		if errors.Is(err, cashfree.ErrDispatchUnknown) {
 			slog.Error("CASHFREE BATCH TRANSFER DISPATCH AMBIGUOUS - TRANSITIONING TO dispatch_unknown",
 				"batch_id", batch.ID,

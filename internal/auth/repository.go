@@ -43,6 +43,7 @@ type UserRepository interface {
 // OTPRepository is the subset of postgres.OTPRepo used by auth.
 type OTPRepository interface {
 	Create(ctx context.Context, req *postgres.OTPRequest) error
+	CreateWithQuota(ctx context.Context, req *postgres.OTPRequest, window time.Duration, max int, cooldown time.Duration) error
 	LatestUnused(ctx context.Context, phone string) (*postgres.OTPRequest, error)
 	LatestUnusedByPurpose(ctx context.Context, phone string, purpose string, batchID *uuid.UUID) (*postgres.OTPRequest, error)
 	IncrementAttempts(ctx context.Context, id uuid.UUID) error

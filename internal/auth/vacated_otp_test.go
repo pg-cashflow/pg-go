@@ -19,6 +19,9 @@ type stubOTP struct {
 }
 
 func (s *stubOTP) Create(context.Context, *postgres.OTPRequest) error { return nil }
+func (s *stubOTP) CreateWithQuota(context.Context, *postgres.OTPRequest, time.Duration, int, time.Duration) error {
+	return nil
+}
 func (s *stubOTP) LatestUnused(context.Context, string) (*postgres.OTPRequest, error) {
 	if s.req == nil {
 		return nil, pgx.ErrNoRows

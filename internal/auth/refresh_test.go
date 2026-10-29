@@ -583,6 +583,13 @@ func TestRotateRefreshToken_TenantStatus(t *testing.T) {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("want %v, got %v", tc.wantErr, err)
 				}
+				if tc.status == domain.TenantStatusVacated {
+					// Verify that token family was actively revoked
+					tokens, _ := refreshRepo.ListActiveSessions(ctx, user.ID)
+					if len(tokens) != 0 {
+						t.Fatalf("expected all sessions in family to be revoked, found %d active", len(tokens))
+					}
+				}
 				return
 			}
 			if err != nil {
@@ -590,4 +597,102 @@ func TestRotateRefreshToken_TenantStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRotateRefreshToken_Vacated_GraceWindowAndPreCheck(t *testing.T) {
+	ctx := context.Background()
+	jwtSecret := "jwt-secret-very-secure-1234567890"
+
+	t.Run("pre-check revokes family", func(t *testing.T) {
+		refreshRepo := newMemoryRefreshTokenRepo()
+		userRepo := &memoryUserRepo{users: make(map[uuid.UUID]*domain.User)}
+		tenantID := uuid.New()
+		propID := uuid.New()
+		user := &domain.User{
+			ID:           uuid.New(),
+			Phone:        "+919876543210",
+			Role:         domain.RoleTenant,
+			PropertyID:   &propID,
+			TenantID:     &tenantID,
+			TokenVersion: 1,
+		}
+		_ = userRepo.Create(ctx, user)
+		tenants := &stubTenantsAuth{byID: map[uuid.UUID]*domain.Tenant{
+			tenantID: {ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive},
+		}}
+		svc := NewService(nil, userRepo, tenants, nil, nil, "otp-secret", jwtSecret)
+		svc.SetRefreshTokenRepo(refreshRepo)
+
+		_, refToken, err := svc.IssueSession(ctx, user)
+		if err != nil {
+			t.Fatalf("IssueSession: %v", err)
+		}
+
+		// Tenant is marked vacated before rotation attempt:
+		tenants.byID[tenantID].Status = domain.TenantStatusVacated
+
+		_, _, _, err = svc.RotateRefreshToken(ctx, refToken)
+		if !errors.Is(err, ErrTenantVacated) {
+			t.Fatalf("want ErrTenantVacated, got %v", err)
+		}
+
+		// Verify family is revoked:
+		tokens, _ := refreshRepo.ListActiveSessions(ctx, user.ID)
+		if len(tokens) != 0 {
+			t.Fatalf("expected all sessions in family to be revoked in pre-check, found %d active", len(tokens))
+		}
+	})
+
+	t.Run("grace window revokes family", func(t *testing.T) {
+		refreshRepo := newMemoryRefreshTokenRepo()
+		userRepo := &memoryUserRepo{users: make(map[uuid.UUID]*domain.User)}
+		tenantID := uuid.New()
+		propID := uuid.New()
+		user := &domain.User{
+			ID:           uuid.New(),
+			Phone:        "+919876543210",
+			Role:         domain.RoleTenant,
+			PropertyID:   &propID,
+			TenantID:     &tenantID,
+			TokenVersion: 1,
+		}
+		_ = userRepo.Create(ctx, user)
+		tenants := &stubTenantsAuth{byID: map[uuid.UUID]*domain.Tenant{
+			tenantID: {ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive},
+		}}
+		svc := NewService(nil, userRepo, tenants, nil, nil, "otp-secret", jwtSecret)
+		svc.SetRefreshTokenRepo(refreshRepo)
+
+		_, refToken, err := svc.IssueSession(ctx, user)
+		if err != nil {
+			t.Fatalf("IssueSession: %v", err)
+		}
+
+		// First rotation succeeds
+		_, nextRefToken, _, err := svc.RotateRefreshToken(ctx, refToken)
+		if err != nil {
+			t.Fatalf("RotateRefreshToken: %v", err)
+		}
+
+		// Now mark tenant vacated
+		tenants.byID[tenantID].Status = domain.TenantStatusVacated
+
+		// Replay old token within 15s grace window triggers grace-window branch, which must revoke family:
+		_, _, _, err = svc.RotateRefreshToken(ctx, refToken)
+		if !errors.Is(err, ErrTenantVacated) {
+			t.Fatalf("want ErrTenantVacated in grace window, got %v", err)
+		}
+
+		// Verify family is revoked (successor token also revoked):
+		tokens, _ := refreshRepo.ListActiveSessions(ctx, user.ID)
+		if len(tokens) != 0 {
+			t.Fatalf("expected all sessions in family to be revoked in grace window, found %d active", len(tokens))
+		}
+
+		// Re-attempting with successor token also fails:
+		_, _, _, err = svc.RotateRefreshToken(ctx, nextRefToken)
+		if err == nil {
+			t.Fatal("expected failure rotating with successor after family revocation")
+		}
+	})
 }
