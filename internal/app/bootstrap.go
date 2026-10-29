@@ -199,7 +199,12 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
-	cfCfg := cashfree.Config{AppID: cfg.CashfreeAppID, SecretKey: cfg.CashfreeSecretKey, Env: cfg.CashfreeEnv}
+	cfCfg := cashfree.Config{
+		AppID:      cfg.CashfreeAppID,
+		SecretKey:  cfg.CashfreeSecretKey,
+		Env:        cfg.CashfreeEnv,
+		APIVersion: cfg.WebhookAPIVersion,
+	}
 	if strings.TrimSpace(cfg.FrontendURL) != "" {
 		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/tenant/pay-return?order_id={order_id}"
 	} else {

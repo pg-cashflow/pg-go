@@ -1,7 +1,8 @@
 # ADR 004: Tenant Identity Onboarding via Cashfree Secure ID (DigiLocker Direct API) & Secure QR Fallback
 
 ## Status
-Accepted
+Superseded in part by Migration 077 (Aadhaar OTP + Smart OCR Manual Review + UIDAI Secure QR)
+*Note: DigiLocker direct redirection has been retired in favor of Cashfree Offline Aadhaar OTP, UIDAI Secure QR offline parsing, and single-document Smart OCR with manual review queue (Migration 077).*
 
 ## Context
 Tenants must verify identity (Aadhaar) during onboarding before room allocation. Calling UIDAI directly as an AUA/KUA is legally closed to a startup.

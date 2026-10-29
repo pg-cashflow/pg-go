@@ -2,7 +2,7 @@
 
 **Rev 14.** HTTP source of truth for [pg-react](https://github.com/pg-cashflow/pg-react). Updated through ADR-029 (Tenant Isolation Architecture, Fail-Closed Security, and Complete Route Parity). Route list strictly matches `NewRouter` in `internal/api/router.go`. TypeScript field shapes live in pg-react `packages/types/index.ts` (mirror of Go domain types; if they diverge, fix types to match this API).
 
-**Out of scope:** scheduled CLIs (`billing-cycle`, `reminder`, `cashfree-poll`, `digilocker-reconcile`, `financial-summary`, `gamification-cycle`, `kyc-expiry`, `kpi-snapshot`, `daily-rollup`) and env/runbooks — see [README.md](README.md).
+**Out of scope:** scheduled CLIs (`billing-cycle`, `reminder`, `cashfree-poll`, `financial-summary`, `gamification-cycle`, `kyc-expiry`, `kpi-snapshot`, `daily-rollup`) and env/runbooks — see [README.md](README.md).
 
 ## Base URL
 
