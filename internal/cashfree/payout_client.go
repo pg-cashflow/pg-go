@@ -16,6 +16,8 @@ var (
 	ErrDispatchUnknown = errors.New("cashfree payout: batch dispatch ambiguous (5xx or transport failure)")
 	// ErrBeneficiaryNotFound is returned when Cashfree reports that the referenced beneficiary does not exist (404).
 	ErrBeneficiaryNotFound = errors.New("cashfree payout: beneficiary not found")
+	// ErrBatchNotFound is returned when Cashfree reports that the referenced batch transfer does not exist (404).
+	ErrBatchNotFound = errors.New("cashfree payout: batch not found")
 )
 
 // PayoutConfig holds configuration for Cashfree Transfers V2 (Payouts).

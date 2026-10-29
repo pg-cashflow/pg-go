@@ -240,7 +240,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Fatalf("expected verified payee to have non-nil verified_by")
 		}
 
-		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours', verified_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID); err != nil {
 			t.Fatalf("age payee: %v", err)
 		}
 	})
@@ -357,6 +357,9 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 		if resp.PayoutItem == nil || resp.PayoutItem.AmountPaise != 750000 {
 			t.Errorf("expected payout item 750000, got %v", resp.PayoutItem)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours', verified_at = NOW() - INTERVAL '25 hours' WHERE property_id = $1`, propID); err != nil {
+			t.Fatalf("age all payees: %v", err)
 		}
 	})
 

@@ -27,8 +27,9 @@ type PayoutDispatcher struct {
 	repo          *postgres.PayoutRepo
 	client        *cashfree.PayoutClient
 	fundsourceID  string
-	encryptionKey []byte
-	keyRing       *crypto.KeyRing
+	encryptionKey       []byte
+	keyRing             *crypto.KeyRing
+	approvalSigningKeys map[string][]byte
 }
 
 // NewPayoutDispatcher creates a new PayoutDispatcher.
@@ -48,6 +49,11 @@ func NewPayoutDispatcher(repo *postgres.PayoutRepo, client *cashfree.PayoutClien
 // SetKeyRing sets the versioned key ring for decrypting payee account numbers.
 func (d *PayoutDispatcher) SetKeyRing(kr *crypto.KeyRing) {
 	d.keyRing = kr
+}
+
+// SetApprovalSigningKeys sets the dedicated HMAC signing keys for verifying approved batch snapshots.
+func (d *PayoutDispatcher) SetApprovalSigningKeys(keys map[string][]byte) {
+	d.approvalSigningKeys = keys
 }
 
 // DispatchBatch processes an outbox-triggered batch transfer against Cashfree Transfers V2.
@@ -92,22 +98,23 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
 
-	// Step 1: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
-	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
-		statusResp, err := d.client.GetBatchTransferStatus(ctx, batchTransferID)
-		if err == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
-			slog.Info("cashfree batch transfer recovered via status poll",
-				"batch_id", batch.ID,
-				"cf_batch_id", statusResp.CFBatchTransferID,
-				"status", statusResp.Status,
-			)
-			// Successfully queried status: reconcile items and return
-			return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+	// Verification Gate: Verify immutable approval snapshot and HMAC signature before outbound dispatch
+	var approvedItemsByID map[uuid.UUID]domain.ApprovedItemSnapshot
+	if len(d.approvalSigningKeys) > 0 {
+		snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, d.approvalSigningKeys)
+		if err != nil {
+			return fmt.Errorf("payout dispatcher: approval integrity failed: %w", err)
 		}
-		// If query fails or returns not found, proceed to normal dispatch below
+		if len(snapshot.Items) != len(items) {
+			return fmt.Errorf("payout dispatcher: approved snapshot has %d items, batch has %d items", len(snapshot.Items), len(items))
+		}
+		approvedItemsByID = make(map[uuid.UUID]domain.ApprovedItemSnapshot, len(snapshot.Items))
+		for _, appItem := range snapshot.Items {
+			approvedItemsByID[appItem.ItemID] = appItem
+		}
 	}
 
-	// Step 2: Deduplicate payees and ensure all beneficiaries are registered with derived IDs
+	// Step 1: Deduplicate and verify all payees locally before any provider interaction
 	uniquePayees := make(map[uuid.UUID]*domain.PayoutPayee)
 	for _, it := range items {
 		if _, exists := uniquePayees[it.PayeeID]; exists {
@@ -123,35 +130,120 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		uniquePayees[it.PayeeID] = payee
 	}
 
-	// Concurrent bounded beneficiary registration (max 8 concurrent workers)
+	// Full TOCTOU Protection: Ensure current payee records and item instructions have not been altered since owner approval
+	if approvedItemsByID != nil {
+		for _, it := range items {
+			appItem, ok := approvedItemsByID[it.ID]
+			if !ok {
+				return fmt.Errorf("payout dispatcher: item %s not present in approved snapshot", it.ID)
+			}
+			if it.PayeeID != appItem.PayeeID {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: item %s payee mismatch (approved: %s, current: %s)",
+					it.ID, appItem.PayeeID, it.PayeeID)
+			}
+			if it.AmountPaise != appItem.AmountPaise {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: item %s amount mismatch (approved: %d, current: %d)",
+					it.ID, appItem.AmountPaise, it.AmountPaise)
+			}
+			if it.ReferenceNumber != appItem.ReferenceNumber {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: item %s reference mismatch (approved: %q, current: %q)",
+					it.ID, appItem.ReferenceNumber, it.ReferenceNumber)
+			}
+
+			payee := uniquePayees[it.PayeeID]
+			if payee.AccountNumberHash != appItem.AccountNumberHash {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: payee %s account hash changed since approval", payee.ID)
+			}
+			currentIFSC := ""
+			if payee.IFSC != nil {
+				currentIFSC = strings.ToUpper(strings.TrimSpace(*payee.IFSC))
+			}
+			if currentIFSC != appItem.IFSC {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: payee %s IFSC changed since approval (approved: %s, current: %s)",
+					payee.ID, appItem.IFSC, currentIFSC)
+			}
+			currentVPA := ""
+			if payee.UPIVPA != nil {
+				currentVPA = strings.ToLower(strings.TrimSpace(*payee.UPIVPA))
+			}
+			if currentVPA != appItem.UPIVPA {
+				return fmt.Errorf("payout dispatcher: TOCTOU detected: payee %s UPI VPA changed since approval (approved: %s, current: %s)",
+					payee.ID, appItem.UPIVPA, currentVPA)
+			}
+		}
+	}
+
+	// Step 2: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
+	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
+		statusResp, err := d.client.GetBatchTransferStatus(ctx, batchTransferID)
+		if err == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+			slog.Info("cashfree batch transfer recovered via status poll",
+				"batch_id", batch.ID,
+				"cf_batch_id", statusResp.CFBatchTransferID,
+				"status", statusResp.Status,
+			)
+			// Successfully queried status: reconcile items and return
+			return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+		}
+
+		// If the batch had an ambiguous prior dispatch (dispatch_unknown), we can only proceed
+		// if the provider definitively confirms the batch does not exist (ErrBatchNotFound).
+		// Any other error (network timeout, 5xx) leaves prior execution unresolved.
+		if batch.Status == domain.BatchDispatchUnknown {
+			if !errors.Is(err, cashfree.ErrBatchNotFound) {
+				return fmt.Errorf("payout dispatcher: batch %s has unresolved prior dispatch; reconciliation required: %w", batch.ID, err)
+			}
+		}
+
+		// For batches currently in processing (e.g. freshly initiated in local DB), a 404/ErrBatchNotFound
+		// is expected since the batch has not yet been dispatched to Cashfree. If the status lookup failed
+		// with a non-404 error (e.g. client auth/network transport failure), fail closed before attempting dispatch.
+		if batch.Status == domain.BatchProcessing && err != nil && !errors.Is(err, cashfree.ErrBatchNotFound) {
+			return fmt.Errorf("payout dispatcher: cannot verify batch status before dispatch: %w", err)
+		}
+	}
+
+	// Step 3: Register / verify beneficiaries with Cashfree Transfers V2
+	// Fail closed: ALL beneficiaries must be verified before a single transfer is submitted.
 	var g errgroup.Group
 	g.SetLimit(8)
 	for _, payee := range uniquePayees {
 		p := payee
 		beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
 		g.Go(func() error {
-			if bErr := d.ensureBeneficiary(ctx, p, beneID); bErr != nil {
-				slog.Warn("payout dispatcher: proactive beneficiary registration warning",
-					"payee_id", p.ID,
-					"beneficiary_id", beneID,
-					"err", bErr,
-				)
+			if err := d.ensureBeneficiary(ctx, p, beneID); err != nil {
+				return fmt.Errorf("register beneficiary %s: %w", beneID, err)
 			}
 			return nil
 		})
 	}
-	_ = g.Wait()
+	if err := g.Wait(); err != nil {
+		return fmt.Errorf("payout dispatcher: refusing batch dispatch: %w", err)
+	}
 
 	transferEntries := make([]cashfree.BatchTransferEntry, 0, len(items))
 	for _, it := range items {
 		payee := uniquePayees[it.PayeeID]
-		beneID := cashfree.DeriveBeneficiaryID(payee.ID, payee.AccountNumberHash)
-
+		accountHash := payee.AccountNumberHash
+		amountPaise := it.AmountPaise
 		mode := "banktransfer"
 		if payee.UPIVPA != nil && strings.TrimSpace(*payee.UPIVPA) != "" {
 			mode = "upi"
 		}
 
+		// Bind transfer parameters strictly to immutable approved snapshot details
+		if approvedItemsByID != nil {
+			appItem := approvedItemsByID[it.ID]
+			accountHash = appItem.AccountNumberHash
+			amountPaise = appItem.AmountPaise
+			if appItem.UPIVPA != "" {
+				mode = "upi"
+			} else {
+				mode = "banktransfer"
+			}
+		}
+
+		beneID := cashfree.DeriveBeneficiaryID(it.PayeeID, accountHash)
 		remarks := strings.TrimSpace(fmt.Sprintf("%s %s", it.Purpose, it.ReferenceNumber))
 		if len(remarks) > 70 {
 			remarks = remarks[:70]
@@ -159,7 +251,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
 			TransferID:      fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", "")),
-			TransferAmount:  json.Number(cashfree.FormatPaiseToRupees(it.AmountPaise)),
+			TransferAmount:  json.Number(cashfree.FormatPaiseToRupees(amountPaise)),
 			TransferMode:    mode,
 			FundsourceID:    d.fundsourceID,
 			TransferRemarks: remarks,
@@ -194,11 +286,12 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 				p := payee
 				beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
 				rg.Go(func() error {
-					_ = d.ensureBeneficiary(ctx, p, beneID)
-					return nil
+					return d.ensureBeneficiary(ctx, p, beneID)
 				})
 			}
-			_ = rg.Wait()
+			if err := rg.Wait(); err != nil {
+				return fmt.Errorf("payout dispatcher: refusing transfer retry: beneficiary validation failed: %w", err)
+			}
 
 			retryResp, retryErr := d.client.RequestBatchTransfer(ctx, req)
 			if retryErr != nil {

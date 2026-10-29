@@ -110,7 +110,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	if _, err := payoutRepo.VerifyPayee(ctx, payee.ID, propID, ownerID); err != nil {
 		t.Fatalf("verify payee: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours', verified_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payee.ID); err != nil {
 		t.Fatalf("age payee: %v", err)
 	}
 
@@ -144,6 +144,12 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	_, _ = payoutRepo.ApproveBatch(ctx, batch.ID, ownerID)
 	_, _, _ = payoutRepo.InitiateBatchTransferTx(ctx, batch.ID)
 
+	cfTr1 := fmt.Sprintf("cf_tr_1_%s", uuid.New().String()[:8])
+	cfTr2 := fmt.Sprintf("cf_tr_2_%s", uuid.New().String()[:8])
+	cfTr3 := fmt.Sprintf("cf_tr_3_%s", uuid.New().String()[:8])
+	cfTr4 := fmt.Sprintf("cf_tr_4_%s", uuid.New().String()[:8])
+	cfTr5 := fmt.Sprintf("cf_tr_5_%s", uuid.New().String()[:8])
+
 	t.Run("Invalid_Signature_Rejected_401", func(t *testing.T) {
 		body := []byte(`{"event":"TRANSFER_SUCCESS"}`)
 		ts := fmt.Sprintf("%d", time.Now().Unix())
@@ -166,7 +172,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:   fmt.Sprintf("pgo_%s", itemA.ID),
-			CFTransferID: "cf_tr_111",
+			CFTransferID: cfTr1,
 			Status:       "SUCCESS",
 			StatusCode:   "COMPLETED",
 			UTR:          ptr("UTR88888888"),
@@ -214,8 +220,8 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		if err := pool.QueryRow(ctx, `
 			SELECT COUNT(*) FROM processed_webhook_events
-			WHERE provider = 'cashfree' AND event_type = 'TRANSFER_SUCCESS' AND provider_reference_id = 'cf_tr_111'
-		`).Scan(&processedCount); err != nil {
+			WHERE provider = 'cashfree' AND event_type = 'TRANSFER_SUCCESS' AND provider_reference_id = $1
+		`, cfTr1).Scan(&processedCount); err != nil {
 			t.Fatalf("count processed_webhook_events: %v", err)
 		}
 		if processedCount != 1 {
@@ -231,7 +237,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:        fmt.Sprintf("pgo_%s", itemB.ID),
-			CFTransferID:      "cf_tr_222",
+			CFTransferID:      cfTr2,
 			Status:            "FAILED",
 			StatusCode:        "BENE_BANK_DECLINED",
 			StatusDescription: "Beneficiary bank declined transfer",
@@ -277,7 +283,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:        fmt.Sprintf("pgo_%s", itemA.ID),
-			CFTransferID:      "cf_tr_111",
+			CFTransferID:      cfTr1,
 			Status:            "REVERSED",
 			StatusDescription: "Bank returned funds due to closed account",
 		}
@@ -339,7 +345,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:        fmt.Sprintf("pgo_%s", itemC.ID),
-			CFTransferID:      "cf_tr_333",
+			CFTransferID:      cfTr3,
 			Status:            "REVERSED",
 			StatusDescription: "Bank reversal forcing ledger outbox fallback",
 		}
@@ -408,7 +414,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:        fmt.Sprintf("pgo_%s", itemD.ID),
-			CFTransferID:      "cf_tr_444",
+			CFTransferID:      cfTr4,
 			Status:            "REVERSED",
 			StatusDescription: "Bank reversal with failing outbox",
 		}
@@ -462,7 +468,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		data := PayoutWebhookData{
 			TransferID:        fmt.Sprintf("pgo_%s", itemE.ID),
-			CFTransferID:      "cf_tr_555",
+			CFTransferID:      cfTr5,
 			Status:            "SUCCESS",
 			StatusCode:        "COMPLETED",
 			UTR:               ptr("UTR99999999"),

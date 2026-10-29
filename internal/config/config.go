@@ -74,6 +74,10 @@ type Config struct {
 	// Must be set independently via PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET.
 	// In production this field is required; the server refuses to start without it (REQ-SEC-008).
 	PayoutExportChecksumSecret string
+	// PayoutApprovalSecret is the HMAC-SHA256 secret dedicated to signing immutable payout approval snapshots.
+	PayoutApprovalSecret string
+	// PayoutApprovalKeys holds versioned approval signing keys for rotation (version -> secret).
+	PayoutApprovalKeys map[string]string
 	// PayoutEncryptionSecret is dedicated to encrypting sensitive beneficiary bank details.
 	// In production, must be independently set and must not fall back to JWTSecret.
 	PayoutEncryptionSecret string
@@ -136,12 +140,16 @@ func Load() (*Config, error) {
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
+		PayoutApprovalSecret:              envFirst("PAYOUT_APPROVAL_SECRET", "CF_PAYOUT_APPROVAL_SECRET"),
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
 		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
 		MetricsSecret:                     strings.TrimSpace(os.Getenv("METRICS_SECRET")),
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)
+	}
+	if keysStr := os.Getenv("PAYOUT_APPROVAL_KEYS"); keysStr != "" {
+		cfg.PayoutApprovalKeys = parseVersionedApprovalKeys(keysStr)
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
 		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)
@@ -263,6 +271,21 @@ func parseVersionedSecrets16(s string) map[int16]string {
 			continue
 		}
 		out[int16(ver)] = parts[1]
+	}
+	return out
+}
+
+func parseVersionedApprovalKeys(s string) map[string]string {
+	out := make(map[string]string)
+	for _, p := range strings.Split(s, ",") {
+		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.TrimSpace(parts[1])
+			if k != "" && v != "" {
+				out[k] = v
+			}
+		}
 	}
 	return out
 }

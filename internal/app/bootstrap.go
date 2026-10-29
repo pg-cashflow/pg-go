@@ -384,6 +384,21 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		}
 	}
 
+	approvalSecret := cfg.PayoutApprovalSecret
+	if approvalSecret == "" {
+		approvalSecret = cfg.PayoutExportChecksumSecret
+	}
+	if approvalSecret == "" {
+		approvalSecret = cfg.JWTSecret
+	}
+	payoutApprovalSigningKey := []byte(approvalSecret)
+	approvalSigningKeys := map[string][]byte{
+		"v1": payoutApprovalSigningKey,
+	}
+	for kid, sec := range cfg.PayoutApprovalKeys {
+		approvalSigningKeys[kid] = []byte(sec)
+	}
+
 	var payoutDispatcher *finance.PayoutDispatcher
 	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
 		payoutClient := cashfree.NewPayoutClient(cashfree.PayoutConfig{
@@ -394,6 +409,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		})
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		payoutDispatcher.SetKeyRing(payoutKeyRing)
+		payoutDispatcher.SetApprovalSigningKeys(approvalSigningKeys)
 		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
 	} else if cfg.CashfreePayoutAutoDispatchEnabled {
 		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
@@ -457,6 +473,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		PayoutRepo:                  payoutRepo,
 		PayoutDispatcher:            payoutDispatcher,
 		PayoutChecksumSecret:        cfg.PayoutExportChecksumSecret,
+		PayoutApprovalSigningKey:    payoutApprovalSigningKey,
+		PayoutApprovalKeys:          approvalSigningKeys,
 		PayoutEncryptionKey:         payoutEncryptionKey,
 		PayoutKeyRing:               payoutKeyRing,
 		CashfreePayoutWebhookSecret: cfg.CashfreePayoutWebhookSecret,

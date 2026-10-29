@@ -556,7 +556,7 @@ func TestVerifyFirebaseAndIssueToken_OwnerWithoutEmailDeniedRelink(t *testing.T)
 	attackerUID := "uid-attacker"
 	pid := uuid.New()
 
-	users := &stubUserRepo{
+	users := &stubUsers{
 		byPhone: map[string]*domain.User{
 			phone: {
 				ID:           uuid.New(),

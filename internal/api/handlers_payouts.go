@@ -685,10 +685,26 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		return
 	}
 
-	approvedBatch, err := repo.ApproveBatch(c.Request.Context(), batchID, uid)
-	if err != nil {
-		respondErr(c, err)
-		return
+	signingKey, keyID := h.getPayoutApprovalSigningKey()
+	var approvedBatch *domain.PayoutBatch
+	if len(signingKey) >= domain.MinApprovalSigningKeyLength {
+		var snapshot *domain.PayoutApprovalSnapshot
+		approvedBatch, snapshot, err = repo.ApproveBatchSigned(c.Request.Context(), pid, batchID, uid, signingKey, keyID)
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
+		_ = snapshot
+	} else {
+		if h.AppEnv == "production" {
+			respondErr(c, fmt.Errorf("payout approval signing key not configured"))
+			return
+		}
+		approvedBatch, err = repo.ApproveBatch(c.Request.Context(), batchID, uid)
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
 	}
 
 	slog.Info("payout batch approved",
@@ -901,6 +917,20 @@ func (h *Handlers) getChecksumSecret() string {
 	// Neither secret is configured — the server was started with a broken config.
 	// Panic immediately so the error is never silently swallowed.
 	panic("getChecksumSecret: neither PayoutChecksumSecret nor JWTSecret is configured")
+}
+
+// getPayoutApprovalSigningKey returns the dedicated HMAC secret and keyID used to sign immutable payout approval snapshots.
+func (h *Handlers) getPayoutApprovalSigningKey() ([]byte, string) {
+	if len(h.PayoutApprovalSigningKey) >= domain.MinApprovalSigningKeyLength {
+		return h.PayoutApprovalSigningKey, "v1"
+	}
+	if len(h.PayoutChecksumSecret) >= domain.MinApprovalSigningKeyLength {
+		return []byte(h.PayoutChecksumSecret), "v1"
+	}
+	if len(h.JWTSecret) >= domain.MinApprovalSigningKeyLength {
+		return []byte(h.JWTSecret), "v1"
+	}
+	return nil, ""
 }
 
 

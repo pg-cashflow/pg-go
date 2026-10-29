@@ -156,6 +156,10 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 		return nil, fmt.Errorf("cashfree payout: read batch status response: %w", err)
 	}
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: HTTP 404: %s", ErrBatchNotFound, string(bodyBytes))
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cashfree payout: get batch status failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
 	}

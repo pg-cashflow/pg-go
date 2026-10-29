@@ -364,7 +364,7 @@ func TestVerifyStepUpOTP_ConcurrentRaceExactlyOneWins(t *testing.T) {
 			switch {
 			case err == nil:
 				successCount++
-			case errors.Is(err, ErrInvalidOTP):
+			case errors.Is(err, ErrInvalidOTP), errors.Is(err, ErrOTPLocked):
 				invalidCount++
 			default:
 				otherErrors++

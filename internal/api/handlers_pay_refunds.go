@@ -561,21 +561,23 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
 
-		var apiErr *cashfree.APIError
-		isDefinite4xx := errors.As(cfErr, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
-
-		if isDefinite4xx {
+		if ClassifyRefundGatewayError(cfErr) == RefundDefinitiveFailure {
 			rfRow.Status = "failed"
 			// Use context.WithoutCancel so client disconnect does not abort cleanup
 			dbCtx := context.WithoutCancel(ctx)
 			if cleanupErr := runner.CleanupFailedRefund(dbCtx, rfRow); cleanupErr != nil {
 				slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
 			}
-			respondErr(c, clientErr(http.StatusBadGateway, fmt.Sprintf("gateway refund rejected: %s", apiErr.Error())))
+			var apiErr *cashfree.APIError
+			errMsg := cfErr.Error()
+			if errors.As(cfErr, &apiErr) {
+				errMsg = apiErr.Error()
+			}
+			respondErr(c, clientErr(http.StatusBadGateway, fmt.Sprintf("gateway refund rejected: %s", errMsg)))
 			return
 		}
 
-		// Ambiguous gateway failure (timeout, dropped connection, 5xx, or 429).
+		// Ambiguous gateway failure (timeout, dropped connection, 5xx, 429, or 409 conflict).
 		// Keep refund row in 'initiated' status and retain pre-allocated dues.
 		// Return 202 Accepted; the reconciler job or webhook will finalize the status.
 		c.JSON(http.StatusAccepted, gin.H{
