@@ -441,8 +441,11 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		if resp.Status != "succeeded" {
 			t.Errorf("expected status 'succeeded', got %s", resp.Status)
 		}
-		if resp.RefundReference == nil || len(*resp.RefundReference) != 35 {
-			t.Errorf("expected 35-character refund reference, got %v", resp.RefundReference)
+		if resp.RefundReference == nil || len(*resp.RefundReference) != 34 {
+			t.Errorf("expected 34-character refund reference, got %v", resp.RefundReference)
+		}
+		if resp.RefundReference != nil && strings.Contains(*resp.RefundReference, "_") {
+			t.Errorf("expected alphanumeric refund reference without underscore, got %s", *resp.RefundReference)
 		}
 		if cfClient.refundCalls != 1 {
 			t.Errorf("expected 1 call to Cashfree, got %d", cfClient.refundCalls)

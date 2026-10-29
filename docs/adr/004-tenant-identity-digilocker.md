@@ -34,9 +34,9 @@ Tenants must verify identity (Aadhaar) during onboarding before room allocation.
    - **Network-Before-Transaction Invariant & Accepted Trade-off**: The Cashfree API call (`CreateDigiLockerLink`) occurs *before* opening the DB transaction so no locks are held across network I/O.
      - **Accepted Trade-off (Orphaned Vendor Session)**: If the Cashfree call succeeds but the subsequent DB transaction aborts (e.g. lock timeout, database partition, commit error), an orphaned session exists on Cashfree's servers with no corresponding database record. This is explicitly accepted because: (1) Cashfree links auto-expire after their short TTL (~10 min), (2) the tenant's retry generates a brand-new `vendor_reference_id` and fresh link, and (3) holding row locks across external HTTP requests poses a severe connection-pool exhaustion and deadlock risk that far outweighs an orphaned vendor session.
 
-4. **Webhook & Callback Idempotency**:
+4. **Webhook & Callback Idempotency & Retirement Stub**:
    - Cashfree webhook deliveries can be duplicated.
-   - The handler relies on `vendor_reference_id UNIQUE` with an explicit upsert-or-noop pattern: if the event is already applied, return `200 OK` without triggering duplicate audit events or state transitions.
+   - **Retirement Stub**: DigiLocker direct redirection is retired. The endpoint `/webhooks/cashfree/kyc` validates HMAC and timestamp headers, then returns `200 OK` without database state mutation. This prevents upstream vendor delivery retries. Real-time verification flows use synchronous Aadhaar OTP and offline Secure QR.
 
 5. **`KYC_HMAC_SECRET` Rotation Runbook & Known Limitation**:
    - Each verification records `hash_key_version SMALLINT NOT NULL DEFAULT 1`.

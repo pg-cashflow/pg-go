@@ -488,9 +488,9 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	// Deterministic 35-character refund reference: rf_<32_char_hex_uuid>
+	// Deterministic 34-character refund reference: rf<32_char_hex_uuid>
 	cleanUUID := strings.ReplaceAll(uuid.New().String(), "-", "")
-	refundRef := fmt.Sprintf("rf_%s", cleanUUID)
+	refundRef := fmt.Sprintf("rf%s", cleanUUID)
 
 	orderPayload, _ := json.Marshal(map[string]any{
 		"order_id": orderID,
