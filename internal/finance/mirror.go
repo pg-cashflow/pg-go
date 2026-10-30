@@ -672,3 +672,28 @@ func (s *Service) MirrorPaymentCorrection(
 	}
 	return err
 }
+
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}

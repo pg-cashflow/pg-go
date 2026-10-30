@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
+
+// UserPhoneLookup finds user accounts by ID to resolve destination phone numbers for delivery.
+type UserPhoneLookup interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+}
 
 // DispatchRepo is the set of outbox and notification methods the Dispatcher uses.
 type DispatchRepo interface {
@@ -89,6 +95,8 @@ type Dispatcher struct {
 	resolver RecipientResolver
 	cfg      DispatcherConfig
 	log      *slog.Logger
+	waSender WhatsAppSender
+	users    UserPhoneLookup
 }
 
 func NewDispatcher(pool *pgxpool.Pool, repo DispatchRepo, resolver RecipientResolver, cfg DispatcherConfig, log *slog.Logger) *Dispatcher {
@@ -99,6 +107,12 @@ func NewDispatcher(pool *pgxpool.Pool, repo DispatchRepo, resolver RecipientReso
 		log = slog.Default()
 	}
 	return &Dispatcher{pool: pool, repo: repo, resolver: resolver, cfg: cfg, log: log}
+}
+
+// SetWhatsAppSender configures an automated WhatsApp gateway and user phone lookup for secondary channel delivery.
+func (d *Dispatcher) SetWhatsAppSender(sender WhatsAppSender, users UserPhoneLookup) {
+	d.waSender = sender
+	d.users = users
 }
 
 // Run starts the dispatcher loop. It blocks until ctx is cancelled.
@@ -243,10 +257,76 @@ func (d *Dispatcher) deliverRecipient(ctx context.Context, tx pgx.Tx, n *domain.
 		return uuid.Nil, fmt.Errorf("record delivery: %w", err)
 	}
 
+	// Deliver to WhatsApp channel if configured and eligible
+	if d.waSender != nil && d.users != nil && d.shouldSendWhatsApp(n) {
+		if err := d.deliverWhatsApp(ctx, sp, notifID, n); err != nil {
+			_ = sp.Rollback(ctx)
+			return uuid.Nil, fmt.Errorf("whatsapp delivery: %w", err)
+		}
+	}
+
 	if err := sp.Commit(ctx); err != nil {
 		return uuid.Nil, fmt.Errorf("commit savepoint: %w", err)
 	}
 	return notifID, nil
+}
+
+func (d *Dispatcher) deliverWhatsApp(ctx context.Context, tx pgx.Tx, notifID uuid.UUID, n *domain.Notification) error {
+	u, err := d.users.GetByID(ctx, n.RecipientID)
+	if err != nil {
+		return fmt.Errorf("lookup user phone: %w", err)
+	}
+	if u == nil || strings.TrimSpace(u.Phone) == "" {
+		delivery := &domain.NotificationDelivery{
+			ID:             uuid.New(),
+			NotificationID: notifID,
+			Channel:        "whatsapp",
+			Status:         "skipped_pref",
+			AttemptCount:   1,
+		}
+		return d.repo.RecordDeliveryTx(ctx, tx, delivery)
+	}
+
+	msg := n.Title
+	if n.DeepLink != "" {
+		msg = fmt.Sprintf("%s\nView: %s", n.Title, n.DeepLink)
+	}
+
+	sendErr := d.waSender.Send(ctx, u.Phone, msg)
+	delivery := &domain.NotificationDelivery{
+		ID:             uuid.New(),
+		NotificationID: notifID,
+		Channel:        "whatsapp",
+		Status:         "sent",
+		AttemptCount:   1,
+	}
+	if sendErr != nil {
+		delivery.Status = "failed"
+		errMsg := sendErr.Error()
+		delivery.LastError = &errMsg
+	}
+	if recErr := d.repo.RecordDeliveryTx(ctx, tx, delivery); recErr != nil {
+		return fmt.Errorf("record whatsapp delivery: %w", recErr)
+	}
+	return sendErr
+}
+
+func (d *Dispatcher) shouldSendWhatsApp(n *domain.Notification) bool {
+	if n == nil {
+		return false
+	}
+	if n.IsActionRequired {
+		return true
+	}
+	switch n.Type {
+	case "payment_review", "payment_rejected", "due_paid",
+		"join_requested", "join_approved", "tenant_created",
+		"critical_tie_out_variance", "recurring_tie_out_exception",
+		"period_tie_out_blocked", "payment_disputed", "violation_issued":
+		return true
+	default:
+		return false
+	}
 }
 
 // finalise either marks the event dispatched (all recipients ok) or records the

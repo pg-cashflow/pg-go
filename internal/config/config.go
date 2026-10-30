@@ -91,6 +91,10 @@ type Config struct {
 	MetricsSecret string
 	// WebhookSecretSource indicates the source of CashfreeWebhookSecret ("pg_secret_key" or "override").
 	WebhookSecretSource string
+	// WhatsApp Cloud API configuration
+	WhatsAppBaseURL       string
+	WhatsAppPhoneNumberID string
+	WhatsAppAccessToken   string
 }
 
 func Load() (*Config, error) {
@@ -113,7 +117,7 @@ func Load() (*Config, error) {
 		VAPIDPrivateKey:                   os.Getenv("VAPID_PRIVATE_KEY"),
 		VAPIDSubject:                      os.Getenv("VAPID_SUBJECT"),
 		HTTPAddr:                          envOr("HTTP_ADDR", ":8080"),
-		AppEnv:                            envOr("APP_ENV", "development"),
+		AppEnv:                            strings.ToLower(strings.TrimSpace(envOr("APP_ENV", "development"))),
 		CORSAllowedOrigins:                splitOrigins(os.Getenv("CORS_ALLOWED_ORIGINS")),
 		TrustedProxies:                    splitOrigins(os.Getenv("TRUSTED_PROXIES")),
 		FrontendURL:                       envFirst("PUBLIC_APP_URL", "FRONTEND_URL"),
@@ -148,6 +152,9 @@ func Load() (*Config, error) {
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
 		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
 		MetricsSecret:                     strings.TrimSpace(os.Getenv("METRICS_SECRET")),
+		WhatsAppBaseURL:                   strings.TrimSpace(os.Getenv("WHATSAPP_BASE_URL")),
+		WhatsAppPhoneNumberID:             strings.TrimSpace(os.Getenv("WHATSAPP_PHONE_NUMBER_ID")),
+		WhatsAppAccessToken:               strings.TrimSpace(os.Getenv("WHATSAPP_ACCESS_TOKEN")),
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)

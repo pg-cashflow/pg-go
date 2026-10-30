@@ -55,9 +55,9 @@ func (r *NotificationRepo) CreateOrGetNotificationTx(ctx context.Context, tx pgx
 	return id, err
 }
 
-// RecordDeliveryTx inserts a delivery attempt row inside the caller's
-// transaction (or savepoint). ON CONFLICT DO NOTHING makes this idempotent
-// across retries; the unique constraint is on (notification_id, channel).
+// RecordDeliveryTx inserts or updates a delivery attempt row inside the caller's
+// transaction (or savepoint). ON CONFLICT (notification_id, channel) updates
+// the status, attempt count, and last error across retries.
 func (r *NotificationRepo) RecordDeliveryTx(ctx context.Context, tx pgx.Tx, d *domain.NotificationDelivery) error {
 	if d.ID == uuid.Nil {
 		d.ID = uuid.New()
@@ -66,7 +66,11 @@ func (r *NotificationRepo) RecordDeliveryTx(ctx context.Context, tx pgx.Tx, d *d
 		INSERT INTO notification_deliveries
 			(id, notification_id, channel, status, attempt_count, last_error, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, now())
-		ON CONFLICT (notification_id, channel) DO NOTHING`,
+		ON CONFLICT (notification_id, channel) DO UPDATE SET
+			status = EXCLUDED.status,
+			attempt_count = EXCLUDED.attempt_count,
+			last_error = EXCLUDED.last_error,
+			updated_at = now()`,
 		d.ID, d.NotificationID, d.Channel, d.Status, d.AttemptCount, d.LastError,
 	)
 	return err

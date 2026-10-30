@@ -342,6 +342,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		notificationsvc.DefaultConfig(),
 		logger,
 	)
+	dispatcher.SetWhatsAppSender(channels.WhatsApp, userRepo)
 
 	searchPool, err := postgres.NewSearchPool(ctx, cfg.DatabaseMaintURL)
 	searchPoolOwned := err == nil && searchPool != maintPool

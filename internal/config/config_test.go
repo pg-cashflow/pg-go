@@ -91,7 +91,7 @@ func TestLoadDefaultsWebhookSecretToClientSecret(t *testing.T) {
 }
 
 func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY", "PAYOUT_CHECKSUM_SECRET", "SMTP_HOST", "TRUSTED_PROXIES"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY", "PAYOUT_CHECKSUM_SECRET", "PAYOUT_APPROVAL_SECRET", "SMTP_HOST", "TRUSTED_PROXIES"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -114,6 +114,7 @@ func TestLoad_ProductionRequiresPayoutEncryptionSecret(t *testing.T) {
 	_ = os.Setenv("APP_ENV", "production")
 	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+	_ = os.Setenv("PAYOUT_APPROVAL_SECRET", "approval-secret-min-32-chars-long-abc")
 	_ = os.Setenv("SMTP_HOST", "smtp.example.com")
 	_ = os.Setenv("TRUSTED_PROXIES", "127.0.0.1")
 
@@ -137,7 +138,7 @@ func TestLoad_ProductionRequiresSMTPHost(t *testing.T) {
 	keys := []string{
 		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
 		"APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_CHECKSUM_SECRET",
-		"SMTP_HOST", "TRUSTED_PROXIES",
+		"PAYOUT_APPROVAL_SECRET", "SMTP_HOST", "TRUSTED_PROXIES",
 	}
 	prev := map[string]string{}
 	for _, k := range keys {
@@ -161,6 +162,7 @@ func TestLoad_ProductionRequiresSMTPHost(t *testing.T) {
 	_ = os.Setenv("APP_ENV", "production")
 	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+	_ = os.Setenv("PAYOUT_APPROVAL_SECRET", "approval-secret-min-32-chars-long-abc")
 	_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
 	_ = os.Setenv("TRUSTED_PROXIES", "127.0.0.1")
 
@@ -271,7 +273,7 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 	keys := []string{
 		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
 		"APP_ENV", "CASHFREE_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET",
-		"CASHFREE_PG_BASE_URL", "SMTP_HOST", "TRUSTED_PROXIES",
+		"PAYOUT_APPROVAL_SECRET", "CASHFREE_PG_BASE_URL", "SMTP_HOST", "TRUSTED_PROXIES",
 	}
 	prev := map[string]string{}
 	for _, k := range keys {
@@ -296,6 +298,7 @@ func TestLoad_CashfreePGBaseURL_ProductionGuard(t *testing.T) {
 		_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
 		_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-secret-min-32-chars-long-abc")
 		_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+		_ = os.Setenv("PAYOUT_APPROVAL_SECRET", "approval-secret-min-32-chars-long-abc")
 		_ = os.Setenv("SMTP_HOST", "smtp.example.com")
 		_ = os.Setenv("TRUSTED_PROXIES", "127.0.0.1")
 		_ = os.Setenv("CASHFREE_PG_BASE_URL", "http://127.0.0.1:8081")
@@ -738,4 +741,48 @@ func TestLoad_KYCIdentitySecrets_Wiring(t *testing.T) {
 		t.Fatalf("KYCIdentitySecrets not independently loaded: %v", cfg.KYCIdentitySecrets)
 	}
 }
+
+func TestLoad_AppEnvNormalization(t *testing.T) {
+	origEnv := os.Getenv("APP_ENV")
+	defer func() {
+		if origEnv != "" {
+			_ = os.Setenv("APP_ENV", origEnv)
+		} else {
+			_ = os.Unsetenv("APP_ENV")
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+
+	// Test 1: Mixed case and whitespace for development
+	_ = os.Setenv("APP_ENV", "  DeVeLoPmEnT  ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AppEnv != "development" {
+		t.Fatalf("expected AppEnv to be normalized to 'development', got %q", cfg.AppEnv)
+	}
+
+	// Test 2: Mixed case and whitespace for staging
+	_ = os.Setenv("APP_ENV", "  StAgInG ")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AppEnv != "staging" {
+		t.Fatalf("expected AppEnv to be normalized to 'staging', got %q", cfg.AppEnv)
+	}
+
+	// Test 3: Mixed case production enforces production validation
+	_ = os.Setenv("APP_ENV", "  PrOdUcTiOn  ")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "FIREBASE_PROJECT_ID is required in production") {
+		t.Fatalf("expected production validation error for normalized AppEnv, got %v", err)
+	}
+}
+
 

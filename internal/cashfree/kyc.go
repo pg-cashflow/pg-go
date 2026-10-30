@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // verificationEndpoint returns the Cashfree Secure ID API base URL, separate
@@ -225,19 +224,6 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 
 	resp, err := c.kycClient().Do(req)
 	if err != nil {
-		if !strings.EqualFold(c.cfg.Env, "production") && c.cfg.MockKYC {
-			last4 := "9999"
-			cleanNum := strings.ReplaceAll(aadhaarNumber, " ", "")
-			if len(cleanNum) >= 4 {
-				last4 = cleanNum[len(cleanNum)-4:]
-			}
-			refStr := fmt.Sprintf("sb_mock_%s_%d", last4, time.Now().UnixNano())
-			return &AadhaarOTPInitResult{
-				RefID:   refStr,
-				Status:  "SUCCESS",
-				Message: "Sandbox test OTP generated (enter 111000 or any 6-digit code)",
-			}, nil
-		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -271,22 +257,6 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
 	trimmedRef := strings.TrimSpace(refID)
-	if strings.HasPrefix(trimmedRef, "sb_mock_") && !strings.EqualFold(c.cfg.Env, "production") && c.cfg.MockKYC {
-		last4 := "9999"
-		parts := strings.Split(trimmedRef, "_")
-		if len(parts) >= 3 && len(parts[2]) == 4 {
-			last4 = parts[2]
-		}
-		return &AadhaarOTPVerifyResult{
-			RefID:      trimmedRef,
-			Status:     "VALID",
-			Name:       "Aadhaar Verified Tenant",
-			DOB:        "1998-05-15",
-			Gender:     "M",
-			MaskedUID:  last4,
-			PhotoBytes: nil,
-		}, nil
-	}
 	body := map[string]string{
 		"ref_id": trimmedRef,
 		"otp":    strings.TrimSpace(otp),

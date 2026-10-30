@@ -27,7 +27,6 @@ type Config struct {
 	OrderExpiryDuration        time.Duration
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
 	ReturnURL                  string
-	MockKYC                    bool // opt-in mock for offline Aadhaar OTP testing in non-production
 	KYCAuthMode                string // "ip" (default) | "signature"
 	KYCPublicKey               *rsa.PublicKey
 	KYCClientID                string
