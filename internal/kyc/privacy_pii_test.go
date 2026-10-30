@@ -48,7 +48,8 @@ func TestGate14_ZeroRawAadhaarInApplicationLogs(t *testing.T) {
 	defer slog.SetDefault(prevLogger)
 
 	// Simulate representative KYC logging events
-	tenantID := uuid.New()
+	// Use deterministic UUID with letters so the 12-digit hex tail cannot randomly resemble all-decimal digits
+	tenantID := uuid.MustParse("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
 	maskedUID := "XXXX-XXXX-1234"
 	identityHash := "hash_abc123"
 
@@ -112,7 +113,8 @@ func TestGate14_DPDP_ConsentRevocationAtomicWipe(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	tenantID := uuid.New()
+	// Use deterministic UUID with letters so the 12-digit hex tail cannot randomly resemble all-decimal digits
+	tenantID := uuid.MustParse("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")
 
 	// 1. Record Consent
 	consent, err := svc.RecordConsent(ctx, tenantID, "onboarding", "v1", "I hereby consent to verification", "127.0.0.1", "test-agent", "tenant")

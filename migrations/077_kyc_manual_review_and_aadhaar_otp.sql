@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 077: Add manual review workflow and Aadhaar OTP method to kyc_verification
 -- Standard: ASD-STE100
 -- Invariants:

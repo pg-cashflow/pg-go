@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 087: Enable and force Row Level Security on payout_records, payout_record_items, and payout_items.
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

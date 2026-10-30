@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 075: Add channel and destination columns to otp_requests
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

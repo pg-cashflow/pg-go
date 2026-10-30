@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 070: Manager capability grants.
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

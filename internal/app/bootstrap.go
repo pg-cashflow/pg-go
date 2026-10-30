@@ -254,9 +254,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			logger.Info("kyc: document-bytes encryption enabled")
 		} else {
 			if cfg.AppEnv == "production" {
-				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP Â§8(5) requirement)")
+				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP Section 8(5) requirement)")
 			}
-			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set â€” Aadhaar document bytes will be stored unencrypted (DPDP Â§8(5) gap)")
+			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set - Aadhaar document bytes will be stored unencrypted (DPDP Section 8(5) gap)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
 		kycRepo.SetVerificationValidityDays(0)

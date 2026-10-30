@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 072: Typed tenant onboarding profile (P0-C).
 
 ALTER TABLE property_onboarding_settings

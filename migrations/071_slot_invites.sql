@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 071: Slot invites, room occupancy reservations, onboarding settings.
 -- ADR: docs/adr/033-slot-invites-and-occupancy.md
 

@@ -509,10 +509,10 @@ func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
 	cases := []struct {
 		name    string
 		secrets map[int16]string
-		wantSub string // non-empty â†’ expect error containing this substring
+		wantSub string // non-empty -> expect error containing this substring
 	}{
 		{
-			name:    "nil map (env var unset) passes â€” KYC dormant",
+			name:    "nil map (env var unset) passes - KYC dormant",
 			secrets: nil,
 			wantSub: "",
 		},

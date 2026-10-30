@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 088: allow every processing_status value the application actually writes.
 -- Previously 'duplicate' and 'ignored_unconfirmed' violated the CHECK from migration 020, and the
 -- resulting UPDATE errors were discarded, leaving those events stuck at 'received' in the audit trail.

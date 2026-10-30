@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 091: Add settlement mode and cash disbursement tracking to tenant_departures
 -- Enforces two-step offline cash departure settlement and auditability.
 

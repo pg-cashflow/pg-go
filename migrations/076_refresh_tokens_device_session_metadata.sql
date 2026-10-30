@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 076: Add device metadata and last_used_at to refresh_tokens for per-device active sessions
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

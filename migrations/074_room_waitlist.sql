@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 074: Room waitlist (P1) + bound slot invites for offers.
 
 ALTER TABLE property_onboarding_settings

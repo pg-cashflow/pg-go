@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 090: Bind payout_payees to tenant_id for deposit returns
 -- Standard: ASD-STE100
 -- Reference: ADR-009, ADR-022

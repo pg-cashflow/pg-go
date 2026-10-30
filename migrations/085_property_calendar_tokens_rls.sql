@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 085: Enable and force Row Level Security on property_calendar_tokens.
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

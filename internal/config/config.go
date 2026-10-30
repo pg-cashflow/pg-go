@@ -47,7 +47,7 @@ type Config struct {
 	AadhaarQRPublicKeyPEM             string
 	KYCIdentitySecret string
 	// KYCIdentitySecrets holds versioned HMAC-SHA256 keys for identity_hash rotation
-	// (version number â†’ secret string). Populated from KYC_IDENTITY_SECRETS env var,
+	// (version number -> secret string). Populated from KYC_IDENTITY_SECRETS env var,
 	// format identical to PAYOUT_ENCRYPTION_KEYS: "1:secret-v1,2:secret-v2,...".
 	// When set, the highest version is the active key; the service must verify against
 	// any version still stored on a row (via hash_key_version). The legacy

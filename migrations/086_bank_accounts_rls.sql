@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 086: Enable and force Row Level Security on bank_accounts.
 -- Standard: ASD-STE100
 -- Method: Empirical First-Principles Verification

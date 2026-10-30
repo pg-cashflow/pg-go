@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 073: First-rent referral (owner bps, bind at join, credit ledger).
 
 ALTER TABLE property_onboarding_settings

@@ -212,22 +212,23 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 						scanFn: func(dest ...any) error {
 							*dest[0].(*uuid.UUID) = payeeID
 							*dest[1].(*uuid.UUID) = propID
-							*dest[2].(*domain.PayeeType) = domain.PayeeTypeVendor
-							*dest[3].(*string) = "Acme Supplies"
-							*dest[4].(**string) = nil
-							*dest[5].(*[]byte) = []byte("enc")
+							*dest[2].(**uuid.UUID) = nil
+							*dest[3].(*domain.PayeeType) = domain.PayeeTypeVendor
+							*dest[4].(*string) = "Acme Supplies"
+							*dest[5].(**string) = nil
+							*dest[6].(*[]byte) = []byte("enc")
 							last4 := "1234"
-							*dest[6].(**string) = &last4
-							*dest[7].(*string) = "hash"
-							*dest[8].(**string) = nil
+							*dest[7].(**string) = &last4
+							*dest[8].(*string) = "hash"
 							*dest[9].(**string) = nil
 							*dest[10].(**string) = nil
-							*dest[11].(*int) = 1
-							*dest[12].(*bool) = true
-							*dest[13].(**uuid.UUID) = nil
-							*dest[14].(**time.Time) = nil
-							*dest[15].(*time.Time) = now
+							*dest[11].(**string) = nil
+							*dest[12].(*int) = 1
+							*dest[13].(*bool) = true
+							*dest[14].(**uuid.UUID) = nil
+							*dest[15].(**time.Time) = nil
 							*dest[16].(*time.Time) = now
+							*dest[17].(*time.Time) = now
 							return nil
 						},
 					}

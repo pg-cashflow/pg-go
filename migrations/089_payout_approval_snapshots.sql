@@ -1,3 +1,5 @@
+SET lock_timeout = '5s';
+
 -- Migration 089: Create dedicated payout_approval_snapshots table with full RLS
 -- Implements immutable destination binding (A2.2) to prevent payee instrument tampering after approval.
 

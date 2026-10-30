@@ -695,7 +695,7 @@ func (r *KYCRepo) ExpireLapsedVerifications(ctx context.Context, now time.Time) 
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, tenant_id
 		FROM kyc_verification
-		WHERE status = 'verified' AND expires_at <= $1
+		WHERE status = 'verified' AND expires_at IS NOT NULL AND expires_at <= $1
 		ORDER BY tenant_id
 	`, now)
 	if err != nil {
