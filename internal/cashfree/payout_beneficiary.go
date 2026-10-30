@@ -81,7 +81,9 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: create beneficiary request: %w", err)
 	}
-	c.sign(httpReq)
+	if err := c.sign(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -149,7 +151,9 @@ func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: get beneficiary request: %w", err)
 	}
-	c.sign(req)
+	if err := c.sign(req); err != nil {
+		return nil, err
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: get beneficiary: %w", err)

@@ -770,3 +770,25 @@ func TestRejectManualReview_Success(t *testing.T) {
 	}
 }
 
+func TestCompleteAadhaarOTP_InFlightLockContention(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	lockAcquired := false
+	repo := &fakeRepo{
+		lockAcquired: &lockAcquired,
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "123456", "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
+	}
+}
+
+

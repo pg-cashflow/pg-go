@@ -137,24 +137,28 @@ func (c *PayoutClient) endpoint() string {
 	return c.cfg.baseURL()
 }
 
-func (c *PayoutClient) sign(req *http.Request) {
+func (c *PayoutClient) sign(req *http.Request) error {
 	req.Header.Set("x-client-id", c.cfg.ClientID)
 	req.Header.Set("x-client-secret", c.cfg.ClientSecret)
 	req.Header.Set("x-api-version", c.cfg.APIVersion)
 	req.Header.Set("Content-Type", "application/json")
 
-	if strings.EqualFold(c.cfg.AuthMode, "signature") && c.cfg.PublicKey != nil {
+	if strings.EqualFold(c.cfg.AuthMode, "signature") {
+		if c.cfg.PublicKey == nil {
+			return errors.New("cashfree payout: auth_mode signature requires public key")
+		}
 		now := time.Now().UTC()
 		if c.cfg.Now != nil {
 			now = c.cfg.Now()
 		}
 		sig, err := GeneratePayoutSignature(c.cfg.ClientID, c.cfg.PublicKey, now)
-		if err == nil {
-			req.Header.Set("X-Cf-Signature", sig)
-		} else {
+		if err != nil {
 			slog.Error("cashfree payout: failed to generate X-Cf-Signature", "err", err)
+			return fmt.Errorf("cashfree payout: generate signature: %w", err)
 		}
+		req.Header.Set("X-Cf-Signature", sig)
 	}
+	return nil
 }
 
 func (c *PayoutClient) checkDeprecation(resp *http.Response) {

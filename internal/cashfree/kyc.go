@@ -114,7 +114,9 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 	if err != nil {
 		return nil, err
 	}
-	c.sign(req)
+	if err := c.signKYC(req); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := c.kycClient().Do(req)
@@ -199,6 +201,7 @@ type AadhaarOTPVerifyResult struct {
 	Gender     string `json:"gender"`
 	MaskedUID  string `json:"masked_uid"`
 	PhotoBytes []byte `json:"-"`
+	PhotoLink  string `json:"photo_link,omitempty"`
 }
 
 // RequestAadhaarOTP initiates an Aadhaar OTP verification session via Cashfree.
@@ -215,7 +218,9 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 	if err != nil {
 		return nil, err
 	}
-	c.sign(req)
+	if err := c.signKYC(req); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.kycClient().Do(req)
@@ -292,7 +297,9 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	if err != nil {
 		return nil, err
 	}
-	c.sign(req)
+	if err := c.signKYC(req); err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.kycClient().Do(req)
@@ -317,6 +324,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		UID       string `json:"uid"`
 		MaskedUID string `json:"masked_uid"`
 		Image     string `json:"image"`
+		PhotoLink string `json:"photo_link"`
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
 		return nil, fmt.Errorf("cashfree verify aadhaar otp: unmarshal: %w", err)
@@ -328,6 +336,15 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	var photoBytes []byte
 	if out.Image != "" {
 		photoBytes, _ = base64.StdEncoding.DecodeString(out.Image)
+	} else if out.PhotoLink != "" {
+		if strings.HasPrefix(out.PhotoLink, "data:") {
+			parts := strings.Split(out.PhotoLink, ",")
+			if len(parts) > 1 {
+				photoBytes, _ = base64.StdEncoding.DecodeString(parts[1])
+			}
+		} else if b64, err := base64.StdEncoding.DecodeString(out.PhotoLink); err == nil && len(b64) > 0 {
+			photoBytes = b64
+		}
 	}
 	return &AadhaarOTPVerifyResult{
 		RefID:      fmt.Sprintf("%v", out.RefID),
@@ -337,6 +354,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		Gender:     out.Gender,
 		MaskedUID:  mUID,
 		PhotoBytes: photoBytes,
+		PhotoLink:  out.PhotoLink,
 	}, nil
 }
 

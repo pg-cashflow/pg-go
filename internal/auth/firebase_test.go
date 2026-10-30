@@ -582,3 +582,71 @@ func TestVerifyFirebaseAndIssueToken_OwnerWithoutEmailDeniedRelink(t *testing.T)
 	}
 }
 
+func TestVerifyFirebaseAndIssueToken_TenantDeniedRelinkWithoutMatchingEmail(t *testing.T) {
+	phone := "+919876543211"
+	initialUID := "uid-tenant-initial"
+	attackerUID := "uid-recycled-sim-holder"
+	pid := uuid.New()
+	tid := uuid.New()
+
+	// Tenant without email
+	users := &stubUsers{
+		byPhone: map[string]*domain.User{
+			phone: {
+				ID:           uuid.New(),
+				Phone:        phone,
+				Email:        "", // Tenant registered with phone only
+				Role:         domain.RoleTenant,
+				TenantID:     &tid,
+				PropertyID:   &pid,
+				FirebaseUID:  &initialUID,
+				TokenVersion: 1,
+			},
+		},
+		byFirebase: map[string]*domain.User{},
+	}
+	users.byFirebase[initialUID] = users.byPhone[phone]
+
+	tenants := stubTenantsByPhone{
+		phone: {
+			ID:         tid,
+			PropertyID: pid,
+			Phone:      &phone,
+			Status:     domain.TenantStatusActive,
+		},
+	}
+	svc := NewService(&stubOTP{}, users, tenants, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+
+	// Recycled SIM holder tries to log in with the same phone but new Firebase UID
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: attackerUID, phone: phone})
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-attacker", "")
+	if !errors.Is(err, ErrAccountReLinkDenied) {
+		t.Fatalf("expected ErrAccountReLinkDenied for tenant without email on re-link, got %v", err)
+	}
+
+	// Now tenant with email on file: attacker tries phone-only OTP (empty email)
+	users.byPhone[phone].Email = "tenant@gmail.com"
+	_, _, err = svc.VerifyFirebaseAndIssueToken(context.Background(), "token-attacker", "")
+	if !errors.Is(err, ErrAccountReLinkDenied) {
+		t.Fatalf("expected ErrAccountReLinkDenied when email is missing from incoming token, got %v", err)
+	}
+
+	// Incoming token has different email
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: attackerUID, phone: phone, email: "other@gmail.com", emailVerified: true})
+	_, _, err = svc.VerifyFirebaseAndIssueToken(context.Background(), "token-attacker", "")
+	if !errors.Is(err, ErrAccountReLinkDenied) {
+		t.Fatalf("expected ErrAccountReLinkDenied when email mismatches, got %v", err)
+	}
+
+	// Legitimate tenant re-link with matching verified email succeeds
+	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "uid-tenant-new-device", phone: phone, email: "tenant@gmail.com", emailVerified: true})
+	token, u, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-tenant-ok", "")
+	if err != nil {
+		t.Fatalf("expected success with matching verified email, got %v", err)
+	}
+	if token == "" || u == nil {
+		t.Fatal("expected valid token and user")
+	}
+}
+
+

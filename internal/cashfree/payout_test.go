@@ -388,3 +388,31 @@ func TestPayoutClient_AuthRejected_401_403(t *testing.T) {
 		})
 	}
 }
+
+func TestPayoutSignature_FailClosedWhenSigningFails(t *testing.T) {
+	// 1. AuthMode is signature, but PublicKey is nil -> Must fail closed immediately
+	cfgMissingKey := PayoutConfig{
+		ClientID:     "CF_CLIENT_123",
+		ClientSecret: "mock_secret",
+		FundsourceID: "fund_01",
+		AuthMode:     "signature",
+		PublicKey:    nil,
+	}
+	client := NewPayoutClient(cfgMissingKey)
+	serverReached := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverReached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client.SetBaseOverride(srv.URL)
+
+	_, err := client.GetBatchTransferStatus(context.Background(), "batch_fail")
+	if err == nil {
+		t.Fatal("expected error when public key is nil in signature mode, got nil")
+	}
+	if serverReached {
+		t.Fatal("expected request NOT to be dispatched when signature generation fails")
+	}
+}
+

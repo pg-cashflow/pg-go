@@ -2,10 +2,17 @@ package cashfree
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestClient wires a Client against the given test server URL and returns
@@ -200,3 +207,130 @@ func TestCooldownSecondsFor(t *testing.T) {
 		t.Errorf("expected 0s cooldown for system fault, got %d", cd)
 	}
 }
+
+func TestKYCSignature_RSAOAEP_SHA1(t *testing.T) {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+
+	fixedTime := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	clientID := "CF_SECURE_ID_CLIENT_99"
+
+	var capturedSignature, capturedClientID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSignature = r.Header.Get("X-Cf-Signature")
+		capturedClientID = r.Header.Get("x-client-id")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ref_id":  "cf_ref_123",
+			"status":  "SUCCESS",
+			"message": "OTP sent",
+		})
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		cfg: Config{
+			AppID:        clientID,
+			SecretKey:    "test-secret",
+			Env:          "sandbox",
+			KYCAuthMode:  "signature",
+			KYCPublicKey: &privKey.PublicKey,
+			Now:          func() time.Time { return fixedTime },
+		},
+		http:         srv.Client(),
+		baseOverride: srv.URL,
+	}
+
+	res, err := client.RequestAadhaarOTP(context.Background(), "999988887777")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.RefID != "cf_ref_123" {
+		t.Errorf("expected ref_id cf_ref_123, got %s", res.RefID)
+	}
+	if capturedClientID != clientID {
+		t.Errorf("expected x-client-id %s, got %s", clientID, capturedClientID)
+	}
+	if capturedSignature == "" {
+		t.Fatal("expected X-Cf-Signature header to be set")
+	}
+
+	sigBytes, err := base64.StdEncoding.DecodeString(capturedSignature)
+	if err != nil {
+		t.Fatalf("signature is not valid base64: %v", err)
+	}
+	decryptedBytes, err := rsa.DecryptOAEP(sha1.New(), rand.Reader, privKey, sigBytes, nil)
+	if err != nil {
+		t.Fatalf("failed to decrypt signature: %v", err)
+	}
+	expected := fmt.Sprintf("%s.%d", clientID, fixedTime.Unix())
+	if string(decryptedBytes) != expected {
+		t.Errorf("decrypted signature mismatch: got %q, want %q", string(decryptedBytes), expected)
+	}
+}
+
+func TestKYCSignature_FailClosedWhenSigningFails(t *testing.T) {
+	serverReached := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverReached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		cfg: Config{
+			AppID:        "CF_ID",
+			SecretKey:    "test-secret",
+			Env:          "sandbox",
+			KYCAuthMode:  "signature",
+			KYCPublicKey: nil, // missing public key in signature mode
+		},
+		http:         srv.Client(),
+		baseOverride: srv.URL,
+	}
+
+	_, err := client.RequestAadhaarOTP(context.Background(), "999988887777")
+	if err == nil {
+		t.Fatal("expected error when kyc public key is nil in signature mode, got nil")
+	}
+	if serverReached {
+		t.Fatal("expected request NOT to be dispatched when signature generation fails")
+	}
+}
+
+func TestVerifyAadhaarOTP_PhotoLinkSupport(t *testing.T) {
+	rawPhoto := []byte("fake-photo-binary-data")
+	encodedPhoto := base64.StdEncoding.EncodeToString(rawPhoto)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ref_id":     "ref_abc_1",
+			"status":     "VALID",
+			"name":       "Ananya Sharma",
+			"dob":        "2000-01-01",
+			"gender":     "F",
+			"uid":        "XXXXXXXX1234",
+			"photo_link": "data:image/jpeg;base64," + encodedPhoto,
+		})
+	}))
+	defer srv.Close()
+
+	client := newKYCTestClient(srv)
+	res, err := client.VerifyAadhaarOTP(context.Background(), "ref_abc_1", "123456")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Name != "Ananya Sharma" {
+		t.Errorf("expected name Ananya Sharma, got %s", res.Name)
+	}
+	if string(res.PhotoBytes) != string(rawPhoto) {
+		t.Errorf("expected photo bytes decoded from photo_link, got %s", string(res.PhotoBytes))
+	}
+	if !strings.Contains(res.PhotoLink, encodedPhoto) {
+		t.Errorf("expected PhotoLink to be preserved, got %s", res.PhotoLink)
+	}
+}
+

@@ -94,7 +94,9 @@ func (c *PayoutClient) RequestBatchTransfer(ctx context.Context, req BatchTransf
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: create batch transfer request: %w", err)
 	}
-	c.sign(httpReq)
+	if err := c.sign(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -152,7 +154,9 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: create batch status request: %w", err)
 	}
-	c.sign(httpReq)
+	if err := c.sign(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
@@ -204,7 +208,9 @@ func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: create transfer status request: %w", err)
 	}
-	c.sign(httpReq)
+	if err := c.sign(httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {

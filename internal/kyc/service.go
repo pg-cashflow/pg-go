@@ -537,6 +537,17 @@ func (s *Service) CompleteAadhaarOTP(
 	refID, otp string,
 	actor string,
 ) (*domain.KYCVerification, error) {
+	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
+	}
+	if !locked {
+		return nil, domain.ErrVerificationInProgress
+	}
+	defer func() {
+		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+	}()
+
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", refID)
 	pending, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
 	if err != nil {
@@ -608,7 +619,7 @@ func (s *Service) CompleteAadhaarOTP(
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
 	majorityDate, mdErr := domain.MajorityDateFromDOB(canonicalDOB)
 	if mdErr != nil {
-		slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "dob", res.DOB, "err", mdErr)
+		slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "err", mdErr)
 		return nil, &AadhaarVerifyFailure{
 			ReasonCode: "INVALID_DOB_FORMAT",
 			Retryable:  false,

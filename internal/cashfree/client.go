@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -23,6 +28,10 @@ type Config struct {
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
 	ReturnURL                  string
 	MockKYC                    bool // opt-in mock for offline Aadhaar OTP testing in non-production
+	KYCAuthMode                string // "ip" (default) | "signature"
+	KYCPublicKey               *rsa.PublicKey
+	KYCClientID                string
+	Now                        func() time.Time
 }
 
 func (c Config) WebhookReplayWindow() int {
@@ -348,6 +357,57 @@ func (c *Client) sign(req *http.Request) {
 		ver = "2025-01-01"
 	}
 	req.Header.Set("x-api-version", ver)
+}
+
+// GenerateKYCSignature creates the Cashfree X-Cf-Signature header value for KYC / Secure ID endpoints.
+// It formats "${clientID}.${unixTimestamp}" and encrypts it using RSA-OAEP with SHA-1,
+// matching Cashfree's signature verification specification. The resulting ciphertext is Base64 encoded.
+func GenerateKYCSignature(clientID string, pubKey *rsa.PublicKey, now time.Time) (string, error) {
+	if strings.TrimSpace(clientID) == "" {
+		return "", errors.New("cashfree kyc: client_id required for signature generation")
+	}
+	if pubKey == nil {
+		return "", errors.New("cashfree kyc: public key required for signature generation")
+	}
+	plainText := fmt.Sprintf("%s.%d", clientID, now.Unix())
+	cipherBytes, err := rsa.EncryptOAEP(sha1.New(), rand.Reader, pubKey, []byte(plainText), nil)
+	if err != nil {
+		return "", fmt.Errorf("cashfree kyc: encrypt signature: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(cipherBytes), nil
+}
+
+func (c *Client) signKYC(req *http.Request) error {
+	clientID := c.cfg.KYCClientID
+	if clientID == "" {
+		clientID = c.cfg.AppID
+	}
+	req.Header.Set("x-client-id", clientID)
+	req.Header.Set("x-client-secret", c.cfg.SecretKey)
+	ver := c.cfg.APIVersion
+	if ver == "" {
+		ver = "2025-01-01"
+	}
+	req.Header.Set("x-api-version", ver)
+
+	if strings.EqualFold(c.cfg.KYCAuthMode, "signature") {
+		if c.cfg.KYCPublicKey == nil {
+			return errors.New("cashfree kyc: auth_mode signature requires kyc public key")
+		}
+		now := time.Now().UTC()
+		if c.cfg.Now != nil {
+			now = c.cfg.Now()
+		} else if c.now != nil {
+			now = c.now()
+		}
+		sig, err := GenerateKYCSignature(clientID, c.cfg.KYCPublicKey, now)
+		if err != nil {
+			slog.Error("cashfree kyc: failed to generate X-Cf-Signature", "err", err)
+			return fmt.Errorf("cashfree kyc: generate signature: %w", err)
+		}
+		req.Header.Set("X-Cf-Signature", sig)
+	}
+	return nil
 }
 
 // VerifyWebhookHMAC checks x-webhook-signature = Base64(HMAC-SHA256(timestamp+rawBody, secret)).

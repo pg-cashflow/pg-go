@@ -441,12 +441,9 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		if err == nil {
 			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
 				// Re-link attempt detected: phone matches, but Firebase UID differs.
-				// Protect owners and managers against SIM swaps and recycled phone numbers.
-				if user.IsManagerOrOwner() {
-					if user.Email == "" || !ident.EmailVerified || !strings.EqualFold(ident.Email, user.Email) {
-						return "", nil, ErrAccountReLinkDenied
-					}
-				} else if user.Email != "" && ident.Email != "" && !strings.EqualFold(ident.Email, user.Email) {
+				// Protect all accounts (owners, managers, and tenants) against SIM swaps and recycled phone numbers.
+				// Any re-link requires an active verified matching email. Without it, account takeover via recycled SIM is denied.
+				if user.Email == "" || !ident.EmailVerified || !strings.EqualFold(ident.Email, user.Email) {
 					return "", nil, ErrAccountReLinkDenied
 				}
 				// Revoke prior access and refresh tokens for security
