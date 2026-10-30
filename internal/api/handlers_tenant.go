@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +12,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/localization"
 )
+
+// aadhaarLast4Pattern allows exactly four ASCII digits.
+var aadhaarLast4Pattern = regexp.MustCompile(`^[0-9]{4}$`)
 
 // TenantPatchMe handles PATCH /tenant/me (limited self-service profile fields).
 func (h *Handlers) TenantPatchMe(c *gin.Context) {
@@ -315,16 +319,22 @@ func (h *Handlers) TenantAadhaar(c *gin.Context) {
 
 	last4 := aadhaar.PersistableLast4(fromQR, data.Verified, data.UIDLast4, body.UIDLast4)
 	if last4 != "" {
+		if !aadhaarLast4Pattern.MatchString(last4) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "uid_last4 must be exactly 4 digits"})
+			return
+		}
 		if err := aadhaar.GuardOverwrite(t.AadhaarLast4, last4); err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "aadhaar last-4 already set"})
 			return
 		}
 		if t.AadhaarLast4 == nil || *t.AadhaarLast4 != last4 {
-			t.AadhaarLast4 = &last4
-			if err := h.TenantStore.Update(c.Request.Context(), t); err != nil {
+			cloned := *t
+			cloned.AadhaarLast4 = &last4
+			if err := h.TenantStore.Update(c.Request.Context(), &cloned); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 				return
 			}
+			t.AadhaarLast4 = &last4
 			auth.InvalidateTenantCache(t.ID)
 		}
 	}

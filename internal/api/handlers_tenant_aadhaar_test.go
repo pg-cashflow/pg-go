@@ -78,6 +78,49 @@ func TestTenantAadhaarRejectsOverwrite(t *testing.T) {
 	}
 }
 
+func TestTenantAadhaarValidatesLast4Format(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name       string
+		uidLast4   string
+		wantStatus int
+	}{
+		{"full 12 digits", "123456789012", http.StatusBadRequest},
+		{"too short", "123", http.StatusBadRequest},
+		{"alphanumeric", "12a4", http.StatusBadRequest},
+		{"symbols", "12-4", http.StatusBadRequest},
+		{"valid 4 digits", "4321", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ten := &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
+			store := &stubTenantStore{t: ten}
+			h := &Handlers{Deps: Deps{TenantStore: store}}
+			r := gin.New()
+			r.POST("/tenant/aadhaar", func(c *gin.Context) {
+				c.Set(auth.ContextTenantKey, ten)
+				h.TenantAadhaar(c)
+			})
+			body, _ := json.Marshal(map[string]any{"consent": true, "uid_last4": tt.uidLast4})
+			req := httptest.NewRequest(http.MethodPost, "/tenant/aadhaar", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("uidLast4=%q expected status %d, got %d (body: %s)", tt.uidLast4, tt.wantStatus, w.Code, w.Body.String())
+			}
+			if tt.wantStatus == http.StatusOK {
+				if ten.AadhaarLast4 == nil || *ten.AadhaarLast4 != tt.uidLast4 {
+					t.Fatalf("expected last4 to be persisted as %q, got %v", tt.uidLast4, ten.AadhaarLast4)
+				}
+			}
+		})
+	}
+}
+
 func TestAllowedReportImage(t *testing.T) {
 	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'}
 	if !allowedReportImage(jpeg) {
