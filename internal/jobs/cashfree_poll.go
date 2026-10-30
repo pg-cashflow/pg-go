@@ -234,6 +234,10 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 			continue
 		}
 		newStatus := domain.NormalizeRefundStatus(details.RefundStatus)
+		if newStatus == domain.RefundStatusOnHold {
+			log.Warn("cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
+				"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
+		}
 		if newStatus != ref.Status {
 			if reconciler, ok := j.Refunds.(RefundReconciler); ok {
 				if err := reconciler.ReconcileRefundTransition(ctx, &ref, newStatus); err != nil {
