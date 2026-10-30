@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -417,7 +416,7 @@ func TestCashfreePollIgnores500With404InBody(t *testing.T) {
 	staleRef := domain.GatewayRefund{
 		ID:              refID,
 		RefundReference: &refRef,
-		RawPayload:      []byte({"order_id": "order_err_1"}),
+		RawPayload:      []byte(`{"order_id": "order_err_1"}`),
 		Status:          "initiated",
 		AmountPaise:     200000,
 		CreatedAt:       staleCreatedAt,
