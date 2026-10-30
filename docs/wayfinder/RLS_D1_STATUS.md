@@ -93,9 +93,10 @@ Every "NO" in the audit matrix above generates a prioritized, sized follow-up ti
 - **Status:** Complete. Migration 085 applied, `CalendarTokenRepo` authored and wired via `ScopedDB`, covered by unit tests.
 - **Size:** S (Small, 0.5 days)
 
-### Ticket R9-F7: Column-Level Protection & Scope Restriction for Sensitive Tenant Identity Fields
+### Ticket R9-F7: Column-Level Protection & Scope Restriction for Sensitive Tenant Identity Fields [COMPLETED]
 - **Scope:**
-  1. Audit usages of `maintTenantRepo` in `cmd/server/main.go` (magic link and auth).
+  1. Audit usages of `maintTenantRepo` in `cmd/server/main.go` and `internal/app/bootstrap.go` (magic link and background consumers).
   2. Restrict projection of sensitive identity fields (`aadhaar_last4`, `guardian_kyc_reference_id`, `guardian_phone`) in public and owner endpoints.
   3. Ensure `maintPool` is never used for general tenant detail lookups on user request paths.
+- **Status:** Complete. Audited usages of `maintTenantRepo`: restricted strictly to `magiclink` (public pay view with minimal non-sensitive projection of Name/Room/Phone and 0 Aadhaar/Guardian PII) and `waitlistConsumer` (asynchronous background event worker under ADR-030). All interactive user and owner request paths execute via `tenantRepo` backed by `scopedDB` with RLS session variable `app.current_property_id`. Identity fields are masked in `tenantResponse` (`XXXX-XXXX-...`, `ref_***...`, `******...`) and verified by `internal/api/handlers_owner_tenants_masking_test.go`.
 - **Size:** M (Medium, 1 day)

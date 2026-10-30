@@ -232,6 +232,20 @@ func (r *PayoutRepo) GetActiveDepartureByTenant(ctx context.Context, tenantID uu
 	))
 }
 
+// GetCollectedDepositPaise returns the sum of all paid deposit dues for a tenant on a property.
+func (r *PayoutRepo) GetCollectedDepositPaise(ctx context.Context, propertyID, tenantID uuid.UUID) (int64, error) {
+	var total int64
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(SUM(amount), 0)::BIGINT
+		FROM dues
+		WHERE property_id = $1 AND tenant_id = $2 AND kind = 'deposit' AND status = 'paid'
+	`, propertyID, tenantID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("payout repo: get collected deposit: %w", err)
+	}
+	return total, nil
+}
+
 func (r *PayoutRepo) UpdateDepartureInspection(ctx context.Context, id uuid.UUID, inspectedAt time.Time, notes *string) error {
 	slaDeadline := inspectedAt.Add(24 * time.Hour)
 	_, err := r.db.Exec(ctx, `

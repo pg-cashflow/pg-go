@@ -140,9 +140,9 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		t.Fatalf("insert due: %v", err)
 	}
 
-	_, err = pool.Exec(ctx, 
+	_, err = pool.Exec(ctx, `
 		INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
-		VALUES (, , , , 'deposit', 1200000, 1200000, , , , 'paid'),
+		VALUES ($1, $2, $3, $4, 'deposit', 1200000, 1200000, $5, $6, $7, 'paid')`,
 		uuid.New(), "DEP-"+uuid.New().String()[:8], tenantID, propID, pStart, pEnd, dueDate,
 	)
 	if err != nil {
