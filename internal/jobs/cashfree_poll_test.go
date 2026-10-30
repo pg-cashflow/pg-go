@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -390,7 +391,7 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
 		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
 	}
 	refundClient := stubRefundFetch{
-		err: errors.New("cashfree fetch refund: 404 Not Found"),
+		err: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "refund not found"},
 	}
 
 	job := &CashfreePollJob{
@@ -405,6 +406,46 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
 
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
 		t.Fatalf("expected orphan initiated refund to reconcile to failed, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
+func TestCashfreePollIgnores500With404InBody(t *testing.T) {
+	refRef := "rf_server_err_1"
+	refID := uuid.New()
+	staleCreatedAt := time.Now().UTC().Add(-45 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte({"order_id": "order_err_1"}),
+		Status:          "initiated",
+		AmountPaise:     200000,
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	// Gateway returns 500 error containing "404" in error body text
+	refundClient := stubRefundFetch{
+		err: &cashfree.APIError{
+			StatusCode: http.StatusInternalServerError,
+			Status:     "500 Internal Server Error",
+			Body:       "upstream database error: entity 404 query failed",
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != uuid.Nil || refundRepo.reconciledStatus != "" {
+		t.Fatalf("500 with 404 in body must not reconcile refund to failed, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }
@@ -424,7 +465,7 @@ func TestCashfreePollLeavesInitiatedRefundWhenOrderIDEmpty(t *testing.T) {
 		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
 	}
 	refundClient := stubRefundFetch{
-		err: errors.New("cashfree fetch refund: 404 Not Found"),
+		err: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "not found"},
 	}
 
 	job := &CashfreePollJob{

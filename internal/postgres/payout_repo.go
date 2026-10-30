@@ -22,6 +22,12 @@ type DepartureMirrorer interface {
 		depositPaise, unusedRentReversal, damagesPaise, netRefundPaise, outstandingDuesNettedPaise, receivableBalancePaise int64,
 		at time.Time,
 	) error
+	MirrorCashRefundDisbursed(
+		ctx context.Context,
+		propertyID, departureID uuid.UUID,
+		amountPaise int64,
+		at time.Time,
+	) error
 }
 
 type PayoutRepo struct {
@@ -80,14 +86,14 @@ func (r *PayoutRepo) SetMirrorer(m DepartureMirrorer) {
 // Payees
 // ---------------------------------------------------------
 
-const payeeCols = `id, property_id, payee_type, name, phone, account_number_encrypted,
+const payeeCols = `id, property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
 	account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
 	key_version, is_verified, verified_by, verified_at, created_at, updated_at`
 
 func scanPayee(row pgx.Row) (*domain.PayoutPayee, error) {
 	var p domain.PayoutPayee
 	err := row.Scan(
-		&p.ID, &p.PropertyID, &p.PayeeType, &p.Name, &p.Phone, &p.AccountNumberEncrypted,
+		&p.ID, &p.PropertyID, &p.TenantID, &p.PayeeType, &p.Name, &p.Phone, &p.AccountNumberEncrypted,
 		&p.AccountNumberLast4, &p.AccountNumberHash, &p.IFSC, &p.BankName, &p.UPIVPA,
 		&p.KeyVersion, &p.IsVerified, &p.VerifiedBy, &p.VerifiedAt, &p.CreatedAt, &p.UpdatedAt,
 	)
@@ -106,12 +112,12 @@ func (r *PayoutRepo) CreatePayee(ctx context.Context, p *domain.PayoutPayee) err
 	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO payout_payees (
-			property_id, payee_type, name, phone, account_number_encrypted,
+			property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
 			account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
 			key_version, is_verified, verified_by, verified_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		RETURNING id`,
-		p.PropertyID, p.PayeeType, p.Name, p.Phone, p.AccountNumberEncrypted,
+		p.PropertyID, p.TenantID, p.PayeeType, p.Name, p.Phone, p.AccountNumberEncrypted,
 		p.AccountNumberLast4, p.AccountNumberHash, p.IFSC, p.BankName, p.UPIVPA,
 		p.KeyVersion, p.IsVerified, p.VerifiedBy, p.VerifiedAt, p.CreatedAt, p.UpdatedAt,
 	).Scan(&p.ID)
@@ -166,6 +172,7 @@ const departureCols = `id, tenant_id, property_id, notice_given_at, planned_vaca
 	actual_vacate_date, inspected_at, sla_deadline_at, deposit_amount_paise,
 	unused_rent_refund_paise, prorated_rent_owed_paise, outstanding_dues_netted_paise,
 	deductions_paise, net_refund_paise, receivable_balance_paise, status, notes,
+	settlement_mode, cash_receipt_ref, cash_disbursed_at, cash_disbursed_by,
 	created_at, updated_at`
 
 func scanDeparture(row pgx.Row) (*domain.TenantDeparture, error) {
@@ -175,6 +182,7 @@ func scanDeparture(row pgx.Row) (*domain.TenantDeparture, error) {
 		&d.ActualVacateDate, &d.InspectedAt, &d.SLADeadlineAt, &d.DepositAmountPaise,
 		&d.UnusedRentRefundPaise, &d.ProratedRentOwedPaise, &d.OutstandingDuesNettedPaise,
 		&d.DeductionsPaise, &d.NetRefundPaise, &d.ReceivableBalancePaise, &d.Status, &d.Notes,
+		&d.SettlementMode, &d.CashReceiptRef, &d.CashDisbursedAt, &d.CashDisbursedBy,
 		&d.CreatedAt, &d.UpdatedAt,
 	)
 	if err != nil {
@@ -190,19 +198,24 @@ func (r *PayoutRepo) CreateDeparture(ctx context.Context, d *domain.TenantDepart
 	if d.Status == "" {
 		d.Status = domain.DeparturePending
 	}
+	if d.SettlementMode == "" {
+		d.SettlementMode = "payout"
+	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO tenant_departures (
 			tenant_id, property_id, notice_given_at, planned_vacate_date,
 			actual_vacate_date, inspected_at, sla_deadline_at, deposit_amount_paise,
 			unused_rent_refund_paise, prorated_rent_owed_paise, outstanding_dues_netted_paise,
 			deductions_paise, net_refund_paise, receivable_balance_paise, status, notes,
+			settlement_mode, cash_receipt_ref, cash_disbursed_at, cash_disbursed_by,
 			created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		RETURNING id`,
 		d.TenantID, d.PropertyID, d.NoticeGivenAt, d.PlannedVacateDate,
 		d.ActualVacateDate, d.InspectedAt, d.SLADeadlineAt, d.DepositAmountPaise,
 		d.UnusedRentRefundPaise, d.ProratedRentOwedPaise, d.OutstandingDuesNettedPaise,
 		d.DeductionsPaise, d.NetRefundPaise, d.ReceivableBalancePaise, d.Status, d.Notes,
+		d.SettlementMode, d.CashReceiptRef, d.CashDisbursedAt, d.CashDisbursedBy,
 		d.CreatedAt, d.UpdatedAt,
 	).Scan(&d.ID)
 }
@@ -973,7 +986,8 @@ type SettleDepartureParams struct {
 	DepartureID       uuid.UUID
 	ActualVacateDate  time.Time
 	ProratedRentPaise int64      // Contractual prorated rent for departure cycle
-	PayeeID           *uuid.UUID // Required if net_refund_paise > 0
+	PayeeID           *uuid.UUID // Required if net_refund_paise > 0 and SettlementMode != "offline_cash"
+	SettlementMode    string     // "payout" (default) or "offline_cash"
 	Notes             *string
 }
 
@@ -1063,7 +1077,8 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 		&dep.ActualVacateDate, &dep.InspectedAt, &dep.SLADeadlineAt, &dep.DepositAmountPaise,
 		&dep.UnusedRentRefundPaise, &dep.ProratedRentOwedPaise, &dep.OutstandingDuesNettedPaise,
 		&dep.DeductionsPaise, &dep.NetRefundPaise, &dep.ReceivableBalancePaise, &dep.Status,
-		&dep.Notes, &dep.CreatedAt, &dep.UpdatedAt,
+		&dep.Notes, &dep.SettlementMode, &dep.CashReceiptRef, &dep.CashDisbursedAt, &dep.CashDisbursedBy,
+		&dep.CreatedAt, &dep.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("lock departure: %w", err)
@@ -1304,62 +1319,85 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 		receivableBalancePaise = totalDebits - totalCredits
 	}
 
+	mode := strings.TrimSpace(params.SettlementMode)
+	if mode == "" {
+		mode = "payout"
+	}
+	if mode != "payout" && mode != "offline_cash" {
+		return nil, fmt.Errorf("invalid settlement_mode: must be 'payout' or 'offline_cash'")
+	}
+	dep.SettlementMode = mode
+
 	// Step 13 & 15: payout_payees & payout_items
 	var payoutItem *domain.PayoutItem
 	if netRefundPaise > 0 {
-		var targetPayeeID uuid.UUID
-		if params.PayeeID != nil {
-			targetPayeeID = *params.PayeeID
+		if dep.SettlementMode == "offline_cash" {
+			// Two-step cash return: liability is credited to refund_payable by MirrorDepartureSettlement.
+			// No payout_items row created; physical cash disbursal occurs via DisburseDepartureCashUnderLock.
 		} else {
-			err = tx.QueryRow(ctx, `
-				SELECT id FROM payout_payees
-				WHERE property_id = $1 AND payee_type IN ('tenant_deposit', 'guardian_deposit')
-				ORDER BY created_at DESC LIMIT 1`, propertyID,
-			).Scan(&targetPayeeID)
-			if err != nil {
+			if params.PayeeID == nil {
 				return nil, errors.New("payee_id is required for deposit refund payout")
 			}
-		}
+			targetPayeeID := *params.PayeeID
 
-		// Step 13: Lock payout_payee and verify property ownership
-		var payeeExists bool
-		err = tx.QueryRow(ctx, `SELECT true FROM payout_payees WHERE id = $1 AND property_id = $2 FOR UPDATE`, targetPayeeID, propertyID).Scan(&payeeExists)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("payee %s does not belong to property %s: %w", targetPayeeID, propertyID, domain.ErrForbidden)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("lock payee %s: %w", targetPayeeID, err)
-		}
+			// Step 13: Lock payout_payee and verify property ownership and tenant binding
+			var payee domain.PayoutPayee
+			err = tx.QueryRow(ctx, `
+				SELECT `+payeeCols+`
+				FROM payout_payees
+				WHERE id = $1 AND property_id = $2
+				FOR UPDATE`, targetPayeeID, propertyID,
+			).Scan(
+				&payee.ID, &payee.PropertyID, &payee.TenantID, &payee.PayeeType, &payee.Name, &payee.Phone, &payee.AccountNumberEncrypted,
+				&payee.AccountNumberLast4, &payee.AccountNumberHash, &payee.IFSC, &payee.BankName, &payee.UPIVPA,
+				&payee.KeyVersion, &payee.IsVerified, &payee.VerifiedBy, &payee.VerifiedAt, &payee.CreatedAt, &payee.UpdatedAt,
+			)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("payee %s does not belong to property %s: %w", targetPayeeID, propertyID, domain.ErrForbidden)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("lock payee %s: %w", targetPayeeID, err)
+			}
+			if payee.TenantID == nil || *payee.TenantID != dep.TenantID {
+				return nil, fmt.Errorf("payee %s does not belong to tenant %s: %w", targetPayeeID, dep.TenantID, domain.ErrForbidden)
+			}
+			if !payee.IsVerified {
+				return nil, fmt.Errorf("payee %s is not verified", targetPayeeID)
+			}
+			if payee.PayeeType != domain.PayeeTypeTenantDeposit && payee.PayeeType != domain.PayeeTypeGuardianDeposit {
+				return nil, fmt.Errorf("payee %s has invalid payee_type %s for deposit refund", targetPayeeID, payee.PayeeType)
+			}
 
-		// Step 15: Insert unbatched payout item
-		refNum := fmt.Sprintf("dep_%s", strings.ReplaceAll(dep.ID.String(), "-", ""))
-		periodLabel := fmt.Sprintf("dep_%s", params.ActualVacateDate.Format("2006_01"))
-		it := domain.PayoutItem{
-			PayeeID:         targetPayeeID,
-			DepartureID:     &dep.ID,
-			ReferenceNumber: refNum,
-			AmountPaise:     netRefundPaise,
-			Purpose:         "tenant_deposit_refund",
-			PeriodLabel:     periodLabel,
-			Status:          domain.PayoutPending,
-			CreatedAt:       now,
-			UpdatedAt:       now,
+			// Step 15: Insert unbatched payout item
+			refNum := fmt.Sprintf("dep_%s", strings.ReplaceAll(dep.ID.String(), "-", ""))
+			periodLabel := fmt.Sprintf("dep_%s", params.ActualVacateDate.Format("2006_01"))
+			it := domain.PayoutItem{
+				PayeeID:         targetPayeeID,
+				DepartureID:     &dep.ID,
+				ReferenceNumber: refNum,
+				AmountPaise:     netRefundPaise,
+				Purpose:         "tenant_deposit_refund",
+				PeriodLabel:     periodLabel,
+				Status:          domain.PayoutPending,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			err = tx.QueryRow(ctx, `
+				INSERT INTO payout_items (
+					batch_id, payee_id, departure_id, reference_number,
+					amount_paise, purpose, period_label, status, created_at, updated_at
+				) VALUES (
+					NULL, $1, $2, $3,
+					$4, $5, $6, $7, $8, $9
+				) RETURNING id`,
+				it.PayeeID, it.DepartureID, it.ReferenceNumber,
+				it.AmountPaise, it.Purpose, it.PeriodLabel, it.Status, it.CreatedAt, it.UpdatedAt,
+			).Scan(&it.ID)
+			if err != nil {
+				return nil, fmt.Errorf("insert payout item: %w", err)
+			}
+			payoutItem = &it
 		}
-		err = tx.QueryRow(ctx, `
-			INSERT INTO payout_items (
-				batch_id, payee_id, departure_id, reference_number,
-				amount_paise, purpose, period_label, status, created_at, updated_at
-			) VALUES (
-				NULL, $1, $2, $3,
-				$4, $5, $6, $7, $8, $9
-			) RETURNING id`,
-			it.PayeeID, it.DepartureID, it.ReferenceNumber,
-			it.AmountPaise, it.Purpose, it.PeriodLabel, it.Status, it.CreatedAt, it.UpdatedAt,
-		).Scan(&it.ID)
-		if err != nil {
-			return nil, fmt.Errorf("insert payout item: %w", err)
-		}
-		payoutItem = &it
 	}
 
 	// Update departure
@@ -1387,11 +1425,12 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 			receivable_balance_paise = $8,
 			status = $9,
 			notes = COALESCE($10, notes),
-			updated_at = $11
+			settlement_mode = $11,
+			updated_at = $12
 		WHERE id = $1`,
 		dep.ID, dep.ActualVacateDate, dep.UnusedRentRefundPaise, dep.ProratedRentOwedPaise,
 		dep.OutstandingDuesNettedPaise, dep.DeductionsPaise, dep.NetRefundPaise,
-		dep.ReceivableBalancePaise, dep.Status, dep.Notes, now,
+		dep.ReceivableBalancePaise, dep.Status, dep.Notes, dep.SettlementMode, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update departure: %w", err)
@@ -1473,4 +1512,131 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 		NetRefundPaise:             netRefundPaise,
 		ReceivableBalancePaise:     receivableBalancePaise,
 	}, nil
+}
+
+type DisburseCashParams struct {
+	DepartureID uuid.UUID
+	PropertyID  uuid.UUID
+	DisbursedBy uuid.UUID
+	ReceiptRef  string
+	Notes       *string
+}
+
+// DisburseDepartureCashUnderLock executes the 2nd step of offline cash deposit return.
+// Requires that the departure was settled in 'offline_cash' mode, is in 'approved' status,
+// and has net_refund_paise > 0. Posts Dr refund_payable and Cr cash (domain.AcctCash).
+func (r *PayoutRepo) DisburseDepartureCashUnderLock(ctx context.Context, params DisburseCashParams) (*domain.TenantDeparture, error) {
+	if strings.TrimSpace(params.ReceiptRef) == "" {
+		return nil, errors.New("receipt_ref is required for cash refund disbursement")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var dep domain.TenantDeparture
+	err = tx.QueryRow(ctx, `
+		SELECT `+departureCols+`
+		FROM tenant_departures
+		WHERE id = $1 FOR UPDATE`, params.DepartureID,
+	).Scan(
+		&dep.ID, &dep.TenantID, &dep.PropertyID, &dep.NoticeGivenAt, &dep.PlannedVacateDate,
+		&dep.ActualVacateDate, &dep.InspectedAt, &dep.SLADeadlineAt, &dep.DepositAmountPaise,
+		&dep.UnusedRentRefundPaise, &dep.ProratedRentOwedPaise, &dep.OutstandingDuesNettedPaise,
+		&dep.DeductionsPaise, &dep.NetRefundPaise, &dep.ReceivableBalancePaise, &dep.Status,
+		&dep.Notes, &dep.SettlementMode, &dep.CashReceiptRef, &dep.CashDisbursedAt, &dep.CashDisbursedBy,
+		&dep.CreatedAt, &dep.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock departure: %w", err)
+	}
+	if dep.PropertyID != params.PropertyID {
+		return nil, domain.ErrForbidden
+	}
+	if dep.SettlementMode != "offline_cash" {
+		return nil, fmt.Errorf("departure is not in offline_cash settlement mode (mode=%s)", dep.SettlementMode)
+	}
+	if dep.Status != domain.DepartureApproved {
+		return nil, fmt.Errorf("departure in status '%s' cannot be disbursed (must be 'approved')", dep.Status)
+	}
+	if dep.NetRefundPaise <= 0 {
+		return nil, errors.New("departure has no net refund to disburse")
+	}
+	if dep.CashDisbursedAt != nil {
+		return nil, errors.New("cash refund has already been disbursed for this departure")
+	}
+
+	now := time.Now().UTC()
+	dep.Status = domain.DepartureRefunded
+	ref := strings.TrimSpace(params.ReceiptRef)
+	dep.CashReceiptRef = &ref
+	dep.CashDisbursedAt = &now
+	dep.CashDisbursedBy = &params.DisbursedBy
+	if params.Notes != nil {
+		dep.Notes = params.Notes
+	}
+	dep.UpdatedAt = now
+
+	_, err = tx.Exec(ctx, `
+		UPDATE tenant_departures
+		SET status = $2,
+			cash_receipt_ref = $3,
+			cash_disbursed_at = $4,
+			cash_disbursed_by = $5,
+			notes = COALESCE($6, notes),
+			updated_at = $7
+		WHERE id = $1`,
+		dep.ID, dep.Status, dep.CashReceiptRef, dep.CashDisbursedAt,
+		dep.CashDisbursedBy, dep.Notes, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update departure for cash disbursement: %w", err)
+	}
+
+	var outboxEvt *domain.LedgerOutboxEvent
+	if r.outbox != nil {
+		mirrorPayload := domain.CashRefundDisbursedMirrorPayload{
+			PropertyID:  dep.PropertyID,
+			DepartureID: dep.ID,
+			AmountPaise: dep.NetRefundPaise,
+			OccurredAt:  now,
+		}
+		rawPayload, mErr := json.Marshal(mirrorPayload)
+		if mErr != nil {
+			return nil, fmt.Errorf("marshal cash refund mirror payload: %w", mErr)
+		}
+		outboxEvt = &domain.LedgerOutboxEvent{
+			EventType:      domain.LedgerOutboxCashRefundDisbursed,
+			PropertyID:     dep.PropertyID,
+			SourceID:       dep.ID,
+			Payload:        rawPayload,
+			IdempotencyKey: fmt.Sprintf("cash_refund:%s", dep.ID),
+		}
+		if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+			return nil, fmt.Errorf("enqueue ledger outbox event: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit cash disbursement: %w", err)
+	}
+
+	// Post balanced financial mirror journals (inline fast path)
+	if r.mirrorer != nil {
+		if err := r.mirrorer.MirrorCashRefundDisbursed(ctx, dep.PropertyID, dep.ID, dep.NetRefundPaise, now); err != nil {
+			slog.Warn("inline cash refund mirror deferred to ledger outbox processor",
+				"departure_id", dep.ID,
+				"err", err,
+			)
+		} else if r.outbox != nil && outboxEvt != nil {
+			_ = r.outbox.MarkProcessedByIdempotencyKey(ctx, outboxEvt.IdempotencyKey)
+		}
+	}
+
+	return &dep, nil
 }

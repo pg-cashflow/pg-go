@@ -573,16 +573,40 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 	// Step 1: Unlocked ancestry resolution
 	var existingRef *domain.GatewayRefund
 	if ref.RefundID != "" {
-		existingRef, _ = h.GatewayPaymentRepo.GetRefundByReference(ctx, ref.RefundID)
+		var err error
+		existingRef, err = h.GatewayPaymentRepo.GetRefundByReference(ctx, ref.RefundID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("refund webhook: failed to query refund by reference", "err", err, "refund_id", ref.RefundID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving refund"})
+			return
+		}
 	}
 	if existingRef == nil && ref.CFRefundID != "" {
-		existingRef, _ = h.GatewayPaymentRepo.GetRefundByCFRefundID(ctx, ref.CFRefundID)
+		var err error
+		existingRef, err = h.GatewayPaymentRepo.GetRefundByCFRefundID(ctx, ref.CFRefundID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("refund webhook: failed to query refund by cf_refund_id", "err", err, "cf_refund_id", ref.CFRefundID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving refund"})
+			return
+		}
 	}
 	var p *domain.Payment
 	if existingRef != nil {
-		p, _ = h.GatewayPaymentRepo.GetByID(ctx, existingRef.PaymentID)
+		var err error
+		p, err = h.GatewayPaymentRepo.GetByID(ctx, existingRef.PaymentID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("refund webhook: failed to query payment by id", "err", err, "payment_id", existingRef.PaymentID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving payment"})
+			return
+		}
 	} else if ref.CFPaymentID != "" {
-		p, _ = h.GatewayPaymentRepo.GetByCFPaymentID(ctx, ref.CFPaymentID)
+		var err error
+		p, err = h.GatewayPaymentRepo.GetByCFPaymentID(ctx, ref.CFPaymentID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("refund webhook: failed to query payment by cf_payment_id", "err", err, "cf_payment_id", ref.CFPaymentID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving payment"})
+			return
+		}
 	}
 
 	if p == nil {

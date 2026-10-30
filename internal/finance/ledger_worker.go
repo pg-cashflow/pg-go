@@ -79,6 +79,12 @@ type LedgerMirrorer interface {
 		amountPaise int64,
 		at time.Time,
 	) error
+	MirrorCashRefundDisbursed(
+		ctx context.Context,
+		propertyID, departureID uuid.UUID,
+		amountPaise int64,
+		at time.Time,
+	) error
 }
 
 // LedgerOutboxWorker polls and processes pending ledger outbox events to ensure zero ledger desynchronization.
@@ -337,6 +343,15 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			return fmt.Errorf("mirrorer not configured")
 		}
 		return w.mirrorer.MirrorPayoutSettled(ctx, p.PropertyID, p.PayoutItemID, p.AmountPaise, p.OccurredAt)
+	case domain.LedgerOutboxCashRefundDisbursed:
+		var p domain.CashRefundDisbursedMirrorPayload
+		if err := json.Unmarshal(evt.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal cash refund disbursed payload: %w", err)
+		}
+		if w.mirrorer == nil {
+			return fmt.Errorf("mirrorer not configured")
+		}
+		return w.mirrorer.MirrorCashRefundDisbursed(ctx, p.PropertyID, p.DepartureID, p.AmountPaise, p.OccurredAt)
 	default:
 		return fmt.Errorf("unrecognized ledger outbox event type '%s'", evt.EventType)
 	}

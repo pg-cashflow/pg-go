@@ -99,19 +99,19 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
 
 	// Verification Gate: Verify immutable approval snapshot and HMAC signature before outbound dispatch
-	var approvedItemsByID map[uuid.UUID]domain.ApprovedItemSnapshot
-	if len(d.approvalSigningKeys) > 0 {
-		snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, d.approvalSigningKeys)
-		if err != nil {
-			return fmt.Errorf("payout dispatcher: approval integrity failed: %w", err)
-		}
-		if len(snapshot.Items) != len(items) {
-			return fmt.Errorf("payout dispatcher: approved snapshot has %d items, batch has %d items", len(snapshot.Items), len(items))
-		}
-		approvedItemsByID = make(map[uuid.UUID]domain.ApprovedItemSnapshot, len(snapshot.Items))
-		for _, appItem := range snapshot.Items {
-			approvedItemsByID[appItem.ItemID] = appItem
-		}
+	if len(d.approvalSigningKeys) == 0 {
+		return errors.New("payout dispatcher: approval signing keys not configured; refusing to dispatch unverified batch")
+	}
+	snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, d.approvalSigningKeys)
+	if err != nil {
+		return fmt.Errorf("payout dispatcher: approval integrity failed: %w", err)
+	}
+	if len(snapshot.Items) != len(items) {
+		return fmt.Errorf("payout dispatcher: approved snapshot has %d items, batch has %d items", len(snapshot.Items), len(items))
+	}
+	approvedItemsByID := make(map[uuid.UUID]domain.ApprovedItemSnapshot, len(snapshot.Items))
+	for _, appItem := range snapshot.Items {
+		approvedItemsByID[appItem.ItemID] = appItem
 	}
 
 	// Step 1: Deduplicate and verify all payees locally before any provider interaction

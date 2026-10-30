@@ -140,6 +140,15 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		t.Fatalf("insert due: %v", err)
 	}
 
+	_, err = pool.Exec(ctx, 
+		INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
+		VALUES (, , , , 'deposit', 1200000, 1200000, , , , 'paid'),
+		uuid.New(), "DEP-"+uuid.New().String()[:8], tenantID, propID, pStart, pEnd, dueDate,
+	)
+	if err != nil {
+		t.Fatalf("insert deposit due: %v", err)
+	}
+
 	tenantStore := &mockTenantStoreForPayouts{
 		tenants: map[uuid.UUID]*domain.Tenant{
 			tenantID: {
@@ -181,6 +190,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		owner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
 		owner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
 		owner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
+		owner.POST("/departures/:id/disburse-cash", h.OwnerDisburseDepartureCash)
 
 		owner.POST("/payouts/payees", h.OwnerCreatePayee)
 		owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
@@ -196,6 +206,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	var payeeID uuid.UUID
 	t.Run("POST /owner/payouts/payees", func(t *testing.T) {
 		body := map[string]interface{}{
+			"tenant_id":  tenantID,
 			"payee_type": "tenant_deposit",
 			"name":       "Tenant Payout Payee",
 			"phone":      "9876543210",
@@ -711,6 +722,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			otherOwner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
 			otherOwner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
 			otherOwner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
+			otherOwner.POST("/departures/:id/disburse-cash", h.OwnerDisburseDepartureCash)
 			otherOwner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 		}
 
@@ -762,6 +774,154 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 
 		if w.Code != http.StatusConflict {
 			t.Fatalf("expected 409 Conflict on tampered checksum, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// 12. Cash Disbursal Rejection on Payout-Mode Departure:
+	t.Run("POST /owner/departures/:id/disburse-cash rejects payout-mode departure", func(t *testing.T) {
+		body := map[string]interface{}{
+			"receipt_ref": "INVALID-CASH-REC",
+		}
+		jsonBytes, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID), bytes.NewReader(jsonBytes))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request disbursing cash on payout-mode departure, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	// 13. Two-Step Offline Cash Departure Settlement and Disbursal:
+	t.Run("Two-step offline cash departure settlement and disbursal lifecycle", func(t *testing.T) {
+		tenantID2 := uuid.New()
+		_, err := pool.Exec(ctx, `
+			INSERT INTO tenants (id, property_id, full_name, phone, room_no, rent_amount, deposit_amount, status, lease_start_date)
+			VALUES ($1, $2, 'Cash Moveout Tenant', '+919888811111', '102B', 1000000, 1000000, 'active', '2026-01-01')`,
+			tenantID2, propID,
+		)
+		if err != nil {
+			t.Fatalf("insert tenant 2: %v", err)
+		}
+
+		depDueID2 := uuid.New()
+		_, err = pool.Exec(ctx, `
+			INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
+			VALUES ($1, $2, $3, 'DEP-CASH-001', 'deposit', 'paid', 1000000, 1000000, '2026-01-01', '2026-02-01', '2026-01-05')`,
+			depDueID2, propID, tenantID2,
+		)
+		if err != nil {
+			t.Fatalf("insert deposit due for tenant 2: %v", err)
+		}
+
+		// Step A: Create Departure
+		createBody := map[string]interface{}{
+			"planned_vacate_date":  "2026-10-01",
+			"deposit_amount_paise": 1000000,
+		}
+		cBytes, _ := json.Marshal(createBody)
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/tenants/%s/departures", tenantID2), bytes.NewReader(cBytes))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create departure 2: %d %s", w.Code, w.Body.String())
+		}
+
+		var cResp struct {
+			Departure domain.TenantDeparture `json:"departure"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &cResp)
+		depID2 := cResp.Departure.ID
+
+		// Step B: Inspect Departure
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/inspect", depID2), strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("inspect departure 2: %d %s", w.Code, w.Body.String())
+		}
+
+		// Step C: Settle in offline_cash mode without payee_id
+		settleBody := map[string]interface{}{
+			"actual_vacate_date":  "2026-09-30",
+			"prorated_rent_paise": 0,
+			"settlement_mode":     "offline_cash",
+		}
+		sBytes, _ := json.Marshal(settleBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/settle", depID2), bytes.NewReader(sBytes))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("settle departure 2 in offline_cash mode: %d %s", w.Code, w.Body.String())
+		}
+
+		var sResp struct {
+			Departure      domain.TenantDeparture `json:"departure"`
+			PayoutItem     *domain.PayoutItem     `json:"payout_item"`
+			NetRefundPaise int64                  `json:"net_refund_paise"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &sResp)
+		if sResp.NetRefundPaise != 1000000 {
+			t.Errorf("expected net refund 1000000, got %d", sResp.NetRefundPaise)
+		}
+		if sResp.PayoutItem != nil {
+			t.Errorf("expected nil payout item in offline_cash mode, got %v", sResp.PayoutItem)
+		}
+		if sResp.Departure.SettlementMode != "offline_cash" {
+			t.Errorf("expected settlement_mode 'offline_cash', got '%s'", sResp.Departure.SettlementMode)
+		}
+		if sResp.Departure.Status != domain.DepartureApproved {
+			t.Errorf("expected departure status 'approved', got '%s'", sResp.Departure.Status)
+		}
+
+		// Step D: Attempt cash disbursal without receipt_ref -> 400
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID2), strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request without receipt_ref, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Step E: Disburse cash with valid receipt_ref -> 200 OK
+		disburseBody := map[string]interface{}{
+			"receipt_ref": "CASH-REC-OCT-2026-001",
+			"notes":       "Physical currency handed over to tenant",
+		}
+		dBytes, _ := json.Marshal(disburseBody)
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID2), bytes.NewReader(dBytes))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("disburse cash: %d %s", w.Code, w.Body.String())
+		}
+
+		var dResp struct {
+			Departure domain.TenantDeparture `json:"departure"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &dResp)
+		if dResp.Departure.Status != domain.DepartureRefunded {
+			t.Errorf("expected status 'refunded', got '%s'", dResp.Departure.Status)
+		}
+		if dResp.Departure.CashReceiptRef == nil || *dResp.Departure.CashReceiptRef != "CASH-REC-OCT-2026-001" {
+			t.Errorf("expected cash receipt ref 'CASH-REC-OCT-2026-001', got %v", dResp.Departure.CashReceiptRef)
+		}
+		if dResp.Departure.CashDisbursedAt == nil {
+			t.Errorf("expected non-nil cash_disbursed_at")
+		}
+
+		// Step F: Duplicate cash disbursal -> 400 Bad Request
+		w = httptest.NewRecorder()
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID2), bytes.NewReader(dBytes))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on duplicate cash disbursal, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

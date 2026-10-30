@@ -60,8 +60,4 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 		notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
 	}
 
-	pub := api.Group("/public")
-	{
-		pub.POST("/cashfree/kyc/webhook", h.CashfreeKYCWebhook)
-	}
 }

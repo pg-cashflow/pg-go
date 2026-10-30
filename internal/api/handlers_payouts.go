@@ -76,9 +76,29 @@ func (h *Handlers) OwnerCreateDeparture(c *gin.Context) {
 		return
 	}
 
-	depositPaise := int64(t.RentAmount) // default to 1 month rent if unspecified
-	if body.DepositAmountPaise != nil && *body.DepositAmountPaise >= 0 {
+	collectedDeposit, err := repo.GetCollectedDepositPaise(c.Request.Context(), pid, tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed calculating collected deposit"})
+		return
+	}
+
+	var depositPaise int64
+	if body.DepositAmountPaise != nil {
+		if *body.DepositAmountPaise < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "deposit_amount_paise must be non-negative"})
+			return
+		}
+		if *body.DepositAmountPaise > collectedDeposit {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":     fmt.Sprintf("requested deposit %d exceeds collected deposit %d", *body.DepositAmountPaise, collectedDeposit),
+				"code":      "payment.invalid_amount",
+				"collected": collectedDeposit,
+			})
+			return
+		}
 		depositPaise = *body.DepositAmountPaise
+	} else {
+		depositPaise = collectedDeposit
 	}
 
 	now := time.Now().UTC()
@@ -211,6 +231,7 @@ type settleDepartureBody struct {
 	ActualVacateDate  string     `json:"actual_vacate_date" binding:"required"` // "YYYY-MM-DD"
 	ProratedRentPaise int64      `json:"prorated_rent_paise"`
 	PayeeID           *uuid.UUID `json:"payee_id"`
+	SettlementMode    string     `json:"settlement_mode"` // "payout" (default) or "offline_cash"
 	Notes             *string    `json:"notes"`
 }
 
@@ -254,6 +275,7 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 		ActualVacateDate:  vacateDate,
 		ProratedRentPaise: body.ProratedRentPaise,
 		PayeeID:           body.PayeeID,
+		SettlementMode:    body.SettlementMode,
 		Notes:             body.Notes,
 	})
 	if err != nil {
@@ -275,18 +297,71 @@ func (h *Handlers) OwnerSettleDeparture(c *gin.Context) {
 	})
 }
 
+type disburseCashBody struct {
+	ReceiptRef string  `json:"receipt_ref" binding:"required"`
+	Notes      *string `json:"notes"`
+	StepUpAuthInput
+}
+
+// OwnerDisburseDepartureCash handles POST /owner/departures/:id/disburse-cash.
+func (h *Handlers) OwnerDisburseDepartureCash(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	depID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	var body disburseCashBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		respondErr(c, clientErr(http.StatusBadRequest, "receipt_ref is required"))
+		return
+	}
+
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, body.StepUpAuthInput); !ok {
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	dep, err := repo.DisburseDepartureCashUnderLock(c.Request.Context(), postgres.DisburseCashParams{
+		DepartureID: depID,
+		PropertyID:  pid,
+		DisbursedBy: uid,
+		ReceiptRef:  body.ReceiptRef,
+		Notes:       body.Notes,
+	})
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"departure": dep})
+}
+
 // ---------------------------------------------------------------------
 // Operational Payouts Subsystem (ADR-009)
 // ---------------------------------------------------------------------
 
 type createPayeeBody struct {
-	PayeeType  string  `json:"payee_type" binding:"required"` // staff, vendor, tenant_deposit, guardian_deposit
-	Name       string  `json:"name" binding:"required"`
-	Phone      *string `json:"phone"`
-	AccountNum *string `json:"account_number"`
-	IFSC       *string `json:"ifsc"`
-	BankName   *string `json:"bank_name"`
-	UPIVPA     *string `json:"upi_vpa"`
+	TenantID   *uuid.UUID `json:"tenant_id"`
+	PayeeType  string     `json:"payee_type" binding:"required"` // staff, vendor, tenant_deposit, guardian_deposit
+	Name       string     `json:"name" binding:"required"`
+	Phone      *string    `json:"phone"`
+	AccountNum *string    `json:"account_number"`
+	IFSC       *string    `json:"ifsc"`
+	BankName   *string    `json:"bank_name"`
+	UPIVPA     *string    `json:"upi_vpa"`
 }
 
 // OwnerCreatePayee handles POST /owner/payouts/payees.
@@ -303,6 +378,21 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	if err := c.ShouldBindJSON(&body); err != nil {
 		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body"))
 		return
+	}
+
+	cleanType := domain.PayeeType(strings.ToLower(strings.TrimSpace(body.PayeeType)))
+	if cleanType == domain.PayeeTypeTenantDeposit || cleanType == domain.PayeeTypeGuardianDeposit {
+		if body.TenantID == nil || *body.TenantID == uuid.Nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required for deposit payees"})
+			return
+		}
+		if h.TenantStore != nil {
+			t, err := h.TenantStore.GetByID(c.Request.Context(), *body.TenantID)
+			if err != nil || t.PropertyID != pid {
+				c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found on this property"})
+				return
+			}
+		}
 	}
 
 	hasAcct := body.AccountNum != nil && strings.TrimSpace(*body.AccountNum) != ""
@@ -340,6 +430,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 
 	payee := &domain.PayoutPayee{
 		PropertyID:             pid,
+		TenantID:               body.TenantID,
 		PayeeType:              domain.PayeeType(body.PayeeType),
 		Name:                   strings.TrimSpace(body.Name),
 		Phone:                  body.Phone,

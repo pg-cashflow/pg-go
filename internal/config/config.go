@@ -189,6 +189,9 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
+		if strings.TrimSpace(cfg.PayoutApprovalSecret) == "" && len(cfg.PayoutApprovalKeys) == 0 {
+			return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET is required in production (must not reuse JWT_SECRET)")
+		}
 		// Step-up OTP (payout_approval) is email-only by architectural contract
 		// (docs/specs/auth-frontend-backend-contract.md Â§1.2). Without SMTP,
 		// auth.Service silently falls back to mailer.NoopMailer, which reports

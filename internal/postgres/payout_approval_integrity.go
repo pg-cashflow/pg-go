@@ -138,9 +138,7 @@ func (r *PayoutRepo) ApproveBatchSigned(
 	}
 
 	payeeRows, err := tx.Query(ctx, `
-		SELECT id, property_id, payee_type, name, phone, account_number_encrypted,
-		       account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
-		       key_version, is_verified, verified_by, verified_at, created_at, updated_at
+		SELECT `+payeeCols+`
 		FROM payout_payees
 		WHERE id = ANY($1) AND property_id = $2
 		FOR UPDATE`, payeeIDs, batch.PropertyID,

@@ -123,6 +123,30 @@ func (s *Service) MirrorPaymentAllocations(ctx context.Context, propertyID uuid.
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 // MirrorUnappliedPayment posts unapplied payment lines: Dr gateway_clearing, Cr unapplied_receipts.
 func (s *Service) MirrorUnappliedPayment(ctx context.Context, propertyID, paymentID uuid.UUID, amountPaise int64, at time.Time) error {
 	if s == nil || s.Store == nil || amountPaise <= 0 {
@@ -134,6 +158,30 @@ func (s *Service) MirrorUnappliedPayment(ctx context.Context, propertyID, paymen
 	lines, err := MakeLines(propertyID, paymentID, "unapplied_payment", at, []LineSpec{
 		{Account: domain.AcctGatewayClearing, Debit: amountPaise, LineKind: "gateway_clearing_dr"},
 		{Account: domain.AcctUnappliedReceipts, Credit: amountPaise, LineKind: "unapplied_receipt_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -248,6 +296,30 @@ func (s *Service) MirrorRefundAllocations(ctx context.Context, propertyID, refun
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 func (s *Service) MirrorProration(ctx context.Context, due *domain.Due, original, prorated int64) error {
 	if s == nil || due == nil {
 		return nil
@@ -265,6 +337,30 @@ func (s *Service) MirrorProration(ctx context.Context, due *domain.Due, original
 	lines, err := MakeLines(due.PropertyID, due.ID, "proration", s.Now(), []LineSpec{
 		{Account: domain.AcctRentRevenue, Debit: diff, LineKind: "proration_dr"},
 		{Account: domain.AcctTenantReceivable, Credit: diff, LineKind: "proration_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -295,6 +391,30 @@ func (s *Service) MirrorApplyCredit(ctx context.Context, propertyID, dueID uuid.
 	lines, err := MakeLines(propertyID, dueID, "apply_credit", at, []LineSpec{
 		{Account: domain.AcctTenantReceivable, Debit: amountPaise, LineKind: "credit_dr"},
 		{Account: revAccount, Credit: amountPaise, LineKind: "revenue_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -339,6 +459,30 @@ func (s *Service) MirrorRewardRedeem(ctx context.Context, propertyID, tenantID, 
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 func (s *Service) MirrorPointsIssued(ctx context.Context, propertyID, tenantID, ledgerID uuid.UUID, points int, amountPaise int64) error {
 	if s == nil || amountPaise <= 0 {
 		return nil
@@ -361,6 +505,30 @@ func (s *Service) MirrorPointsIssued(ctx context.Context, propertyID, tenantID, 
 	lines, err := MakeLines(propertyID, ledgerID, "reward_issue", at, []LineSpec{
 		{Account: domain.AcctLoyaltyExpense, Debit: amountPaise, LineKind: "loyalty_dr"},
 		{Account: domain.AcctRewardLiability, Credit: amountPaise, LineKind: "liability_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -435,6 +603,30 @@ func (s *Service) MirrorDepartureSettlement(
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 // MirrorPayoutSettled posts journal entry when a refund_payable payout item is settled from the bank account:
 // Dr refund_payable (amountPaise)
 // Cr bank (amountPaise)
@@ -448,6 +640,30 @@ func (s *Service) MirrorPayoutSettled(ctx context.Context, propertyID, payoutIte
 	lines, err := MakeLines(propertyID, payoutItemID, "payout_settlement", at, []LineSpec{
 		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "refund_paid"},
 		{Account: domain.AcctBank, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -483,6 +699,54 @@ func (s *Service) MirrorPayoutReversed(ctx context.Context, propertyID, payoutIt
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 // MirrorBankStatementCredit posts initial ingestion of cleared bank statement credit:
 // Dr bank (amountPaise)
 // Cr unapplied_receipts (amountPaise)
@@ -496,6 +760,30 @@ func (s *Service) MirrorBankStatementCredit(ctx context.Context, propertyID, ban
 	lines, err := MakeLines(propertyID, bankTxnID, "bank_statement_credit", at, []LineSpec{
 		{Account: domain.AcctBank, Debit: amountPaise, LineKind: "bank_deposit_dr"},
 		{Account: domain.AcctUnappliedReceipts, Credit: amountPaise, LineKind: "unapplied_receipt_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -540,6 +828,30 @@ func (s *Service) MirrorUnappliedAllocation(ctx context.Context, propertyID, ban
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 // MirrorBankDepositRefund posts refund of unidentified bank deposit back to payer:
 // Dr unapplied_receipts (amountPaise)
 // Cr bank (amountPaise)
@@ -553,6 +865,30 @@ func (s *Service) MirrorBankDepositRefund(ctx context.Context, propertyID, bankT
 	lines, err := MakeLines(propertyID, bankTxnID, "unapplied_deposit_refund", at, []LineSpec{
 		{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "unapplied_receipt_refund_dr"},
 		{Account: domain.AcctBank, Credit: amountPaise, LineKind: "bank_refund_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -580,6 +916,30 @@ func (s *Service) MirrorUnappliedReclassification(ctx context.Context, propertyI
 	lines, err := MakeLines(propertyID, bankTxnID, "unapplied_reclassification", at, []LineSpec{
 		{Account: domain.AcctUnappliedReceipts, Debit: amountPaise, LineKind: "unapplied_receipt_reclass_dr"},
 		{Account: targetAccount, Credit: amountPaise, LineKind: "reclass_target_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err
@@ -645,6 +1005,30 @@ func (s *Service) MirrorDepositSettlement(
 	return err
 }
 
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
 // MirrorPaymentCorrection posts a reversing journal for the original payment.
 func (s *Service) MirrorPaymentCorrection(
 	ctx context.Context,
@@ -662,6 +1046,30 @@ func (s *Service) MirrorPaymentCorrection(
 	lines, err := MakeLines(propertyID, correctionID, "payment_correction", at, []LineSpec{
 		{Account: domain.AcctRentRevenue, Debit: amountPaise, LineKind: "correction_reversal_dr"},
 		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "correction_reversal_cr"},
+	})
+	if err != nil {
+		return err
+	}
+	err = s.Store.InsertJournal(ctx, lines)
+	if err == ErrDuplicateIdempotency {
+		return nil
+	}
+	return err
+}
+
+// MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
+// Dr refund_payable (amountPaise)
+// Cr cash (amountPaise)
+func (s *Service) MirrorCashRefundDisbursed(ctx context.Context, propertyID, departureID uuid.UUID, amountPaise int64, at time.Time) error {
+	if s == nil || s.Store == nil || amountPaise <= 0 {
+		return nil
+	}
+	if at.IsZero() {
+		at = s.Now()
+	}
+	lines, err := MakeLines(propertyID, departureID, "cash_refund_disbursed", at, []LineSpec{
+		{Account: domain.AcctRefundPayable, Debit: amountPaise, LineKind: "cash_refund_paid"},
+		{Account: domain.AcctCash, Credit: amountPaise, LineKind: "cash_out"},
 	})
 	if err != nil {
 		return err

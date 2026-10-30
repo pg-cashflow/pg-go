@@ -116,12 +116,14 @@ func TestLivePayoutDispatcher(t *testing.T) {
 	}
 
 	// Create and approve batch
+	signingKey := []byte("secret-key-that-is-at-least-32-bytes-long-for-hmac")
+	approvalKeys := map[string][]byte{"v1": signingKey}
 	batchNum := fmt.Sprintf("BATCH-DISP-%s", uuid.New().String()[:8])
 	batch, _, err := payoutRepo.CreateBatchFromUnbatchedItems(ctx, propID, ownerID, batchNum, []byte("secret"), nil)
 	if err != nil {
 		t.Fatalf("create batch: %v", err)
 	}
-	batch, err = payoutRepo.ApproveBatch(ctx, batch.ID, ownerID)
+	batch, _, err = payoutRepo.ApproveBatchSigned(ctx, propID, batch.ID, ownerID, signingKey, "v1")
 	if err != nil {
 		t.Fatalf("approve batch: %v", err)
 	}
@@ -167,6 +169,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		client.SetBaseOverride(srv.URL)
 
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		if err := dispatcher.DispatchBatch(ctx, batch.ID); err != nil {
 			t.Fatalf("dispatch batch: %v", err)
 		}
@@ -213,6 +216,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		client.SetBaseOverride(srv.URL)
 
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil {
 			t.Fatal("expected error on 5xx, got nil")
@@ -242,9 +246,24 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			FundsourceID: "fund_01",
 		})
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil || !strings.Contains(err.Error(), "not verified") {
 			t.Fatalf("expected error containing 'not verified', got: %v", err)
+		}
+	})
+
+	t.Run("DispatchBatch_NoApprovalKeys_FailsClosed", func(t *testing.T) {
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID:     "cid",
+			ClientSecret: "csec",
+			FundsourceID: "fund_01",
+		})
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		// deliberately omit SetApprovalSigningKeys
+		err := dispatcher.DispatchBatch(ctx, batch.ID)
+		if err == nil || !strings.Contains(err.Error(), "approval signing keys not configured") {
+			t.Fatalf("expected error containing 'approval signing keys not configured', got: %v", err)
 		}
 	})
 

@@ -49,6 +49,15 @@ func (m *testMirrorer) MirrorDepartureSettlement(
 	return nil
 }
 
+func (m *testMirrorer) MirrorCashRefundDisbursed(
+	ctx context.Context,
+	propertyID, departureID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	return nil
+}
+
 func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)

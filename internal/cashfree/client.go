@@ -227,7 +227,11 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree fetch refund: %s %s", resp.Status, string(b))
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
 	}
 	var raw struct {
 		CFRefundID   json.Number `json:"cf_refund_id"`

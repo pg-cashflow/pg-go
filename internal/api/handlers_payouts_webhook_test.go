@@ -96,9 +96,16 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 	router := gin.New()
 	router.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
+	tenantID := uuid.New()
+	_, _ = pool.Exec(ctx, `INSERT INTO tenants (id, property_id, name, rent_amount, due_day, status) VALUES ($1, $2, 'Departing Tenant', 1000000, 5, 'active')`, tenantID, propID)
+	defer func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, tenantID)
+	}()
+
 	// Create a test payee and items
 	payee := &domain.PayoutPayee{
 		PropertyID:        propID,
+		TenantID:          &tenantID,
 		PayeeType:         domain.PayeeTypeTenantDeposit,
 		Name:              "Departing Tenant",
 		AccountNumberHash: domain.ComputeAccountHash([]byte("salt"), "tenant@upi"),

@@ -96,7 +96,6 @@ type PaymentService interface {
 	SuggestMatch(ctx context.Context, propertyID uuid.UUID, amountPaise int64, txnDate time.Time, note string) (*payment.MatchResult, error)
 	ManualMatch(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, recordedBy uuid.UUID) (*domain.Payment, error)
 	MarkCashPaid(ctx context.Context, dueID uuid.UUID, amountPaise int64, recordedBy uuid.UUID, note string) (*domain.Payment, error)
-	SettleDeposit(ctx context.Context, tenantID uuid.UUID, refundedPaise int64, reason string) error
 	BuildSummary(ctx context.Context, propertyID uuid.UUID, period string) (*payment.ReconciliationSummary, error)
 	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error)
 	VerifyPayment(ctx context.Context, in payment.VerifyPaymentInput) (*domain.Payment, error)

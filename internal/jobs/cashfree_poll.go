@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -215,7 +216,8 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		}
 		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
-			isNotFound := strings.Contains(err.Error(), "404") || strings.Contains(strings.ToLower(err.Error()), "not found")
+			var apiErr *cashfree.APIError
+			isNotFound := errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute && hasVerifiedOrderID {
 				log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
 					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)

@@ -206,6 +206,18 @@ func (m *mockMirrorer) MirrorPayoutSettled(
 	return nil
 }
 
+func (m *mockMirrorer) MirrorCashRefundDisbursed(
+	ctx context.Context,
+	propertyID, departureID uuid.UUID,
+	amountPaise int64,
+	at time.Time,
+) error {
+	if m.fail {
+		return errors.New("simulated mirror cash refund disbursed failure")
+	}
+	return nil
+}
+
 func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)

@@ -27,7 +27,6 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/tenants/:id/vacate", h.TenantVacate)
 	owner.POST("/tenants/:id/attach-phone", h.TenantAttachPhone)
 	owner.POST("/tenants/:id/prorate", h.TenantProrate)
-	owner.POST("/tenants/:id/deposit/settle", h.TenantDepositSettle)
 	owner.GET("/tenants/:id/id-photo", h.TenantIDPhoto)
 
 	owner.GET("/dues", h.ListDues)
@@ -143,6 +142,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/departures/:id/inspect", h.OwnerInspectDeparture)
 	owner.POST("/departures/:id/deductions", h.OwnerAddDepartureDeduction)
 	owner.POST("/departures/:id/settle", h.OwnerSettleDeparture)
+	owner.POST("/departures/:id/disburse-cash", h.OwnerDisburseDepartureCash)
 
 	owner.POST("/payouts/payees", h.OwnerCreatePayee)
 	owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)

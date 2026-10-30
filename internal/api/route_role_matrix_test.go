@@ -75,7 +75,6 @@ var exactPublicPaths = map[string]bool{
 	"/api/auth/refresh":                true,
 	"/api/auth/logout":                 true,
 	"/api/locales":                     true,
-	"/api/public/cashfree/kyc/webhook": true,
 }
 
 // classifyRoute maps a route to its contract-defined access. It returns false

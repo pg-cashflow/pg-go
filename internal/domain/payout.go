@@ -22,6 +22,7 @@ const (
 type PayoutPayee struct {
 	ID                     uuid.UUID  `json:"id"`
 	PropertyID             uuid.UUID  `json:"property_id"`
+	TenantID               *uuid.UUID `json:"tenant_id,omitempty"`
 	PayeeType              PayeeType  `json:"payee_type"`
 	Name                   string     `json:"name"`
 	Phone                  *string    `json:"phone,omitempty"`
@@ -75,6 +76,10 @@ type TenantDeparture struct {
 	ReceivableBalancePaise     int64           `json:"receivable_balance_paise"`
 	Status                     DepartureStatus `json:"status"`
 	Notes                      *string         `json:"notes,omitempty"`
+	SettlementMode             string          `json:"settlement_mode"`
+	CashReceiptRef             *string         `json:"cash_receipt_ref,omitempty"`
+	CashDisbursedAt            *time.Time      `json:"cash_disbursed_at,omitempty"`
+	CashDisbursedBy            *uuid.UUID      `json:"cash_disbursed_by,omitempty"`
 	CreatedAt                  time.Time       `json:"created_at"`
 	UpdatedAt                  time.Time       `json:"updated_at"`
 }
