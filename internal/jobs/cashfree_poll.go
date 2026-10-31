@@ -17,7 +17,7 @@ import (
 
 const (
 	CashfreePollStale       = 10 * time.Minute
-	CashfreeRefundPollStale = 1 * time.Hour
+	CashfreeRefundPollStale = 2 * time.Minute
 )
 
 type IntentStaleLister interface {

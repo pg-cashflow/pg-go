@@ -327,6 +327,41 @@ func (s *mockRefundTenantStore) GetIDPhoto(context.Context, uuid.UUID) ([]byte, 
 	return nil, nil
 }
 
+type refundStepUpUserStore struct {
+	owners []domain.User
+	user   *domain.User
+}
+
+func (s *refundStepUpUserStore) Create(context.Context, *domain.User) error { return nil }
+func (s *refundStepUpUserStore) GetByPhone(context.Context, string) (*domain.User, error) {
+	if s.user != nil {
+		return s.user, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (s *refundStepUpUserStore) GetByPropertyAndRole(context.Context, uuid.UUID, domain.Role) ([]domain.User, error) {
+	return s.owners, nil
+}
+func (s *refundStepUpUserStore) GetByID(context.Context, uuid.UUID) (*domain.User, error) {
+	if s.user != nil {
+		return s.user, nil
+	}
+	return nil, domain.ErrNotFound
+}
+func (s *refundStepUpUserStore) SetPropertyID(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+
+type refundStepUpAuthService struct {
+	stubPayoutAuthService
+	validOTP string
+}
+
+func (a *refundStepUpAuthService) VerifyStepUpOTPSpecific(_ context.Context, _ string, otp, _ string, _ *uuid.UUID) error {
+	if otp == a.validOTP && otp != "" {
+		return nil
+	}
+	return auth.ErrInvalidOTP
+}
+
 func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 	if h.UserStore == nil {
 		h.UserStore = &mockDualControlUserStore{
@@ -630,6 +665,108 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r.ServeHTTP(rec3, req3)
 		if rec3.Code != http.StatusConflict {
 			t.Fatalf("expected 409 Conflict on idempotency key mismatch, got %d: %s", rec3.Code, rec3.Body.String())
+		}
+	})
+
+	// 4b. Idempotency Replay with Step-Up: retry after dropped connection does not require a fresh code
+	t.Run("idempotency retry succeeds without valid step-up code on second call", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		testOwner := &domain.User{
+			ID:         userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+			Phone:      "+919876543210",
+		}
+		userStore := &refundStepUpUserStore{
+			owners: []domain.User{*testOwner}, // Solo owner enforces step-up
+			user:   testOwner,
+		}
+		authSvc := &refundStepUpAuthService{validOTP: "654321"}
+
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+			UserStore:          userStore,
+			Auth:               authSvc,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		bodyWithOTP := map[string]any{
+			"amount_paise": 250000,
+			"reason":       "Step up test refund",
+			"otp":          "654321",
+		}
+		bufWithOTP, _ := json.Marshal(bodyWithOTP)
+
+		// Call 1: valid OTP -> succeeds with 200 OK
+		req1 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(bufWithOTP))
+		req1.Header.Set("Content-Type", "application/json")
+		req1.Header.Set("Idempotency-Key", "idem_stepup_retry_key")
+		rec1 := httptest.NewRecorder()
+		r.ServeHTTP(rec1, req1)
+		if rec1.Code != http.StatusOK {
+			t.Fatalf("first call with valid OTP failed: %d: %s", rec1.Code, rec1.Body.String())
+		}
+
+		// Call 2: retry of same idempotency key with INVALID/EMPTY OTP -> must still return 200 OK with the refund
+		bodyNoOTP := map[string]any{
+			"amount_paise": 250000,
+			"reason":       "Step up test refund",
+			"otp":          "", // empty OTP (already consumed on initial attempt)
+		}
+		bufNoOTP, _ := json.Marshal(bodyNoOTP)
+
+		req2 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(bufNoOTP))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.Header.Set("Idempotency-Key", "idem_stepup_retry_key")
+		rec2 := httptest.NewRecorder()
+		r.ServeHTTP(rec2, req2)
+		if rec2.Code != http.StatusOK {
+			t.Fatalf("retry with same idempotency key and empty OTP failed: %d: %s", rec2.Code, rec2.Body.String())
+		}
+
+		// Gateway must only have been called once
+		if cfClient.refundCalls != 1 {
+			t.Fatalf("expected exactly 1 Cashfree call, got %d", cfClient.refundCalls)
+		}
+
+		// Call 3: NEW idempotency key with empty OTP must be rejected with 401 Unauthorized
+		req3 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(bufNoOTP))
+		req3.Header.Set("Content-Type", "application/json")
+		req3.Header.Set("Idempotency-Key", "idem_stepup_new_key")
+		rec3 := httptest.NewRecorder()
+		r.ServeHTTP(rec3, req3)
+		if rec3.Code != http.StatusUnauthorized {
+			t.Fatalf("new refund request with empty OTP expected 401 Unauthorized, got %d: %s", rec3.Code, rec3.Body.String())
 		}
 	})
 

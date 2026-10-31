@@ -421,11 +421,6 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	// Cryptographic step-up / dual-control enforcement
-	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
-		return
-	}
-
 	// Gateway check: Only cashfree provider payments can be refunded via PG API
 	if p.Provider != "cashfree" && p.MatchedBy != domain.MatchedByCashfree {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only cashfree gateway payments can be refunded via gateway"})
@@ -468,6 +463,12 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 			return
 		}
 		c.JSON(http.StatusOK, existingRef)
+		return
+	}
+
+	// Cryptographic step-up / dual-control enforcement. Runs after the idempotent replay
+	// lookup above, so a retry of a completed request does not need a fresh one-time code.
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
 		return
 	}
 
@@ -596,8 +597,14 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
 	dbCtx := context.WithoutCancel(ctx)
 	if settleErr := runner.SettleRefund(dbCtx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
-		slog.Error("refund post-settlement failed", "error", settleErr, "refund_id", rfRow.ID)
-		respondErr(c, fmt.Errorf("post-settlement transaction failed: %w", settleErr))
+		// The gateway already accepted the refund. Do not report a failure: the row stays
+		// non-terminal and the webhook or the poll job settles it from the gateway state.
+		slog.Error("refund post-settlement failed; gateway accepted refund, reconciliation will settle",
+			"error", settleErr, "refund_id", rfRow.ID, "cf_refund_id", cfResp.CFRefundID)
+		c.JSON(http.StatusAccepted, gin.H{
+			"message": "refund accepted by gateway; ledger update in progress",
+			"refund":  rfRow,
+		})
 		return
 	}
 
