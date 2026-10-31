@@ -59,6 +59,7 @@ type Deps struct {
 	CashfreeClient CashfreeClient
 
 	GatewayPaymentRepo  GatewayPaymentRepo
+	UnmatchedReceipts   UnmatchedReceiptStore
 	WebhookToleranceSec int
 	WebhookAPIVersion   string
 	Pool                *pgxpool.Pool
@@ -163,6 +164,12 @@ func NewRouter(d Deps) *gin.Engine {
 
 	if legacyAppShellEnabled(d) {
 		r.Use(legacypwa.Handler())
+	}
+
+	if d.UnmatchedReceipts == nil && d.GatewayPaymentRepo != nil {
+		if u, ok := d.GatewayPaymentRepo.(UnmatchedReceiptStore); ok {
+			d.UnmatchedReceipts = u
+		}
 	}
 
 	h := &Handlers{Deps: d}

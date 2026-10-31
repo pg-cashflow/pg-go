@@ -85,6 +85,7 @@ func TestAPIContract_ListEnvelopes(t *testing.T) {
 		"items",
 		"batches",
 		"settlements",
+		"unapplied_receipts",
 	}
 
 	for _, envelope := range expectedEnvelopes {

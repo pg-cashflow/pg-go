@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
@@ -178,12 +179,67 @@ func (h *Handlers) TenantPayments(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	list, err := h.PaymentStore.ListByTenant(c.Request.Context(), t.ID)
+	ctx := c.Request.Context()
+	list, err := h.PaymentStore.ListByTenant(ctx, t.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list failed"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"payments": list})
+
+	type TenantPaymentResponseItem struct {
+		domain.Payment
+		UIStatus      string `json:"ui_status,omitempty"`
+		StatusMessage string `json:"status_message,omitempty"`
+	}
+
+	knownPaymentIDs := make(map[uuid.UUID]bool)
+	respPayments := make([]TenantPaymentResponseItem, 0, len(list))
+	for _, p := range list {
+		knownPaymentIDs[p.ID] = true
+		item := TenantPaymentResponseItem{Payment: p}
+		if p.IsUnapplied {
+			item.UIStatus = "HELD_UNAPPLIED"
+			item.StatusMessage = domain.TenantUIStatusHeld
+		}
+		respPayments = append(respPayments, item)
+	}
+
+	// Also surface held/resolving unmatched receipts that have not created a payment row yet (e.g. amount mismatch)
+	var heldReceipts []domain.UnmatchedGatewayReceipt
+	if h.UnmatchedReceipts != nil {
+		receipts, err := h.UnmatchedReceipts.ListUnmatchedReceiptsByTenant(ctx, t.ID)
+		if err == nil {
+			for _, r := range receipts {
+				if r.Status == domain.ReceiptStatusHeld || r.Status == domain.ReceiptStatusResolving {
+					heldReceipts = append(heldReceipts, r)
+					if r.PaymentID == nil || !knownPaymentIDs[*r.PaymentID] {
+						var cfPaymentID *string
+						if r.ProviderPaymentID != "" {
+							cfPaymentID = &r.ProviderPaymentID
+						}
+						respPayments = append(respPayments, TenantPaymentResponseItem{
+							Payment: domain.Payment{
+								ID:          r.ID,
+								TenantID:    t.ID,
+								Amount:      r.AmountPaise,
+								Provider:    r.Provider,
+								CFPaymentID: cfPaymentID,
+								IsUnapplied: true,
+								CreatedAt:   r.CreatedAt,
+							},
+							UIStatus:      "HELD_UNAPPLIED",
+							StatusMessage: domain.TenantUIStatusHeld,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"payments":           respPayments,
+		"unapplied_receipts": heldReceipts,
+	})
 }
 
 // TenantPaymentReceipt handles GET /tenant/payments/:id/receipt (read-only receipt payload).

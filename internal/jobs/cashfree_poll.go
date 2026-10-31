@@ -92,6 +92,14 @@ func (j *CashfreePollJob) Run(ctx context.Context) error {
 	return nil
 }
 
+// RunRefundsOnly executes the refund polling and reconciliation cycle for ambiguous non-terminal refunds.
+func (j *CashfreePollJob) RunRefundsOnly(ctx context.Context) error {
+	if j.Refunds != nil && j.RefundClient != nil {
+		return j.runRefunds(ctx)
+	}
+	return nil
+}
+
 func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 	log := j.Log
 	if log == nil {

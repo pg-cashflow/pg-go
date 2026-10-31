@@ -525,6 +525,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		adminEmail:      cfg.AdminEmail,
 		adminPhone:      cfg.AdminPhone,
 		smsGateway:      gateway,
+		cfClient:        cfClient,
+		paymentRepo:     maintPaymentRepo,
 	}
 
 	cleanup := func() {
@@ -560,6 +562,8 @@ type backgroundConfig struct {
 	adminEmail      string
 	adminPhone      string
 	smsGateway      sms.SMSGateway
+	cfClient        *cashfree.Client
+	paymentRepo     *postgres.PaymentRepo
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -643,6 +647,38 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 					} else if n > 0 {
 						bg.logger.Info("payout poller reconciled batches", "count", n)
 					}
+				}
+			}
+		}()
+	}
+
+	if bg.cfClient != nil && bg.paymentRepo != nil {
+		bg.logger.Info("cashfree refund poller started", "interval", "5m", "stale_after", "15m")
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "cashfree_refund_poller")
+					if err != nil {
+						bg.logger.Error("cashfree refund poller lock failed", "err", err)
+						continue
+					}
+					if !acquired {
+						continue
+					}
+					job := &jobs.CashfreePollJob{
+						Refunds:      bg.paymentRepo,
+						RefundClient: bg.cfClient,
+						Log:          bg.logger,
+					}
+					if err := job.RunRefundsOnly(ctx); err != nil && !errors.Is(err, context.Canceled) {
+						bg.logger.Error("cashfree refund poller finished with error", "err", err)
+					}
+					_ = release(ctx)
 				}
 			}
 		}()

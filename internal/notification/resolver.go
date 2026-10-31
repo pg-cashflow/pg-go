@@ -104,6 +104,14 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtPaymentDisputed):
 		return r.toOwner(ctx, evt, "payment_disputed", "🚨 URGENT: A payment dispute/chargeback has been filed.", "/owner/payments")
 
+	// Tenant-directed: unapplied payment received and held awaiting owner resolution
+	case string(domain.EvtUnappliedReceiptHeld):
+		return r.toTenant(ctx, evt, "payment_held", "Payment received. Owner is resolving.", "/tenant/payments")
+
+	// Tenant-directed: unapplied receipt resolved by owner
+	case string(domain.EvtUnappliedReceiptResolved):
+		return r.toTenant(ctx, evt, "payment_resolved", "Your payment has been resolved by the owner.", "/tenant/payments")
+
 	default:
 		// Unknown event type → skip silently. Returning no recipients with no
 		// error is the correct "skip" signal to the dispatcher.

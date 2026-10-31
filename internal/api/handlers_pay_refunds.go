@@ -396,35 +396,40 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: amount_paise must be positive and reason required"})
 		return
 	}
+
+	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
+}
+
+func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
 
 	if h.GatewayPaymentRepo == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
-		return
+		return nil, errors.New("payment repository unavailable")
 	}
 	if h.CashfreeClient == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cashfree client unavailable"})
-		return
+		return nil, errors.New("cashfree client unavailable")
 	}
 
 	// Unlocked Read 1: Resolve payment
 	p, err := h.GatewayPaymentRepo.GetByID(ctx, paymentID)
 	if err != nil || p == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
-		return
+		return nil, errors.New("payment not found")
 	}
 
 	// Verify tenant belongs to property
 	tenant, err := h.TenantStore.GetByID(ctx, p.TenantID)
 	if err != nil || tenant == nil || tenant.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found for property"})
-		return
+		return nil, errors.New("payment not found for property")
 	}
 
 	// Gateway check: Only cashfree provider payments can be refunded via PG API
 	if p.Provider != "cashfree" && p.MatchedBy != domain.MatchedByCashfree {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "only cashfree gateway payments can be refunded via gateway"})
-		return
+		return nil, errors.New("invalid provider")
 	}
 
 	// 180-day eligibility window check
@@ -435,7 +440,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 	if now.Sub(paymentTime) > 180*24*time.Hour {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "payment is older than 180 days and cannot be refunded via gateway"})
-		return
+		return nil, errors.New("older than 180 days")
 	}
 
 	// Idempotency key handling: standard Idempotency-Key with X-Idempotency-Key fallback
@@ -445,11 +450,11 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 	if idempotencyKey == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header is required for refund operations"})
-		return
+		return nil, errors.New("missing idempotency key")
 	}
 	if len(idempotencyKey) > 128 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header cannot exceed 128 characters"})
-		return
+		return nil, errors.New("idempotency key too long")
 	}
 
 	// Unlocked Read 2: Check if already initiated/completed with this idempotency key
@@ -460,16 +465,16 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				"error": "idempotency key conflict: refund already exists with different amount or reason",
 				"code":  "IDEMPOTENCY_CONFLICT",
 			})
-			return
+			return nil, errors.New("idempotency conflict")
 		}
 		c.JSON(http.StatusOK, existingRef)
-		return
+		return existingRef, nil
 	}
 
 	// Cryptographic step-up / dual-control enforcement. Runs after the idempotent replay
 	// lookup above, so a retry of a completed request does not need a fresh one-time code.
 	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
-		return
+		return nil, errors.New("step up verification failed")
 	}
 
 	// Resolve Cashfree Order ID
@@ -486,7 +491,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 	if orderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot resolve gateway order ID for payment refund"})
-		return
+		return nil, errors.New("cannot resolve gateway order ID")
 	}
 
 	// Deterministic 34-character refund reference: rf<32_char_hex_uuid>
@@ -518,7 +523,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	runner := h.getRefundTxRunner()
 	if runner == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database pool unavailable"})
-		return
+		return nil, errors.New("database pool unavailable")
 	}
 
 	allocationsToCreate, err := runner.PrepareRefund(ctx, pid, p, req, rfRow)
@@ -526,10 +531,10 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		var vErr *refundValidationErr
 		if errors.As(err, &vErr) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": vErr.msg})
-			return
+			return nil, err
 		}
 		respondErr(c, err)
-		return
+		return nil, err
 	}
 
 	// Always resolve canonical refund reference from rfRow
@@ -542,7 +547,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	if rfRow.ID != originalRefundID {
 		if isTerminalRefund(rfRow.Status) || (rfRow.CFRefundID != nil && *rfRow.CFRefundID != "") {
 			c.JSON(http.StatusOK, rfRow)
-			return
+			return rfRow, nil
 		}
 		// Adopted row in non-terminal state without gateway ID: return 202.
 		// Do not call gateway again to avoid race and empty allocations.
@@ -550,7 +555,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
 			"refund":  rfRow,
 		})
-		return
+		return rfRow, nil
 	}
 
 	// Step C: External Gateway Call (ZERO row locks held during external I/O)
@@ -575,7 +580,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 				errMsg = apiErr.Error()
 			}
 			respondErr(c, clientErr(http.StatusBadGateway, fmt.Sprintf("gateway refund rejected: %s", errMsg)))
-			return
+			return nil, cfErr
 		}
 
 		// Ambiguous gateway failure (timeout, dropped connection, 5xx, 429, or 409 conflict).
@@ -585,7 +590,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
 			"refund":  rfRow,
 		})
-		return
+		return rfRow, nil
 	}
 
 	// Update status and provider IDs from gateway response
@@ -597,15 +602,13 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
 	dbCtx := context.WithoutCancel(ctx)
 	if settleErr := runner.SettleRefund(dbCtx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
-		// The gateway already accepted the refund. Do not report a failure: the row stays
-		// non-terminal and the webhook or the poll job settles it from the gateway state.
 		slog.Error("refund post-settlement failed; gateway accepted refund, reconciliation will settle",
 			"error", settleErr, "refund_id", rfRow.ID, "cf_refund_id", cfResp.CFRefundID)
 		c.JSON(http.StatusAccepted, gin.H{
 			"message": "refund accepted by gateway; ledger update in progress",
 			"refund":  rfRow,
 		})
-		return
+		return rfRow, nil
 	}
 
 	if rfRow.Status == "succeeded" && h.Referrals != nil {
@@ -617,4 +620,5 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, rfRow)
+	return rfRow, nil
 }

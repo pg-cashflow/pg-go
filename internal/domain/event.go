@@ -38,6 +38,8 @@ const (
 	EvtPaymentReportSubmitted EventType = "PaymentReportSubmitted"
 	EvtPaymentReportRejected  EventType = "PaymentReportRejected"
 	EvtPaymentDisputed        EventType = "PaymentDisputed"
+	EvtUnappliedReceiptHeld     EventType = "UnappliedReceiptHeld"
+	EvtUnappliedReceiptResolved EventType = "UnappliedReceiptResolved"
 
 	// Gamification events
 	EvtPointsAwarded        EventType = "PointsAwarded"

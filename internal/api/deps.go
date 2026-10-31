@@ -279,6 +279,21 @@ type GatewayPaymentRepo interface {
 	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
 }
 
+// UnmatchedReceiptStore manages unmatched and unapplied gateway receipts requiring owner resolution.
+type UnmatchedReceiptStore interface {
+	GetUnmatchedReceiptByID(ctx context.Context, id uuid.UUID) (*domain.UnmatchedGatewayReceipt, error)
+	GetUnmatchedReceiptByPaymentID(ctx context.Context, paymentID uuid.UUID) (*domain.UnmatchedGatewayReceipt, error)
+	GetUnmatchedReceiptByProviderPaymentID(ctx context.Context, provider, providerPaymentID string) (*domain.UnmatchedGatewayReceipt, error)
+	ListUnmatchedReceipts(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.UnmatchedGatewayReceipt, error)
+	ListUnmatchedReceiptsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.UnmatchedGatewayReceipt, error)
+	ResolveUnmatchedReceiptAsCredit(ctx context.Context, receiptID uuid.UUID, resolvedBy uuid.UUID, idempotencyKey string, notes string) (*domain.Payment, error)
+	MarkUnmatchedReceiptResolving(ctx context.Context, receiptID uuid.UUID, idempotencyKey string, notes string) error
+	LinkUnmatchedReceiptRefund(ctx context.Context, receiptID uuid.UUID, refundID uuid.UUID) error
+	LinkUnmatchedReceiptPayment(ctx context.Context, receiptID uuid.UUID, paymentID uuid.UUID) error
+	MarkUnmatchedReceiptHeldNotified(ctx context.Context, receiptID uuid.UUID) error
+	MarkUnmatchedReceiptResolutionNotified(ctx context.Context, receiptID uuid.UUID) error
+}
+
 type CashfreeClient interface {
 	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)

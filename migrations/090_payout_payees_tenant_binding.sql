@@ -27,10 +27,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_payee_general
     WHERE payee_type NOT IN ('tenant_deposit', 'guardian_deposit');
 
 -- 4. Clean orphan dev/test payees without tenant_id that would fail validation
+UPDATE payout_payees p
+SET tenant_id = td.tenant_id
+FROM payout_items pi
+JOIN tenant_departures td ON td.id = pi.departure_id
+WHERE pi.payee_id = p.id 
+  AND p.tenant_id IS NULL 
+  AND p.payee_type IN ('tenant_deposit', 'guardian_deposit');
+
+UPDATE payout_payees p
+SET tenant_id = (SELECT t.id FROM tenants t WHERE t.property_id = p.property_id LIMIT 1)
+WHERE p.tenant_id IS NULL 
+  AND p.payee_type IN ('tenant_deposit', 'guardian_deposit')
+  AND EXISTS (SELECT 1 FROM tenants t WHERE t.property_id = p.property_id);
+
+DELETE FROM payout_items
+WHERE payee_id IN (
+    SELECT id FROM payout_payees 
+    WHERE payee_type IN ('tenant_deposit', 'guardian_deposit') AND tenant_id IS NULL
+);
+
 DELETE FROM payout_payees 
 WHERE payee_type IN ('tenant_deposit', 'guardian_deposit') 
-  AND tenant_id IS NULL
-  AND NOT EXISTS (SELECT 1 FROM payout_items WHERE payout_items.payee_id = payout_payees.id);
+  AND tenant_id IS NULL;
 
 -- 5. Add scoped check constraint for deposit payees
 ALTER TABLE payout_payees ADD CONSTRAINT chk_payee_tenant_link
@@ -40,4 +59,3 @@ ALTER TABLE payout_payees ADD CONSTRAINT chk_payee_tenant_link
     ) NOT VALID;
 
 ALTER TABLE payout_payees VALIDATE CONSTRAINT chk_payee_tenant_link;
-

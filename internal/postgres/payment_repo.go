@@ -358,11 +358,302 @@ func (r *PaymentRepo) UpdateWebhookEventStatus(ctx context.Context, id uuid.UUID
 
 func (r *PaymentRepo) RecordUnmatchedReceipt(ctx context.Context, orderID, paymentID string, intentID *uuid.UUID, amountPaise int64, failureReason string, payload []byte) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO unmatched_gateway_receipts (provider, provider_order_id, provider_payment_id, cf_payment_id, payment_intent_id, amount_paise, failure_reason, raw_payload, created_at)
-		VALUES ('cashfree', $1, $2, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO unmatched_gateway_receipts (
+			provider, provider_order_id, provider_payment_id, cf_payment_id,
+			payment_intent_id, due_id, property_id, tenant_id,
+			amount_paise, failure_reason, raw_payload, status, created_at, updated_at
+		)
+		SELECT
+			'cashfree', $1, $2, $2,
+			pi.id, d.id, d.property_id, d.tenant_id,
+			$4, $5, $6, 'held', NOW(), NOW()
+		FROM (SELECT 1) AS dummy
+		LEFT JOIN LATERAL (
+			SELECT id, due_id FROM payment_intents
+			WHERE (id = $3 OR ($3 IS NULL AND provider_order_id = $1))
+			ORDER BY created_at DESC LIMIT 1
+		) pi ON true
+		LEFT JOIN dues d ON d.id = pi.due_id
 		ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
 		orderID, paymentID, intentID, amountPaise, failureReason, payload)
 	return err
+}
+
+const unmatchedReceiptCols = `id, property_id, payment_intent_id, due_id, tenant_id, payment_id, provider, provider_order_id, provider_payment_id, cf_payment_id, amount_paise, currency, payment_method, failure_reason, raw_payload, status, resolved_at, resolved_by, resolution_action, resolution_refund_id, resolution_idempotency_key, resolution_notes, held_notified_at, resolution_notified_at, created_at, updated_at`
+
+func scanUnmatchedReceipt(row pgx.Row) (*domain.UnmatchedGatewayReceipt, error) {
+	var r domain.UnmatchedGatewayReceipt
+	err := row.Scan(
+		&r.ID, &r.PropertyID, &r.PaymentIntentID, &r.DueID, &r.TenantID, &r.PaymentID,
+		&r.Provider, &r.ProviderOrderID, &r.ProviderPaymentID, &r.CFPaymentID,
+		&r.AmountPaise, &r.Currency, &r.PaymentMethod, &r.FailureReason, &r.RawPayload,
+		&r.Status, &r.ResolvedAt, &r.ResolvedBy, &r.ResolutionAction, &r.ResolutionRefundID,
+		&r.ResolutionIdempotencyKey, &r.ResolutionNotes, &r.HeldNotifiedAt,
+		&r.ResolutionNotifiedAt, &r.CreatedAt, &r.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if r.ProviderPaymentID == "" && r.CFPaymentID != nil {
+		r.ProviderPaymentID = *r.CFPaymentID
+	}
+	if r.CFPaymentID == nil && r.ProviderPaymentID != "" {
+		r.CFPaymentID = &r.ProviderPaymentID
+	}
+	return &r, nil
+}
+
+func (r *PaymentRepo) GetUnmatchedReceiptByID(ctx context.Context, id uuid.UUID) (*domain.UnmatchedGatewayReceipt, error) {
+	return scanUnmatchedReceipt(r.db.QueryRow(ctx, `SELECT `+unmatchedReceiptCols+` FROM unmatched_gateway_receipts WHERE id=$1`, id))
+}
+
+func (r *PaymentRepo) GetUnmatchedReceiptByPaymentID(ctx context.Context, paymentID uuid.UUID) (*domain.UnmatchedGatewayReceipt, error) {
+	return scanUnmatchedReceipt(r.db.QueryRow(ctx, `SELECT `+unmatchedReceiptCols+` FROM unmatched_gateway_receipts WHERE payment_id=$1`, paymentID))
+}
+
+func (r *PaymentRepo) GetUnmatchedReceiptByProviderPaymentID(ctx context.Context, provider, providerPaymentID string) (*domain.UnmatchedGatewayReceipt, error) {
+	return scanUnmatchedReceipt(r.db.QueryRow(ctx, `SELECT `+unmatchedReceiptCols+` FROM unmatched_gateway_receipts WHERE provider=$1 AND (provider_payment_id=$2 OR cf_payment_id=$2)`, provider, providerPaymentID))
+}
+
+func (r *PaymentRepo) ListUnmatchedReceipts(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.UnmatchedGatewayReceipt, error) {
+	query := `SELECT ` + unmatchedReceiptCols + ` FROM unmatched_gateway_receipts WHERE property_id = $1`
+	var rows pgx.Rows
+	var err error
+	if status != "" {
+		query += ` AND status = $2 ORDER BY created_at ASC`
+		rows, err = r.db.Query(ctx, query, propertyID, status)
+	} else {
+		query += ` ORDER BY created_at ASC`
+		rows, err = r.db.Query(ctx, query, propertyID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []domain.UnmatchedGatewayReceipt
+	for rows.Next() {
+		item, err := scanUnmatchedReceipt(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, *item)
+	}
+	return list, rows.Err()
+}
+
+func (r *PaymentRepo) ListUnmatchedReceiptsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.UnmatchedGatewayReceipt, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT `+unmatchedReceiptCols+`
+		FROM unmatched_gateway_receipts
+		WHERE tenant_id = $1
+		ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []domain.UnmatchedGatewayReceipt
+	for rows.Next() {
+		item, err := scanUnmatchedReceipt(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, *item)
+	}
+	return list, rows.Err()
+}
+
+func (r *PaymentRepo) MarkUnmatchedReceiptResolving(ctx context.Context, receiptID uuid.UUID, idempotencyKey string, notes string) error {
+	res, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET status = 'resolving',
+		    resolution_idempotency_key = $1,
+		    resolution_notes = $2,
+		    updated_at = NOW()
+		WHERE id = $3 AND status = 'held'`,
+		idempotencyKey, notes, receiptID)
+	if err != nil {
+		return err
+	}
+	if res.RowsAffected() == 0 {
+		return errors.New("receipt is not in held status or does not exist")
+	}
+	return nil
+}
+
+func (r *PaymentRepo) LinkUnmatchedReceiptRefund(ctx context.Context, receiptID uuid.UUID, refundID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET resolution_refund_id = $1,
+		    updated_at = NOW()
+		WHERE id = $2`, refundID, receiptID)
+	return err
+}
+
+func (r *PaymentRepo) LinkUnmatchedReceiptPayment(ctx context.Context, receiptID uuid.UUID, paymentID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET payment_id = $1,
+		    updated_at = NOW()
+		WHERE id = $2`, paymentID, receiptID)
+	return err
+}
+
+func (r *PaymentRepo) MarkUnmatchedReceiptHeldNotified(ctx context.Context, receiptID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET held_notified_at = NOW(), updated_at = NOW()
+		WHERE id = $1`, receiptID)
+	return err
+}
+
+func (r *PaymentRepo) MarkUnmatchedReceiptResolutionNotified(ctx context.Context, receiptID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET resolution_notified_at = NOW(), updated_at = NOW()
+		WHERE id = $1`, receiptID)
+	return err
+}
+
+func (r *PaymentRepo) ResolveUnmatchedReceiptAsCredit(ctx context.Context, receiptID uuid.UUID, resolvedBy uuid.UUID, idempotencyKey string, notes string) (*domain.Payment, error) {
+	pool, isPool := r.db.(*pgxpool.Pool)
+	if isPool {
+		var res *domain.Payment
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var err error
+			res, err = r.WithTx(tx).ResolveUnmatchedReceiptAsCredit(ctx, receiptID, resolvedBy, idempotencyKey, notes)
+			return err
+		})
+		return res, err
+	}
+
+	tx, ok := r.db.(pgx.Tx)
+	if !ok {
+		return nil, errors.New("database connection does not support transactions")
+	}
+
+	row := tx.QueryRow(ctx, `SELECT `+unmatchedReceiptCols+` FROM unmatched_gateway_receipts WHERE id = $1 FOR UPDATE`, receiptID)
+	receipt, err := scanUnmatchedReceipt(row)
+	if err != nil {
+		return nil, fmt.Errorf("fetch unmatched receipt: %w", err)
+	}
+
+	if receipt.Status == domain.ReceiptStatusResolved {
+		if receipt.ResolutionIdempotencyKey != nil && *receipt.ResolutionIdempotencyKey == idempotencyKey &&
+			receipt.ResolutionAction != nil && *receipt.ResolutionAction == domain.ReceiptActionCredit {
+			if receipt.PaymentID != nil {
+				return r.WithTx(tx).GetByID(ctx, *receipt.PaymentID)
+			}
+		}
+		return nil, fmt.Errorf("receipt %s is already resolved", receiptID)
+	}
+
+	if receipt.TenantID == nil {
+		return nil, errors.New("cannot apply credit: receipt has no tenant assigned")
+	}
+	tenantID := *receipt.TenantID
+
+	var paymentID uuid.UUID
+	var p *domain.Payment
+	if receipt.PaymentID != nil {
+		paymentID = *receipt.PaymentID
+		p, err = r.WithTx(tx).GetByID(ctx, paymentID)
+		if err != nil {
+			return nil, fmt.Errorf("get existing payment: %w", err)
+		}
+		note := "applied as advance credit by owner"
+		if notes != "" {
+			note = notes
+		}
+		_, err = tx.Exec(ctx, `
+			UPDATE payments
+			SET is_unapplied = false, raw_note = $1
+			WHERE id = $2`, note, paymentID)
+		if err != nil {
+			return nil, fmt.Errorf("update payment unapplied status: %w", err)
+		}
+		p.IsUnapplied = false
+		p.RawNote = &note
+	} else {
+		paymentID = uuid.New()
+		note := "applied as advance credit by owner from unmatched receipt"
+		if notes != "" {
+			note = notes
+		}
+		now := time.Now().UTC()
+		var dueID *uuid.UUID = receipt.DueID
+		p = &domain.Payment{
+			ID:                paymentID,
+			PropertyID:        receipt.PropertyID,
+			TenantID:          tenantID,
+			Amount:            receipt.AmountPaise,
+			Provider:          receipt.Provider,
+			ProviderPaymentID: &receipt.ProviderPaymentID,
+			CFPaymentID:       &receipt.ProviderPaymentID,
+			MatchedBy:         domain.MatchedByManual,
+			RecordedBy:        &resolvedBy,
+			MatchedAt:         now,
+			IsUnapplied:       false,
+			RawNote:           &note,
+			CreatedAt:         now,
+		}
+		if dueID != nil {
+			p.DueID = *dueID
+		}
+		_, err = tx.Exec(ctx, `
+			INSERT INTO payments (id, property_id, due_id, tenant_id, amount, provider, provider_payment_id, cf_payment_id, matched_by, recorded_by, matched_at, is_unapplied, raw_note, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			p.ID, p.PropertyID, dueID, p.TenantID, p.Amount, p.Provider, p.ProviderPaymentID, p.CFPaymentID, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.IsUnapplied, p.RawNote, p.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("insert payment from receipt: %w", err)
+		}
+		if receipt.PaymentIntentID != nil {
+			_, _ = tx.Exec(ctx, `UPDATE payment_intents SET status = 'paid', updated_at = NOW() WHERE id = $1 AND status <> 'paid'`, *receipt.PaymentIntentID)
+		}
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE tenants
+		SET credit_balance_paise = credit_balance_paise + $1, updated_at = NOW()
+		WHERE id = $2`, receipt.AmountPaise, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("update tenant credit balance: %w", err)
+	}
+
+	now := time.Now().UTC()
+	action := domain.ReceiptActionCredit
+	_, err = tx.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET status = $1,
+		    resolved_at = $2,
+		    resolved_by = $3,
+		    resolution_action = $4,
+		    resolution_idempotency_key = $5,
+		    resolution_notes = $6,
+		    payment_id = $7,
+		    updated_at = $2
+		WHERE id = $8`,
+		domain.ReceiptStatusResolved, now, resolvedBy, action, idempotencyKey, notes, paymentID, receiptID)
+	if err != nil {
+		return nil, fmt.Errorf("update receipt resolved: %w", err)
+	}
+
+	if receipt.PropertyID != nil {
+		payloadBytes, _ := json.Marshal(map[string]any{
+			"receipt_id":   receiptID,
+			"payment_id":   paymentID,
+			"amount_paise": receipt.AmountPaise,
+			"action":       action,
+		})
+		_, _ = tx.Exec(ctx, `
+			INSERT INTO outbox_events (event_type, property_id, tenant_id, actor_role, payload)
+			VALUES ($1, $2, $3, $4, $5)`,
+			"UnappliedReceiptResolved", *receipt.PropertyID, tenantID, "owner", payloadBytes)
+	}
+
+	return p, nil
 }
 
 const refundCols = `id, payment_id, property_id, provider, provider_refund_id, refund_reference, idempotency_key, amount_paise, status, cf_refund_id, reason, source, initiated_by, raw_response, created_at, updated_at`
@@ -783,11 +1074,24 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 			if err != nil {
 				return fmt.Errorf("enqueue refund ledger outbox in reconcile: %w", err)
 			}
+			_, _ = tx.Exec(ctx, `
+				UPDATE unmatched_gateway_receipts
+				SET status = 'resolved',
+				    resolved_at = NOW(),
+				    resolution_action = 'refunded',
+				    updated_at = NOW()
+				WHERE resolution_refund_id = $1 AND status <> 'resolved'`, ref.ID)
 
 		case "failed", "cancelled":
 			if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, ref.ID); err != nil {
 				return fmt.Errorf("delete refund allocations in reconcile: %w", err)
 			}
+			_, _ = tx.Exec(ctx, `
+				UPDATE unmatched_gateway_receipts
+				SET status = 'held',
+				    resolution_refund_id = NULL,
+				    updated_at = NOW()
+				WHERE resolution_refund_id = $1 AND status = 'resolving'`, ref.ID)
 		}
 		return nil
 	}
