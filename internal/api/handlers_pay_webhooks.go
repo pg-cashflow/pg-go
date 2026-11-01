@@ -142,6 +142,20 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		return
 	}
 
+	// Verify payment status is SUCCESS
+	if status := strings.ToUpper(strings.TrimSpace(succ.PaymentStatus)); status != "" && status != "SUCCESS" {
+		slog.Default().Warn("rejecting payment success webhook with non-success status", "order_id", succ.OrderID, "status", succ.PaymentStatus)
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Verify currency is INR
+	if curr := strings.ToUpper(strings.TrimSpace(succ.PaymentCurrency)); curr != "" && curr != "INR" {
+		slog.Default().Warn("rejecting payment success webhook with non-INR currency", "order_id", succ.OrderID, "currency", succ.PaymentCurrency)
+		c.Status(http.StatusOK)
+		return
+	}
+
 	intent, err := h.IntentStore.GetByOrderID(ctx, succ.OrderID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

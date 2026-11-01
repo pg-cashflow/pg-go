@@ -70,6 +70,19 @@ func (t Tenant) IsPhoneLess() bool {
 	return t.Phone == nil || *t.Phone == ""
 }
 
+// CanSignIn returns true if tenant status permits authentication and session renewal.
+func (t *Tenant) CanSignIn() bool {
+	if t == nil {
+		return false
+	}
+	switch t.Status {
+	case TenantStatusActive, TenantStatusPendingAllocation:
+		return true
+	default:
+		return false
+	}
+}
+
 func (t Tenant) ContactMode() string {
 	if t.IsPhoneLess() {
 		return "cash_only"

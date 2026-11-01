@@ -204,9 +204,9 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		}
 
 		// Grace window check: only applies if the family has not been nuked (active tokens exist)
-		// and this token was revoked within the last 15 seconds.
+		// and this token was revoked within the last 5 seconds, and successor has not been used.
 		// Rather than minting an unconstrained new child on every replay, we return the existing successor token.
-		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 15*time.Second && replacedBy != nil {
+		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= 5*time.Second && replacedBy != nil {
 			var successor domain.RefreshToken
 			querySuccessor := `
 				SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at

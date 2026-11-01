@@ -991,8 +991,8 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		var errResp map[string]string
 		_ = json.Unmarshal(rec.Body.Bytes(), &errResp)
-		if errResp["error"] != "payment not found for property" {
-			t.Errorf("expected 'payment not found for property', got %q", errResp["error"])
+		if errResp["error"] != "payment not found" {
+			t.Errorf("expected 'payment not found', got %q", errResp["error"])
 		}
 		if len(gwRepo.refunds) != 0 {
 			t.Errorf("expected no refunds created in repo, got %d", len(gwRepo.refunds))

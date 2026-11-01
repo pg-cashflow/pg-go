@@ -54,13 +54,14 @@ type WebhookEnvelope struct {
 
 // SuccessWebhook is extracted from PAYMENT_SUCCESS_WEBHOOK.
 type SuccessWebhook struct {
-	Type          string
-	OrderID       string
-	CFPaymentID   string
-	BankReference string
-	AmountPaise   int64
-	PaymentStatus string
-	PaymentTime   string
+	Type            string
+	OrderID         string
+	CFPaymentID     string
+	BankReference   string
+	AmountPaise     int64
+	PaymentStatus   string
+	PaymentCurrency string
+	PaymentTime     string
 }
 
 func (w SuccessWebhook) TxnID() string {
@@ -121,14 +122,16 @@ func ParseWebhook(raw []byte) (any, string, error) {
 	case "PAYMENT_SUCCESS_WEBHOOK":
 		var p struct {
 			Order struct {
-				OrderID string `json:"order_id"`
+				OrderID       string `json:"order_id"`
+				OrderCurrency string `json:"order_currency"`
 			} `json:"order"`
 			Payment struct {
-				CFPaymentID   json.Number `json:"cf_payment_id"`
-				PaymentStatus string      `json:"payment_status"`
-				PaymentAmount json.Number `json:"payment_amount"`
-				BankReference string      `json:"bank_reference"`
-				PaymentTime   string      `json:"payment_time"`
+				CFPaymentID     json.Number `json:"cf_payment_id"`
+				PaymentStatus   string      `json:"payment_status"`
+				PaymentAmount   json.Number `json:"payment_amount"`
+				PaymentCurrency string      `json:"payment_currency"`
+				BankReference   string      `json:"bank_reference"`
+				PaymentTime     string      `json:"payment_time"`
 			} `json:"payment"`
 		}
 		if err := json.Unmarshal(env.RawData, &p); err != nil {
@@ -138,14 +141,19 @@ func ParseWebhook(raw []byte) (any, string, error) {
 		if err != nil {
 			return nil, evtType, fmt.Errorf("payment_success amount parse: %w", err)
 		}
+		currency := strings.TrimSpace(p.Payment.PaymentCurrency)
+		if currency == "" {
+			currency = strings.TrimSpace(p.Order.OrderCurrency)
+		}
 		return SuccessWebhook{
-			Type:          evtType,
-			OrderID:       p.Order.OrderID,
-			CFPaymentID:   p.Payment.CFPaymentID.String(),
-			BankReference: p.Payment.BankReference,
-			AmountPaise:   paise,
-			PaymentStatus: p.Payment.PaymentStatus,
-			PaymentTime:   p.Payment.PaymentTime,
+			Type:            evtType,
+			OrderID:         p.Order.OrderID,
+			CFPaymentID:     p.Payment.CFPaymentID.String(),
+			BankReference:   p.Payment.BankReference,
+			AmountPaise:     paise,
+			PaymentStatus:   p.Payment.PaymentStatus,
+			PaymentCurrency: currency,
+			PaymentTime:     p.Payment.PaymentTime,
 		}, evtType, nil
 
 	case "PAYMENT_FAILED_WEBHOOK":

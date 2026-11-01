@@ -623,7 +623,7 @@ func TestRequestStepUpOTP_CooldownEnforced(t *testing.T) {
 // is unset) rather than the pre-fix test fixture state, which only ever
 // left s.mailer as Go nil (never calling SetMailer at all). A nil mailer
 // was already caught by the old "s.mailer != nil" check; an explicitly-set
-// NoopMailer was not â€” that gap is what let delivery fail silently while
+// NoopMailer was not -- that gap is what let delivery fail silently while
 // the API reported 200 OK.
 //
 // It also covers a non-payout_approval purpose, because the original

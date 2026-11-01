@@ -171,9 +171,9 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 			}
 		}
 
-		// Grace window check (15 seconds, only if family is not already nuked)
+		// Grace window check (5 seconds, only if family is not already nuked)
 		successorID, hasSuccessor := m.replacedBy[oldRT.ID]
-		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 15*time.Second && hasSuccessor {
+		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 5*time.Second && hasSuccessor {
 			successor, exists := m.byID[successorID]
 			if exists && !successor.Revoked {
 				return successor, domain.ErrGraceWindow

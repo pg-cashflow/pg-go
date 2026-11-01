@@ -545,7 +545,7 @@ func TestValidateForRealDeployment_VersionedKYCIdentitySecrets(t *testing.T) {
 			wantSub: "must be distinct secrets (rotation requires unique keys per version)",
 		},
 		{
-			name: "mixed: one valid, one short â€” both errors surface",
+			name: "mixed: one valid, one short -- both errors surface",
 			secrets: map[int16]string{
 				1: "this-is-a-valid-kyc-identity-v1-secret-32ch",
 				2: "short",

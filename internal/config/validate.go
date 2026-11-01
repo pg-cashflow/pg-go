@@ -10,7 +10,7 @@ import (
 )
 
 // ValidateForRealDeployment enforces security invariants that must hold
-// whenever real credentials are present â€” regardless of APP_ENV.
+// whenever real credentials are present -- regardless of APP_ENV.
 //
 // Rationale (ADR-2, Batch 1): checks keyed on APP_ENV == "production" create
 // a class of bugs where staging/dev servers with real credentials bypass guards.
@@ -59,7 +59,7 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 	}
 
-	// Invariant: key separation â€” distinct components must not share HMAC keys
+	// Invariant: key separation -- distinct components must not share HMAC keys
 	if c.JWTSecret != "" && c.OTPHMACSecret != "" && c.JWTSecret == c.OTPHMACSecret {
 		errs = append(errs, "JWT_SECRET and OTP_HMAC_SECRET must be distinct secrets")
 	}
@@ -223,7 +223,7 @@ func (c *Config) ValidateWarnings() []string {
 
 	// Admin email unset warning in non-production
 	if strings.TrimSpace(c.AdminEmail) == "" {
-		warns = append(warns, "ADMIN_EMAIL is not configured â€” outbox dead-letter alerts and operator failure notices will only be logged locally")
+		warns = append(warns, "ADMIN_EMAIL is not configured -- outbox dead-letter alerts and operator failure notices will only be logged locally")
 	}
 
 	// Non-production worker URL fallback warning (ADR-030)

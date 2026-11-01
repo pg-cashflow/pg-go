@@ -237,9 +237,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
 		//
 		// Security invariants (both enforced in KYCRepo.encryptBytes / decryptBytes):
-		//   - Absent key (empty string): encryption intentionally disabled â€” documents stored as
+		//   - Absent key (empty string): encryption intentionally disabled -- documents stored as
 		//     plaintext. This is the opted-out path; warn only.
-		//   - Present but malformed key: FATAL â€” the repo hard-errors on any encrypt/decrypt call
+		//   - Present but malformed key: FATAL -- the repo hard-errors on any encrypt/decrypt call
 		//     rather than silently storing Aadhaar documents in plaintext. Fail at startup here to
 		//     surface this misconfiguration immediately.
 		var kycDocKey []byte

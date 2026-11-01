@@ -185,7 +185,7 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 	// so "!= nil" alone cannot distinguish "configured" from "discarding
 	// silently" for either provider. Treating that distinction correctly
 	// for SMS but not for the mailer was the root cause of REQ-SEC note
-	// (silent step-up OTP loss) â€” keep them symmetric.
+	// (silent step-up OTP loss) -- keep them symmetric.
 	smsAvailable := s.gateway != nil
 	if _, isNoop := s.gateway.(sms.NoopGateway); isNoop {
 		smsAvailable = false
@@ -544,9 +544,7 @@ func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *
 		if terr != nil {
 			return "", nil, fmt.Errorf("get tenant for user: %w", terr)
 		}
-		switch tenant.Status {
-		case domain.TenantStatusActive, domain.TenantStatusPendingAllocation:
-		default:
+		if !tenant.CanSignIn() {
 			return "", nil, ErrTenantVacated
 		}
 	}
@@ -806,7 +804,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	if existingRT, err := s.refreshRepo.GetRefreshTokenByHash(ctx, oldHash); err == nil && existingRT != nil {
 		if preUser, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && preUser != nil {
 			if preUser.TenantID != nil && s.tenants != nil {
-				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
 					}
@@ -819,10 +817,10 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	rotatedRT, err := s.refreshRepo.RotateTokenTx(ctx, oldHash, newRT)
 	if err != nil {
 		if errors.Is(err, domain.ErrGraceWindow) && rotatedRT != nil {
-			// Multi-tab race: the token was already rotated within the last 15s.
+			// Multi-tab race: the token was already rotated within the last 5s.
 			// The successor row is still valid. Issue a fresh access token so the
 			// caller gets a new 15-minute window, but return an empty refresh-token
-			// string to signal that the cookie must NOT be rotated â€” the browser's
+			// string to signal that the cookie must NOT be rotated -- the browser's
 			// cookie is already the correct successor plaintext.
 			graceUser, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
 			if uerr != nil {
@@ -830,7 +828,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			}
 			if graceUser.TenantID != nil && s.tenants != nil {
 				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
-				if terr == nil && t != nil && t.Status == domain.TenantStatusVacated {
+				if terr == nil && t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 					}
@@ -865,7 +863,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	// Verify tenant status if tenant
 	if user.TenantID != nil && s.tenants != nil {
 		t, err := s.tenants.GetByID(ctx, *user.TenantID)
-		if err == nil && t != nil && t.Status == domain.TenantStatusVacated {
+		if err == nil && t != nil && !t.CanSignIn() {
 			if s.refreshRepo != nil {
 				_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 			}

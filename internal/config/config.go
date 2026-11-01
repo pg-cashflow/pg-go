@@ -192,7 +192,7 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutEncryptionSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_ENCRYPTION_SECRET is required in production (must not reuse JWT_SECRET)")
 		}
-		// REQ-SEC-008: checksum secret must be independently keyed â€” never fall through to JWTSecret.
+		// REQ-SEC-008: checksum secret must be independently keyed -- never fall through to JWTSecret.
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
@@ -200,7 +200,7 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET is required in production (must not reuse JWT_SECRET)")
 		}
 		// Step-up OTP (payout_approval) is email-only by architectural contract
-		// (docs/specs/auth-frontend-backend-contract.md Â§1.2). Without SMTP,
+		// (docs/specs/auth-frontend-backend-contract.md §1.2). Without SMTP,
 		// auth.Service silently falls back to mailer.NoopMailer, which reports
 		// success while sending nothing. Fail at boot, not at an owner's
 		// payout-approval request.
@@ -270,8 +270,8 @@ func parseVersionedKeys(s string) map[byte]string {
 // parseVersionedSecrets16 parses a comma-separated "version:secret" string into a
 // map[int16]string. The key type is int16 to match the hash_key_version column in
 // kyc_verification and the hashKeyVersion parameters throughout the KYC repo and
-// service layers. Valid version range: 1â€“32767 (int16 max; version 0 is reserved).
-// Malformed pairs and out-of-range version numbers are silently skipped â€” the
+// service layers. Valid version range: 1-32767 (int16 max; version 0 is reserved).
+// Malformed pairs and out-of-range version numbers are silently skipped -- the
 // caller (validate.go) reports them after Load() returns.
 func parseVersionedSecrets16(s string) map[int16]string {
 	out := make(map[int16]string)

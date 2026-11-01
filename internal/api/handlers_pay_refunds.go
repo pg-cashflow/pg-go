@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -433,8 +434,21 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
 }
 
+var validRefundReasonRegex = regexp.MustCompile(`^[a-zA-Z0-9 .,_\-]+$`)
+
 func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
+
+	trimmedReason := strings.TrimSpace(req.Reason)
+	if len(trimmedReason) < 3 || len(trimmedReason) > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason must be between 3 and 100 characters"})
+		return nil, errors.New("invalid reason length")
+	}
+	if !validRefundReasonRegex.MatchString(trimmedReason) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason contains invalid characters; only letters, digits, spaces, and punctuation (.,-_) are allowed"})
+		return nil, errors.New("invalid reason characters")
+	}
+	req.Reason = trimmedReason
 
 	if h.GatewayPaymentRepo == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
@@ -452,11 +466,11 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("payment not found")
 	}
 
-	// Verify tenant belongs to property
+	// Verify tenant belongs to property (use uniform 404 message to prevent payment ID enumeration oracle)
 	tenant, err := h.TenantStore.GetByID(ctx, p.TenantID)
 	if err != nil || tenant == nil || tenant.PropertyID != pid {
-		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found for property"})
-		return nil, errors.New("payment not found for property")
+		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+		return nil, errors.New("payment not found")
 	}
 
 	// Gateway check: Only cashfree provider payments can be refunded via PG API
