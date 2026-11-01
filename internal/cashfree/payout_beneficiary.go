@@ -92,7 +92,7 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 	defer resp.Body.Close()
 	c.checkDeprecation(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: read beneficiary response: %w", err)
 	}

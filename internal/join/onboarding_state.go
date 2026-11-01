@@ -28,7 +28,7 @@ type OnboardingState struct {
 
 // BuildOnboardingState computes where the user is in the signup/admission flow.
 //
-// kycVerified is true only once UIDAI/DigiLocker verification itself completed
+// kycVerified is true only once UIDAI Aadhaar verification itself completed
 // (status == verified). kycGatePassed is broader: it is also true once the tenant
 // has submitted a document for manual review (status == pending_manual_review),
 // since that is the full extent of what the tenant can do — the remaining step

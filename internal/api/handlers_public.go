@@ -19,7 +19,6 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
-	"github.com/pg-cashflow/pg-go/internal/qr"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
@@ -74,22 +73,18 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
   <title>Pay rent — {{.PropertyName}}</title>
   <meta property="og:type" content="website">
   <meta property="og:title" content="Pay ₹{{.AmountRupees}} — {{.PropertyName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}">
-  <meta property="og:description" content="Rent payment due for {{.PropertyName}}. Pay directly via UPI to {{.OwnerName}}.">
-  <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Pay ₹{{.AmountRupees}} — {{.PropertyName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}">
-  <meta name="twitter:description" content="Rent payment due for {{.PropertyName}}. Pay directly via UPI to {{.OwnerName}}.">
+  <meta property="og:description" content="Rent payment due for {{.PropertyName}}.">
   <style>
-    body{font-family:system-ui,sans-serif;margin:0;padding:1.5rem;background:#f7f7f5;color:#1a1a1a}
-    main{max-width:28rem;margin:0 auto}
-    h1{font-size:1.25rem;margin:0 0 .5rem}
-    .amt{font-size:2rem;font-weight:700;margin:.75rem 0}
-    .warn{background:#fff3cd;border:1px solid #ffecb5;padding:.75rem;border-radius:6px;margin:1rem 0;font-size:.9rem}
-    img{display:block;width:256px;height:256px;margin:1rem auto;background:#fff;padding:.5rem;border-radius:8px}
-    .meta{color:#555;font-size:.9rem}
-    .row{display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0}
-    button,a.btn{appearance:none;border:0;background:#1a1a1a;color:#fff;padding:.6rem .9rem;border-radius:8px;font-size:.9rem;text-decoration:none;display:inline-block}
-    button.secondary{background:#fff;color:#1a1a1a;border:1px solid #ccc}
-    .done{background:#e8f5e9;border:1px solid #c8e6c9;padding:.75rem;border-radius:6px}
+    body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:1.5rem;background:#f7f7f5;color:#1a1a1a}
+    main{max-width:28rem;margin:2rem auto;background:#fff;padding:2rem;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
+    h1{font-size:1.4rem;margin:0 0 .5rem}
+    .amt{font-size:2.25rem;font-weight:700;margin:1rem 0;color:#0f172a}
+    .meta{color:#64748b;font-size:.9rem;margin:.25rem 0}
+    .info{background:#f8fafc;border:1px solid #e2e8f0;padding:1rem;border-radius:10px;margin:1.25rem 0;font-size:.875rem;line-height:1.5;color:#334155}
+    .row{display:flex;gap:.75rem;flex-wrap:wrap;margin:1.5rem 0 0}
+    a.btn{appearance:none;border:0;background:#0f172a;color:#fff;padding:.75rem 1.25rem;border-radius:10px;font-size:1rem;font-weight:600;text-decoration:none;display:block;width:100%;text-align:center;box-sizing:border-box}
+    a.btn:hover{background:#1e293b}
+    .done{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:1rem;border-radius:10px;font-size:.9rem}
   </style>
 </head>
 <body>
@@ -99,70 +94,33 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
   <p class="amt">₹{{.AmountRupees}}</p>
   <p class="meta">Due code: {{.DueCode}} · expires {{.ExpiresAt}}</p>
   {{if .Payable}}
-  {{if eq .Mode "cashfree"}}
-  <p class="meta">UPI checkout — payment is confirmed automatically. Do not use a personal UPI QR.</p>
-  <div class="row"><button type="button" id="cfpay">Pay with UPI</button></div>
-  <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
-  <script>
-  (function(){
-    var btn=document.getElementById('cfpay');
-    if(!btn) return;
-    btn.addEventListener('click', function(){
-      var cashfree=Cashfree({mode: {{printf "%q" .CashfreeEnv}}});
-      cashfree.checkout({paymentSessionId: {{printf "%q" .PaymentSessionID}}, redirectTarget:'_self'});
-    });
-  })();
-  </script>
-  {{else}}
-  <div class="warn"><strong>Important:</strong> When you scan this QR, your UPI app may let you edit the amount.
-    Please pay the exact amount shown above so we can match your payment automatically.</div>
-  {{if .QRDataURI}}<img id="qr" src="{{.QRDataURI}}" alt="UPI QR">{{end}}
-  <div class="row">
-    <a class="btn" href="{{.UPILink}}">Open in UPI app</a>
-    <a class="btn" id="save" download="rent-{{.DueCode}}.png">Save QR</a>
-    <button type="button" class="secondary" data-copy="{{.VPA}}">Copy UPI ID</button>
-    <button type="button" class="secondary" data-copy="{{.Note}}">Copy note</button>
+  <div class="info">
+    <strong>Mandatory KYC Policy:</strong> In compliance with RBI regulations and platform security standards, tenant identity verification is required before making payments. Please log in to complete verification and pay securely via UPI, Card, or Netbanking.
   </div>
-  <p class="meta">UPI ID: {{.VPA}} · Note: {{.Note}}</p>
-  {{end}}
+  <div class="row">
+    <a class="btn" href="/tenant/dues">Log in to Pay Due</a>
+  </div>
   {{else}}
-  <p class="done">This due is already paid or waived. Do not reuse an old QR.</p>
+  <p class="done">This due is already paid or waived.</p>
   {{end}}
 </main>
-<script>
-(function(){
-  var img=document.getElementById('qr');
-  var save=document.getElementById('save');
-  if(img&&save) save.href=img.src;
-  document.querySelectorAll('[data-copy]').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var t=btn.getAttribute('data-copy')||'';
-      if(navigator.clipboard) navigator.clipboard.writeText(t);
-    });
-  });
-})();
-</script>
 </body>
 </html>`))
 
 type paymentPageData struct {
-	PropertyName     string
-	OwnerName        string
-	RoomNumber       *string
-	AmountRupees     string
-	DueCode          string
-	ExpiresAt        string
-	UPILink          string
-	QRDataURI        template.URL
-	VPA              string
-	Note             string
-	Payable          bool
-	Mode             string
-	PaymentSessionID string
-	CashfreeEnv      string
+	PropertyName string
+	OwnerName    string
+	RoomNumber   *string
+	AmountRupees string
+	DueCode      string
+	ExpiresAt    string
+	Payable      bool
 }
 
-// PaymentPage serves GET /p/:token HTML.
+// PaymentPage serves GET /p/:token.
+// It displays due metadata and directs the tenant to the authenticated app for mandatory KYC and payment.
+// Crucially, it does not create a Cashfree order on GET (protecting against WhatsApp link crawlers)
+// and does not expose unauthenticated personal UPI QR codes.
 func (h *Handlers) PaymentPage(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	c.Header("Pragma", "no-cache")
@@ -181,11 +139,21 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 		return
 	}
 
-	room := ""
-	if view.RoomNumber != nil {
-		room = *view.RoomNumber
-	}
 	payable := view.Due.Status == domain.DueStatusPending || view.Due.Status == domain.DueStatusPartial
+	accept := c.GetHeader("Accept")
+	if strings.Contains(accept, "application/json") {
+		c.JSON(http.StatusOK, gin.H{
+			"property_name": view.PropertyName,
+			"owner_name":    view.OwnerName,
+			"room_number":   view.RoomNumber,
+			"amount_paise":  view.AmountPaise,
+			"due_code":      view.Due.DueCode,
+			"payable":       payable,
+			"redirect_url":  "/tenant/dues",
+		})
+		return
+	}
+
 	data := paymentPageData{
 		PropertyName: view.PropertyName,
 		OwnerName:    view.OwnerName,
@@ -193,37 +161,7 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 		AmountRupees: cashfree.FormatPaiseToRupees(view.AmountPaise),
 		DueCode:      view.Due.DueCode,
 		ExpiresAt:    view.ExpiresAt.Format("02 Jan 2006 15:04 MST"),
-		Note:         domain.UPINote(view.Due.DueCode),
 		Payable:      payable,
-		Mode:         domain.PaymentModeManual,
-		CashfreeEnv:  h.CashfreeEnv,
-	}
-	if strings.EqualFold(data.CashfreeEnv, "production") {
-		data.CashfreeEnv = "production"
-	} else {
-		data.CashfreeEnv = "sandbox"
-	}
-
-	if payable && h.Collector != nil && h.PropertyStore != nil {
-		if prop, err := h.PropertyStore.GetByID(c.Request.Context(), view.Due.PropertyID); err == nil {
-			intent, png, err := h.Collector.PayIntent(c.Request.Context(), &view.Due, prop, room, "", view.TenantPhone)
-			if err == nil && intent != nil {
-				data.Mode = intent.Mode
-				data.PaymentSessionID = intent.PaymentSessionID
-				data.VPA = intent.VPA
-				data.UPILink = intent.UPILink
-				if len(png) > 0 {
-					data.QRDataURI = template.URL("data:image/png;base64," + b64(png)) // #nosec G203
-				}
-			}
-		}
-	}
-	if data.Mode != domain.PaymentModeCashfree && payable && data.UPILink == "" {
-		data.UPILink = qr.GenerateUPILink(view.UPIVPA, view.OwnerName, int64(view.AmountPaise), view.Due.DueCode, room)
-		data.VPA = view.UPIVPA
-		if png, err := qr.GenerateQR(data.UPILink); err == nil {
-			data.QRDataURI = template.URL("data:image/png;base64," + b64(png)) // #nosec G203
-		}
 	}
 
 	c.Header("Content-Type", "text/html; charset=utf-8")

@@ -192,6 +192,34 @@ func (h *Handlers) OwnerRefundUnappliedReceipt(c *gin.Context) {
 	if !ok {
 		return
 	}
+	h.processRefundUnappliedReceipt(c, pid, uid)
+}
+
+// ManagerRefundUnappliedReceipt handles POST /manager/payments/unapplied-receipts/:id/refund.
+// It verifies that the property owner has enabled allow_manager_refunds in property settings.
+func (h *Handlers) ManagerRefundUnappliedReceipt(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if h.OnboardingSettings != nil {
+		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
+		if err != nil || s == nil || !s.AllowManagerRefunds {
+			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+			return
+		}
+	} else {
+		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+		return
+	}
+	h.processRefundUnappliedReceipt(c, pid, uid)
+}
+
+func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.UUID) {
 	receiptID, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return

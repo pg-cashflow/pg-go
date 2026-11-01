@@ -92,8 +92,8 @@ func TestCreateUPIOrderUPIOnlyExactRupees(t *testing.T) {
 		t.Fatal("must not send surcharge")
 	}
 	meta, _ := body["order_meta"].(map[string]any)
-	if meta["payment_methods"] != "upi" {
-		t.Fatalf("payment_methods=%v", meta["payment_methods"])
+	if meta["payment_methods"] != nil {
+		t.Fatalf("payment_methods=%v, want all methods enabled (nil)", meta["payment_methods"])
 	}
 	cust, _ := body["customer_details"].(map[string]any)
 	if cust["customer_id"] != "cust_9999999999" {

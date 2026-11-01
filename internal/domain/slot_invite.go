@@ -55,6 +55,7 @@ type PropertyOnboardingSettings struct {
 	ReferralEnabled             bool      `json:"referral_enabled"`
 	JoinerDiscountBps           int       `json:"joiner_discount_bps"`
 	ReferrerRewardBps           int       `json:"referrer_reward_bps"`
+	AllowManagerRefunds         bool      `json:"allow_manager_refunds"`
 }
 
 type InviteResolution struct {

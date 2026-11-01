@@ -33,10 +33,10 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 
 	gated.GET("/dues", h.TenantDues)
 	gated.GET("/dues/options", h.TenantDuesOptions)
-	gated.GET("/dues/:id/qr", h.TenantDueQR)
 
-	// payment routes enforce property KYC policy if enabled
-	payGated := gated.Group("", h.RequireKYCIfPolicyEnforced())
+	// payment routes strictly enforce KYC verification (status == verified)
+	payGated := gated.Group("", h.RequireKYCVerified())
+	payGated.GET("/dues/:id/qr", h.TenantDueQR)
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	payGated.GET("/dues/:id/pay", h.TenantDuePay)
 	payGated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)

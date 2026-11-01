@@ -38,4 +38,6 @@ func registerManagerRoutes(manager *gin.RouterGroup, d Deps, h *Handlers) {
 	manager.GET("/finance/today", capOf("expenses.post"), h.ManagerFinanceToday)
 	manager.POST("/finance/meal-prep", capOf("expenses.post"), h.PostMealPrep)
 	manager.GET("/kyc/:id/document", capOf("tenants.view"), h.OwnerKYCDocument)
+	manager.POST("/payments/:id/refund", capOf("refunds.issue"), h.ManagerRefundPayment)
+	manager.POST("/payments/unapplied-receipts/:id/refund", capOf("refunds.issue"), h.ManagerRefundUnappliedReceipt)
 }

@@ -28,7 +28,7 @@ func (h *Handlers) IsKYCVerified(ctx context.Context, tenantID uuid.UUID) bool {
 // document for manual review (status pending_manual_review) has completed the
 // onboarding action required of them — the remaining step (owner approval) is not
 // something the tenant can accelerate, so blocking the dashboard on it would strand
-// them with no path forward. Automatic methods (digilocker / aadhaar_otp / qr) only
+// them with no path forward. Automatic method (aadhaar_otp) only
 // pass the gate once status == verified, since those are near-instant.
 func (h *Handlers) KYCOnboardingGatePassed(ctx context.Context, tenantID uuid.UUID) bool {
 	if h.KYCSvc == nil {

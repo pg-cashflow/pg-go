@@ -116,7 +116,7 @@ func (c *Client) GetOrderSettlements(ctx context.Context, orderID string) ([]Ord
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read settlement response: %w", err)
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -400,6 +399,40 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
 }
 
+// ManagerRefundPayment handles POST /manager/payments/:id/refund.
+// It verifies that the property owner has enabled allow_manager_refunds in property settings.
+func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if h.OnboardingSettings != nil {
+		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
+		if err != nil || s == nil || !s.AllowManagerRefunds {
+			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+			return
+		}
+	} else {
+		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var req OwnerRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body: amount_paise must be positive and reason required"})
+		return
+	}
+
+	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
+}
+
 func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
 
@@ -574,12 +607,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 			if cleanupErr := runner.CleanupFailedRefund(dbCtx, rfRow); cleanupErr != nil {
 				slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
 			}
-			var apiErr *cashfree.APIError
-			errMsg := cfErr.Error()
-			if errors.As(cfErr, &apiErr) {
-				errMsg = apiErr.Error()
-			}
-			respondErr(c, clientErr(http.StatusBadGateway, fmt.Sprintf("gateway refund rejected: %s", errMsg)))
+			respondErr(c, clientErr(http.StatusBadGateway, "gateway refund rejected by payment provider"))
 			return nil, cfErr
 		}
 
@@ -598,6 +626,10 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	rfRow.Status = respStatus
 	rfRow.CFRefundID = &cfResp.CFRefundID
 	rfRow.ProviderRefundID = &cfResp.CFRefundID
+	if rfRow.Status == "onhold" {
+		slog.Warn("ALERT: cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
+			"refund_id", rfRow.ID, "payment_id", p.ID)
+	}
 
 	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
 	dbCtx := context.WithoutCancel(ctx)

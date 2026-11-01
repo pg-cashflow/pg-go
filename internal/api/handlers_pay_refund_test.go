@@ -1736,3 +1736,41 @@ func TestRecomputeDueStatus_DepartureScenarios(t *testing.T) {
 		t.Fatalf("Standard partial refund failed: expected status='partial', amount=300000, got status=%s amount=%d", statusStd, remAmtStd)
 	}
 }
+
+func TestManagerRefundPayment_ToggleAndCapability(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	managerID := uuid.New()
+	paymentID := uuid.New()
+
+	t.Run("manager refund rejected when owner toggle is disabled", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				OnboardingSettings: &fakeOnboardingSettingsRepo{
+					settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
+						propID: {
+							PropertyID:          propID,
+							AllowManagerRefunds: false,
+						},
+					},
+				},
+			},
+		}
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "id", Value: paymentID.String()}}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     managerID,
+			PropertyID: &propID,
+			Role:       domain.RoleManager,
+		})
+		c.Request = httptest.NewRequest(http.MethodPost, "/manager/payments/"+paymentID.String()+"/refund", nil)
+
+		h.ManagerRefundPayment(c)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden, got %d", w.Code)
+		}
+	})
+}

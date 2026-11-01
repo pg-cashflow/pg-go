@@ -23,6 +23,7 @@ type OnboardingSettingsPatch struct {
 	ReferralEnabled           *bool
 	JoinerDiscountBps         *int
 	ReferrerRewardBps         *int
+	AllowManagerRefunds       *bool
 }
 
 func (p OnboardingSettingsPatch) Validate() error {

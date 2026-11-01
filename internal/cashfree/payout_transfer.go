@@ -106,7 +106,7 @@ func (c *PayoutClient) RequestBatchTransfer(ctx context.Context, req BatchTransf
 	defer resp.Body.Close()
 	c.checkDeprecation(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed reading response body: %v", ErrDispatchUnknown, err)
 	}
@@ -165,7 +165,7 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 	defer resp.Body.Close()
 	c.checkDeprecation(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: read batch status response: %w", err)
 	}
@@ -219,7 +219,7 @@ func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string)
 	defer resp.Body.Close()
 	c.checkDeprecation(resp)
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: read transfer status response: %w", err)
 	}

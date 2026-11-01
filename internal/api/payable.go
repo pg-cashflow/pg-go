@@ -14,12 +14,14 @@ func (h *Handlers) tenantPayable(ctx context.Context, t *domain.Tenant) bool {
 	if t.IsMinor(time.Now().UTC()) && t.GuardianConsentVerifiedAt == nil {
 		return false
 	}
-	requireKYC := false
+	requireKYC := true
 	if h.OnboardingSettings != nil {
 		s, err := h.OnboardingSettings.Get(ctx, t.PropertyID)
 		if err == nil && s != nil {
 			requireKYC = s.RequireKYCBeforePay
 		}
+	} else if h.KYCSvc == nil {
+		requireKYC = false
 	}
 	kycVerified := true
 	if requireKYC {

@@ -115,7 +115,6 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	exp := c.now().Add(expiryDur).UTC()
 
 	orderMeta := map[string]any{
-		"payment_methods":   "upi",
 		"order_expiry_time": exp.Format(time.RFC3339),
 	}
 	if c.cfg.ReturnURL != "" {
@@ -147,7 +146,7 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 		return "", nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		return "", nil, fmt.Errorf("cashfree create order: %s %s", resp.Status, string(b))
 	}
@@ -183,7 +182,7 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 		return "", "", 0, false, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		return "", "", 0, false, fmt.Errorf("cashfree fetch: %s %s", resp.Status, string(b))
 	}
@@ -233,7 +232,7 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
@@ -305,7 +304,7 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,

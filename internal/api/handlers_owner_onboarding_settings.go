@@ -52,6 +52,7 @@ type patchOnboardingSettingsBody struct {
 	ReferralEnabled           *bool  `json:"referral_enabled"`
 	JoinerDiscountBps         *int   `json:"joiner_discount_bps"`
 	ReferrerRewardBps         *int   `json:"referrer_reward_bps"`
+	AllowManagerRefunds       *bool  `json:"allow_manager_refunds"`
 }
 
 func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
@@ -83,6 +84,7 @@ func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
 		ReferralEnabled:           body.ReferralEnabled,
 		JoinerDiscountBps:         body.JoinerDiscountBps,
 		ReferrerRewardBps:         body.ReferrerRewardBps,
+		AllowManagerRefunds:       body.AllowManagerRefunds,
 	}
 	s, err := h.OnboardingSettings.Update(c.Request.Context(), pid, patch)
 	if err != nil {
