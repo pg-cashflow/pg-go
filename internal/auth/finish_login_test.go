@@ -93,4 +93,3 @@ func TestCreateUserForIdentity_TenantStatus(t *testing.T) {
 		})
 	}
 }
-

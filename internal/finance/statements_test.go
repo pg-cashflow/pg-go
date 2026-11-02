@@ -354,4 +354,3 @@ func TestListExpensesPaginated(t *testing.T) {
 		t.Fatalf("expected exactly 5 distinct expenses across both pages, got %d", len(seen))
 	}
 }
-

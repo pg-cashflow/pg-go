@@ -687,7 +687,7 @@ func TestCreateExpense_EmergencyApprovalEventParity(t *testing.T) {
 			SingleExpenseLimitPaise:     50_000_00,
 			ManagerMonthlyLimitPaise:    500_000_00,
 			OwnerApprovalThresholdPaise: 5_000_00, // lower threshold to force approval
-			EmergencyBypassEnabled:      false,   // bypass disabled
+			EmergencyBypassEnabled:      false,    // bypass disabled
 		}
 		if err := st.SavePolicy(ctx, policy); err != nil {
 			t.Fatalf("save policy: %v", err)
@@ -771,4 +771,3 @@ func TestCreateExpense_EmergencyApprovalEventParity(t *testing.T) {
 		}
 	})
 }
-

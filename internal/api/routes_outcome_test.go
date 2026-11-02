@@ -15,9 +15,9 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
+	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -196,25 +196,25 @@ func TestUnreferencedRoutesOutcome(t *testing.T) {
 	}}
 
 	router := NewRouter(Deps{
-		JWTSecret:           jwtSecret,
-		Auth:                outcomeAuthStub{},
-		Joins:               outcomeJoinStub{},
-		Finance:             finSvc,
-		FinanceEnabled:      true,
-		Payments:            outcomePaymentStore{},
-		EventStore:          outcomeEventStore{},
-		GamificationStore:   outcomeGamificationStore{},
-		Gamification:        gamification.NewService(outcomeGamificationStore{}, nil, nil, nil, nil),
-		PropertyStore:       pStore,
-		TenantStore:         tStore,
-		DueStore:            dueStore,
-		PaymentStore:        &isolationPaymentStore{},
-		AuthTenantRepo:      tStore,
-		AuthUserRepo:        uStore,
-		Billing:             outcomeBillingStub{},
-		Tenants:             outcomeTenantStub{},
-		KYCSvc:              outcomeKYCStub{},
-		CapabilityStore:     &stubCapabilityStore{allActive: true},
+		JWTSecret:         jwtSecret,
+		Auth:              outcomeAuthStub{},
+		Joins:             outcomeJoinStub{},
+		Finance:           finSvc,
+		FinanceEnabled:    true,
+		Payments:          outcomePaymentStore{},
+		EventStore:        outcomeEventStore{},
+		GamificationStore: outcomeGamificationStore{},
+		Gamification:      gamification.NewService(outcomeGamificationStore{}, nil, nil, nil, nil),
+		PropertyStore:     pStore,
+		TenantStore:       tStore,
+		DueStore:          dueStore,
+		PaymentStore:      &isolationPaymentStore{},
+		AuthTenantRepo:    tStore,
+		AuthUserRepo:      uStore,
+		Billing:           outcomeBillingStub{},
+		Tenants:           outcomeTenantStub{},
+		KYCSvc:            outcomeKYCStub{},
+		CapabilityStore:   &stubCapabilityStore{allActive: true},
 	})
 
 	doReq := func(method, path, token string, body any, headers map[string]string) *httptest.ResponseRecorder {

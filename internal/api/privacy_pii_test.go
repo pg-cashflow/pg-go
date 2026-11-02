@@ -78,7 +78,7 @@ func (s *stubPIITenantService) CreateTenant(_ context.Context, in domain.NewTena
 	}, nil
 }
 func (s *stubPIITenantService) UpdateTenant(_ context.Context, _ *domain.Tenant) error { return nil }
-func (s *stubPIITenantService) Vacate(_ context.Context, _ uuid.UUID) error             { return nil }
+func (s *stubPIITenantService) Vacate(_ context.Context, _ uuid.UUID) error            { return nil }
 func (s *stubPIITenantService) LogNotice(_ context.Context, _ uuid.UUID, _ time.Time) error {
 	return nil
 }

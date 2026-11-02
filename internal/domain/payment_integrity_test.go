@@ -119,4 +119,3 @@ func TestCalculatePaymentStatus(t *testing.T) {
 		}
 	})
 }
-

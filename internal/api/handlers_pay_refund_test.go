@@ -350,7 +350,9 @@ func (s *refundStepUpUserStore) GetByID(context.Context, uuid.UUID) (*domain.Use
 	}
 	return nil, domain.ErrNotFound
 }
-func (s *refundStepUpUserStore) SetPropertyID(context.Context, uuid.UUID, uuid.UUID) error { return nil }
+func (s *refundStepUpUserStore) SetPropertyID(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
 
 type refundStepUpAuthService struct {
 	stubPayoutAuthService

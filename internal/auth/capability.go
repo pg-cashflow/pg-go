@@ -119,4 +119,3 @@ func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.Handler
 func RequireCapability(cap string, checker CapabilityChecker) gin.HandlerFunc {
 	return RequireAnyCapability(checker, cap)
 }
-

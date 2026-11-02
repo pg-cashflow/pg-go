@@ -29,13 +29,13 @@ type txFn func(ctx context.Context, fn func(dues DueRepository, tenants TenantRe
 
 // Service creates and adjusts dues (rent, deposit, prorate, waive).
 type Service struct {
-	dues          DueRepository
-	tenants       TenantRepository
-	pub           events.Publisher
-	runInTx       txFn
-	now           func() time.Time
-	onProrate     func(ctx context.Context, due *domain.Due, original, prorated int64)
-	onApplyCredit func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)
+	dues                DueRepository
+	tenants             TenantRepository
+	pub                 events.Publisher
+	runInTx             txFn
+	now                 func() time.Time
+	onProrate           func(ctx context.Context, due *domain.Due, original, prorated int64)
+	onApplyCredit       func(ctx context.Context, propertyID, dueID uuid.UUID, amountPaise int64, dueKind domain.DueKind, at time.Time)
 	onFirstRentDiscount func(ctx context.Context, tenant *domain.Tenant, due *domain.Due) error
 	onFirstRentRecorded func(ctx context.Context, tenantID, dueID uuid.UUID, originalAmount int64) error
 }

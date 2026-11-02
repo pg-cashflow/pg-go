@@ -648,5 +648,3 @@ func TestVerifyFirebaseAndIssueToken_TenantDeniedRelinkWithoutMatchingEmail(t *t
 		t.Fatal("expected valid token and user")
 	}
 }
-
-

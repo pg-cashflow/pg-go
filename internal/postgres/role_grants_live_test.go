@@ -16,11 +16,12 @@ import (
 // 1. All three roles exist, have rolsuper=false, and rolbypassrls=false.
 // 2. All three roles are denied access to schema_migrations.
 // 3. All three roles are denied UPDATE and DELETE on immutable financial ledger tables:
-//    - financial_journal_entries
-//    - capital_transactions
-//    - expense_payments
-//    - payout_records
-//    - payout_record_items
+//   - financial_journal_entries
+//   - capital_transactions
+//   - expense_payments
+//   - payout_records
+//   - payout_record_items
+//
 // 4. pgapp_worker can perform valid writes across all 9 job families.
 func TestLiveRoleGrantsAndImmutability(t *testing.T) {
 	testutil.RequireDB(t)

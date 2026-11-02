@@ -161,7 +161,7 @@ func (s *fakeOwnerUserStore) GetByPropertyAndRole(_ context.Context, pid uuid.UU
 	}
 	return list, nil
 }
-func (s *fakeOwnerUserStore) Create(_ context.Context, _ *domain.User) error { return nil }
+func (s *fakeOwnerUserStore) Create(_ context.Context, _ *domain.User) error        { return nil }
 func (s *fakeOwnerUserStore) SetPropertyID(_ context.Context, _, _ uuid.UUID) error { return nil }
 
 type fakeOwnerAuthService struct {
@@ -226,7 +226,7 @@ func (s *fakeOwnerPropertyStore) Create(_ context.Context, p *domain.Property) e
 
 type fakeOwnerJoinService struct {
 	api.JoinService
-	rejectedJoins  map[uuid.UUID]bool
+	rejectedJoins map[uuid.UUID]bool
 }
 
 func (s *fakeOwnerJoinService) Reject(_ context.Context, pid, id uuid.UUID) error {
@@ -312,7 +312,7 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 	validJoinID := uuid.New()
 	foreignJoinID := uuid.New()
 	joinSvc := &fakeOwnerJoinService{
-		rejectedJoins:  map[uuid.UUID]bool{validJoinID: true},
+		rejectedJoins: map[uuid.UUID]bool{validJoinID: true},
 	}
 
 	billingSvc := &fakeOwnerBillingService{waivedDues: make(map[uuid.UUID]bool)}
@@ -476,11 +476,11 @@ func TestOwnerSensitiveRoutes_T4a(t *testing.T) {
 		ctx := context.Background()
 		// Seed an expense paid by manager so advance outstanding exists
 		exp, _, err := financeSvc.CreateExpense(ctx, finance.CreateExpenseInput{
-			PropertyID:    propOwner,
-			CategoryCode:  "vendor",
-			AmountPaise:   100000,
-			ActorID:       mgrID,
-			ActorRole:     string(domain.RoleManager),
+			PropertyID:     propOwner,
+			CategoryCode:   "vendor",
+			AmountPaise:    100000,
+			ActorID:        mgrID,
+			ActorRole:      string(domain.RoleManager),
 			IdempotencyKey: "exp-seed-1",
 		})
 		if err != nil {

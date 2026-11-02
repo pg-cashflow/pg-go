@@ -686,4 +686,3 @@ func TestValidateForRealDeployment_PayoutAuthMode(t *testing.T) {
 		}
 	})
 }
-

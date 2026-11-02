@@ -227,4 +227,3 @@ func TestRequireAnyCapability_NilCheckerFailsClosed(t *testing.T) {
 		t.Fatalf("expected 200 for owner caller, got %d", wOwner.Code)
 	}
 }
-

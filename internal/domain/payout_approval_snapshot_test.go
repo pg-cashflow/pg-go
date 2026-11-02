@@ -118,9 +118,9 @@ func TestPayoutApprovalSnapshot_TamperDetection(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		modifyFn  func(s *PayoutApprovalSnapshot)
-		wrongKey  bool
+		name     string
+		modifyFn func(s *PayoutApprovalSnapshot)
+		wrongKey bool
 	}{
 		{
 			name: "tampered amount",
@@ -159,7 +159,7 @@ func TestPayoutApprovalSnapshot_TamperDetection(t *testing.T) {
 			},
 		},
 		{
-			name: "wrong signing key",
+			name:     "wrong signing key",
 			wrongKey: true,
 		},
 	}

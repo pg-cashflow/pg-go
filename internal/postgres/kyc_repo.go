@@ -330,7 +330,7 @@ func (r *KYCRepo) InitiateVerificationTx(
 
 		if existing != nil {
 			switch existing.Status {
-case domain.KYCStatusVerified:
+			case domain.KYCStatusVerified:
 				// Check if verified record has expired
 				if existing.ExpiresAt != nil && !now.Before(*existing.ExpiresAt) {
 					// Record has expired; transition to 'expired', clear active tenant profile last4, and audit
@@ -1371,4 +1371,3 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 
 	return updated, err
 }
-

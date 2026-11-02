@@ -604,7 +604,7 @@ func TestParseVersionedSecrets16(t *testing.T) {
 			},
 		},
 		{
-			name:  "whitespace around the outer pair is trimmed; interior whitespace in version field causes skip",
+			name: "whitespace around the outer pair is trimmed; interior whitespace in version field causes skip",
 			// TrimSpace("  1 : secret-v1 ") → "1 : secret-v1 "
 			// SplitN("1 : secret-v1 ", ":", 2) → ["1 ", " secret-v1 "]
 			// Atoi("1 ") fails (trailing space) → pair skipped.
@@ -784,5 +784,3 @@ func TestLoad_AppEnvNormalization(t *testing.T) {
 		t.Fatalf("expected production validation error for normalized AppEnv, got %v", err)
 	}
 }
-
-

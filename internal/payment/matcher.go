@@ -134,4 +134,3 @@ func dateOnly(t time.Time) time.Time {
 	tLocal := t.In(istLocation)
 	return time.Date(tLocal.Year(), tLocal.Month(), tLocal.Day(), 0, 0, 0, 0, time.UTC)
 }
-

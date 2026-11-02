@@ -67,7 +67,6 @@ func (r *PaymentIntentRepo) LatestOpenForDue(ctx context.Context, dueID uuid.UUI
 		ORDER BY created_at DESC LIMIT 1`, dueID))
 }
 
-
 func (r *PaymentIntentRepo) ListStaleCreated(ctx context.Context, olderThan time.Time) ([]domain.PaymentIntent, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT `+intentCols+` FROM payment_intents

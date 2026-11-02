@@ -714,4 +714,3 @@ func TestRequestStepUpOTP_NoopMailerFailsClosed(t *testing.T) {
 		}
 	})
 }
-

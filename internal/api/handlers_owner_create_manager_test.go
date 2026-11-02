@@ -231,4 +231,3 @@ func TestOwnerCreateManager_CapabilityGrantFailure(t *testing.T) {
 		t.Fatalf("expected status 500 when capability grant fails, got %d body=%s", w.Code, w.Body.String())
 	}
 }
-

@@ -264,7 +264,7 @@ func (r *postgresRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID
 
 		// If succeeded, recompute dues and enqueue outbox
 		switch rfRow.Status {
-case "succeeded":
+		case "succeeded":
 			for _, item := range allocationsToCreate {
 				d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
 				if err == nil && d != nil {

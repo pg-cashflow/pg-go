@@ -534,5 +534,3 @@ func TestCashfreePollLeavesInitiatedRefundWhenOrderIDEmpty(t *testing.T) {
 }
 
 var _ GatewaySettler = (*payment.Service)(nil)
-
-

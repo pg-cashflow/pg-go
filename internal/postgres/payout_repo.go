@@ -134,7 +134,6 @@ func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy
 	))
 }
 
-
 func (r *PayoutRepo) GetPayeeByID(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
 	return scanPayee(r.db.QueryRow(ctx, `SELECT `+payeeCols+` FROM payout_payees WHERE id=$1`, id))
 }

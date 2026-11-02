@@ -491,4 +491,3 @@ func TestTokenVersionCache_RevocationAfterInvalidation(t *testing.T) {
 		t.Fatalf("req3: expected 403 after invalidation, got %d", w3.Code)
 	}
 }
-

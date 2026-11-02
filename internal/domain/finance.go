@@ -27,7 +27,6 @@ var (
 	ErrPayeeCoolingOff = errors.New("payee is within the 24-hour cooling-off period; disbursement blocked")
 )
 
-
 // Chart of accounts (operating + capital). Amounts always paise.
 const (
 	AcctCash                     = "cash"

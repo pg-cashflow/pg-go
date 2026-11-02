@@ -122,4 +122,3 @@ func cookieOrIPRateLimit(cookieName string, rps float64, burst int) gin.HandlerF
 		return "ip:" + c.ClientIP()
 	})
 }
-

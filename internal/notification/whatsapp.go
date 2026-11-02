@@ -227,4 +227,3 @@ func (s *MetaWhatsAppSender) post(ctx context.Context, payload any) error {
 	}
 	return fmt.Errorf("whatsapp HTTP %d: %s", resp.StatusCode, string(respBody))
 }
-

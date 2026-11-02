@@ -29,9 +29,8 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
-	"github.com/pg-cashflow/pg-go/internal/slotinvite"
-	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/invite"
+	"github.com/pg-cashflow/pg-go/internal/jobs"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
@@ -41,11 +40,12 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/push"
 	"github.com/pg-cashflow/pg-go/internal/referral"
-	"github.com/pg-cashflow/pg-go/internal/waitlist"
 	roisvc "github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
+	"github.com/pg-cashflow/pg-go/internal/slotinvite"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 	"github.com/pg-cashflow/pg-go/internal/tenant"
+	"github.com/pg-cashflow/pg-go/internal/waitlist"
 )
 
 // Server is the wired HTTP application returned by Build.
@@ -200,10 +200,12 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	var cfOrders collector.CashfreeOrders
 	var cfClient *cashfree.Client
 	cfCfg := cashfree.Config{
-		AppID:      cfg.CashfreeAppID,
-		SecretKey:  cfg.CashfreeSecretKey,
-		Env:        cfg.CashfreeEnv,
-		APIVersion: cfg.WebhookAPIVersion,
+		AppID:        cfg.CashfreeAppID,
+		SecretKey:    cfg.CashfreeSecretKey,
+		Env:          cfg.CashfreeEnv,
+		APIVersion:   cfg.WebhookAPIVersion,
+		KYCClientID:  cfg.CashfreeKYCAppID,
+		KYCSecretKey: cfg.CashfreeKYCSecretKey,
 	}
 	if strings.TrimSpace(cfg.FrontendURL) != "" {
 		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/tenant/pay-return?order_id={order_id}"

@@ -89,11 +89,11 @@ func (r *DueRepo) HasOpenRentDue(ctx context.Context, tenantID uuid.UUID) (bool,
 }
 
 type DueListFilter struct {
-	PropertyID    uuid.UUID
-	TenantID      *uuid.UUID
-	Kind          *domain.DueKind
-	Status        *domain.DueStatus
-	Limit         int
+	PropertyID uuid.UUID
+	TenantID   *uuid.UUID
+	Kind       *domain.DueKind
+	Status     *domain.DueStatus
+	Limit      int
 	// CursorDueDate and CursorID together form the keyset cursor for pagination.
 	// OFFSET is not supported (REQ-PERF-004).
 	CursorDueDate *time.Time

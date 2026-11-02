@@ -149,7 +149,7 @@ func TestHashedAssetRE(t *testing.T) {
 		"sw.js",
 		"assets/logo.png",
 		"assets/apple-touch-icon.png",
-		"assets/icon-1234.png", // too short
+		"assets/icon-1234.png",                 // too short
 		"other/ActiveSessionsCard-QpflnB9r.js", // not under assets/
 	}
 
@@ -219,4 +219,3 @@ func TestCacheControlHeaders(t *testing.T) {
 		}
 	}
 }
-

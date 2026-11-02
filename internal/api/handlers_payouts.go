@@ -627,7 +627,6 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 		return
 	}
 
-
 	c.JSON(http.StatusCreated, gin.H{"batch": batch, "items": items})
 }
 
@@ -1024,7 +1023,6 @@ func (h *Handlers) getPayoutApprovalSigningKey() ([]byte, string) {
 	}
 	return nil, ""
 }
-
 
 func (h *Handlers) getPayoutKeyRing() *crypto.KeyRing {
 	if h.PayoutKeyRing != nil {

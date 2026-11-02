@@ -261,7 +261,7 @@ func ParseWebhook(raw []byte) (any, string, error) {
 			RefundReason: p.AutoRefund.RefundReason,
 		}, evtType, nil
 
-	case "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE_WEBHOOK":
+	case "DISPUTE_CREATED", "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE", "DISPUTE_STATUS_UPDATE_WEBHOOK":
 		var p struct {
 			Dispute struct {
 				DisputeID         any         `json:"dispute_id"`
@@ -274,6 +274,10 @@ func ParseWebhook(raw []byte) (any, string, error) {
 				ReasonDescription string      `json:"reason_description"`
 				RespondBy         string      `json:"respond_by"`
 			} `json:"dispute"`
+			OrderDetails struct {
+				OrderID     string `json:"order_id"`
+				CFPaymentID any    `json:"cf_payment_id"`
+			} `json:"order_details"`
 		}
 		if err := json.Unmarshal(env.RawData, &p); err != nil {
 			return nil, evtType, fmt.Errorf("dispute data json: %w", err)
@@ -286,11 +290,30 @@ func ParseWebhook(raw []byte) (any, string, error) {
 				return nil, evtType, fmt.Errorf("dispute amount parse: %w", err)
 			}
 		}
+
+		orderID := strings.TrimSpace(p.OrderDetails.OrderID)
+		if orderID == "" {
+			orderID = strings.TrimSpace(p.Dispute.OrderID)
+		}
+
+		cfPayID := parseRefID(p.OrderDetails.CFPaymentID)
+		if cfPayID == "" || cfPayID == "<nil>" {
+			cfPayID = parseRefID(p.Dispute.CFPaymentID)
+			if cfPayID == "<nil>" {
+				cfPayID = ""
+			}
+		}
+
+		dispID := parseRefID(p.Dispute.DisputeID)
+		if dispID == "<nil>" {
+			dispID = ""
+		}
+
 		return DisputeWebhook{
 			Type:              evtType,
-			DisputeID:         fmt.Sprintf("%v", p.Dispute.DisputeID),
-			OrderID:           p.Dispute.OrderID,
-			CFPaymentID:       fmt.Sprintf("%v", p.Dispute.CFPaymentID),
+			DisputeID:         dispID,
+			OrderID:           orderID,
+			CFPaymentID:       cfPayID,
 			DisputeType:       p.Dispute.DisputeType,
 			DisputeStatus:     strings.ToUpper(strings.TrimSpace(p.Dispute.DisputeStatus)),
 			DisputeAmount:     paise,

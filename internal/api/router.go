@@ -43,20 +43,20 @@ type Deps struct {
 	UserStore        UserStore
 	PreferencesStore PreferencesStore
 
-	Joins          JoinService
-	InviteResolver InviteResolver
-	SlotInvites          SlotInviteService
-	Referrals            ReferralAdmissionService
-	Waitlist             WaitlistAdmissionService
-	OnboardingSettings   OnboardingSettingsStore
-	JoinIdempotency      JoinIdempotencyStore
-	ReportStore    ReportStore
-	IntentStore    IntentStore
-	PaymentLookup  PaymentLookup
-	Collector      *collector.Service
-	CashfreeSecret string
-	CashfreeEnv    string
-	CashfreeClient CashfreeClient
+	Joins              JoinService
+	InviteResolver     InviteResolver
+	SlotInvites        SlotInviteService
+	Referrals          ReferralAdmissionService
+	Waitlist           WaitlistAdmissionService
+	OnboardingSettings OnboardingSettingsStore
+	JoinIdempotency    JoinIdempotencyStore
+	ReportStore        ReportStore
+	IntentStore        IntentStore
+	PaymentLookup      PaymentLookup
+	Collector          *collector.Service
+	CashfreeSecret     string
+	CashfreeEnv        string
+	CashfreeClient     CashfreeClient
 
 	GatewayPaymentRepo  GatewayPaymentRepo
 	UnmatchedReceipts   UnmatchedReceiptStore

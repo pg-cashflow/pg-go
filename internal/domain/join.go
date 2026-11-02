@@ -16,27 +16,27 @@ const (
 )
 
 type JoinRequest struct {
-	ID               uuid.UUID  `json:"id"`
-	PropertyID       uuid.UUID  `json:"property_id"`
-	UserID           uuid.UUID  `json:"user_id"`
-	Phone            string     `json:"phone"`
-	Name             string     `json:"name"`
-	AadhaarLast4     *string    `json:"aadhaar_last4,omitempty"`
-	PermanentAddress string     `json:"permanent_address,omitempty"`
-	CurrentAddress   string     `json:"current_address,omitempty"`
-	ParentName       string     `json:"parent_name,omitempty"`
-	EmergencyPhone   string     `json:"emergency_phone,omitempty"`
-	JoinedOn         *time.Time `json:"joined_on,omitempty"`
-	Status           JoinStatus `json:"status"`
-	TenantID         *uuid.UUID `json:"tenant_id,omitempty"`
-	SlotInviteID           *uuid.UUID      `json:"slot_invite_id,omitempty"`
-	OccupationType         OccupationType  `json:"occupation_type,omitempty"`
-	DateOfBirth            *time.Time      `json:"date_of_birth,omitempty"`
-	ProfileSchemaVersion   int             `json:"profile_schema_version"`
-	OccupationDetails      json.RawMessage `json:"occupation_details,omitempty"`
-	EmergencyContactName   string          `json:"emergency_contact_name,omitempty"`
-	CreatedAt              time.Time       `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID                   uuid.UUID       `json:"id"`
+	PropertyID           uuid.UUID       `json:"property_id"`
+	UserID               uuid.UUID       `json:"user_id"`
+	Phone                string          `json:"phone"`
+	Name                 string          `json:"name"`
+	AadhaarLast4         *string         `json:"aadhaar_last4,omitempty"`
+	PermanentAddress     string          `json:"permanent_address,omitempty"`
+	CurrentAddress       string          `json:"current_address,omitempty"`
+	ParentName           string          `json:"parent_name,omitempty"`
+	EmergencyPhone       string          `json:"emergency_phone,omitempty"`
+	JoinedOn             *time.Time      `json:"joined_on,omitempty"`
+	Status               JoinStatus      `json:"status"`
+	TenantID             *uuid.UUID      `json:"tenant_id,omitempty"`
+	SlotInviteID         *uuid.UUID      `json:"slot_invite_id,omitempty"`
+	OccupationType       OccupationType  `json:"occupation_type,omitempty"`
+	DateOfBirth          *time.Time      `json:"date_of_birth,omitempty"`
+	ProfileSchemaVersion int             `json:"profile_schema_version"`
+	OccupationDetails    json.RawMessage `json:"occupation_details,omitempty"`
+	EmergencyContactName string          `json:"emergency_contact_name,omitempty"`
+	CreatedAt            time.Time       `json:"created_at"`
+	UpdatedAt            time.Time       `json:"updated_at"`
 }
 
 type PaymentReportStatus string
@@ -118,5 +118,5 @@ type PayIntent struct {
 	DueIDs           []uuid.UUID `json:"due_ids,omitempty"`
 	// FallbackReason is set when the property is in cashfree mode but the backend
 	// fell back to manual. Possible values: "missing_phone", "gateway_down".
-	FallbackReason   string      `json:"fallback_reason,omitempty"`
+	FallbackReason string `json:"fallback_reason,omitempty"`
 }

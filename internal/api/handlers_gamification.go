@@ -1066,7 +1066,7 @@ func (h *Handlers) OwnerBulkGenerateFloorsRooms(c *gin.Context) {
 		"rooms_created":  createdRooms,
 	})
 }
- 
+
 // OwnerListRedemptions lists coupon and perk redemptions for a property.
 func (h *Handlers) OwnerListRedemptions(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)

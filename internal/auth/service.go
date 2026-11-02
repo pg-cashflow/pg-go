@@ -165,8 +165,6 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		return "", "", nil
 	}
 
-
-
 	// Check if user has an email on file:
 	var userEmail string
 	if s.users != nil {

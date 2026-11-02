@@ -667,4 +667,3 @@ func TestFeatureBankStatements_AccountsAndTransactions(t *testing.T) {
 		t.Fatalf("owner list bank transactions: status %d (body %s)", code, body)
 	}
 }
-

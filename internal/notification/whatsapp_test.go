@@ -27,8 +27,8 @@ func TestNormalizePhone(t *testing.T) {
 		{"+91 98765 43210", "919876543210", false},
 		{"919876543210", "919876543210", false},
 		{"14155552671", "14155552671", false}, // international US
-		{"123", "", true},                      // too short
-		{"", "", true},                         // empty
+		{"123", "", true},                     // too short
+		{"", "", true},                        // empty
 	}
 
 	for _, tt := range tests {
@@ -342,4 +342,3 @@ func TestDispatcher_DeliverWhatsApp_FailureRecorded(t *testing.T) {
 		t.Errorf("expected LastError to contain 'rate limit exceeded', got %v", del.LastError)
 	}
 }
-

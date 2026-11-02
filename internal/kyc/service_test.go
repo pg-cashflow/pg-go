@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
@@ -18,21 +20,21 @@ import (
 // ---- Fakes ------------------------------------------------------------------
 
 type fakeRepo struct {
-	consent         *domain.KYCConsent
-	verification    *domain.KYCVerification
-	latestVerif     *domain.KYCVerification
-	auditLogs       []domain.KYCAuditLog
-	tenantName      string
-	attestedPhoto   []byte
-	lockAcquired    *bool
-	lockAcquireErr  error
-	lockReleaseErr  error
-	releasedLockIDs []uuid.UUID
-	recordConsentFn func(c *domain.KYCConsent) error
-	initiateVTxFn   func() (*domain.KYCVerification, error)
-	completeVTxFn   func(id uuid.UUID) (*domain.KYCVerification, error)
-	failVTxFn       func(id uuid.UUID, reason string) error
-	clearDupFn      func(id uuid.UUID, reason string) error
+	consent                 *domain.KYCConsent
+	verification            *domain.KYCVerification
+	latestVerif             *domain.KYCVerification
+	auditLogs               []domain.KYCAuditLog
+	tenantName              string
+	attestedPhoto           []byte
+	lockAcquired            *bool
+	lockAcquireErr          error
+	lockReleaseErr          error
+	releasedLockIDs         []uuid.UUID
+	recordConsentFn         func(c *domain.KYCConsent) error
+	initiateVTxFn           func() (*domain.KYCVerification, error)
+	completeVTxFn           func(id uuid.UUID) (*domain.KYCVerification, error)
+	failVTxFn               func(id uuid.UUID, reason string) error
+	clearDupFn              func(id uuid.UUID, reason string) error
 	recordFailureAndCountFn func(reasonCode string) (int, error)
 }
 
@@ -238,7 +240,6 @@ func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID
 	}, nil
 }
 
-
 type fakeCashfree struct {
 	ocrResp       *cashfree.SmartOCRResponse
 	ocrErr        error
@@ -321,7 +322,6 @@ func TestRecordConsent(t *testing.T) {
 	}
 }
 
-
 func TestVerifySecureQR_NoConsent(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newTestService(repo, &fakeCashfree{})
@@ -357,8 +357,6 @@ func TestClearDuplicateFlag_RequiresReason(t *testing.T) {
 		t.Fatal("expected error when reason is empty")
 	}
 }
-
-
 
 func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	tenantID := uuid.New()
@@ -436,7 +434,6 @@ func TestVerifyAadhaarDocument_NameMismatch(t *testing.T) {
 	}
 }
 
-
 func TestVerifyAadhaarDocument_InFlightLockContention(t *testing.T) {
 	tenantID := uuid.New()
 	locked := false
@@ -481,7 +478,6 @@ func TestVerifyAadhaarDocument_ReleaseLockOnError(t *testing.T) {
 	}
 }
 
-
 func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
 	tenantID := uuid.New()
 	consentID := uuid.New()
@@ -521,7 +517,13 @@ func TestInitiateAadhaarOTP_HappyPath(t *testing.T) {
 	cf := &fakeCashfree{}
 	svc := newTestService(repo, cf)
 
-	refID, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, "123456789012", "tenant:"+tenantID.String())
+	checkDigit, err := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	if err != nil {
+		t.Fatalf("failed to generate check digit: %v", err)
+	}
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	refID, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
 	if err != nil {
 		t.Fatalf("unexpected error initiating aadhaar otp: %v", err)
 	}
@@ -530,6 +532,12 @@ func TestInitiateAadhaarOTP_HappyPath(t *testing.T) {
 	}
 	if repo.verification == nil || repo.verification.Method != domain.KYCMethodAadhaarOTP {
 		t.Errorf("expected verification method aadhaar_otp, got %v", repo.verification)
+	}
+
+	// Verify invalid Aadhaar numbers fail fast without calling gateway
+	_, err = svc.InitiateAadhaarOTP(context.Background(), tenantID, "123456789012", "tenant:"+tenantID.String())
+	if !errors.Is(err, kycsvc.ErrInvalidAadhaarNumber) {
+		t.Errorf("expected ErrInvalidAadhaarNumber for invalid aadhaar, got %v", err)
 	}
 }
 
@@ -790,5 +798,3 @@ func TestCompleteAadhaarOTP_InFlightLockContention(t *testing.T) {
 		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
 	}
 }
-
-

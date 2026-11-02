@@ -250,7 +250,6 @@ func (h *Handlers) TenantProrate(c *gin.Context) {
 	c.JSON(http.StatusOK, due)
 }
 
-
 func maskOptionalPhone(p *string) *string {
 	if p == nil {
 		return nil

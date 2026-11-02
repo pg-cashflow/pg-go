@@ -221,4 +221,3 @@ func TestDeriveKeyHKDF(t *testing.T) {
 		t.Fatalf("decrypted %s does not match plaintext %s", decrypted, plaintext)
 	}
 }
-

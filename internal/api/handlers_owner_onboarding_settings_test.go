@@ -71,7 +71,7 @@ func TestManagerGetOnboardingSettings_OK(t *testing.T) {
 		PropertyStore: &scopeTestPropertyStore{props: map[uuid.UUID]*domain.Property{
 			propA: {ID: propA, OwnerPhone: "+919000000499"},
 		}},
-		UserStore: &scopeTestUserStore{users: map[uuid.UUID]*domain.User{manager.ID: manager}},
+		UserStore:          &scopeTestUserStore{users: map[uuid.UUID]*domain.User{manager.ID: manager}},
 		OnboardingSettings: &stubOnboardingSettingsStore{},
 	})
 

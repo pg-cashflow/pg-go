@@ -105,7 +105,6 @@ var (
 	ErrDuplicateTxn     = errors.New("payment: duplicate upi txn id")
 )
 
-
 var utrRegex = regexp.MustCompile(`^[A-Z0-9]{6,50}$`)
 
 // NormalizeUTR normalizes a UTR string:
@@ -158,4 +157,3 @@ func NormalizeRefundStatus(raw string) string {
 		return RefundStatusPending
 	}
 }
-

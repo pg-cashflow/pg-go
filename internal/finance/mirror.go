@@ -673,7 +673,6 @@ func (s *Service) MirrorPaymentCorrection(
 	return err
 }
 
-
 // MirrorCashRefundDisbursed posts journal entry when a refund_payable departure is disbursed in physical cash:
 // Dr refund_payable (amountPaise)
 // Cr cash (amountPaise)

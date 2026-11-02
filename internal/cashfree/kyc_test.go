@@ -75,7 +75,6 @@ func TestAPIError_OmitBodyFromErrorString(t *testing.T) {
 	}
 }
 
-
 func TestClassifyAadhaarError(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -334,3 +333,94 @@ func TestVerifyAadhaarOTP_PhotoLinkSupport(t *testing.T) {
 	}
 }
 
+func TestAadhaarOTP_NumericRefID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/offline-aadhaar/otp":
+			// Numeric ref_id exceeding 1e7 (would format as 1.2345678e+07 with float64 %v)
+			_, _ = w.Write([]byte(`{"ref_id": 12345678, "status": "SUCCESS", "message": "OTP sent"}`))
+		case "/offline-aadhaar/verify":
+			_, _ = w.Write([]byte(`{"ref_id": 98765432101234, "status": "VALID", "name": "Rahul Verma", "uid": "1234"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newKYCTestClient(srv)
+	reqRes, err := client.RequestAadhaarOTP(context.Background(), "999988887777")
+	if err != nil {
+		t.Fatalf("unexpected RequestAadhaarOTP error: %v", err)
+	}
+	if reqRes.RefID != "12345678" {
+		t.Fatalf("expected ref_id '12345678', got %q (possible scientific notation bug)", reqRes.RefID)
+	}
+
+	verRes, err := client.VerifyAadhaarOTP(context.Background(), reqRes.RefID, "123456")
+	if err != nil {
+		t.Fatalf("unexpected VerifyAadhaarOTP error: %v", err)
+	}
+	if verRes.RefID != "98765432101234" {
+		t.Fatalf("expected ref_id '98765432101234', got %q", verRes.RefID)
+	}
+}
+
+func TestParseRefID(t *testing.T) {
+	cases := []struct {
+		input    any
+		expected string
+	}{
+		{nil, ""},
+		{"string_ref", "string_ref"},
+		{"  trimmed_ref  ", "trimmed_ref"},
+		{json.Number("87654321"), "87654321"},
+		{int64(12345678), "12345678"},
+		{int(42), "42"},
+		{float64(12345678), "12345678"},
+	}
+	for _, tc := range cases {
+		got := parseRefID(tc.input)
+		if got != tc.expected {
+			t.Errorf("parseRefID(%v) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}
+
+func TestSignKYC_DedicatedKYCCredentials(t *testing.T) {
+	var capturedID, capturedSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedID = r.Header.Get("x-client-id")
+		capturedSecret = r.Header.Get("x-client-secret")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ref_id":  "cf_ref_xyz",
+			"status":  "SUCCESS",
+			"message": "OTP sent",
+		})
+	}))
+	defer srv.Close()
+
+	client := &Client{
+		cfg: Config{
+			AppID:        "PG_APP_ID",
+			SecretKey:    "PG_SECRET_KEY",
+			KYCClientID:  "KYC_APP_ID",
+			KYCSecretKey: "KYC_SECRET_KEY",
+			Env:          "sandbox",
+		},
+		http:         srv.Client(),
+		baseOverride: srv.URL,
+	}
+
+	_, err := client.RequestAadhaarOTP(context.Background(), "999988887777")
+	if err != nil {
+		t.Fatalf("unexpected RequestAadhaarOTP error: %v", err)
+	}
+	if capturedID != "KYC_APP_ID" {
+		t.Errorf("expected x-client-id 'KYC_APP_ID', got %q", capturedID)
+	}
+	if capturedSecret != "KYC_SECRET_KEY" {
+		t.Errorf("expected x-client-secret 'KYC_SECRET_KEY', got %q (PG secret was reused!)", capturedSecret)
+	}
+}

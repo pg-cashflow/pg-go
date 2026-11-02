@@ -130,4 +130,3 @@ func TestTenant_GamificationAndContact(t *testing.T) {
 		t.Errorf("phoneless tenant should have cash_only contact mode")
 	}
 }
-

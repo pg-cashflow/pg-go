@@ -282,7 +282,7 @@ func (h *Handlers) TenantLifecycle(c *gin.Context) {
 		return
 	}
 	out := gin.H{
-		"tenant_status": t.Status,
+		"tenant_status":        t.Status,
 		"credit_balance_paise": t.CreditBalancePaise,
 	}
 	if h.PayoutRepo != nil {

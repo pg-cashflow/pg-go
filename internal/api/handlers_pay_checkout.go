@@ -27,7 +27,6 @@ var (
 
 const verifyThrottleDuration = 3 * time.Second
 
-
 func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 	if due.Status == domain.DueStatusPaid || due.Status == domain.DueStatusWaived {
 		c.JSON(http.StatusOK, domain.PayIntent{

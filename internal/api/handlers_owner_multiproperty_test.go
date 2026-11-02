@@ -504,4 +504,3 @@ func TestOwner_BulkGenerateFloorsRooms(t *testing.T) {
 		t.Errorf("bulk generate result: got %+v, want floors=2, rooms=6", res)
 	}
 }
-

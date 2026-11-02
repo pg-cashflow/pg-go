@@ -12,11 +12,11 @@ import (
 )
 
 var (
-	ErrReferralNotFound      = errors.New("referral: not found")
-	ErrReferralNotOpen       = errors.New("referral: not open")
-	ErrReferralSelf          = errors.New("referral: self referral")
-	ErrReferralDisabled      = errors.New("referral: disabled")
-	ErrReferralAlreadyBound  = errors.New("referral: already bound")
+	ErrReferralNotFound     = errors.New("referral: not found")
+	ErrReferralNotOpen      = errors.New("referral: not open")
+	ErrReferralSelf         = errors.New("referral: self referral")
+	ErrReferralDisabled     = errors.New("referral: disabled")
+	ErrReferralAlreadyBound = errors.New("referral: already bound")
 )
 
 type ReferralRepo struct{ db DBTX }

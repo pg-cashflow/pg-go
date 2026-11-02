@@ -163,4 +163,3 @@ func TestLegacyAppShellEnabled(t *testing.T) {
 		t.Fatal("expected legacyAppShellEnabled to be true when AppEnv is empty")
 	}
 }
-

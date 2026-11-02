@@ -38,15 +38,15 @@ func NewService(pool *pgxpool.Pool, invites *postgres.SlotInviteRepo, settings *
 }
 
 type CreateInput struct {
-	PropertyID        uuid.UUID
-	FloorID           uuid.UUID
-	RoomID            uuid.UUID
-	RentPaise         int64
-	DepositPaise      int64
-	DueDay            int16
-	AllowOverCapacity bool
+	PropertyID         uuid.UUID
+	FloorID            uuid.UUID
+	RoomID             uuid.UUID
+	RentPaise          int64
+	DepositPaise       int64
+	DueDay             int16
+	AllowOverCapacity  bool
 	OverCapacityReason string
-	CreatedBy         uuid.UUID
+	CreatedBy          uuid.UUID
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*domain.SlotInvite, error) {

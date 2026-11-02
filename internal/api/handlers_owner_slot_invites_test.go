@@ -48,7 +48,7 @@ func TestOwnerRevokeSlotInvite_CrossPropertyIDOR(t *testing.T) {
 		PropertyStore: &scopeTestPropertyStore{props: map[uuid.UUID]*domain.Property{
 			propA: {ID: propA, OwnerPhone: owner.Phone},
 		}},
-		UserStore:   &scopeTestUserStore{users: map[uuid.UUID]*domain.User{owner.ID: owner}},
+		UserStore: &scopeTestUserStore{users: map[uuid.UUID]*domain.User{owner.ID: owner}},
 		SlotInvites: &stubSlotInviteService{
 			revoke: func(_ context.Context, propertyID, id, _ uuid.UUID) (*domain.SlotInvite, error) {
 				if propertyID != propA || id != inviteID {
@@ -95,8 +95,8 @@ func TestManagerCreateSlotInvite_RequiresCapability(t *testing.T) {
 		PropertyStore: &scopeTestPropertyStore{props: map[uuid.UUID]*domain.Property{
 			propA: {ID: propA, OwnerPhone: "+919000000299"},
 		}},
-		UserStore: &scopeTestUserStore{users: map[uuid.UUID]*domain.User{manager.ID: manager}},
-		SlotInvites: &stubSlotInviteService{},
+		UserStore:       &scopeTestUserStore{users: map[uuid.UUID]*domain.User{manager.ID: manager}},
+		SlotInvites:     &stubSlotInviteService{},
 		CapabilityStore: &stubCapabilityStore{active: map[string]bool{}},
 	})
 

@@ -30,6 +30,7 @@ type Config struct {
 	KYCAuthMode                string // "ip" (default) | "signature"
 	KYCPublicKey               *rsa.PublicKey
 	KYCClientID                string
+	KYCSecretKey               string
 	Now                        func() time.Time
 }
 
@@ -380,8 +381,12 @@ func (c *Client) signKYC(req *http.Request) error {
 	if clientID == "" {
 		clientID = c.cfg.AppID
 	}
+	secretKey := c.cfg.KYCSecretKey
+	if secretKey == "" {
+		secretKey = c.cfg.SecretKey
+	}
 	req.Header.Set("x-client-id", clientID)
-	req.Header.Set("x-client-secret", c.cfg.SecretKey)
+	req.Header.Set("x-client-secret", secretKey)
 	ver := c.cfg.APIVersion
 	if ver == "" {
 		ver = "2025-01-01"

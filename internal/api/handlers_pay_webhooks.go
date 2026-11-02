@@ -119,7 +119,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		}
 		h.handleRefundWebhook(c, ref, evtRecord)
 
-	case "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE_WEBHOOK":
+	case "DISPUTE_CREATED", "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE", "DISPUTE_STATUS_UPDATE_WEBHOOK":
 		disp, ok := val.(cashfree.DisputeWebhook)
 		if !ok {
 			c.Status(http.StatusOK)
@@ -939,7 +939,6 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "refund settle failed"})
 			return
 		}
-
 
 		if h.Referrals != nil && len(committedDueIDs) > 0 {
 			for _, dueID := range committedDueIDs {

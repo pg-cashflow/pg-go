@@ -114,10 +114,10 @@ func bpsAmount(rentPaise int64, bps int) int64 {
 }
 
 type firstRentPlan struct {
-	refID       uuid.UUID
-	joinerDisc  int64
-	passPaise   int64
-	rentBase    int64
+	refID      uuid.UUID
+	joinerDisc int64
+	passPaise  int64
+	rentBase   int64
 }
 
 func (s *Service) planFirstRent(ctx context.Context, tenantID uuid.UUID, rentBase int64) (*firstRentPlan, error) {

@@ -29,9 +29,9 @@ type mockPayoutRows struct {
 	err    error
 }
 
-func (r *mockPayoutRows) Close() {}
-func (r *mockPayoutRows) Err() error { return r.err }
-func (r *mockPayoutRows) CommandTag() pgconn.CommandTag { return pgconn.CommandTag{} }
+func (r *mockPayoutRows) Close()                                       {}
+func (r *mockPayoutRows) Err() error                                   { return r.err }
+func (r *mockPayoutRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
 func (r *mockPayoutRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
 func (r *mockPayoutRows) Next() bool {
 	if r.nextFn != nil {
@@ -46,8 +46,8 @@ func (r *mockPayoutRows) Scan(dest ...any) error {
 	return nil
 }
 func (r *mockPayoutRows) Values() ([]any, error) { return nil, nil }
-func (r *mockPayoutRows) RawValues() [][]byte { return nil }
-func (r *mockPayoutRows) Conn() *pgx.Conn { return nil }
+func (r *mockPayoutRows) RawValues() [][]byte    { return nil }
+func (r *mockPayoutRows) Conn() *pgx.Conn        { return nil }
 
 type mockPayoutDB struct {
 	queryRowCalled bool

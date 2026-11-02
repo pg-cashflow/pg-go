@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,7 @@ var (
 	ErrQRDataIncomplete      = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
 	ErrCashfreeUnavailable   = errors.New("kyc: verification unavailable — cashfree is not configured")
 	ErrDigiLockerUnavailable = ErrCashfreeUnavailable // Deprecated alias
+	ErrInvalidAadhaarNumber  = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
 )
 
 // PermanentError is an interface implemented by errors that represent an
@@ -445,6 +447,12 @@ func (s *Service) InitiateAadhaarOTP(
 	aadhaarNumber string,
 	actor string,
 ) (string, error) {
+	cleanedNum := strings.ReplaceAll(aadhaarNumber, " ", "")
+	cleanedNum = strings.ReplaceAll(cleanedNum, "-", "")
+	if err := aadhaar.ValidateAadhaarNumber(cleanedNum); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidAadhaarNumber, err)
+	}
+
 	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
 	if err != nil {
 		if errors.Is(err, domain.ErrVerificationNotFound) {
@@ -490,7 +498,7 @@ func (s *Service) InitiateAadhaarOTP(
 		}
 	}
 
-	res, err := s.cashfree.RequestAadhaarOTP(ctx, aadhaarNumber)
+	res, err := s.cashfree.RequestAadhaarOTP(ctx, cleanedNum)
 	if err != nil {
 		return "", fmt.Errorf("kyc service: request aadhaar otp: %w", err)
 	}
@@ -671,7 +679,6 @@ func (s *Service) RejectManualReview(ctx context.Context, verificationID, proper
 	return s.repo.RejectManualReviewTx(ctx, verificationID, propertyID, reviewerID, reason, actor)
 }
 
-
 // GetAttestedPhoto retrieves the verified government/vendor-attested photo crop for owner inspection.
 func (s *Service) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
 	return s.repo.GetAttestedPhoto(ctx, tenantID)
@@ -756,4 +763,3 @@ func (s *Service) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 func (s *Service) RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error) {
 	return s.repo.RecordGuardianConsentTx(ctx, tenantID, guardianName, guardianPhone, relation, refID, actor)
 }
-

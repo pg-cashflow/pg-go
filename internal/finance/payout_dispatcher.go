@@ -24,9 +24,9 @@ type PayoutBatchDispatcher interface {
 
 // PayoutDispatcher handles the Cashfree Transfers V2 batch transfer lifecycle.
 type PayoutDispatcher struct {
-	repo          *postgres.PayoutRepo
-	client        *cashfree.PayoutClient
-	fundsourceID  string
+	repo                *postgres.PayoutRepo
+	client              *cashfree.PayoutClient
+	fundsourceID        string
 	encryptionKey       []byte
 	keyRing             *crypto.KeyRing
 	approvalSigningKeys map[string][]byte

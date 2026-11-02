@@ -415,4 +415,3 @@ func TestPayoutSignature_FailClosedWhenSigningFails(t *testing.T) {
 		t.Fatal("expected request NOT to be dispatched when signature generation fails")
 	}
 }
-

@@ -11,41 +11,41 @@ import (
 )
 
 type Config struct {
-	DatabaseURL                       string
-	DatabaseMaintURL                  string
-	DatabaseWorkerURL                 string
-	JWTSecret                         string
-	OTPHMACSecret                     string
-	MagicLinkHMACSecret               string
-	MagicLinkBaseURL                  string
-	SMTPHost                          string
-	SMTPPort                          string
-	SMTPUsername                      string
-	SMTPPassword                      string
-	SMTPFrom                          string
-	VAPIDPublicKey                    string
-	VAPIDPrivateKey                   string
-	VAPIDSubject                      string
-	HTTPAddr                          string
-	AppEnv                            string
-	CORSAllowedOrigins                []string
-	FrontendURL                       string
-	FirebaseProjectID                 string
-	FirebaseCredentials               string
-	CashfreeAppID                     string // Deprecated: alias for CashfreePGAppID
-	CashfreeSecretKey                 string // Deprecated: alias for CashfreePGSecretKey
-	CashfreePGAppID                   string
-	CashfreePGSecretKey               string
-	CashfreeKYCAppID                  string
-	CashfreeKYCSecretKey              string
-	CashfreeEnv                       string
-	CashfreeWebhookSecret             string
-	WebhookTimestampToleranceSec      int
-	OrderExpiryDuration               time.Duration
-	OrderPollerBufferDuration         time.Duration
-	WebhookAPIVersion                 string
-	AadhaarQRPublicKeyPEM             string
-	KYCIdentitySecret string
+	DatabaseURL                  string
+	DatabaseMaintURL             string
+	DatabaseWorkerURL            string
+	JWTSecret                    string
+	OTPHMACSecret                string
+	MagicLinkHMACSecret          string
+	MagicLinkBaseURL             string
+	SMTPHost                     string
+	SMTPPort                     string
+	SMTPUsername                 string
+	SMTPPassword                 string
+	SMTPFrom                     string
+	VAPIDPublicKey               string
+	VAPIDPrivateKey              string
+	VAPIDSubject                 string
+	HTTPAddr                     string
+	AppEnv                       string
+	CORSAllowedOrigins           []string
+	FrontendURL                  string
+	FirebaseProjectID            string
+	FirebaseCredentials          string
+	CashfreeAppID                string // Deprecated: alias for CashfreePGAppID
+	CashfreeSecretKey            string // Deprecated: alias for CashfreePGSecretKey
+	CashfreePGAppID              string
+	CashfreePGSecretKey          string
+	CashfreeKYCAppID             string
+	CashfreeKYCSecretKey         string
+	CashfreeEnv                  string
+	CashfreeWebhookSecret        string
+	WebhookTimestampToleranceSec int
+	OrderExpiryDuration          time.Duration
+	OrderPollerBufferDuration    time.Duration
+	WebhookAPIVersion            string
+	AadhaarQRPublicKeyPEM        string
+	KYCIdentitySecret            string
 	// KYCIdentitySecrets holds versioned HMAC-SHA256 keys for identity_hash rotation
 	// (version number -> secret string). Populated from KYC_IDENTITY_SECRETS env var,
 	// format identical to PAYOUT_ENCRYPTION_KEYS: "1:secret-v1,2:secret-v2,...".
@@ -57,7 +57,7 @@ type Config struct {
 	// KYCDocCryptoKey is the hex-encoded 32-byte AES-256 key used to encrypt
 	// Aadhaar document bytes (document_bytes, attested_photo_bytes) at rest.
 	// Set via KYC_DOC_CRYPTO_KEY. Empty = encryption disabled (dev/CI safe).
-	KYCDocCryptoKey string
+	KYCDocCryptoKey                   string
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
 	CashfreePayoutAPIVersion          string

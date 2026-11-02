@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -27,18 +28,18 @@ import (
 // ---- Fake KYCService --------------------------------------------------------
 
 type fakeKYCSvc struct {
-	consentFn    func(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error)
-	qrFn         func(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
-	revokeFn     func(ctx context.Context, tenantID uuid.UUID, actor string) error
-	statusFn     func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
-	ownerViewFn  func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
-	vendorRefFn  func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
-	clearDupFn   func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
-	uploadFn     func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
-	photoFn      func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+	consentFn            func(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error)
+	qrFn                 func(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
+	revokeFn             func(ctx context.Context, tenantID uuid.UUID, actor string) error
+	statusFn             func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
+	ownerViewFn          func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
+	vendorRefFn          func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
+	clearDupFn           func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
+	uploadFn             func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
+	photoFn              func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
-	approveFn           func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
-	rejectFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	approveFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	rejectFn             func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 }
 
 func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error) {
@@ -252,7 +253,7 @@ func TestTenantKYCRevoke_OK(t *testing.T) {
 	}
 }
 
-// ---- TenantKYCStatus — field visibility -------------------------------------
+// ---- TenantKYCStatus â€” field visibility -------------------------------------
 
 func TestTenantKYCStatus_HidesInternalFields(t *testing.T) {
 	uid := "XXXX-1234"
@@ -559,7 +560,13 @@ func TestTenantKYCAadhaarOTPRequest_OK(t *testing.T) {
 	svc := &fakeKYCSvc{}
 	r := kycTestTenantRouter(svc, "")
 
-	body := `{"aadhaar_number":"548550008000"}`
+	checkDigit, err := aadhaar.GenerateVerhoeffCheckDigit("54855000800")
+	if err != nil {
+		t.Fatalf("generate check digit: %v", err)
+	}
+	validAadhaar := fmt.Sprintf("54855000800%d", checkDigit)
+
+	body := fmt.Sprintf(`{"aadhaar_number":%q}`, validAadhaar)
 	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -574,6 +581,43 @@ func TestTenantKYCAadhaarOTPRequest_OK(t *testing.T) {
 	}
 	if resp["ref_id"] != "test_aadhaar_ref_123" {
 		t.Errorf("expected ref_id 'test_aadhaar_ref_123', got %v", resp["ref_id"])
+	}
+}
+
+func TestTenantKYCAadhaarOTPRequest_InvalidAadhaar(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	r := kycTestTenantRouter(svc, "")
+
+	invalidCases := []struct {
+		name string
+		num  string
+	}{
+		{"wrong checksum", "548550008000"},
+		{"too short", "548550008"},
+		{"leading zero", "048550008000"},
+		{"leading one", "148550008000"},
+		{"non digits", "54855000800A"},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"aadhaar_number":%q}`, tc.num)
+			req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp map[string]interface{}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json response: %v", err)
+			}
+			if resp["code"] != "kyc.invalid_aadhaar" {
+				t.Errorf("expected code kyc.invalid_aadhaar, got %v", resp["code"])
+			}
+		})
 	}
 }
 
@@ -1018,5 +1062,3 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		t.Fatalf("expected tenant with nil majority date to be payable")
 	}
 }
-
-

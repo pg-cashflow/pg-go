@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
-	"github.com/pg-cashflow/pg-go/internal/postgres"
 	joinsvc "github.com/pg-cashflow/pg-go/internal/join"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/waitlist"
 )
 

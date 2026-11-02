@@ -151,6 +151,52 @@ func TestParseWebhookTypes(t *testing.T) {
 	if !ok || disp.DisputeID != "DISP_98765" || disp.DisputeAmount != 1200000 || disp.DisputeStatus != "ACTION_REQUIRED" || disp.OrderID != "pg-ORDER-4" {
 		t.Fatalf("unexpected dispute content: %+v", disp)
 	}
+
+	// Official Cashfree wire shape with order_details separate from dispute object
+	rawOfficialDispute := []byte(`{
+		"type": "DISPUTE_CREATED",
+		"data": {
+			"dispute": {
+				"dispute_id": 433475258,
+				"dispute_type": "DISPUTE",
+				"reason_code": "1402",
+				"reason_description": "Duplicate Processing",
+				"dispute_amount": 300.00,
+				"dispute_status": "DISPUTE_CREATED",
+				"respond_by": "2026-11-15T23:59:59+05:30"
+			},
+			"order_details": {
+				"order_id": "order_1944392DR1kMTFYd",
+				"cf_payment_id": 885473311,
+				"order_amount": 300.00,
+				"order_currency": "INR"
+			}
+		},
+		"event_time": "2026-11-02T12:00:00+05:30"
+	}`)
+	val, typ, err = ParseWebhook(rawOfficialDispute)
+	if err != nil || typ != "DISPUTE_CREATED" {
+		t.Fatalf("expected DISPUTE_CREATED, got typ=%s err=%v", typ, err)
+	}
+	officialDisp, ok := val.(DisputeWebhook)
+	if !ok {
+		t.Fatalf("expected DisputeWebhook type, got %T", val)
+	}
+	if officialDisp.DisputeID != "433475258" {
+		t.Errorf("expected DisputeID '433475258', got %q", officialDisp.DisputeID)
+	}
+	if officialDisp.OrderID != "order_1944392DR1kMTFYd" {
+		t.Errorf("expected OrderID 'order_1944392DR1kMTFYd', got %q", officialDisp.OrderID)
+	}
+	if officialDisp.CFPaymentID != "885473311" {
+		t.Errorf("expected CFPaymentID '885473311', got %q", officialDisp.CFPaymentID)
+	}
+	if officialDisp.DisputeAmount != 30000 {
+		t.Errorf("expected DisputeAmount 30000 paise, got %d", officialDisp.DisputeAmount)
+	}
+	if officialDisp.DisputeStatus != "DISPUTE_CREATED" {
+		t.Errorf("expected DisputeStatus 'DISPUTE_CREATED', got %q", officialDisp.DisputeStatus)
+	}
 }
 
 func TestParseWebhook_MalformedAmountFailsClosed(t *testing.T) {
@@ -192,4 +238,3 @@ func TestParseWebhook_MalformedAmountFailsClosed(t *testing.T) {
 		t.Fatalf("expected error parsing PAYMENT_DISPUTE_CREATED_WEBHOOK with 3 decimal places, got nil err, payload=%+v", val)
 	}
 }
-

@@ -57,24 +57,24 @@ type routeClass struct {
 }
 
 var exactPublicPaths = map[string]bool{
-	"/healthz":                         true,
-	"/metrics":                         true,
-	"/p/:token":                        true,
-	"/p/:token/push/subscribe":         true,
-	"/webhooks/cashfree":               true,
-	"/webhooks/cashfree/payouts":       true,
-	"/webhooks/cashfree/settlements":   true,
-	"/api/healthz":                     true,
-	"/api/metrics":                     true,
-	"/api/push/vapid-public-key":       true,
-	"/api/join/invite/:code":           true,
-	"/api/owner/calendar.ics":          true,
-	"/api/auth/otp/request":            true,
-	"/api/auth/otp/verify":             true,
-	"/api/auth/firebase":               true,
-	"/api/auth/refresh":                true,
-	"/api/auth/logout":                 true,
-	"/api/locales":                     true,
+	"/healthz":                       true,
+	"/metrics":                       true,
+	"/p/:token":                      true,
+	"/p/:token/push/subscribe":       true,
+	"/webhooks/cashfree":             true,
+	"/webhooks/cashfree/payouts":     true,
+	"/webhooks/cashfree/settlements": true,
+	"/api/healthz":                   true,
+	"/api/metrics":                   true,
+	"/api/push/vapid-public-key":     true,
+	"/api/join/invite/:code":         true,
+	"/api/owner/calendar.ics":        true,
+	"/api/auth/otp/request":          true,
+	"/api/auth/otp/verify":           true,
+	"/api/auth/firebase":             true,
+	"/api/auth/refresh":              true,
+	"/api/auth/logout":               true,
+	"/api/locales":                   true,
 }
 
 // classifyRoute maps a route to its contract-defined access. It returns false
@@ -233,12 +233,12 @@ type matrixResult struct {
 }
 
 var authMiddlewareCodes = map[string]bool{
-	string(apierr.CodeAuthMissingToken):        true,
-	string(apierr.CodeAuthInvalidToken):        true,
-	string(apierr.CodeAuthAccessRevoked):       true,
-	string(apierr.CodeAuthForbidden):           true,
-	string(apierr.CodeAuthProfileIncomplete):   true,
-	string(apierr.CodeAuthAlreadyActivated):    true,
+	string(apierr.CodeAuthMissingToken):      true,
+	string(apierr.CodeAuthInvalidToken):      true,
+	string(apierr.CodeAuthAccessRevoked):     true,
+	string(apierr.CodeAuthForbidden):         true,
+	string(apierr.CodeAuthProfileIncomplete): true,
+	string(apierr.CodeAuthAlreadyActivated):  true,
 }
 
 // isAuthLayerRefusal reports whether a result came from the auth middleware

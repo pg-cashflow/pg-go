@@ -370,4 +370,3 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 	}
 	return true
 }
-

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -34,7 +36,7 @@ import (
 // NOTE: Single-process in-memory limitation:
 // This rate limiter maintains an in-memory map per process instance. In a
 // multi-replica deployment each instance enforces its own limit independently,
-// allowing a tenant up to N × burst across N replicas. For true distributed
+// allowing a tenant up to N Ã— burst across N replicas. For true distributed
 // enforcement, replace with a Redis sliding window or Postgres advisory store.
 func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 	const (
@@ -112,7 +114,7 @@ func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 }
 
 // ---------------------------------------------------------------------------
-// Error mapping — translates service sentinel errors to typed ClientErrors.
+// Error mapping â€” translates service sentinel errors to typed ClientErrors.
 // ---------------------------------------------------------------------------
 
 func kycClientErr(err error) error {
@@ -146,6 +148,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusUnprocessableEntity, err.Error(), apierr.Code("kyc.qr_incomplete"))
 	case errors.Is(err, kycsvc.ErrCashfreeUnavailable):
 		return clientErrWithCode(http.StatusServiceUnavailable, err.Error(), apierr.Code("kyc.cashfree_unavailable"))
+	case errors.Is(err, kycsvc.ErrInvalidAadhaarNumber):
+		return clientErrWithCode(http.StatusBadRequest, err.Error(), apierr.Code("kyc.invalid_aadhaar"))
 	case errors.Is(err, domain.ErrVerificationNotFound):
 		return clientErrWithCode(http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
 	case errors.Is(err, domain.ErrVerificationNotPending):
@@ -281,7 +285,6 @@ func (h *Handlers) TenantKYCStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-
 // TenantKYCUpload handles POST /api/tenant/kyc/upload.
 // Presents a single Aadhaar document (image/PDF up to 5MB) for Smart OCR verification.
 func (h *Handlers) TenantKYCUpload(c *gin.Context) {
@@ -340,7 +343,7 @@ type secureQRVerifyBody struct {
 // TenantKYCSecureQRVerify handles POST /api/tenant/kyc/qr/verify.
 // Offline Aadhaar Secure QR verification: the UIDAI RSA-SHA256 signature is checked
 // in-process (no network call to Cashfree/UIDAI), so this completes synchronously and
-// is the lowest-latency KYC path available — lower than Aadhaar OTP, which depends on
+// is the lowest-latency KYC path available â€” lower than Aadhaar OTP, which depends on
 // SMS delivery, and lower than document upload, which depends on manual review.
 func (h *Handlers) TenantKYCSecureQRVerify(c *gin.Context) {
 	svc := h.kycSvcOrErr(c)
@@ -394,6 +397,15 @@ func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
 		apierr.RespondBindErr(c, "aadhaar_number is required", apierr.CodeRequestInvalidBody)
 		return
 	}
+
+	cleanedNum := strings.ReplaceAll(body.AadhaarNumber, " ", "")
+	cleanedNum = strings.ReplaceAll(cleanedNum, "-", "")
+	if err := aadhaar.ValidateAadhaarNumber(cleanedNum); err != nil {
+		apierr.RespondBindErr(c, "invalid aadhaar number: "+err.Error(), apierr.Code("kyc.invalid_aadhaar"))
+		return
+	}
+	body.AadhaarNumber = cleanedNum
+
 	actor := fmt.Sprintf("tenant:%s", t.ID)
 
 	refID, err := svc.InitiateAadhaarOTP(c.Request.Context(), t.ID, body.AadhaarNumber, actor)
@@ -805,7 +817,7 @@ func (h *Handlers) OwnerKYCReject(c *gin.Context) {
 }
 
 // ---------------------------------------------------------------------------
-// Projection helpers — enforce tenant/owner field visibility boundaries.
+// Projection helpers â€” enforce tenant/owner field visibility boundaries.
 // ---------------------------------------------------------------------------
 
 // tenantKYCVerificationView strips fields that would leak fraud signals to the
@@ -837,7 +849,7 @@ func tenantKYCVerificationView(v *domain.KYCVerification) gin.H {
 }
 
 // ownerKYCVerificationView includes duplicate_detected so the owner can review
-// flagged records. Still excludes raw identity_hash (irreversible HMAC — no use
+// flagged records. Still excludes raw identity_hash (irreversible HMAC â€” no use
 // to an owner, and reduces risk if the response is logged).
 func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 	m := tenantKYCVerificationView(v)

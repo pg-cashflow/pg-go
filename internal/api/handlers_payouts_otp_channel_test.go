@@ -63,7 +63,7 @@ func (s *stubPayoutAuthService) IssueSession(context.Context, *domain.User) (str
 func (s *stubPayoutAuthService) RotateRefreshToken(context.Context, string) (string, string, *domain.User, error) {
 	return "", "", nil, nil
 }
-func (s *stubPayoutAuthService) RevokeSession(context.Context, string) error    { return nil }
+func (s *stubPayoutAuthService) RevokeSession(context.Context, string) error         { return nil }
 func (s *stubPayoutAuthService) RevokeUserSessions(context.Context, uuid.UUID) error { return nil }
 func (s *stubPayoutAuthService) IssueSessionWithClient(context.Context, *domain.User, string, string) (string, string, error) {
 	return "", "", nil
@@ -97,7 +97,7 @@ func (s *stubPayoutUserStore) GetByPhone(context.Context, string) (*domain.User,
 func (s *stubPayoutUserStore) GetByPropertyAndRole(context.Context, uuid.UUID, domain.Role) ([]domain.User, error) {
 	return nil, nil
 }
-func (s *stubPayoutUserStore) Create(context.Context, *domain.User) error                 { return nil }
+func (s *stubPayoutUserStore) Create(context.Context, *domain.User) error                { return nil }
 func (s *stubPayoutUserStore) SetPropertyID(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 func (s *stubPayoutUserStore) IncrementTokenVersion(context.Context, uuid.UUID) error    { return nil }
 

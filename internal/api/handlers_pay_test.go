@@ -629,6 +629,40 @@ func TestCashfreeWebhook_DisputeFailSafe(t *testing.T) {
 	if outbox.events[0].PropertyID != propID {
 		t.Fatalf("expected propertyID %s, got %s", propID, outbox.events[0].PropertyID)
 	}
+
+	// Test official Cashfree format where order_id and cf_payment_id are in order_details
+	outbox.events = nil
+	gwRepo.lastStatus = ""
+	officialDisputeJSON := `{
+		"type": "DISPUTE_CREATED",
+		"data": {
+			"dispute": {
+				"dispute_id": 433475258,
+				"dispute_type": "DISPUTE",
+				"reason_code": "1402",
+				"reason_description": "Duplicate Processing",
+				"dispute_amount": 8000.00,
+				"dispute_status": "DISPUTE_CREATED",
+				"respond_by": "2026-11-15T23:59:59+05:30"
+			},
+			"order_details": {
+				"order_id": "order_disp_123",
+				"cf_payment_id": 999899,
+				"order_amount": 8000.00,
+				"order_currency": "INR"
+			}
+		}
+	}`
+	codeOfficial := postSignedWebhook(t, h, officialDisputeJSON)
+	if codeOfficial != http.StatusOK {
+		t.Fatalf("expected 200 OK on official dispute webhook, got %d", codeOfficial)
+	}
+	if gwRepo.lastStatus != "dispute_action_required" {
+		t.Fatalf("expected webhook status dispute_action_required, got %s", gwRepo.lastStatus)
+	}
+	if len(outbox.events) != 1 || outbox.events[0].EventType != string(domain.EvtPaymentDisputed) {
+		t.Fatalf("expected 1 EvtPaymentDisputed outbox event for official format, got %+v", outbox.events)
+	}
 }
 
 func postSignedWebhook(t *testing.T, h *Handlers, body string) int {

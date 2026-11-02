@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -24,7 +25,6 @@ func (c *Client) verificationEndpoint() string {
 	}
 	return "https://sandbox.cashfree.com/verification"
 }
-
 
 // APIError represents an HTTP error returned by Cashfree with a status code.
 type APIError struct {
@@ -70,7 +70,6 @@ func (e *CorruptDocumentError) Error() string {
 func (e *CorruptDocumentError) IsPermanent() bool {
 	return true
 }
-
 
 // SmartOCRResponse contains the extracted verification results from Cashfree Smart OCR (/bharat-ocr).
 type SmartOCRResponse struct {
@@ -240,15 +239,39 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 		Status  string `json:"status"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("cashfree request aadhaar otp: unmarshal: %w", err)
 	}
-	refStr := fmt.Sprintf("%v", out.RefID)
+	refStr := parseRefID(out.RefID)
 	return &AadhaarOTPInitResult{
 		RefID:   refStr,
 		Status:  out.Status,
 		Message: out.Message,
 	}, nil
+}
+
+func parseRefID(val any) string {
+	switch v := val.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case json.Number:
+		return v.String()
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10)
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int:
+		return strconv.Itoa(v)
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	}
 }
 
 // VerifyAadhaarOTP completes the Aadhaar OTP verification via Cashfree.
@@ -296,7 +319,9 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		Image     string `json:"image"`
 		PhotoLink string `json:"photo_link"`
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("cashfree verify aadhaar otp: unmarshal: %w", err)
 	}
 	mUID := out.MaskedUID
@@ -317,7 +342,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		}
 	}
 	return &AadhaarOTPVerifyResult{
-		RefID:      fmt.Sprintf("%v", out.RefID),
+		RefID:      parseRefID(out.RefID),
 		Status:     out.Status,
 		Name:       out.Name,
 		DOB:        out.DOB,
@@ -385,4 +410,3 @@ func CooldownSecondsFor(class AadhaarFailureClass, reasonCode string) int {
 		return 0
 	}
 }
-
