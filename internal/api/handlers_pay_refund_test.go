@@ -32,12 +32,14 @@ type mockCFClient struct {
 	failRefund   bool
 	refundResult *cashfree.RefundDetails
 	refundErr    error
+	lastReason   string
 }
 
 func (m *mockCFClient) CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.refundCalls++
+	m.lastReason = reason
 	if m.failRefund {
 		if m.refundErr != nil {
 			return nil, m.refundErr
@@ -1773,4 +1775,139 @@ func TestManagerRefundPayment_ToggleAndCapability(t *testing.T) {
 			t.Fatalf("expected 403 Forbidden, got %d", w.Code)
 		}
 	})
+}
+
+func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+	tenantID := uuid.New()
+	dueID := uuid.New()
+
+	cfPayID := "cf_pay_test_reason"
+	cfOrderID := "order_test_reason"
+
+	setupHandler := func() (*Handlers, *domain.Payment, *gin.Engine, *mockCFClient) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			ProviderPaymentID: &cfPayID,
+			PropertyID:        &propID,
+			CreatedAt:         time.Now().Add(-1 * time.Hour),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     fakeRunner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+		return h, basePayment, r, cfClient
+	}
+
+	validCases := []struct {
+		name   string
+		reason string
+	}{
+		{name: "English with apostrophe and slash and dot", reason: "Tenant's deposit refund / room change."},
+		{name: "Telugu language refund reason", reason: "అద్దె వాపసు"},
+		{name: "Tamil language refund reason", reason: "வாடகை திருப்பி"},
+		{name: "Kannada language refund reason", reason: "ಬಾಡಿಗೆ ಮರುಪಾವತಿ"},
+		{name: "Kannada with ZWNJ (passbook catalog key)", reason: "ಪಾಸ್ಬುಕ್"},
+		{name: "Kannada with virama and ZWNJ", reason: "ಪಾಸ್‌ಬುಕ್"},
+		{name: "Multi-language reason with numbers and dash", reason: "Room 102 - అద్దె వాపసు / overpayment"},
+	}
+
+	for _, tc := range validCases {
+		t.Run("valid_"+tc.name, func(t *testing.T) {
+			_, basePayment, r, cfClient := setupHandler()
+			body := map[string]any{
+				"amount_paise": 100000,
+				"reason":       tc.reason,
+			}
+			buf, _ := json.Marshal(body)
+			req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Idempotency-Key", "idem_"+uuid.New().String()[:8])
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for valid reason %q, got %d (body: %s)", tc.reason, rec.Code, rec.Body.String())
+			}
+
+			// Verify Cashfree received a sanitized ASCII note, NOT the free-text reason
+			if !strings.HasPrefix(cfClient.lastReason, "Refund ") {
+				t.Errorf("expected Cashfree note to start with 'Refund ', got %q", cfClient.lastReason)
+			}
+			if cfClient.lastReason == tc.reason {
+				t.Errorf("Cashfree must NOT receive the raw free-text reason, got %q", cfClient.lastReason)
+			}
+
+			var resp domain.GatewayRefund
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if resp.Reason != strings.TrimSpace(tc.reason) {
+				t.Errorf("expected audit reason %q, got %q", tc.reason, resp.Reason)
+			}
+		})
+	}
+
+	invalidCases := []struct {
+		name         string
+		reason       string
+		expectedCode string
+	}{
+		{name: "too short under 3 chars", reason: "ab", expectedCode: "refund.reasonLength"},
+		{name: "disallowed special characters (script tag)", reason: "Refund <script>", expectedCode: "refund.reasonCharacters"},
+		{name: "disallowed special characters (dollar)", reason: "Refund $500", expectedCode: "refund.reasonCharacters"},
+		{name: "disallowed special characters (semicolon)", reason: "Refund; DROP TABLE dues", expectedCode: "refund.reasonCharacters"},
+	}
+
+	for _, tc := range invalidCases {
+		t.Run("invalid_"+tc.name, func(t *testing.T) {
+			_, basePayment, r, _ := setupHandler()
+			body := map[string]any{
+				"amount_paise": 100000,
+				"reason":       tc.reason,
+			}
+			buf, _ := json.Marshal(body)
+			req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Idempotency-Key", "idem_"+uuid.New().String()[:8])
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request for invalid reason %q, got %d (body: %s)", tc.reason, rec.Code, rec.Body.String())
+			}
+			var resp map[string]any
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			if tc.expectedCode != "" && resp["code"] != tc.expectedCode {
+				t.Errorf("expected error code %q, got %v", tc.expectedCode, resp["code"])
+			}
+		})
+	}
 }

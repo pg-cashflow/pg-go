@@ -75,5 +75,7 @@
   "preferences.invalidTheme",
   "preferences.noFields",
   "push.endpointInvalid",
-  "push.endpointConflict"
+  "push.endpointConflict",
+  "refund.reasonLength",
+  "refund.reasonCharacters"
 ]

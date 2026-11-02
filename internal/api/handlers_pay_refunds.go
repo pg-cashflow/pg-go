@@ -10,13 +10,16 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"golang.org/x/text/unicode/norm"
 )
 
 type refundAllocItem struct {
@@ -357,7 +360,7 @@ func recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *postgres.DueRep
 
 type OwnerRefundRequest struct {
 	AmountPaise int64  `json:"amount_paise" binding:"required,gt=0"`
-	Reason      string `json:"reason" binding:"required,min=3,max=100"`
+	Reason      string `json:"reason" binding:"required,max=400"`
 	StepUpAuthInput
 }
 
@@ -434,18 +437,19 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
 }
 
-var validRefundReasonRegex = regexp.MustCompile(`^[a-zA-Z0-9 .,_\-]+$`)
+var validRefundReasonRegex = regexp.MustCompile(`^[\p{L}\p{M}\p{N}\x{200C}\x{200D} .,_'/-]+$`)
 
 func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
 
-	trimmedReason := strings.TrimSpace(req.Reason)
-	if len(trimmedReason) < 3 || len(trimmedReason) > 100 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reason must be between 3 and 100 characters"})
+	trimmedReason := norm.NFC.String(strings.TrimSpace(req.Reason))
+	runeCount := utf8.RuneCountInString(trimmedReason)
+	if runeCount < 3 || runeCount > 100 {
+		apierr.RespondBindErr(c, "reason must be between 3 and 100 characters", apierr.CodeRefundReasonLength)
 		return nil, errors.New("invalid reason length")
 	}
 	if !validRefundReasonRegex.MatchString(trimmedReason) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "reason contains invalid characters; only letters, digits, spaces, and punctuation (.,-_) are allowed"})
+		apierr.RespondBindErr(c, "reason contains invalid characters", apierr.CodeRefundReasonCharacters)
 		return nil, errors.New("invalid reason characters")
 	}
 	req.Reason = trimmedReason
@@ -507,7 +511,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	// Unlocked Read 2: Check if already initiated/completed with this idempotency key
 	existingRef, err := h.GatewayPaymentRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, idempotencyKey)
 	if err == nil && existingRef != nil {
-		if existingRef.AmountPaise != req.AmountPaise || existingRef.Reason != req.Reason {
+		if existingRef.AmountPaise != req.AmountPaise || norm.NFC.String(existingRef.Reason) != req.Reason {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "idempotency key conflict: refund already exists with different amount or reason",
 				"code":  "IDEMPOTENCY_CONFLICT",
@@ -610,7 +614,9 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	if _, err := uuid.Parse(idempotencyKey); err != nil {
 		cfIdempotencyKey = uuid.NewSHA1(uuid.NameSpaceURL, []byte(idempotencyKey)).String()
 	}
-	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, req.Reason, cfIdempotencyKey)
+	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
+	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
+	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
 

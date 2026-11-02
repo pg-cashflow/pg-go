@@ -171,9 +171,9 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 			}
 		}
 
-		// Grace window check (5 seconds, only if family is not already nuked)
+		// Grace window check (domain.RefreshGraceWindow, only if family is not already nuked)
 		successorID, hasSuccessor := m.replacedBy[oldRT.ID]
-		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= 5*time.Second && hasSuccessor {
+		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= domain.RefreshGraceWindow && hasSuccessor {
 			successor, exists := m.byID[successorID]
 			if exists && !successor.Revoked {
 				return successor, domain.ErrGraceWindow
@@ -463,10 +463,10 @@ func TestRefreshTokenReplayAttackDetection(t *testing.T) {
 		t.Fatalf("legitimate rotation: %v", err)
 	}
 
-	// Fast-forward revoked_at beyond 30s grace window to simulate delayed replay attack
+	// Fast-forward revoked_at beyond grace window to simulate delayed replay attack
 	h1 := HashRefreshToken(refToken1)
 	if rt1, ok := refreshRepo.tokens[h1]; ok {
-		past := time.Now().Add(-35 * time.Second)
+		past := time.Now().Add(-1 * (domain.RefreshGraceWindow + 5*time.Second))
 		rt1.RevokedAt = &past
 	}
 

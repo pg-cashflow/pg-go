@@ -93,6 +93,56 @@ func TestCashfreePollSettlesOpenDue(t *testing.T) {
 	}
 }
 
+func TestCashfreePollJob_SettlesAfterWebhookRejected(t *testing.T) {
+	// Scenario: An inbound Cashfree webhook arrived with an anomaly (e.g. malformed currency or empty status),
+	// causing the webhook handler to reject the payload and refuse immediate settlement.
+	// The payment intent remains in 'created' status in the database.
+	// When the reconciliation poll job runs, it detects the stale intent, contacts Cashfree directly,
+	// confirms successful payment upstream, and settles the pending due.
+	dueID := uuid.New()
+	intentID := uuid.New()
+	orderID := "pg-order-webhook-rejected-101"
+
+	intents := &stubIntentStale{list: []domain.PaymentIntent{{
+		ID:              intentID,
+		DueID:           dueID,
+		ProviderOrderID: orderID,
+		Status:          domain.IntentCreated,
+		AmountPaise:     750000,
+	}}}
+	settle := &stubSettle{}
+	job := &CashfreePollJob{
+		Intents: intents,
+		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:  stubCFFetch{ok: true, cfID: "cf_pay_998877", ref: "UTR_BANK_RECON_88", amount: 750000},
+		Settle:  settle,
+		Now:     func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("job.Run failed: %v", err)
+	}
+
+	if settle.n != 1 {
+		t.Fatalf("expected exactly 1 settlement invocation, got %d", settle.n)
+	}
+	if settle.dueID != dueID {
+		t.Fatalf("expected settled dueID=%s, got %s", dueID, settle.dueID)
+	}
+	if settle.amount != 750000 {
+		t.Fatalf("expected settled amount=750000, got %d", settle.amount)
+	}
+	if settle.txn != "UTR_BANK_RECON_88" {
+		t.Fatalf("expected txn='UTR_BANK_RECON_88', got '%s'", settle.txn)
+	}
+	if intents.cfPaid != "cf_pay_998877" {
+		t.Fatalf("expected intent marked paid with cf_pay_998877, got '%s'", intents.cfPaid)
+	}
+	if intents.touched != 1 {
+		t.Fatalf("expected intent touched count=1, got %d", intents.touched)
+	}
+}
+
 func TestCashfreePollSkipsPaidDue(t *testing.T) {
 	dueID := uuid.New()
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{

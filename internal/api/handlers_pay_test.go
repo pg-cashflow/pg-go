@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,7 +137,7 @@ func TestCashfreeWebhookSettlesSuccess(t *testing.T) {
 	r := gin.New()
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 
-	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
 	req.Header.Set("x-webhook-timestamp", ts)
@@ -197,7 +198,7 @@ func TestCashfreeWebhookUnknownOrderOK(t *testing.T) {
 		Payments:           pay,
 		GatewayPaymentRepo: &stubGatewayRepo{},
 	}}
-	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"missing"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"missing"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || pay.n != 0 {
 		t.Fatalf("code=%d n=%d", code, pay.n)
 	}
@@ -211,7 +212,7 @@ func TestCashfreeWebhookLookupError500(t *testing.T) {
 		Payments:           &stubPay{},
 		GatewayPaymentRepo: &stubGatewayRepo{},
 	}}
-	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`)
 	if code != http.StatusInternalServerError {
 		t.Fatalf("code=%d", code)
 	}
@@ -227,7 +228,7 @@ func TestCashfreeWebhookAmountMismatchDoesNotMarkPaid(t *testing.T) {
 	}
 	pay := &stubPay{}
 	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay, GatewayPaymentRepo: &stubGatewayRepo{}}}
-	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || pay.n != 0 || intents.paid != "" {
 		t.Fatalf("code=%d n=%d paid=%s", code, pay.n, intents.paid)
 	}
@@ -243,9 +244,105 @@ func TestCashfreeWebhookDueNotOpenDoesNotMarkPaid(t *testing.T) {
 	}
 	pay := &stubPay{settleErr: payment.ErrDueNotOpen}
 	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec", IntentStore: intents, Payments: pay, GatewayPaymentRepo: &stubGatewayRepo{}}}
-	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`)
 	if code != http.StatusOK || intents.paid != "" {
 		t.Fatalf("code=%d paid=%s", code, intents.paid)
+	}
+}
+
+func TestCashfreeWebhook_RejectsEmptyOrNonSuccessStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dueID := uuid.New()
+	intent := &domain.PaymentIntent{ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-STATUS-1", AmountPaise: 1050}
+
+	testCases := []struct {
+		name          string
+		paymentStatus string
+	}{
+		{name: "empty status", paymentStatus: ""},
+		{name: "failed status", paymentStatus: "FAILED"},
+		{name: "pending status", paymentStatus: "PENDING"},
+		{name: "user dropped status", paymentStatus: "USER_DROPPED"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			intents := &stubIntentStore{
+				byOrder: map[string]*domain.PaymentIntent{"pg-STATUS-1": intent},
+				byCF:    map[string]*domain.PaymentIntent{},
+			}
+			pay := &stubPay{}
+			gwRepo := &stubGatewayRepo{}
+			h := &Handlers{Deps: Deps{
+				CashfreeSecret:     "whsec",
+				IntentStore:        intents,
+				Payments:           pay,
+				GatewayPaymentRepo: gwRepo,
+			}}
+
+			payload := fmt.Sprintf(`{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-STATUS-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":%q,"payment_currency":"INR","bank_reference":"UTR1"}}}`, tc.paymentStatus)
+			code := postSignedWebhook(t, h, payload)
+			if code != http.StatusOK {
+				t.Fatalf("expected HTTP 200 to acknowledge webhook, got %d", code)
+			}
+			if pay.n != 0 {
+				t.Fatalf("expected payment not to settle, but settled %d times", pay.n)
+			}
+			if gwRepo.lastStatus != "rejected" {
+				t.Fatalf("expected webhook status 'rejected', got %q", gwRepo.lastStatus)
+			}
+			if !strings.Contains(gwRepo.lastReason, "payment_status") {
+				t.Fatalf("expected rejection reason to mention payment_status, got %q", gwRepo.lastReason)
+			}
+		})
+	}
+}
+
+func TestCashfreeWebhook_RejectsEmptyOrNonINRCurrency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	dueID := uuid.New()
+	intent := &domain.PaymentIntent{ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-CURR-1", AmountPaise: 1050}
+
+	testCases := []struct {
+		name            string
+		paymentCurrency string
+		orderCurrency   string
+	}{
+		{name: "empty currency", paymentCurrency: "", orderCurrency: ""},
+		{name: "usd currency", paymentCurrency: "USD", orderCurrency: "USD"},
+		{name: "eur currency", paymentCurrency: "EUR", orderCurrency: ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			intents := &stubIntentStore{
+				byOrder: map[string]*domain.PaymentIntent{"pg-CURR-1": intent},
+				byCF:    map[string]*domain.PaymentIntent{},
+			}
+			pay := &stubPay{}
+			gwRepo := &stubGatewayRepo{}
+			h := &Handlers{Deps: Deps{
+				CashfreeSecret:     "whsec",
+				IntentStore:        intents,
+				Payments:           pay,
+				GatewayPaymentRepo: gwRepo,
+			}}
+
+			payload := fmt.Sprintf(`{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-CURR-1","order_currency":%q},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":%q,"bank_reference":"UTR1"}}}`, tc.orderCurrency, tc.paymentCurrency)
+			code := postSignedWebhook(t, h, payload)
+			if code != http.StatusOK {
+				t.Fatalf("expected HTTP 200 to acknowledge webhook, got %d", code)
+			}
+			if pay.n != 0 {
+				t.Fatalf("expected payment not to settle, but settled %d times", pay.n)
+			}
+			if gwRepo.lastStatus != "rejected" {
+				t.Fatalf("expected webhook status 'rejected', got %q", gwRepo.lastStatus)
+			}
+			if !strings.Contains(gwRepo.lastReason, "payment_currency") {
+				t.Fatalf("expected rejection reason to mention payment_currency, got %q", gwRepo.lastReason)
+			}
+		})
 	}
 }
 
@@ -253,6 +350,7 @@ type stubGatewayRepo struct {
 	webhookEvents []*domain.WebhookEvent
 	deadLettered  bool
 	lastStatus    string
+	lastReason    string
 	refunds       map[string]*domain.GatewayRefund
 }
 
@@ -280,8 +378,11 @@ func (s *stubGatewayRepo) CreateWebhookEvent(_ context.Context, evt *domain.Webh
 	s.webhookEvents = append(s.webhookEvents, evt)
 	return nil
 }
-func (s *stubGatewayRepo) UpdateWebhookEventStatus(_ context.Context, _ uuid.UUID, status string, _ *string) error {
+func (s *stubGatewayRepo) UpdateWebhookEventStatus(_ context.Context, _ uuid.UUID, status string, reason *string) error {
 	s.lastStatus = status
+	if reason != nil {
+		s.lastReason = *reason
+	}
 	if status == "dead_letter" {
 		s.deadLettered = true
 	}

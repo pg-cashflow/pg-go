@@ -80,6 +80,10 @@ const (
 	CodeFinanceDateOutOfRange      Code = "finance.dateOutOfRange"
 	CodeFinanceInvalidSettings     Code = "finance.invalidSettings"
 
+	// Refund
+	CodeRefundReasonLength     Code = "refund.reasonLength"
+	CodeRefundReasonCharacters Code = "refund.reasonCharacters"
+
 	// Request & Bind
 	CodeRequestInvalidBody     Code = "request.invalidBody"
 	CodeRequestInvalidId       Code = "request.invalidId"
@@ -185,6 +189,9 @@ var AllCodes = []Code{
 
 	CodePushEndpointInvalid,
 	CodePushEndpointConflict,
+
+	CodeRefundReasonLength,
+	CodeRefundReasonCharacters,
 }
 
 // ErrorEnvelope is the standard JSON envelope emitted for client-facing errors.

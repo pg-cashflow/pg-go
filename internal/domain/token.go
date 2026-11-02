@@ -18,7 +18,7 @@ var (
 	ErrReplayDetected       = errors.New("refresh token replay detected")
 	ErrRefreshTokenExpired  = errors.New("refresh token expired")
 	// ErrGraceWindow is returned by RotateTokenTx when a multi-tab race replays a
-	// token that was rotated within the last 15 seconds and the family is still
+	// token that was rotated within the last 5 seconds and the family is still
 	// valid. The caller must issue a new access token using the successor row's
 	// user data but MUST NOT update the refresh cookie — the browser's current
 	// cookie is already the valid successor token.
@@ -26,8 +26,9 @@ var (
 )
 
 const (
-	PaymentTokenTTL = 72 * time.Hour
-	TokenByteLen    = 32
+	PaymentTokenTTL    = 72 * time.Hour
+	TokenByteLen       = 32
+	RefreshGraceWindow = 5 * time.Second
 )
 
 type PaymentToken struct {

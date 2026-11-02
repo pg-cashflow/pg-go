@@ -142,16 +142,26 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		return
 	}
 
-	// Verify payment status is SUCCESS
-	if status := strings.ToUpper(strings.TrimSpace(succ.PaymentStatus)); status != "" && status != "SUCCESS" {
-		slog.Default().Warn("rejecting payment success webhook with non-success status", "order_id", succ.OrderID, "status", succ.PaymentStatus)
+	// Verify payment status is SUCCESS (fail closed on empty or non-SUCCESS)
+	status := strings.ToUpper(strings.TrimSpace(succ.PaymentStatus))
+	if status != "SUCCESS" {
+		reason := fmt.Sprintf("invalid payment_status: %q", succ.PaymentStatus)
+		slog.Default().Error("ALERT: payment success webhook rejected (anomaly detected)", "order_id", succ.OrderID, "status", succ.PaymentStatus, "reason", reason)
+		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "rejected", &reason)
+		}
 		c.Status(http.StatusOK)
 		return
 	}
 
-	// Verify currency is INR
-	if curr := strings.ToUpper(strings.TrimSpace(succ.PaymentCurrency)); curr != "" && curr != "INR" {
-		slog.Default().Warn("rejecting payment success webhook with non-INR currency", "order_id", succ.OrderID, "currency", succ.PaymentCurrency)
+	// Verify currency is INR (fail closed on empty or non-INR)
+	curr := strings.ToUpper(strings.TrimSpace(succ.PaymentCurrency))
+	if curr != "INR" {
+		reason := fmt.Sprintf("invalid payment_currency: %q", succ.PaymentCurrency)
+		slog.Default().Error("ALERT: payment success webhook rejected (anomaly detected)", "order_id", succ.OrderID, "currency", succ.PaymentCurrency, "reason", reason)
+		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "rejected", &reason)
+		}
 		c.Status(http.StatusOK)
 		return
 	}
