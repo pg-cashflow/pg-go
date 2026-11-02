@@ -244,10 +244,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		}
 
 		beneID := cashfree.DeriveBeneficiaryID(it.PayeeID, accountHash)
-		remarks := strings.TrimSpace(fmt.Sprintf("%s %s", it.Purpose, it.ReferenceNumber))
-		if len(remarks) > 70 {
-			remarks = remarks[:70]
-		}
+		remarks := SanitizePayoutRemarks(it.Purpose, it.ReferenceNumber)
 
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
 			TransferID:      fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", "")),
@@ -508,4 +505,35 @@ func UnmarshalPayoutBatchPayload(payload []byte) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	return p.BatchID, nil
+}
+
+// SanitizePayoutRemarks enforces Cashfree Payouts V2 remark constraints:
+// allowed characters: numbers, alphabets and whitespaces (^[a-zA-Z0-9 ]{1,70}$).
+// Disallowed characters (such as '-', '_', '@', '.') are converted to spaces.
+// Whitespace is collapsed and trimmed, and result is truncated to at most 70 runes.
+func SanitizePayoutRemarks(purpose, refNum string) string {
+	raw := strings.TrimSpace(fmt.Sprintf("%s %s", purpose, refNum))
+	var b strings.Builder
+	b.Grow(len(raw))
+	lastWasSpace := false
+
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastWasSpace = false
+		} else if !lastWasSpace && b.Len() > 0 {
+			b.WriteByte(' ')
+			lastWasSpace = true
+		}
+	}
+
+	result := strings.TrimSpace(b.String())
+	runes := []rune(result)
+	if len(runes) > 70 {
+		result = strings.TrimSpace(string(runes[:70]))
+	}
+	if result == "" {
+		return "Payout"
+	}
+	return result
 }

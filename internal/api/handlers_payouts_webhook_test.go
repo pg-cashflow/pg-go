@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -593,6 +594,7 @@ type mockPayoutWebhookStore struct {
 	updateStatusFunc            func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
 	updateBatchStatusFunc       func(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
 	setBatchDispatchUnknownFunc func(ctx context.Context, batchID uuid.UUID, reason string) error
+	setBatchFailedFunc          func(ctx context.Context, batchID uuid.UUID, reason string) error
 }
 
 func (m *mockPayoutWebhookStore) GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
@@ -633,6 +635,13 @@ func (m *mockPayoutWebhookStore) UpdateBatchStatusFromItemsTx(ctx context.Contex
 func (m *mockPayoutWebhookStore) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
 	if m.setBatchDispatchUnknownFunc != nil {
 		return m.setBatchDispatchUnknownFunc(ctx, batchID, reason)
+	}
+	return nil
+}
+
+func (m *mockPayoutWebhookStore) SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error {
+	if m.setBatchFailedFunc != nil {
+		return m.setBatchFailedFunc(ctx, batchID, reason)
 	}
 	return nil
 }
@@ -1001,6 +1010,114 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 		if updateCalled {
 			t.Fatal("expected status update NOT to be called when status_code is not COMPLETED")
+		}
+	})
+
+	t.Run("bulk_transfer_rejected_sets_batch_failed", func(t *testing.T) {
+		batchID := uuid.New()
+		var failedBatchID uuid.UUID
+		var failedReason string
+		mock := &mockPayoutWebhookStore{
+			setBatchFailedFunc: func(ctx context.Context, bID uuid.UUID, reason string) error {
+				failedBatchID = bID
+				failedReason = reason
+				return nil
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Type: "BULK_TRANSFER_REJECTED",
+		}
+		data := PayoutWebhookData{
+			BatchTransferID:   "pgo_" + batchID.String(),
+			StatusCode:        "REJECTED",
+			StatusDescription: "insufficient float balance",
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if failedBatchID != batchID {
+			t.Fatalf("expected batch %s to be marked failed, got %s", batchID, failedBatchID)
+		}
+		if !strings.Contains(failedReason, "insufficient float balance") {
+			t.Fatalf("expected reason to contain failure message, got %q", failedReason)
+		}
+	})
+
+	t.Run("transfer_acknowledged_ignores_terminal_item", func(t *testing.T) {
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:      id,
+					Status:  domain.PayoutFailed,
+					BatchID: nil,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				t.Fatalf("unexpected call to UpdatePayoutItemStatusTx on terminal item")
+				return nil
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := makeEnv("TRANSFER_ACKNOWLEDGED", itemID)
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("low_balance_alert_returns_200", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           &mockPayoutWebhookStore{},
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Type: "LOW_BALANCE_ALERT",
+		}
+		data := PayoutWebhookData{
+			StatusDescription: "Float balance dropped below threshold",
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

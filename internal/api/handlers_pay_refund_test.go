@@ -244,7 +244,44 @@ func (m *mockRefundPaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uu
 	var totalRefunded int64
 	for _, ra := range m.refAllocs {
 		if ra.DueID != nil && *ra.DueID == dueID {
-			totalRefunded += ra.AmountPaise
+			succeeded := true
+			for _, r := range m.refunds {
+				if r.ID == ra.RefundID {
+					succeeded = (r.Status == "succeeded")
+					break
+				}
+			}
+			if succeeded {
+				totalRefunded += ra.AmountPaise
+			}
+		}
+	}
+	return totalPaid - totalRefunded, nil
+}
+func (m *mockRefundPaymentRepo) GetDueUnreservedPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var totalPaid int64
+	for _, a := range m.allocations {
+		if a.DueID == dueID {
+			totalPaid += a.AmountPaise
+		}
+	}
+	var totalRefunded int64
+	for _, ra := range m.refAllocs {
+		if ra.DueID != nil && *ra.DueID == dueID {
+			unreserved := true
+			for _, r := range m.refunds {
+				if r.ID == ra.RefundID {
+					if r.Status == "failed" || r.Status == "cancelled" {
+						unreserved = false
+					}
+					break
+				}
+			}
+			if unreserved {
+				totalRefunded += ra.AmountPaise
+			}
 		}
 	}
 	return totalPaid - totalRefunded, nil
@@ -256,7 +293,7 @@ func (m *mockRefundPaymentRepo) GetPaymentDueRefundedPaise(ctx context.Context, 
 	for _, ra := range m.refAllocs {
 		if ra.DueID != nil && *ra.DueID == dueID && ra.RefundID != excludeRefundID {
 			for _, r := range m.refunds {
-				if r.ID == ra.RefundID && r.PaymentID == paymentID && r.Status == "succeeded" {
+				if r.ID == ra.RefundID && r.PaymentID == paymentID && r.Status != "failed" && r.Status != "cancelled" {
 					totalRefunded += ra.AmountPaise
 					break
 				}

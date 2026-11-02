@@ -529,6 +529,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		smsGateway:      gateway,
 		cfClient:        cfClient,
 		paymentRepo:     maintPaymentRepo,
+		referralSvc:     referralSvc,
 	}
 
 	cleanup := func() {
@@ -566,6 +567,7 @@ type backgroundConfig struct {
 	smsGateway      sms.SMSGateway
 	cfClient        *cashfree.Client
 	paymentRepo     *postgres.PaymentRepo
+	referralSvc     *referral.Service
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -655,7 +657,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	}
 
 	if bg.cfClient != nil && bg.paymentRepo != nil {
-		bg.logger.Info("cashfree refund poller started", "interval", "5m", "stale_after", "15m")
+		bg.logger.Info("cashfree refund poller started", "interval", "5m", "stale_after", "2m")
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
@@ -675,6 +677,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 					job := &jobs.CashfreePollJob{
 						Refunds:      bg.paymentRepo,
 						RefundClient: bg.cfClient,
+						Referrals:    bg.referralSvc,
 						Log:          bg.logger,
 					}
 					if err := job.RunRefundsOnly(ctx); err != nil && !errors.Is(err, context.Canceled) {

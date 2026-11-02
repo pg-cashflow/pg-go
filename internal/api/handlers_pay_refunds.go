@@ -185,7 +185,7 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 				if remAlloc <= 0 {
 					continue
 				}
-				netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.dueID)
+				netPaid, err := txPayRepo.GetDueUnreservedPaidPaise(ctx, d.dueID)
 				if err != nil {
 					return fmt.Errorf("get due net paid: %w", err)
 				}
@@ -545,7 +545,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("cannot resolve gateway order ID")
 	}
 
-	// Deterministic 34-character refund reference: rf<32_char_hex_uuid>
+	// Random unique 34-character refund reference: rf<32_char_hex_uuid>
 	cleanUUID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	refundRef := fmt.Sprintf("rf%s", cleanUUID)
 

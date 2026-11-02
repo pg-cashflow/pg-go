@@ -801,13 +801,23 @@ func (r *PaymentRepo) GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (
 	return netPaid, err
 }
 
+func (r *PaymentRepo) GetDueUnreservedPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error) {
+	var unreserved int64
+	err := r.db.QueryRow(ctx, `
+		SELECT 
+			COALESCE((SELECT SUM(amount_paise) FROM payment_allocations WHERE due_id = $1), 0) -
+			COALESCE((SELECT SUM(ra.amount_paise) FROM refund_allocations ra JOIN gateway_refunds gr ON gr.id = ra.refund_id WHERE ra.due_id = $1 AND gr.status NOT IN ('failed', 'cancelled')), 0) -
+			COALESCE((SELECT SUM(amount_paise) FROM departure_due_adjustments WHERE due_id = $1), 0)`, dueID).Scan(&unreserved)
+	return unreserved, err
+}
+
 func (r *PaymentRepo) GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error) {
 	var refunded int64
 	err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(ra.amount_paise), 0)
 		FROM refund_allocations ra
 		JOIN gateway_refunds gr ON gr.id = ra.refund_id
-		WHERE ra.due_id = $1 AND gr.payment_id = $2 AND gr.id != $3 AND gr.status = 'succeeded'`,
+		WHERE ra.due_id = $1 AND gr.payment_id = $2 AND gr.id != $3 AND gr.status NOT IN ('failed', 'cancelled')`,
 		dueID, paymentID, excludeRefundID).Scan(&refunded)
 	return refunded, err
 }
@@ -965,7 +975,7 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 					if remAlloc <= 0 {
 						continue
 					}
-					netPaid, err := txRepo.GetDueNetPaidPaise(ctx, pa.dueID)
+					netPaid, err := txRepo.GetDueUnreservedPaidPaise(ctx, pa.dueID)
 					if err != nil {
 						return err
 					}
@@ -1007,7 +1017,7 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 				if err != nil {
 					return err
 				}
-				netPaid, err := txRepo.GetDueNetPaidPaise(ctx, primaryDue.ID)
+				netPaid, err := txRepo.GetDueUnreservedPaidPaise(ctx, primaryDue.ID)
 				if err != nil {
 					return err
 				}

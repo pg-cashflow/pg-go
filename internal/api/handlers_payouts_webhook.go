@@ -150,8 +150,18 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				"reason", data.StatusDescription,
 				"code", data.StatusCode,
 			)
-			_ = repo.SetBatchDispatchUnknown(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription))
+			_ = repo.SetBatchFailed(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription))
 		}
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Handle LOW_BALANCE_ALERT
+	if evtType == "LOW_BALANCE_ALERT" {
+		slog.Error("CRITICAL: CASHFREE PAYOUT LOW BALANCE ALERT RECEIVED",
+			"event_type", evtType,
+			"description", data.StatusDescription,
+		)
 		c.Status(http.StatusOK)
 		return
 	}
@@ -357,6 +367,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		}
 
 	case "TRANSFER_ACKNOWLEDGED":
+		// Guard against out-of-order re-opening of terminal items
+		if item.Status == domain.PayoutSucceeded ||
+			item.Status == domain.PayoutFailed ||
+			item.Status == domain.PayoutRejected ||
+			item.Status == domain.PayoutReversed ||
+			item.Status == domain.PayoutRetriableFailed {
+			slog.Info("payout webhook: ignoring TRANSFER_ACKNOWLEDGED for terminal item", "item_id", item.ID, "status", item.Status)
+			c.Status(http.StatusOK)
+			return
+		}
 		// Gateway accepted transfer into in-flight queue; keep processing
 		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil, item.BatchID) {
 			return

@@ -656,11 +656,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 	// Step 2: Lock hierarchy and forward-only status transition
 	if h.Pool != nil {
-		var committedDueIDs []uuid.UUID
+		var rfRow *domain.GatewayRefund
+		dbRefundStatus := domain.NormalizeRefundStatus(ref.RefundStatus)
 
 		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
-			txDueRepo := postgres.NewDueRepo(tx)
 
 			// In-transaction deduplication
 			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", ref.Type, ref.CFRefundID, ref.RefundStatus)
@@ -671,41 +671,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				return nil
 			}
 
-			// Locks: tenants -> dues -> payments -> gateway_refunds
-			// Errors on FOR UPDATE lock rows must propagate — if the row is missing or
-			// the query fails, proceeding without the lock breaks the lock hierarchy.
-			var dummy uuid.UUID
-			if lockErr := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); lockErr != nil {
-				return fmt.Errorf("lock tenant for refund webhook: %w", lockErr)
-			}
-			var d *domain.Due
-			if p.DueID != uuid.Nil {
-				d, err = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
-				if err != nil {
-					return err
-				}
-			}
-			if lockErr := tx.QueryRow(ctx, `SELECT id FROM payments WHERE id=$1 FOR UPDATE`, p.ID).Scan(&dummy); lockErr != nil {
-				return fmt.Errorf("lock payment for refund webhook: %w", lockErr)
-			}
-
-			// Forward-only state transition check under lock
-			if existingRef != nil {
-				var currentStatus string
-				if err := tx.QueryRow(ctx, `SELECT status FROM gateway_refunds WHERE id=$1 FOR UPDATE`, existingRef.ID).Scan(&currentStatus); err == nil {
-					existingRef.Status = currentStatus
-				}
-			}
-			if existingRef != nil && isTerminalRefund(existingRef.Status) && !isTerminalRefund(ref.RefundStatus) {
-				return nil // reject regression from terminal status
-			}
-
 			source := "system"
 			if ref.IsAutoRefund {
 				source = "cashfree_auto"
 			}
-			dbRefundStatus := domain.NormalizeRefundStatus(ref.RefundStatus)
-			rfRow := &domain.GatewayRefund{
+			rfRow = &domain.GatewayRefund{
 				PaymentID:       p.ID,
 				CFRefundID:      &ref.CFRefundID,
 				RefundReference: &ref.RefundID,
@@ -721,217 +691,16 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				rfRow.IdempotencyKey = existingRef.IdempotencyKey
 				rfRow.InitiatedBy = existingRef.InitiatedBy
 				rfRow.CreatedAt = existingRef.CreatedAt
+			} else {
+				rfRow.ID = uuid.New()
+				if p.PropertyID != nil {
+					rfRow.PropertyID = *p.PropertyID
+				}
+				rfRow.CreatedAt = time.Now().UTC()
 			}
-			prevStatus := ""
-			if existingRef != nil {
-				prevStatus = existingRef.Status
-			}
-			if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+
+			if err := txPayRepo.ReconcileRefundTransition(ctx, rfRow, dbRefundStatus); err != nil {
 				return err
-			}
-			if rfRow.Status != dbRefundStatus {
-				slog.Warn("refund webhook: status rejected by forward-only merge",
-					"refund_id", rfRow.ID, "incoming", dbRefundStatus, "persisted", rfRow.Status)
-			}
-			if dbRefundStatus == domain.RefundStatusSucceeded && rfRow.Status == domain.RefundStatusSucceeded &&
-				(prevStatus == domain.RefundStatusFailed || prevStatus == domain.RefundStatusCancelled) {
-				slog.Error("CRITICAL: refund previously marked failed/cancelled was confirmed succeeded by gateway; verify books",
-					"refund_id", rfRow.ID, "payment_id", p.ID, "previous_status", prevStatus)
-			}
-
-			// Financial ledger reversal only when the persisted status is succeeded.
-			if strings.EqualFold(ref.RefundStatus, "SUCCESS") && rfRow.Status == domain.RefundStatusSucceeded {
-				var mirrorAllocs []domain.RefundAllocationItemPayload
-
-				if !p.IsUnapplied {
-					// Step A: Inspect existing refund allocations (pre-created by OwnerRefundPayment)
-					type allocItem struct {
-						dueID       uuid.UUID
-						amountPaise int64
-					}
-					var existingAllocs []allocItem
-					allocRows, qErr := tx.Query(ctx, `SELECT due_id, amount_paise FROM refund_allocations WHERE refund_id = $1`, rfRow.ID)
-					if qErr == nil {
-						for allocRows.Next() {
-							var item allocItem
-							if err := allocRows.Scan(&item.dueID, &item.amountPaise); err == nil && item.dueID != uuid.Nil {
-								existingAllocs = append(existingAllocs, item)
-							}
-						}
-						allocRows.Close()
-					}
-
-					if len(existingAllocs) > 0 {
-						// Existing allocations already set by OwnerRefundPayment: preserve them and recompute all touched dues
-						for _, item := range existingAllocs {
-							targetDue, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
-							if err == nil && targetDue != nil {
-								if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, targetDue); err != nil {
-									return err
-								}
-								mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-									AmountPaise: item.amountPaise,
-									DueKind:     string(targetDue.Kind),
-								})
-								committedDueIDs = append(committedDueIDs, item.dueID)
-							}
-						}
-					} else {
-						// No pre-created allocations (e.g. gateway auto-refund or Cashfree dashboard refund)
-						// Fetch payment allocations linked to this payment and allocate LIFO across dues
-						pAllocRows, paErr := tx.Query(ctx, `
-							SELECT pa.due_id, pa.amount_paise, d.kind
-							FROM payment_allocations pa
-							JOIN dues d ON d.id = pa.due_id
-							WHERE pa.payment_id = $1
-							ORDER BY d.due_date DESC, d.id DESC`, p.ID)
-
-						type pAllocItem struct {
-							dueID       uuid.UUID
-							amountPaise int64
-							kind        domain.DueKind
-						}
-						var pAllocs []pAllocItem
-						if paErr == nil {
-							for pAllocRows.Next() {
-								var pa pAllocItem
-								if err := pAllocRows.Scan(&pa.dueID, &pa.amountPaise, &pa.kind); err == nil {
-									pAllocs = append(pAllocs, pa)
-								}
-							}
-							pAllocRows.Close()
-						}
-
-						if len(pAllocs) > 0 {
-							remRefund := ref.RefundAmount
-							for _, pa := range pAllocs {
-								if remRefund <= 0 {
-									break
-								}
-								prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, pa.dueID, rfRow.ID)
-								if err != nil {
-									return err
-								}
-								remAlloc := pa.amountPaise - prevRefunded
-								if remAlloc <= 0 {
-									continue
-								}
-								netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, pa.dueID)
-								if err != nil {
-									return err
-								}
-								maxAlloc := remAlloc
-								if netPaid < maxAlloc {
-									maxAlloc = netPaid
-								}
-								if maxAlloc <= 0 {
-									continue
-								}
-								allocAmt := remRefund
-								if allocAmt > maxAlloc {
-									allocAmt = maxAlloc
-								}
-								dueIDCopy := pa.dueID
-								if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-									RefundID:    rfRow.ID,
-									DueID:       &dueIDCopy,
-									AmountPaise: allocAmt,
-								}); err != nil {
-									return err
-								}
-								targetDue, err := txDueRepo.GetByIDForUpdate(ctx, pa.dueID)
-								if err == nil && targetDue != nil {
-									if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, targetDue); err != nil {
-										return err
-									}
-									mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-										AmountPaise: allocAmt,
-										DueKind:     string(pa.kind),
-									})
-									committedDueIDs = append(committedDueIDs, pa.dueID)
-								}
-								remRefund -= allocAmt
-							}
-						} else if d != nil {
-							// Single due fallback
-							prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, d.ID, rfRow.ID)
-							if err != nil {
-								return err
-							}
-							netPaid, err := txPayRepo.GetDueNetPaidPaise(ctx, d.ID)
-							if err != nil {
-								return err
-							}
-							maxAlloc := p.Amount - prevRefunded
-							if netPaid < maxAlloc {
-								maxAlloc = netPaid
-							}
-							allocAmt := ref.RefundAmount
-							if allocAmt > maxAlloc {
-								allocAmt = maxAlloc
-							}
-							if allocAmt > 0 {
-								if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-									RefundID:    rfRow.ID,
-									DueID:       &d.ID,
-									AmountPaise: allocAmt,
-								}); err != nil {
-									return err
-								}
-								if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
-									return err
-								}
-								mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-									AmountPaise: allocAmt,
-									DueKind:     string(d.Kind),
-								})
-								committedDueIDs = append(committedDueIDs, d.ID)
-							}
-						}
-					}
-				}
-
-				// Enqueue in-transaction refund outbox event (C-05)
-				propID := uuid.Nil
-				if existingRef != nil && existingRef.PropertyID != uuid.Nil {
-					propID = existingRef.PropertyID
-				}
-				if propID == uuid.Nil && d != nil {
-					propID = d.PropertyID
-				}
-				if propID == uuid.Nil && p.PropertyID != nil {
-					propID = *p.PropertyID
-				}
-				dueKind := string(domain.DueKindRent)
-				if len(mirrorAllocs) > 0 {
-					dueKind = mirrorAllocs[0].DueKind
-				} else if d != nil {
-					dueKind = string(d.Kind)
-				}
-				refundPayload := domain.RefundMirrorPayload{
-					PropertyID:  propID,
-					RefundID:    rfRow.ID,
-					PaymentID:   p.ID,
-					AmountPaise: ref.RefundAmount,
-					IsUnapplied: p.IsUnapplied,
-					Allocations: mirrorAllocs,
-					DueKind:     dueKind,
-					OccurredAt:  time.Now().UTC(),
-				}
-				rawPayload, err := json.Marshal(refundPayload)
-				if err != nil {
-					return fmt.Errorf("marshal refund outbox: %w", err)
-				}
-				outboxKey := fmt.Sprintf("refund_mirror:%s", rfRow.ID)
-				_, err = tx.Exec(ctx, `
-					INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
-					VALUES ($1, $2, $3, $4, $5, NOW())
-					ON CONFLICT (idempotency_key) DO NOTHING`,
-					domain.LedgerOutboxRefund, propID, rfRow.ID, rawPayload, outboxKey,
-				)
-				if err != nil {
-					return fmt.Errorf("enqueue refund outbox: %w", err)
-				}
 			}
 			return nil
 		})
@@ -940,11 +709,14 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			return
 		}
 
-		if h.Referrals != nil && len(committedDueIDs) > 0 {
-			for _, dueID := range committedDueIDs {
-				if dueID != uuid.Nil {
-					if err := h.Referrals.ReverseFirstRentPayment(ctx, dueID, p.ID); err != nil {
-						slog.Warn("referral reverse on refund webhook failed", "due_id", dueID, "payment_id", p.ID, "err", err)
+		if h.Referrals != nil && dbRefundStatus == domain.RefundStatusSucceeded && rfRow != nil {
+			payRepo := postgres.NewPaymentRepo(h.Pool)
+			if dueIDs, err := payRepo.GetRefundDueIDs(ctx, rfRow.ID); err == nil {
+				for _, dueID := range dueIDs {
+					if dueID != uuid.Nil {
+						if err := h.Referrals.ReverseFirstRentPayment(ctx, dueID, p.ID); err != nil {
+							slog.Warn("referral reverse on refund webhook failed", "due_id", dueID, "payment_id", p.ID, "err", err)
+						}
 					}
 				}
 			}

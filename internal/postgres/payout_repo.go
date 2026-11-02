@@ -812,6 +812,18 @@ func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.U
 	return err
 }
 
+// SetBatchFailed sets batch status to failed on definitive rejections (e.g. BULK_TRANSFER_REJECTED).
+func (r *PayoutRepo) SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE payout_batches
+		SET status = 'failed',
+		    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, reason,
+	)
+	return err
+}
+
 // UpdatePayoutItemStatusTx updates status, UTR, settled_at, and failure reason on a payout item.
 func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 	ctx context.Context,
@@ -833,6 +845,8 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 		        -- Terminal immutable states: once succeeded, only allow reversal
 		        WHEN status = 'succeeded' AND $2 != 'reversed' THEN status
 		        WHEN status = 'reversed' THEN status
+		        -- Do not allow acknowledged/processing to downgrade terminal failure/rejection
+		        WHEN status IN ('failed', 'rejected', 'retriable_failed') AND $2 = 'processing' THEN status
 		        ELSE $2
 		    END,
 		    cf_transfer_id = COALESCE($3, cf_transfer_id),

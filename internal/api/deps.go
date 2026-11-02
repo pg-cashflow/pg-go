@@ -275,6 +275,7 @@ type GatewayPaymentRepo interface {
 	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
 	CreateRefundAllocation(ctx context.Context, alloc *domain.RefundAllocation) error
 	GetDueNetPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error)
+	GetDueUnreservedPaidPaise(ctx context.Context, dueID uuid.UUID) (int64, error)
 	GetPaymentDueRefundedPaise(ctx context.Context, paymentID, dueID, excludeRefundID uuid.UUID) (int64, error)
 	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
 }
@@ -350,4 +351,5 @@ type PayoutWebhookStore interface {
 	UpdatePayoutItemStatusTx(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
 	UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
 	SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error
+	SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error
 }

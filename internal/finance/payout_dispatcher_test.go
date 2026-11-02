@@ -442,3 +442,60 @@ func fmtPhone() string {
 func ptr(s string) *string {
 	return &s
 }
+
+func TestSanitizePayoutRemarks(t *testing.T) {
+	cases := []struct {
+		name     string
+		purpose  string
+		refNum   string
+		expected string
+	}{
+		{
+			name:     "tenant deposit with underscores",
+			purpose:  "tenant_deposit_refund",
+			refNum:   "dep_6fa8087c53e04e43b174094e9f50ca6f",
+			expected: "tenant deposit refund dep 6fa8087c53e04e43b174094e9f50ca6f",
+		},
+		{
+			name:     "salary with hyphen and staff name",
+			purpose:  "Salary 2026-10 - Divakar",
+			refNum:   "SAL-202610-abcd1234",
+			expected: "Salary 2026 10 Divakar SAL 202610 abcd1234",
+		},
+		{
+			name:     "punctuation and special characters stripped",
+			purpose:  "Rent refund: #123 (Room @404)!",
+			refNum:   "REF/2026.01",
+			expected: "Rent refund 123 Room 404 REF 2026 01",
+		},
+		{
+			name:     "empty purpose and ref",
+			purpose:  "",
+			refNum:   "",
+			expected: "Payout",
+		},
+		{
+			name:     "truncation to 70 characters without rune corruption",
+			purpose:  "VeryLongPurposeWithLotsOfCharactersThatExceedsTheSeventyCharacterLimitCompletely",
+			refNum:   "ref12345",
+			expected: "VeryLongPurposeWithLotsOfCharactersThatExceedsTheSeventyCharacterLimit",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizePayoutRemarks(tc.purpose, tc.refNum)
+			if got != tc.expected {
+				t.Errorf("SanitizePayoutRemarks(%q, %q) = %q, want %q", tc.purpose, tc.refNum, got, tc.expected)
+			}
+			if len([]rune(got)) > 70 {
+				t.Errorf("result exceeds 70 runes: %d", len([]rune(got)))
+			}
+			for _, r := range got {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == ' ') {
+					t.Errorf("disallowed character %q in result %q", r, got)
+				}
+			}
+		})
+	}
+}
