@@ -76,6 +76,6 @@
   "preferences.noFields",
   "push.endpointInvalid",
   "push.endpointConflict",
-  "refund.reasonLength",
-  "refund.reasonCharacters"
+  "payment.refundReasonLength",
+  "payment.refundReasonCharacters"
 ]

@@ -252,9 +252,11 @@ func TestE2E_FullFeatureLifecycleJourney(t *testing.T) {
 				"order_id": cfOrderID,
 			},
 			"payment": map[string]any{
-				"cf_payment_id":  cfPaymentID,
-				"payment_amount": cashfree.FormatPaiseToRupees(rentPaise),
-				"bank_reference": utr,
+				"cf_payment_id":    cfPaymentID,
+				"payment_amount":   cashfree.FormatPaiseToRupees(rentPaise),
+				"payment_status":   "SUCCESS",
+				"payment_currency": "INR",
+				"bank_reference":   utr,
 			},
 		},
 	}

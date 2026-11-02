@@ -164,9 +164,11 @@ func TestGate05_SequentialDuplicateReplay(t *testing.T) {
 				"order_id": cfOrderID,
 			},
 			"payment": map[string]any{
-				"cf_payment_id":  cfPaymentID,
-				"payment_amount": 12000.0,
-				"bank_reference": fmt.Sprintf("UTR_SEQ_%d", cfPaymentID),
+				"cf_payment_id":    cfPaymentID,
+				"payment_amount":   12000.0,
+				"bank_reference":   fmt.Sprintf("UTR_SEQ_%d", cfPaymentID),
+				"payment_status":   "SUCCESS",
+				"payment_currency": "INR",
 			},
 		},
 	}
@@ -265,9 +267,11 @@ func TestGate05_ConcurrentWebhookStampede(t *testing.T) {
 				"order_id": cfOrderID,
 			},
 			"payment": map[string]any{
-				"cf_payment_id":  cfPaymentID,
-				"payment_amount": 18000.0,
-				"bank_reference": fmt.Sprintf("UTR_STAMPEDE_%d", cfPaymentID),
+				"cf_payment_id":    cfPaymentID,
+				"payment_amount":   18000.0,
+				"bank_reference":   fmt.Sprintf("UTR_STAMPEDE_%d", cfPaymentID),
+				"payment_status":   "SUCCESS",
+				"payment_currency": "INR",
 			},
 		},
 	}
@@ -426,9 +430,11 @@ func TestGate05_OutOfOrderRefundBeforeSuccess(t *testing.T) {
 				"order_id": cfOrderID,
 			},
 			"payment": map[string]any{
-				"cf_payment_id":  cfPaymentID,
-				"payment_amount": 9000.0,
-				"bank_reference": fmt.Sprintf("UTR_OOO_%d", cfPaymentID),
+				"cf_payment_id":    cfPaymentID,
+				"payment_amount":   9000.0,
+				"bank_reference":   fmt.Sprintf("UTR_OOO_%d", cfPaymentID),
+				"payment_status":   "SUCCESS",
+				"payment_currency": "INR",
 			},
 		},
 	}
@@ -577,9 +583,11 @@ func TestGate05_ZeroDeadlocksUnderConcurrentExecution(t *testing.T) {
 				"data": map[string]any{
 					"order": map[string]any{"order_id": ordID},
 					"payment": map[string]any{
-						"cf_payment_id":  cfPID,
-						"payment_amount": 5000.0,
-						"bank_reference": fmt.Sprintf("UTR_DL_%d", cfPID),
+						"cf_payment_id":    cfPID,
+						"payment_amount":   5000.0,
+						"bank_reference":   fmt.Sprintf("UTR_DL_%d", cfPID),
+						"payment_status":   "SUCCESS",
+						"payment_currency": "INR",
 					},
 				},
 			}

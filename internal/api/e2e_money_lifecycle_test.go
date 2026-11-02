@@ -173,9 +173,11 @@ func TestE2EMoneyLifecycle_DoubleEntryConservation(t *testing.T) {
 				"order_id": cfOrderID,
 			},
 			"payment": map[string]any{
-				"cf_payment_id":  cfPaymentID,
-				"payment_amount": 15000.0,
-				"bank_reference": fmt.Sprintf("UTR_E2E_%d", cfPaymentID),
+				"cf_payment_id":    cfPaymentID,
+				"payment_amount":   15000.0,
+				"payment_status":   "SUCCESS",
+				"payment_currency": "INR",
+				"bank_reference":   fmt.Sprintf("UTR_E2E_%d", cfPaymentID),
 			},
 		},
 	}

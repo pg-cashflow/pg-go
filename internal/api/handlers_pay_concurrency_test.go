@@ -263,6 +263,8 @@ func TestA_ConcurrentWebhooksDeduplication(t *testing.T) {
 			"payment": {
 				"cf_payment_id": "%s",
 				"payment_amount": 5500.00,
+				"payment_status": "SUCCESS",
+				"payment_currency": "INR",
 				"bank_reference": "UTRCONC1"
 			}
 		}
@@ -752,6 +754,8 @@ func TestI_VerifyFirstThenWebhook(t *testing.T) {
 			"payment": {
 				"cf_payment_id": "%s",
 				"payment_amount": 6000.00,
+				"payment_status": "SUCCESS",
+				"payment_currency": "INR",
 				"bank_reference": "BANK_REF_1"
 			}
 		}
@@ -816,6 +820,8 @@ func TestJ_WebhookFirstThenVerify(t *testing.T) {
 			"payment": {
 				"cf_payment_id": "%s",
 				"payment_amount": 7500.00,
+				"payment_status": "SUCCESS",
+				"payment_currency": "INR",
 				"bank_reference": "BANK_REF_2"
 			}
 		}

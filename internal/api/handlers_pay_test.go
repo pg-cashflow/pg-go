@@ -183,7 +183,7 @@ func TestCashfreeWebhookFailsClosedWithoutSecret(t *testing.T) {
 func TestCashfreeWebhookFailsClosedWithoutGatewayPaymentRepo(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := &Handlers{Deps: Deps{CashfreeSecret: "whsec"}}
-	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"bank_reference":"UTR1"}}}`)
+	code := postSignedWebhook(t, h, `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"pg-ABC-1"},"payment":{"cf_payment_id":"9","payment_amount":10.5,"payment_status":"SUCCESS","payment_currency":"INR","bank_reference":"UTR1"}}}`)
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 Service Unavailable when GatewayPaymentRepo is nil, got %d", code)
 	}

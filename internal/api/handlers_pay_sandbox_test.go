@@ -253,7 +253,8 @@ func TestMoneyRail_DuplicateWebhook_Idempotent(t *testing.T) {
 				"cf_payment_id": %s,
 				"payment_amount": 5500.00,
 				"bank_reference": "UTR998877",
-				"payment_status": "SUCCESS"
+				"payment_status": "SUCCESS",
+				"payment_currency": "INR"
 			}
 		}
 	}`, orderID, cfPaymentID)

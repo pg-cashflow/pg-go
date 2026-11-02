@@ -1919,10 +1919,10 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 		reason       string
 		expectedCode string
 	}{
-		{name: "too short under 3 chars", reason: "ab", expectedCode: "refund.reasonLength"},
-		{name: "disallowed special characters (script tag)", reason: "Refund <script>", expectedCode: "refund.reasonCharacters"},
-		{name: "disallowed special characters (dollar)", reason: "Refund $500", expectedCode: "refund.reasonCharacters"},
-		{name: "disallowed special characters (semicolon)", reason: "Refund; DROP TABLE dues", expectedCode: "refund.reasonCharacters"},
+		{name: "too short under 3 chars", reason: "ab", expectedCode: "payment.refundReasonLength"},
+		{name: "disallowed special characters (script tag)", reason: "Refund <script>", expectedCode: "payment.refundReasonCharacters"},
+		{name: "disallowed special characters (dollar)", reason: "Refund $500", expectedCode: "payment.refundReasonCharacters"},
+		{name: "disallowed special characters (semicolon)", reason: "Refund; DROP TABLE dues", expectedCode: "payment.refundReasonCharacters"},
 	}
 
 	for _, tc := range invalidCases {

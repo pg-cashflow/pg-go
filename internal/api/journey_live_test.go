@@ -229,7 +229,7 @@ func (h *liveHarness) signedWebhook(t *testing.T, orderID string, cfPaymentID in
 		"type": "PAYMENT_SUCCESS_WEBHOOK",
 		"data": map[string]any{
 			"order":   map[string]any{"order_id": orderID},
-			"payment": map[string]any{"cf_payment_id": cfPaymentID, "payment_amount": amountRupees, "bank_reference": utr},
+			"payment": map[string]any{"cf_payment_id": cfPaymentID, "payment_amount": amountRupees, "payment_status": "SUCCESS", "payment_currency": "INR", "bank_reference": utr},
 		},
 	})
 	if err != nil {

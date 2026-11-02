@@ -75,6 +75,8 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.ambiguousMatch`        | 400         | Payment     | Multiple dues match amount within date window                                    |
 | `payment.noMatch`               | 400         | Payment     | No pending due found matching amount within date window                          |
 | `payment.invalidAmount`         | 400         | Payment     | Payment amount must be a positive integer                                        |
+| `payment.refundReasonLength`     | 400         | Payment     | Refund reason must be between 3 and 100 characters                               |
+| `payment.refundReasonCharacters` | 400         | Payment     | Refund reason contains disallowed special characters                             |
 | `finance.duplicateRequest`      | 409         | Finance     | Duplicate idempotency key                                                        |
 | `finance.idempotencyRequired`   | 400         | Finance     | Idempotency-Key header is required                                               |
 | `finance.invalidAmount`         | 400         | Finance     | Invalid expense or payment amount                                                |
@@ -995,6 +997,8 @@ Validation & error responses:
 | **Payment**     | `payment.ambiguousMatch`        | 400         | Multiple dues match amount within date window                                                 |
 | **Payment**     | `payment.noMatch`               | 400         | No open due matches the provided payment amount                                               |
 | **Payment**     | `payment.invalidAmount`         | 400         | Payment amount in paise must be positive integer                                              |
+| **Payment**     | `payment.refundReasonLength`     | 400         | Refund reason must be between 3 and 100 characters                                           |
+| **Payment**     | `payment.refundReasonCharacters` | 400         | Refund reason contains disallowed special characters                                         |
 | **Finance**     | `finance.duplicateRequest`      | 409         | Mutating financial request with duplicate Idempotency-Key                                     |
 | **Finance**     | `finance.idempotencyRequired`   | 400         | Idempotency-Key header is missing on mutating financial endpoint                              |
 | **Finance**     | `finance.invalidAmount`         | 400         | Financial amount in paise must be positive integer                                            |

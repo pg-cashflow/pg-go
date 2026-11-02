@@ -81,8 +81,8 @@ const (
 	CodeFinanceInvalidSettings     Code = "finance.invalidSettings"
 
 	// Refund
-	CodeRefundReasonLength     Code = "refund.reasonLength"
-	CodeRefundReasonCharacters Code = "refund.reasonCharacters"
+	CodeRefundReasonLength     Code = "payment.refundReasonLength"
+	CodeRefundReasonCharacters Code = "payment.refundReasonCharacters"
 
 	// Request & Bind
 	CodeRequestInvalidBody     Code = "request.invalidBody"
