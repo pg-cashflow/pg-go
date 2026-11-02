@@ -160,3 +160,63 @@ func TestHashedAssetRE(t *testing.T) {
 	}
 }
 
+func TestPrerenderedCleanURLs_ServeWithoutRedirect(t *testing.T) {
+	r := gin.New()
+	r.Use(Handler())
+
+	cleanPaths := []string{
+		"/terms",
+		"/privacy",
+		"/landing",
+	}
+
+	for _, p := range cleanPaths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("path %q: expected 200 OK (no 301 redirect), got %d", p, w.Code)
+		}
+		cc := w.Header().Get("Cache-Control")
+		if cc != "no-cache, must-revalidate" {
+			t.Errorf("path %q: expected Cache-Control 'no-cache, must-revalidate', got %q", p, cc)
+		}
+	}
+}
+
+func TestCacheControlHeaders(t *testing.T) {
+	r := gin.New()
+	r.Use(Handler())
+
+	cases := []struct {
+		path            string
+		expectedCode    int
+		expectedCacheCC string
+	}{
+		{"/index.html", http.StatusOK, "no-cache, must-revalidate"},
+		{"/landing.html", http.StatusOK, "no-cache, must-revalidate"},
+		{"/terms.html", http.StatusOK, "no-cache, must-revalidate"},
+		{"/terms/index.html", http.StatusOK, "no-cache, must-revalidate"},
+		{"/terms/", http.StatusOK, "no-cache, must-revalidate"},
+		{"/terms", http.StatusOK, "no-cache, must-revalidate"},
+		{"/sw.js", http.StatusOK, "no-cache, must-revalidate"},
+		{"/assets/main-BHJd8sAA.js", http.StatusOK, "public, max-age=31536000, immutable"},
+		{"/dashboard/active", http.StatusOK, "no-cache, must-revalidate"}, // SPA route fallback
+	}
+
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != tc.expectedCode {
+			t.Errorf("path %s: expected status %d, got %d", tc.path, tc.expectedCode, w.Code)
+		}
+		cc := w.Header().Get("Cache-Control")
+		if cc != tc.expectedCacheCC {
+			t.Errorf("path %s: expected Cache-Control %q, got %q", tc.path, tc.expectedCacheCC, cc)
+		}
+	}
+}
+

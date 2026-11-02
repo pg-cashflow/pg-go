@@ -44,6 +44,12 @@ func TestSecurityHeaders(t *testing.T) {
 	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "script-src 'self' 'unsafe-inline'") {
 		t.Errorf("expected CSP script-src to omit 'unsafe-inline', got %q", got)
 	}
+	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "fonts.googleapis.com") {
+		t.Errorf("expected CSP to omit fonts.googleapis.com (fonts are self-hosted), got %q", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "fonts.gstatic.com") {
+		t.Errorf("expected CSP to omit fonts.gstatic.com (fonts are self-hosted), got %q", got)
+	}
 	if got := w.Header().Get("Strict-Transport-Security"); !strings.Contains(got, "max-age=31536000") {
 		t.Errorf("expected HSTS header in production, got %q", got)
 	}

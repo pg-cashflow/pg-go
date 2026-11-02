@@ -2,6 +2,7 @@ package web
 
 import (
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
 	"path"
@@ -31,29 +32,49 @@ func Handler() gin.HandlerFunc {
 	}
 	fileServer := http.FileServer(http.FS(sub))
 
+	serveHTML := func(c *gin.Context, filePath string, fi fs.FileInfo) bool {
+		f, err := sub.Open(filePath)
+		if err != nil {
+			return false
+		}
+		defer f.Close()
+		if rs, ok := f.(io.ReadSeeker); ok {
+			c.Header("Cache-Control", "no-cache, must-revalidate")
+			http.ServeContent(c.Writer, c.Request, path.Base(filePath), fi.ModTime(), rs)
+			return true
+		}
+		return false
+	}
+
 	return func(c *gin.Context) {
 		reqPath := strings.TrimPrefix(path.Clean(c.Request.URL.Path), "/")
 		if reqPath == "" || reqPath == "." {
 			reqPath = "index.html"
 		}
 
-		// Explicit landing page handling: if /landing is requested and landing.html exists,
-		// serve landing.html with revalidation headers so client routes do not flash landing markup.
-		if reqPath == "landing" {
-			if _, err := fs.Stat(sub, "landing.html"); err == nil {
-				c.Header("Cache-Control", "no-cache, must-revalidate")
-				c.Request.URL.Path = "/landing.html"
-				fileServer.ServeHTTP(c.Writer, c.Request)
-				return
+		// Prerendered clean URL support: if /terms, /privacy, /landing, etc. are requested
+		// without extension, check if <reqPath>.html or <reqPath>/index.html exists.
+		// Serving the candidate HTML directly avoids 301 redirects to trailing slashes
+		// and ensures fresh HTML with strict revalidation headers.
+		if !strings.Contains(reqPath, ".") {
+			htmlCandidate := reqPath + ".html"
+			if fi, err := fs.Stat(sub, htmlCandidate); err == nil && !fi.IsDir() {
+				if serveHTML(c, htmlCandidate, fi) {
+					return
+				}
+			}
+			idxCandidate := reqPath + "/index.html"
+			if fi, err := fs.Stat(sub, idxCandidate); err == nil && !fi.IsDir() {
+				if serveHTML(c, idxCandidate, fi) {
+					return
+				}
 			}
 		}
 
-		fileExists := func() bool {
-			_, err := fs.Stat(sub, reqPath)
-			return err == nil
-		}
+		stat, statErr := fs.Stat(sub, reqPath)
+		fileExists := statErr == nil
 
-		if !fileExists() {
+		if !fileExists {
 			// A path containing a dot is an asset reference (JS, CSS, PNG, etc.).
 			// If it does not exist in the embed it is stale (old deploy). Return 404
 			// so the browser does not execute index.html as JavaScript.
@@ -73,10 +94,31 @@ func Handler() gin.HandlerFunc {
 
 			// Client-side route fallback → index.html with no-cache so the browser
 			// always revalidates before using it (prevents stale shell after deploy).
+			if fi, err := fs.Stat(sub, "index.html"); err == nil && !fi.IsDir() {
+				if serveHTML(c, "index.html", fi) {
+					return
+				}
+			}
 			c.Header("Cache-Control", "no-cache, must-revalidate")
 			c.Request.URL.Path = "/"
 			fileServer.ServeHTTP(c.Writer, c.Request)
 			return
+		}
+
+		// Direct request for an HTML file or directory containing index.html:
+		// Serve via serveHTML with no-cache, must-revalidate to avoid http.FileServer 301 redirects.
+		if strings.HasSuffix(reqPath, ".html") {
+			if serveHTML(c, reqPath, stat) {
+				return
+			}
+		}
+		if stat.IsDir() {
+			dirIdx := path.Join(reqPath, "index.html")
+			if fi, err := fs.Stat(sub, dirIdx); err == nil && !fi.IsDir() {
+				if serveHTML(c, dirIdx, fi) {
+					return
+				}
+			}
 		}
 
 		// File exists — set appropriate cache headers before serving.
@@ -84,13 +126,13 @@ func Handler() gin.HandlerFunc {
 		case hashedAssetRE.MatchString(reqPath):
 			// Content-hashed assets are immutable: safe to cache for 1 year.
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
-		case reqPath == "index.html" || reqPath == "landing.html" || reqPath == "sw.js" || reqPath == "service-worker.js":
-			// Entry point, landing page and service worker must always revalidate.
+		case reqPath == "sw.js" || reqPath == "service-worker.js":
+			// Service worker must always revalidate.
 			c.Header("Cache-Control", "no-cache, must-revalidate")
 		}
 
 		// Never fall back to index.html for API routes or non-GET/HEAD methods
-		// (redundant guard — kept for clarity since fileExists() passed above).
+		// (redundant guard — kept for clarity since fileExists passed above).
 		if strings.HasPrefix(reqPath, "api/") || reqPath == "api" || (c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead) {
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 				"error": "route not found",
