@@ -500,7 +500,37 @@ func (s *Service) InitiateAadhaarOTP(
 
 	res, err := s.cashfree.RequestAadhaarOTP(ctx, cleanedNum)
 	if err != nil {
-		return "", fmt.Errorf("kyc service: request aadhaar otp: %w", err)
+		var httpStatus int
+		var msg string
+		var apiErr *cashfree.APIError
+		if errors.As(err, &apiErr) {
+			httpStatus = apiErr.StatusCode
+			msg = apiErr.Body
+		} else {
+			msg = err.Error()
+		}
+		return "", s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, httpStatus, msg, actor, err)
+	}
+
+	// Validate Cashfree response: require status SUCCESS, the exact message "OTP sent successfully",
+	// and a non-empty ref_id before persisting any verification record.
+	isSuccess := res != nil &&
+		strings.EqualFold(res.Status, "SUCCESS") &&
+		strings.EqualFold(strings.TrimSpace(res.Message), "OTP sent successfully") &&
+		strings.TrimSpace(res.RefID) != ""
+
+	if !isSuccess {
+		statusStr := "UNKNOWN"
+		msg := ""
+		if res != nil {
+			statusStr = res.Status
+			msg = res.Message
+			if msg == "" {
+				msg = res.Status
+			}
+		}
+		underlying := fmt.Errorf("aadhaar otp request failed: status=%s, message=%s", statusStr, msg)
+		return "", s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, 200, msg, actor, underlying)
 	}
 
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", res.RefID)
@@ -515,6 +545,56 @@ func (s *Service) InitiateAadhaarOTP(
 	}
 
 	return res.RefID, nil
+}
+
+func (s *Service) classifyAndRecordAadhaarFailure(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	verificationID *uuid.UUID,
+	httpStatus int,
+	msg string,
+	actor string,
+	underlying error,
+) *AadhaarVerifyFailure {
+	code, class := cashfree.ClassifyAadhaarError(httpStatus, msg)
+	var count int
+	if code != "COOLDOWN_ACTIVE" {
+		c, logErr := s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
+		if logErr != nil {
+			slog.Error("kyc: failure log write failed", "err", logErr)
+		} else {
+			count = c
+		}
+	}
+	if code == "INVALID_AADHAAR" && count >= 2 {
+		class = cashfree.FailureTerminal
+	}
+
+	attemptsRemaining := domain.AadhaarOTPMaxAttempts - count
+	if attemptsRemaining < 0 {
+		attemptsRemaining = 0
+	}
+	if class == cashfree.FailureTerminal || class == cashfree.FailureSystemFault {
+		attemptsRemaining = 0
+	}
+
+	retryable := class == cashfree.FailureRecoverable && attemptsRemaining > 0
+	if class == cashfree.FailureCooldown {
+		retryable = true
+	}
+
+	if verificationID != nil && (class == cashfree.FailureTerminal || (!retryable && attemptsRemaining == 0)) {
+		_ = s.repo.FailVerificationTx(ctx, *verificationID, underlying.Error(), actor)
+	}
+
+	return &AadhaarVerifyFailure{
+		ReasonCode:        code,
+		Class:             class,
+		Retryable:         retryable,
+		CooldownSeconds:   cashfree.CooldownSecondsFor(class, code),
+		AttemptsRemaining: attemptsRemaining,
+		Underlying:        underlying,
+	}
 }
 
 // CompleteAadhaarOTP verifies the submitted OTP with UIDAI and auto-verifies the tenant.
@@ -583,45 +663,22 @@ func (s *Service) CompleteAadhaarOTP(
 		} else {
 			msg = err.Error()
 		}
-		code, class := cashfree.ClassifyAadhaarError(httpStatus, msg)
-		var count int
-		if code != "COOLDOWN_ACTIVE" {
-			c, logErr := s.repo.RecordFailureAndCount(ctx, tenantID, domain.KYCMethodAadhaarOTP, code, 10)
-			if logErr != nil {
-				slog.Error("kyc: failure log write failed", "err", logErr)
-			} else {
-				count = c
+		return nil, s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, httpStatus, msg, actor, err)
+	}
+
+	// Fail closed unless status == "VALID", before reading any demographic identity data
+	if res == nil || !strings.EqualFold(strings.TrimSpace(res.Status), "VALID") {
+		statusStr := "UNKNOWN"
+		msg := ""
+		if res != nil {
+			statusStr = res.Status
+			msg = res.Message
+			if msg == "" {
+				msg = res.Status
 			}
 		}
-		if code == "INVALID_AADHAAR" && count >= 2 {
-			class = cashfree.FailureTerminal
-		}
-
-		attemptsRemaining := domain.AadhaarOTPMaxAttempts - count
-		if attemptsRemaining < 0 {
-			attemptsRemaining = 0
-		}
-		if class == cashfree.FailureTerminal || class == cashfree.FailureSystemFault {
-			attemptsRemaining = 0
-		}
-
-		retryable := class == cashfree.FailureRecoverable && attemptsRemaining > 0
-		if class == cashfree.FailureCooldown {
-			retryable = true
-		}
-
-		if class == cashfree.FailureTerminal || (!retryable && attemptsRemaining == 0) {
-			_ = s.repo.FailVerificationTx(ctx, pending.ID, err.Error(), actor)
-		}
-
-		return nil, &AadhaarVerifyFailure{
-			ReasonCode:        code,
-			Class:             class,
-			Retryable:         retryable,
-			CooldownSeconds:   cashfree.CooldownSecondsFor(class, code),
-			AttemptsRemaining: attemptsRemaining,
-			Underlying:        err,
-		}
+		underlying := fmt.Errorf("aadhaar otp verification not valid: status=%s, message=%s", statusStr, msg)
+		return nil, s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, 200, msg, actor, underlying)
 	}
 
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)

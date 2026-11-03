@@ -194,6 +194,7 @@ type AadhaarOTPInitResult struct {
 type AadhaarOTPVerifyResult struct {
 	RefID      string `json:"ref_id"`
 	Status     string `json:"status"`
+	Message    string `json:"message,omitempty"`
 	Name       string `json:"name"`
 	DOB        string `json:"dob"`
 	Gender     string `json:"gender"`
@@ -311,6 +312,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	var out struct {
 		RefID     any    `json:"ref_id"`
 		Status    string `json:"status"`
+		Message   string `json:"message"`
 		Name      string `json:"name"`
 		DOB       string `json:"dob"`
 		Gender    string `json:"gender"`
@@ -344,6 +346,7 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 	return &AadhaarOTPVerifyResult{
 		RefID:      parseRefID(out.RefID),
 		Status:     out.Status,
+		Message:    out.Message,
 		Name:       out.Name,
 		DOB:        out.DOB,
 		Gender:     out.Gender,

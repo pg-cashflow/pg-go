@@ -265,11 +265,13 @@ func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID
 }
 
 type fakeCashfree struct {
-	ocrResp       *cashfree.SmartOCRResponse
-	ocrErr        error
-	ocrCalled     bool
-	verifyOTPErr  error
-	verifyOTPResp *cashfree.AadhaarOTPVerifyResult
+	ocrResp        *cashfree.SmartOCRResponse
+	ocrErr         error
+	ocrCalled      bool
+	requestOTPErr  error
+	requestOTPResp *cashfree.AadhaarOTPInitResult
+	verifyOTPErr   error
+	verifyOTPResp  *cashfree.AadhaarOTPVerifyResult
 }
 
 func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
@@ -277,6 +279,12 @@ func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ s
 	return f.ocrResp, f.ocrErr
 }
 func (f *fakeCashfree) RequestAadhaarOTP(_ context.Context, _ string) (*cashfree.AadhaarOTPInitResult, error) {
+	if f.requestOTPErr != nil {
+		return nil, f.requestOTPErr
+	}
+	if f.requestOTPResp != nil {
+		return f.requestOTPResp, nil
+	}
 	return &cashfree.AadhaarOTPInitResult{
 		RefID:   "123456",
 		Status:  "SUCCESS",
@@ -565,6 +573,109 @@ func TestInitiateAadhaarOTP_HappyPath(t *testing.T) {
 	}
 }
 
+func TestInitiateAadhaarOTP_CashfreeValidation(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+
+	baseRepo := func() *fakeRepo {
+		return &fakeRepo{
+			consent: &domain.KYCConsent{
+				ID:       consentID,
+				TenantID: tenantID,
+			},
+		}
+	}
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	t.Run("Aadhaar not linked to mobile returns 200 SUCCESS but fails closed to MOBILE_NOT_LINKED without creating DB record", func(t *testing.T) {
+		repo := baseRepo()
+		cf := &fakeCashfree{
+			requestOTPResp: &cashfree.AadhaarOTPInitResult{
+				RefID:   "",
+				Status:  "SUCCESS",
+				Message: "Aadhaar not linked to mobile number",
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T: %v", err, err)
+		}
+		if fail.ReasonCode != "MOBILE_NOT_LINKED" {
+			t.Errorf("expected ReasonCode MOBILE_NOT_LINKED, got %s", fail.ReasonCode)
+		}
+		if fail.Class != cashfree.FailureTerminal {
+			t.Errorf("expected FailureTerminal, got %v", fail.Class)
+		}
+		if fail.Retryable {
+			t.Errorf("expected Retryable false, got true")
+		}
+		if repo.verification != nil {
+			t.Errorf("expected no verification record to be persisted, but got: %v", repo.verification)
+		}
+	})
+
+	t.Run("Invalid Aadhaar Card message in 200 SUCCESS maps to INVALID_AADHAAR and applies cooldown without creating DB record", func(t *testing.T) {
+		repo := baseRepo()
+		cf := &fakeCashfree{
+			requestOTPResp: &cashfree.AadhaarOTPInitResult{
+				RefID:   "",
+				Status:  "SUCCESS",
+				Message: "Invalid Aadhaar Card",
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T: %v", err, err)
+		}
+		if fail.ReasonCode != "INVALID_AADHAAR" {
+			t.Errorf("expected ReasonCode INVALID_AADHAAR, got %s", fail.ReasonCode)
+		}
+		if fail.Class != cashfree.FailureRecoverable {
+			t.Errorf("expected FailureRecoverable, got %v", fail.Class)
+		}
+		if fail.CooldownSeconds != 30 {
+			t.Errorf("expected CooldownSeconds 30, got %d", fail.CooldownSeconds)
+		}
+		if repo.verification != nil {
+			t.Errorf("expected no verification record to be persisted, but got: %v", repo.verification)
+		}
+	})
+
+	t.Run("Empty ref_id in SUCCESS response fails closed without creating DB record", func(t *testing.T) {
+		repo := baseRepo()
+		cf := &fakeCashfree{
+			requestOTPResp: &cashfree.AadhaarOTPInitResult{
+				RefID:   "",
+				Status:  "SUCCESS",
+				Message: "OTP sent successfully",
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+		if err == nil {
+			t.Fatal("expected error for empty ref_id, got nil")
+		}
+		if repo.verification != nil {
+			t.Errorf("expected no verification record to be persisted, but got: %v", repo.verification)
+		}
+	})
+}
+
 func TestCompleteAadhaarOTP_AutoVerified(t *testing.T) {
 	tenantID := uuid.New()
 	verifID := uuid.New()
@@ -773,6 +884,42 @@ func TestCompleteAadhaarOTP_FailureClassificationAndRetryBudget(t *testing.T) {
 		}
 		if fail.AttemptsRemaining != 3 {
 			t.Errorf("expected full retry budget (3) remaining, got %d", fail.AttemptsRemaining)
+		}
+	})
+
+	t.Run("Status other than VALID in 200 response fails closed without unparseable DOB error", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: basePendingVerif(),
+			recordFailureAndCountFn: func(code string) (int, error) {
+				if code != "WRONG_OTP" {
+					t.Errorf("unexpected code: %s", code)
+				}
+				return 1, nil
+			},
+		}
+		cf := &fakeCashfree{
+			verifyOTPResp: &cashfree.AadhaarOTPVerifyResult{
+				RefID:   "ref_fail",
+				Status:  "INVALID",
+				Message: "incorrect otp",
+				DOB:     "invalid-dob",
+			},
+		}
+		svc := newTestService(repo, cf)
+
+		_, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_fail", "000000", "tenant:"+tenantID.String())
+		if err == nil {
+			t.Fatal("expected error for non-VALID status, got nil")
+		}
+		var fail *kycsvc.AadhaarVerifyFailure
+		if !errors.As(err, &fail) {
+			t.Fatalf("expected AadhaarVerifyFailure, got %T: %v", err, err)
+		}
+		if fail.ReasonCode != "WRONG_OTP" {
+			t.Errorf("expected ReasonCode WRONG_OTP, got %s", fail.ReasonCode)
+		}
+		if fail.ReasonCode == "INVALID_DOB_FORMAT" {
+			t.Errorf("did not expect INVALID_DOB_FORMAT when status is INVALID")
 		}
 	})
 }

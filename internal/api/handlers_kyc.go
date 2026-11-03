@@ -410,6 +410,19 @@ func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
 
 	refID, err := svc.InitiateAadhaarOTP(c.Request.Context(), t.ID, body.AadhaarNumber, actor)
 	if err != nil {
+		var fail *kycsvc.AadhaarVerifyFailure
+		if errors.As(err, &fail) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":              fail.Error(),
+				"code":               "kyc.aadhaar_verify_failed",
+				"status":             "failed",
+				"reason_code":        fail.ReasonCode,
+				"retryable":          fail.Retryable,
+				"cooldown_seconds":   fail.CooldownSeconds,
+				"attempts_remaining": fail.AttemptsRemaining,
+			})
+			return
+		}
 		respondErr(c, kycClientErr(err))
 		return
 	}
