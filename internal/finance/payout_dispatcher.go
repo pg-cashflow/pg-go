@@ -246,8 +246,13 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		beneID := cashfree.DeriveBeneficiaryID(it.PayeeID, accountHash)
 		remarks := SanitizePayoutRemarks(it.Purpose, it.ReferenceNumber)
 
+		transferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", ""))
+		if it.RetryOf != nil {
+			transferID = fmt.Sprintf("pgo_%s_a2", strings.ReplaceAll(it.ID.String(), "-", ""))
+		}
+
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
-			TransferID:      fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", "")),
+			TransferID:      transferID,
 			TransferAmount:  json.Number(cashfree.FormatPaiseToRupees(amountPaise)),
 			TransferMode:    mode,
 			FundsourceID:    d.fundsourceID,
@@ -308,10 +313,12 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 			}
 			resp = retryResp
 		} else {
-			if strings.Contains(strings.ToLower(err.Error()), "already exists") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
-				if statusResp, sErr := d.client.GetBatchTransferStatus(ctx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
-					return d.reconcileBatchStatus(ctx, batch, items, statusResp)
-				}
+			if statusResp, sErr := d.client.GetBatchTransferStatus(ctx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+				slog.Info("payout dispatcher: batch already exists at gateway on error; reconciling existing batch status",
+					"batch_id", batch.ID,
+					"cf_batch_id", statusResp.CFBatchTransferID,
+				)
+				return d.reconcileBatchStatus(ctx, batch, items, statusResp)
 			}
 			return fmt.Errorf("payout dispatcher: request batch transfer: %w", err)
 		}
@@ -405,20 +412,22 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 			VPA: strings.TrimSpace(*payee.UPIVPA),
 		}
 	} else if len(payee.AccountNumberEncrypted) > 0 && payee.IFSC != nil {
-		accountNum := string(payee.AccountNumberEncrypted)
+		var decrypted []byte
+		var err error
 		if d.keyRing != nil {
-			decrypted, _, err := crypto.DecryptWithKeyRing(d.keyRing, payee.AccountNumberEncrypted)
+			decrypted, _, err = crypto.DecryptWithKeyRing(d.keyRing, payee.AccountNumberEncrypted)
 			if err != nil {
 				return fmt.Errorf("payee %s: decrypt account number failed: %w", payee.ID, err)
 			}
-			accountNum = string(decrypted)
 		} else if len(d.encryptionKey) == 32 {
-			decrypted, _, err := crypto.Decrypt(d.encryptionKey, payee.AccountNumberEncrypted)
+			decrypted, _, err = crypto.Decrypt(d.encryptionKey, payee.AccountNumberEncrypted)
 			if err != nil {
 				return fmt.Errorf("payee %s: decrypt account number failed: %w", payee.ID, err)
 			}
-			accountNum = string(decrypted)
+		} else {
+			return fmt.Errorf("payee %s: encryption key or key ring unavailable to decrypt bank account", payee.ID)
 		}
+		accountNum := string(decrypted)
 		req.BeneficiaryInstrument = cashfree.BeneficiaryInstrumentDetails{
 			BankAccountNumber: accountNum,
 			BankIFSC:          strings.TrimSpace(*payee.IFSC),
@@ -439,12 +448,17 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 ) error {
 	itemMap := make(map[string]domain.PayoutItem, len(items))
 	for _, it := range items {
-		itemMap[fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", ""))] = it
+		cleanID := strings.ReplaceAll(it.ID.String(), "-", "")
+		itemMap[cleanID] = it
 	}
 
 	// Update items from Cashfree status
 	for _, st := range statusResp.Transfers {
-		it, ok := itemMap[st.TransferID]
+		cleanTransferID := strings.TrimPrefix(st.TransferID, "pgo_")
+		if idx := strings.IndexAny(cleanTransferID, "_"); idx != -1 {
+			cleanTransferID = cleanTransferID[:idx]
+		}
+		it, ok := itemMap[cleanTransferID]
 		if !ok {
 			continue
 		}
@@ -488,6 +502,23 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
 				return fmt.Errorf("reconcile payout item reversed status: %w", err)
 			}
+		case "REJECTED":
+			reason := st.StatusDescription
+			if reason == "" {
+				reason = st.StatusCode
+			}
+			if reason == "" {
+				reason = "transfer rejected by gateway"
+			}
+			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
+				return fmt.Errorf("update payout item rejected status: %w", err)
+			}
+		default:
+			slog.Warn("payout batch reconcile: unhandled transfer status from gateway",
+				"transfer_id", st.TransferID,
+				"status", st.Status,
+				"status_code", st.StatusCode,
+			)
 		}
 	}
 

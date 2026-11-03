@@ -2329,5 +2329,68 @@ func TestCancelRefund_Scenarios(t *testing.T) {
 			t.Fatalf("expected 403 Forbidden when manager refunds are disabled, got %d", w.Code)
 		}
 	})
+
+	t.Run("initiated refund older than 2m never dispatched returns 404 from gateway and cancels locally", func(t *testing.T) {
+		cfClient := &mockCFClient{
+			failRefund: true,
+			refundErr: &cashfree.APIError{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       `{"message":"refund not found"}`,
+			},
+		}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_test_cancel_undispatched"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			CFRefundID:      nil, // Never assigned by Cashfree
+			AmountPaise:     75000,
+			Status:          domain.RefundStatusInitiated,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-5 * time.Minute),
+			UpdatedAt:       time.Now().Add(-5 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancelling undispatched initiated refund",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for undispatched 404 refund cancellation, got %d (body: %s)", w.Code, w.Body.String())
+		}
+
+		updated, err := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if err != nil || updated == nil {
+			t.Fatalf("failed fetching updated refund: %v", err)
+		}
+		if updated.Status != domain.RefundStatusCancelled {
+			t.Fatalf("expected refund status 'cancelled', got %s", updated.Status)
+		}
+	})
 	_ = tenantID
 }

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // verificationEndpoint returns the Cashfree Secure ID API base URL, separate
@@ -73,7 +75,7 @@ func (e *CorruptDocumentError) IsPermanent() bool {
 
 // SmartOCRResponse contains the extracted verification results from Cashfree Smart OCR (/bharat-ocr).
 type SmartOCRResponse struct {
-	ReferenceID int64
+	ReferenceID any
 	Status      string
 	MessageCode string
 	Name        string
@@ -93,6 +95,10 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
+	verificationID := fmt.Sprintf("cf_ocr_%s", strings.ReplaceAll(uuid.New().String(), "-", "")[:24])
+	if err := writer.WriteField("verification_id", verificationID); err != nil {
+		return nil, fmt.Errorf("cashfree ocr: write verification_id: %w", err)
+	}
 	if err := writer.WriteField("document_type", "AADHAAR"); err != nil {
 		return nil, fmt.Errorf("cashfree ocr: write document_type: %w", err)
 	}
@@ -132,7 +138,7 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 	}
 
 	var raw struct {
-		ReferenceID int64  `json:"reference_id"`
+		ReferenceID any    `json:"reference_id"`
 		Status      string `json:"status"`
 		MessageCode string `json:"message_code"`
 		OCRData     struct {
@@ -210,6 +216,7 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 	}
 	body := map[string]string{
 		"aadhaar_number": strings.TrimSpace(aadhaarNumber),
+		"uid":            strings.TrimSpace(aadhaarNumber),
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,

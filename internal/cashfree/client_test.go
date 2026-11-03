@@ -220,3 +220,69 @@ func TestClient_WithBaseURL(t *testing.T) {
 		t.Fatalf("expected request to /orders, got %s", requestedPath)
 	}
 }
+
+
+func TestCancelRefund(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotContentType string
+	var gotAppID string
+	var gotSecret string
+	var gotBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		gotAppID = r.Header.Get("x-client-id")
+		gotSecret = r.Header.Get("x-client-secret")
+		gotBody, _ = io.ReadAll(r.Body)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+			"cf_refund_id": "888777",
+			"refund_id": "rf_cancel_123",
+			"order_id": "order_cancel_123",
+			"cf_payment_id": "999000",
+			"refund_status": "CANCELLED",
+			"refund_amount": 2500.00,
+			"refund_type": "PAYMENT_REVERSAL",
+			"refund_reason": "Requested by owner"
+		}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(Config{AppID: "test_app_id", SecretKey: "test_secret_key", Env: "sandbox"})
+	c.baseOverride = srv.URL
+
+	ref, err := c.CancelRefund(context.Background(), "order_cancel_123", "rf_cancel_123", "Requested by owner")
+	if err != nil {
+		t.Fatalf("CancelRefund failed: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Fatalf("expected HTTP PUT, got: %s", gotMethod)
+	}
+	if gotPath != "/orders/order_cancel_123/refunds/rf_cancel_123" {
+		t.Fatalf("unexpected path: %s", gotPath)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got: %s", gotContentType)
+	}
+	if gotAppID != "test_app_id" || gotSecret != "test_secret_key" {
+		t.Fatalf("unexpected credentials: app_id=%s secret=%s", gotAppID, gotSecret)
+	}
+
+	var reqBody CancelRefundRequest
+	if err := json.Unmarshal(gotBody, &reqBody); err != nil {
+		t.Fatalf("unmarshal cancel request body: %v", err)
+	}
+	if reqBody.RefundStatus != "CANCELLED" || reqBody.Remarks != "Requested by owner" {
+		t.Fatalf("unexpected cancel request body: %+v", reqBody)
+	}
+
+	if ref.CFRefundID != "888777" || ref.RefundStatus != "CANCELLED" || ref.AmountPaise != 250000 {
+		t.Fatalf("unexpected refund response details: %+v", ref)
+	}
+}

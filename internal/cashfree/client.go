@@ -296,7 +296,7 @@ func (c *Client) CancelRefund(ctx context.Context, orderID, refundID, remarks st
 	if err != nil {
 		return nil, fmt.Errorf("cashfree marshal cancel refund: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint()+"/orders/"+orderID+"/refunds/"+refundID, bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint()+"/orders/"+orderID+"/refunds/"+refundID, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}

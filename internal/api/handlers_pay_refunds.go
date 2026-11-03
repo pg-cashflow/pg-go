@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"golang.org/x/text/unicode/norm"
@@ -630,11 +631,21 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 	if orderPayload.OrderID != "" && targetRef != "" && h.CashfreeClient != nil {
 		cfResp, cancelErr := h.CashfreeClient.CancelRefund(ctx, orderPayload.OrderID, targetRef, req.Reason)
 		if cancelErr != nil {
-			slog.Error("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
-			return
-		}
-		if cfResp != nil && domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
+			var apiErr *cashfree.APIError
+			var statusCoder interface{ HTTPStatusCode() int }
+			isNotFound := (errors.As(cancelErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound) ||
+				(errors.As(cancelErr, &statusCoder) && statusCoder.HTTPStatusCode() == http.StatusNotFound) ||
+				strings.Contains(cancelErr.Error(), "status 404") ||
+				strings.Contains(cancelErr.Error(), "404 Not Found")
+
+			if isNotFound && (rf.CFRefundID == nil || *rf.CFRefundID == "") {
+				slog.Info("refund not found at gateway and has no cf_refund_id; cancelling locally", "refund_id", rf.ID)
+			} else {
+				slog.Error("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
+				c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
+				return
+			}
+		} else if cfResp != nil && domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
 			slog.Warn("gateway returned non-cancelled status on cancel", "status", cfResp.RefundStatus, "refund_id", rf.ID)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund status is not cancelled; reservation remains held"})
 			return

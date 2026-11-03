@@ -168,8 +168,10 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 
 	// Resolve target payout item
 	rawTransferID := strings.TrimPrefix(data.TransferID, "pgo_")
-	parts := strings.Split(rawTransferID, "_r")
-	itemID, err := uuid.Parse(parts[0])
+	if idx := strings.IndexAny(rawTransferID, "_"); idx != -1 {
+		rawTransferID = rawTransferID[:idx]
+	}
+	itemID, err := uuid.Parse(rawTransferID)
 	if err != nil {
 		// Not an item-level event or non-UUID reference; acknowledge safely
 		c.Status(http.StatusOK)

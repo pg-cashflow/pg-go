@@ -974,7 +974,7 @@ func (r *PayoutRepo) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx
 		switch st {
 		case domain.PayoutSucceeded:
 			succeededCount++
-		case domain.PayoutFailed, domain.PayoutRejected:
+		case domain.PayoutFailed, domain.PayoutRejected, domain.PayoutRetriableFailed:
 			failedCount++
 		default:
 			inFlightCount++

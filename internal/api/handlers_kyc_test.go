@@ -3,9 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -196,13 +193,6 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	}
 
 	return r
-}
-
-// signHMAC builds a valid Cashfree webhook HMAC signature for the given secret.
-func signHMAC(secret, timestamp, body string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte(timestamp + body))
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // ---- TenantKYCConsent -------------------------------------------------------

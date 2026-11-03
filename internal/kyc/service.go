@@ -401,7 +401,7 @@ func (s *Service) VerifyAadhaarDocument(
 		)
 	}
 
-	vendorRefID := fmt.Sprintf("cf_ocr_%d", resp.ReferenceID)
+	vendorRefID := fmt.Sprintf("cf_ocr_%v", resp.ReferenceID)
 	nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
 
 	// 6. Normalise demographics and compute identity hash
@@ -512,11 +512,9 @@ func (s *Service) InitiateAadhaarOTP(
 		return "", s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, httpStatus, msg, actor, err)
 	}
 
-	// Validate Cashfree response: require status SUCCESS, the exact message "OTP sent successfully",
-	// and a non-empty ref_id before persisting any verification record.
+	// Validate Cashfree response: require status SUCCESS and a non-empty ref_id before persisting any verification record.
 	isSuccess := res != nil &&
 		strings.EqualFold(res.Status, "SUCCESS") &&
-		strings.EqualFold(strings.TrimSpace(res.Message), "OTP sent successfully") &&
 		strings.TrimSpace(res.RefID) != ""
 
 	if !isSuccess {
