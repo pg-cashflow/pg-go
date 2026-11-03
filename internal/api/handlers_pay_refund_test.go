@@ -393,10 +393,14 @@ func (s *refundStepUpUserStore) SetPropertyID(context.Context, uuid.UUID, uuid.U
 
 type refundStepUpAuthService struct {
 	stubPayoutAuthService
-	validOTP string
+	validOTP    string
+	seenPurpose string
+	seenBatch   *uuid.UUID
 }
 
-func (a *refundStepUpAuthService) VerifyStepUpOTPSpecific(_ context.Context, _ string, otp, _ string, _ *uuid.UUID) error {
+func (a *refundStepUpAuthService) VerifyStepUpOTPSpecific(_ context.Context, _ string, otp, purpose string, batchID *uuid.UUID) error {
+	a.seenPurpose = purpose
+	a.seenBatch = batchID
 	if otp == a.validOTP && otp != "" {
 		return nil
 	}
@@ -405,12 +409,9 @@ func (a *refundStepUpAuthService) VerifyStepUpOTPSpecific(_ context.Context, _ s
 
 func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 	if h.UserStore == nil {
-		h.UserStore = &mockDualControlUserStore{
-			owners: []domain.User{
-				{ID: userID, PropertyID: &propID, Role: domain.RoleOwner},
-				{ID: uuid.New(), PropertyID: &propID, Role: domain.RoleOwner},
-			},
-		}
+		owner := &domain.User{ID: userID, PropertyID: &propID, Role: domain.RoleOwner, Phone: "+919000000001"}
+		h.UserStore = &refundStepUpUserStore{owners: []domain.User{*owner}, user: owner}
+		h.Auth = &refundStepUpAuthService{validOTP: "123456"}
 	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -494,6 +495,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 550000,
 			"reason":       "Tenant cancelled booking before checkin",
 		}
@@ -562,6 +564,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 600000, // exceeds 550,000
 			"reason":       "Over refund",
 		}
@@ -610,6 +613,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 550000,
 			"reason":       "Old refund",
 		}
@@ -663,6 +667,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 200000,
 			"reason":       "Idempotent partial refund",
 		}
@@ -695,6 +700,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 
 		// Third call with SAME key but DIFFERENT amount must return 409 Conflict
 		bodyConflict := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 300000,
 			"reason":       "Idempotent partial refund with different amount",
 		}
@@ -853,6 +859,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 200000,
 			"reason":       "Failing refund",
 		}
@@ -909,6 +916,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 200000,
 			"reason":       "Timing out refund",
 		}
@@ -962,6 +970,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 100000,
 			"reason":       "Fail closed check",
 		}
@@ -1018,6 +1027,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 550000,
 			"reason":       "Cross property refund attempt",
 		}
@@ -1068,6 +1078,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 100000,
 			"reason":       "Missing idempotency key test",
 		}
@@ -1119,6 +1130,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 100000,
 			"reason":       "Oversized idempotency key test",
 		}
@@ -1190,6 +1202,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 200000,
 			"reason":       "First request in flight",
 		}
@@ -1264,6 +1277,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r := setupRefundRouter(h, propID, userID)
 
 		body := map[string]any{
+			"otp":          "123456",
 			"amount_paise": 200000,
 			"reason":       "Already succeeded",
 		}
@@ -1453,6 +1467,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	// Cycle 2 net paid drops from ₹5,500 to ₹2,500 -> status becomes 'partial', amount becomes ₹2,500.
 	// Cycle 1 net paid remains ₹5,500 -> status remains 'paid', amount remains 0.
 	body1 := map[string]any{
+		"otp":          "123456",
 		"amount_paise": 300000,
 		"reason":       "Partial refund round 1",
 	}
@@ -1493,6 +1508,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	// Remaining on Due 2 is ₹2,500 -> Due 2 receives ₹2,500 allocation -> net paid becomes 0 -> status becomes 'pending', amount becomes ₹5,500.
 	// Remaining ₹1,000 spills over to Due 1 -> Due 1 net paid drops to ₹4,500 -> status becomes 'partial', amount becomes ₹1,000.
 	body2 := map[string]any{
+		"otp":          "123456",
 		"amount_paise": 350000,
 		"reason":       "Partial refund round 2",
 	}
@@ -1527,6 +1543,7 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	// Total refunded so far: ₹3,000 + ₹3,500 = ₹6,500. Remaining balance: ₹4,500.
 	// Requesting ₹5,000 must be rejected with 400!
 	body3 := map[string]any{
+		"otp":          "123456",
 		"amount_paise": 500000, // exceeds remaining 4,500
 		"reason":       "Attempting to exceed remaining refundable balance",
 	}
@@ -1676,6 +1693,7 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 
 	// Case 1: Tenant has approved departure -> MUST return 400 Bad Request
 	body := map[string]any{
+		"otp":          "123456",
 		"amount_paise": 100000,
 		"reason":       "Attempting refund on departed tenant",
 	}
@@ -1882,6 +1900,7 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 		t.Run("valid_"+tc.name, func(t *testing.T) {
 			_, basePayment, r, cfClient := setupHandler()
 			body := map[string]any{
+				"otp":          "123456",
 				"amount_paise": 100000,
 				"reason":       tc.reason,
 			}
@@ -1929,6 +1948,7 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 		t.Run("invalid_"+tc.name, func(t *testing.T) {
 			_, basePayment, r, _ := setupHandler()
 			body := map[string]any{
+				"otp":          "123456",
 				"amount_paise": 100000,
 				"reason":       tc.reason,
 			}

@@ -33,7 +33,7 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load: %v", err))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, dbURL)
@@ -79,6 +79,7 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 	env := isolatedTestEnv(
 		"GOTOOLCHAIN=local",
 		"GOPROXY=off",
+		"GODEBUG=netdns=go",
 		"DATABASE_URL="+cfg.DatabaseURL,
 		"DATABASE_MAINT_URL="+cfg.DatabaseMaintURL,
 		"JWT_SECRET="+cfg.JWTSecret,
@@ -88,8 +89,16 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 		"MIGRATIONS_DIR="+filepath.Join("..", "..", "migrations"),
 	)
 
+	binPath := filepath.Join(t.TempDir(), "billing-cycle.exe")
+	buildCmd := exec.Command("go", "build", "-o", binPath, ".")
+	buildCmd.Dir = cmdPath
+	buildCmd.Env = env
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to build billing-cycle binary: %v (out: %s)", err, string(out))
+	}
+
 	// Step 1: Start billing-cycle subprocess and kill it abruptly mid-batch
-	cmd1 := exec.Command("go", "run", ".")
+	cmd1 := exec.Command(binPath)
 	cmd1.Dir = cmdPath
 	cmd1.Env = env
 
@@ -106,10 +115,10 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Step 2: Rerun billing-cycle to completion
-	cmd2Ctx, cmd2Cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	cmd2Ctx, cmd2Cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cmd2Cancel()
 
-	cmd2 := exec.CommandContext(cmd2Ctx, "go", "run", ".")
+	cmd2 := exec.CommandContext(cmd2Ctx, binPath)
 	cmd2.Dir = cmdPath
 	cmd2.Env = env
 

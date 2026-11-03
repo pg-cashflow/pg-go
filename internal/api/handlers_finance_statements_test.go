@@ -76,12 +76,8 @@ func TestOwnerFinancialStatementsAndReopenEndpoints(t *testing.T) {
 		Finance:        finSvc,
 		FinanceEnabled: true,
 		Payments:       &dummyPaymentSummaryBuilder{},
-		UserStore: &mockDualControlUserStore{
-			owners: []domain.User{
-				{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner},
-				{ID: uuid.New(), PropertyID: &propID, Role: domain.RoleOwner},
-			},
-		},
+		UserStore:      &refundStepUpUserStore{owners: []domain.User{{ID: ownerID}}, user: &domain.User{ID: ownerID, Phone: "+919000000001"}},
+		Auth:           &refundStepUpAuthService{validOTP: "123456"},
 	}
 	router := NewRouter(deps)
 
@@ -211,7 +207,7 @@ func TestOwnerFinancialStatementsAndReopenEndpoints(t *testing.T) {
 
 		body := map[string]string{
 			"period": "2026-09",
-			"reason": "Auditor adjustment for past period",
+			"otp":    "123456", "reason": "Auditor adjustment for past period",
 		}
 		raw, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/owner/finance/tie-out/reopen", bytes.NewBuffer(raw))
@@ -238,7 +234,7 @@ func TestOwnerFinancialStatementsAndReopenEndpoints(t *testing.T) {
 
 		body := map[string]string{
 			"period": "2026-09",
-			"reason": "Auditor adjustment for past period",
+			"otp":    "123456", "reason": "Auditor adjustment for past period",
 		}
 		raw, _ := json.Marshal(body)
 		req := httptest.NewRequest(http.MethodPost, "/api/owner/finance/tie-out/reopen", bytes.NewBuffer(raw))

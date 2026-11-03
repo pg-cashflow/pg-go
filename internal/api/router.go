@@ -15,6 +15,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/intelligence"
 	"github.com/pg-cashflow/pg-go/internal/localization"
+	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/roi"
 	"github.com/pg-cashflow/pg-go/internal/search"
@@ -59,6 +60,7 @@ type Deps struct {
 	CashfreeClient     CashfreeClient
 
 	GatewayPaymentRepo  GatewayPaymentRepo
+	OrderSettler        payment.OrderGatewaySettler
 	UnmatchedReceipts   UnmatchedReceiptStore
 	WebhookToleranceSec int
 	WebhookAPIVersion   string
@@ -170,6 +172,21 @@ func NewRouter(d Deps) *gin.Engine {
 		if u, ok := d.GatewayPaymentRepo.(UnmatchedReceiptStore); ok {
 			d.UnmatchedReceipts = u
 		}
+	}
+
+	if d.OrderSettler == nil {
+		var paySvc *payment.Service
+		if p, ok := d.Payments.(*payment.Service); ok {
+			paySvc = p
+		}
+		d.OrderSettler = payment.NewOrderSettlementService(payment.OrderSettlementConfig{
+			Pool:               d.Pool,
+			GatewayPaymentRepo: d.GatewayPaymentRepo,
+			IntentStore:        d.IntentStore,
+			LedgerOutboxRepo:   d.LedgerOutboxRepo,
+			FinanceEnabled:     d.FinanceEnabled || d.Finance != nil,
+			Payments:           paySvc,
+		})
 	}
 
 	h := &Handlers{Deps: d}

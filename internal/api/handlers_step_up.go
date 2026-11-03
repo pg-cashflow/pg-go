@@ -28,8 +28,8 @@ type StepUpAuthInput struct {
 // has multiple active owners, or cryptographic step-up re-authentication (OTP or fresh Firebase token)
 // when in solo-owner mode.
 // If createdBy is provided and len(activeOwners) > 1, maker cannot approve their own action.
-// If both h.UserStore and h.Auth are unconfigured (e.g., in lightweight repo unit tests),
-// it skips verification. In all other cases (including production), full verification is enforced.
+// An action without a persisted maker must use step-up even when multiple owners exist.
+// Merely having multiple owners is not evidence of a second person's approval.
 // Returns the approval mode ("dual_control", "solo_owner_reauth") and true if verification succeeded.
 func (h *Handlers) verifyDualControlOrStepUp(
 	c *gin.Context,
@@ -48,12 +48,14 @@ func (h *Handlers) verifyDualControlOrStepUp(
 	var activeOwners []domain.User
 	if h.UserStore != nil {
 		owners, err := h.UserStore.GetByPropertyAndRole(c.Request.Context(), pid, domain.RoleOwner)
-		if err == nil {
-			activeOwners = owners
+		if err != nil {
+			respondErr(c, clientErr(http.StatusServiceUnavailable, "owner authorization lookup unavailable"))
+			return "", false
 		}
+		activeOwners = owners
 	}
 
-	if len(activeOwners) > 1 {
+	if len(activeOwners) > 1 && createdBy != nil {
 		// Strict maker-checker enforcement
 		if createdBy != nil && uid == *createdBy {
 			slog.Warn("dual control approval rejected: maker cannot be checker", "user_id", uid)
@@ -87,7 +89,7 @@ func (h *Handlers) verifyDualControlOrStepUp(
 	}
 
 	user, err := h.UserStore.GetByID(c.Request.Context(), uid)
-	if err != nil {
+	if err != nil || user == nil {
 		respondErr(c, clientErr(http.StatusUnauthorized, "owner account not found for step-up verification"))
 		return "", false
 	}
@@ -134,7 +136,7 @@ func (h *Handlers) verifyDualControlOrStepUp(
 			matches = true
 		} else if user.Phone != "" && strings.TrimSpace(user.Phone) == ident.Phone && ident.Phone != "" {
 			matches = true
-		} else if user.Email != "" && strings.EqualFold(user.Email, ident.Email) && ident.Email != "" {
+		} else if user.Email != "" && ident.EmailVerified && strings.EqualFold(user.Email, ident.Email) && ident.Email != "" {
 			matches = true
 		}
 		if !matches {

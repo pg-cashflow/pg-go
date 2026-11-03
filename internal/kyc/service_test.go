@@ -19,6 +19,30 @@ import (
 
 // ---- Fakes ------------------------------------------------------------------
 
+func TestGetStatusRejectsExpiredVerificationWithoutExpiryJob(t *testing.T) {
+	for _, expired := range []bool{true, false} {
+		expires := time.Now().Add(time.Hour)
+		if expired {
+			expires = time.Now().Add(-time.Hour)
+		}
+		repo := &fakeRepo{verification: &domain.KYCVerification{Status: domain.KYCStatusVerified, ExpiresAt: &expires}}
+		svc := kycsvc.NewService(repo, nil, kycsvc.Config{})
+		v, _, err := svc.GetStatus(context.Background(), uuid.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expired && v.Status != domain.KYCStatusExpired {
+			t.Fatal("expired KYC still passed the read-time gate")
+		}
+		if !expired && v.Status != domain.KYCStatusVerified {
+			t.Fatal("valid KYC rejected")
+		}
+		if repo.verification.Status != domain.KYCStatusVerified {
+			t.Fatal("read-time projection mutated repository state")
+		}
+	}
+}
+
 type fakeRepo struct {
 	consent                 *domain.KYCConsent
 	verification            *domain.KYCVerification

@@ -709,6 +709,12 @@ func (s *Service) GetStatus(ctx context.Context, tenantID uuid.UUID) (*domain.KY
 	if err != nil {
 		return nil, nil, fmt.Errorf("kyc service: get verification status: %w", err)
 	}
+	// Authorization must not depend on the expiry job running on schedule.
+	if v != nil && v.Status == domain.KYCStatusVerified && !v.IsValid(time.Now().UTC()) {
+		expired := *v
+		expired.Status = domain.KYCStatusExpired
+		v = &expired
+	}
 
 	c, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
 	if errors.Is(err, domain.ErrVerificationNotFound) {

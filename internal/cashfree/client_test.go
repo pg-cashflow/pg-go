@@ -92,6 +92,12 @@ func TestCreateUPIOrderUPIOnlyExactRupees(t *testing.T) {
 		t.Fatal("must not send surcharge")
 	}
 	meta, _ := body["order_meta"].(map[string]any)
+	if expiry, ok := body["order_expiry_time"].(string); !ok || expiry == "" {
+		t.Fatal("order expiry must be a top-level request field")
+	}
+	if _, nested := meta["order_expiry_time"]; nested {
+		t.Fatal("order expiry must not be nested in order_meta")
+	}
 	if meta["payment_methods"] != nil {
 		t.Fatalf("payment_methods=%v, want all methods enabled (nil)", meta["payment_methods"])
 	}

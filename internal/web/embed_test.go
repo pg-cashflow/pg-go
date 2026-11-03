@@ -2,6 +2,7 @@ package web
 
 import (
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -188,6 +189,16 @@ func TestPrerenderedCleanURLs_ServeWithoutRedirect(t *testing.T) {
 func TestCacheControlHeaders(t *testing.T) {
 	r := gin.New()
 	r.Use(Handler())
+	asset := ""
+	_ = fs.WalkDir(distFS, "dist/assets", func(name string, entry fs.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() && hashedAssetRE.MatchString(strings.TrimPrefix(name, "dist/")) {
+			asset = "/" + strings.TrimPrefix(name, "dist/")
+		}
+		return nil
+	})
+	if asset == "" {
+		t.Fatal("build and copy frontend dist before running the embedded asset contract")
+	}
 
 	cases := []struct {
 		path            string
@@ -201,7 +212,7 @@ func TestCacheControlHeaders(t *testing.T) {
 		{"/terms/", http.StatusOK, "no-cache, must-revalidate"},
 		{"/terms", http.StatusOK, "no-cache, must-revalidate"},
 		{"/sw.js", http.StatusOK, "no-cache, must-revalidate"},
-		{"/assets/main-BHJd8sAA.js", http.StatusOK, "public, max-age=31536000, immutable"},
+		{asset, http.StatusOK, "public, max-age=31536000, immutable"},
 		{"/dashboard/active", http.StatusOK, "no-cache, must-revalidate"}, // SPA route fallback
 	}
 

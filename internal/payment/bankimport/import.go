@@ -153,6 +153,7 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 		}
 	}
 
+	duplicate := false
 	if bank != nil {
 		inserted, err := bank.InsertTransaction(ctx, nil, creditTxn)
 		if err != nil {
@@ -160,8 +161,7 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 			return &Error{Message: "failed to record bank transaction"}
 		}
 		if !inserted {
-			out.Duplicates++
-			return nil
+			duplicate = true
 		}
 	}
 	if ledger != nil && in.FinanceEnabled {
@@ -169,6 +169,13 @@ func importCredit(ctx context.Context, bank BankWriter, ledger Ledger, matcher M
 			slog.Error("ImportStatements ledger mirror quarantine failed", "error", err)
 			return &Error{Message: "failed to record financial entry"}
 		}
+	}
+	// A prior import may have committed the bank row and then failed to mirror.
+	// Retry the idempotent ledger write with the same deterministic source UUID
+	// before treating the bank row as a completed duplicate.
+	if duplicate {
+		out.Duplicates++
+		return nil
 	}
 	if isSuggested {
 		out.Suggested++

@@ -54,6 +54,16 @@ func main() {
 	referralRepo := postgres.NewReferralRepo(pool)
 	referralSvc := referral.NewService(referralRepo)
 	paySvc := payment.NewServiceWithPool(pool, dueRepo, paymentRepo, tenantRepo, eventRepo, payment.NewSQLSummaryRepository(pool))
+	ledgerRepo := postgres.NewLedgerOutboxRepo(pool)
+
+	orderSettler := payment.NewOrderSettlementService(payment.OrderSettlementConfig{
+		Pool:               pool,
+		GatewayPaymentRepo: paymentRepo,
+		IntentStore:        intentRepo,
+		LedgerOutboxRepo:   ledgerRepo,
+		FinanceEnabled:     true,
+		Payments:           paySvc,
+	})
 
 	cfClient := cashfree.NewClient(cfCfg)
 	job := &jobs.CashfreePollJob{
@@ -61,6 +71,7 @@ func main() {
 		Dues:         dueRepo,
 		Client:       cfClient,
 		Settle:       paySvc,
+		OrderSettler: orderSettler,
 		Refunds:      paymentRepo,
 		RefundClient: cfClient,
 		Referrals:    referralSvc,

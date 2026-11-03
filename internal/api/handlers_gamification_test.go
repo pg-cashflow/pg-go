@@ -217,6 +217,8 @@ func TestAuthorizationMatrix(t *testing.T) {
 	deps := Deps{
 		JWTSecret:         jwtSecret,
 		GamificationStore: store,
+		KYCSvc:            verifiedKYCSvc(),
+		CapabilityStore:   &stubCapabilityStore{allActive: true},
 		TenantStore:       &stubTenantStore{t: tenantA},
 		AuthTenantRepo:    &stubTenantRepo{t: tenantA},
 	}
@@ -329,6 +331,8 @@ func TestGamificationCrossPropertyIDORGuards(t *testing.T) {
 	deps := Deps{
 		JWTSecret:         jwtSecret,
 		GamificationStore: store,
+		KYCSvc:            verifiedKYCSvc(),
+		CapabilityStore:   &stubCapabilityStore{allActive: true},
 		TenantStore:       &multiTenantStoreStub{tenants: map[uuid.UUID]*domain.Tenant{tenantA.ID: tenantA, tenantB.ID: tenantB}},
 		AuthTenantRepo:    &multiTenantRepoStub{tenants: map[uuid.UUID]*domain.Tenant{tenantA.ID: tenantA, tenantB.ID: tenantB}},
 	}
@@ -583,6 +587,8 @@ func TestOwnerRedemptions_ListAndFulfil(t *testing.T) {
 		JWTSecret:         jwtSecret,
 		Gamification:      gamSvc,
 		GamificationStore: store,
+		KYCSvc:            verifiedKYCSvc(),
+		CapabilityStore:   &stubCapabilityStore{allActive: true},
 		TenantStore:       &stubTenantStore{t: tenantA},
 		AuthTenantRepo:    &stubTenantRepo{t: tenantA},
 	}

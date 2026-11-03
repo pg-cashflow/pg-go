@@ -38,6 +38,18 @@ type GatewaySettler interface {
 	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error)
 }
 
+type OrderGatewaySettler interface {
+	SettleGatewayOrder(
+		ctx context.Context,
+		orderID string,
+		cfPaymentID string,
+		txnID string,
+		amountPaise int64,
+		intent *domain.PaymentIntent,
+		rawPayload []byte,
+	) error
+}
+
 type RefundStaleRepo interface {
 	ListStaleNonTerminalRefunds(ctx context.Context, olderThan time.Time) ([]domain.GatewayRefund, error)
 	CreateOrUpdateRefund(ctx context.Context, ref *domain.GatewayRefund) error
@@ -69,6 +81,7 @@ type CashfreePollJob struct {
 	Dues             DueByID
 	Client           CashfreeFetcher
 	Settle           GatewaySettler
+	OrderSettler     OrderGatewaySettler
 	Refunds          RefundStaleRepo
 	RefundClient     RefundStatusFetcher
 	Referrals        ReferralClawback
@@ -118,7 +131,7 @@ func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 		return err
 	}
 	for _, intent := range stale {
-		if j.Dues != nil {
+		if j.OrderSettler == nil && j.Dues != nil {
 			due, err := j.Dues.GetByID(ctx, intent.DueID)
 			if err != nil || due == nil {
 				continue
@@ -144,21 +157,30 @@ func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 		if txn == "" {
 			txn = cfID
 		}
-		dedupKey := ""
-		if cfID != "" {
-			dedupKey = fmt.Sprintf("cashfree:pg:%s", cfID)
-		}
-		if dedupKey != "" {
-			_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn, dedupKey)
-		} else {
-			_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn)
-		}
-		if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
-			log.Error("cashfree poll settle", "order", intent.ProviderOrderID, "err", err)
-			continue
-		}
-		if cfID != "" {
-			_ = j.Intents.MarkPaid(ctx, intent.ID, cfID)
+
+		if j.OrderSettler != nil {
+			intentCopy := intent
+			if err := j.OrderSettler.SettleGatewayOrder(ctx, intent.ProviderOrderID, cfID, txn, amount, &intentCopy, nil); err != nil {
+				log.Error("cashfree poll settle order", "order", intent.ProviderOrderID, "err", err)
+				continue
+			}
+		} else if j.Settle != nil {
+			dedupKey := ""
+			if cfID != "" {
+				dedupKey = fmt.Sprintf("cashfree:pg:%s", cfID)
+			}
+			if dedupKey != "" {
+				_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn, dedupKey)
+			} else {
+				_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn)
+			}
+			if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
+				log.Error("cashfree poll settle", "order", intent.ProviderOrderID, "err", err)
+				continue
+			}
+			if cfID != "" {
+				_ = j.Intents.MarkPaid(ctx, intent.ID, cfID)
+			}
 		}
 	}
 	return nil

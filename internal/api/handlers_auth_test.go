@@ -42,7 +42,17 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
-func TestRevokeSessionsInvalidatesPriorJWT(t *testing.T) {
+type revokeOthersAuthService struct {
+	stubPayoutAuthService
+	called bool
+}
+
+func (s *revokeOthersAuthService) RevokeOtherSessions(context.Context, uuid.UUID, *uuid.UUID, string) error {
+	s.called = true
+	return nil
+}
+
+func TestRevokeOtherSessionsPreservesCallerJWT(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	jwtSecret := "test-secret-key-with-sufficient-length-32"
 	propID := uuid.New()
@@ -57,10 +67,13 @@ func TestRevokeSessionsInvalidatesPriorJWT(t *testing.T) {
 		t.Fatalf("IssueToken: %v", err)
 	}
 	store := &stubSessionStore{user: user}
+	svc := &revokeOthersAuthService{}
 	r := NewRouter(Deps{
 		JWTSecret:    jwtSecret,
 		AuthUserRepo: store,
+		Auth:         svc,
 	})
+	r.GET("/session-check", auth.RequireOwner(jwtSecret, store), func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/revoke-sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -77,11 +90,14 @@ func TestRevokeSessionsInvalidatesPriorJWT(t *testing.T) {
 		t.Fatalf("body=%v", body)
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/api/owner/properties", nil)
+	if !svc.called {
+		t.Fatal("other-session revocation was not called")
+	}
+	req2 := httptest.NewRequest(http.MethodGet, "/session-check", nil)
 	req2.Header.Set("Authorization", "Bearer "+token)
 	w2 := httptest.NewRecorder()
 	r.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 after revoke, got %d body=%s", w2.Code, w2.Body.String())
+	if w2.Code != http.StatusOK {
+		t.Fatalf("caller session must survive revoke-others, got %d body=%s", w2.Code, w2.Body.String())
 	}
 }

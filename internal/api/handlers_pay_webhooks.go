@@ -222,6 +222,10 @@ func (h *Handlers) SettleGatewayOrder(
 	intent *domain.PaymentIntent,
 	rawPayload []byte,
 ) error {
+	if h.OrderSettler != nil {
+		return h.OrderSettler.SettleGatewayOrder(ctx, orderID, cfPaymentID, txnID, amountPaise, intent, rawPayload)
+	}
+
 	if intent == nil && h.IntentStore != nil {
 		var err error
 		intent, err = h.IntentStore.GetByOrderID(ctx, orderID)

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"golang.org/x/text/unicode/norm"
@@ -122,6 +124,9 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		if rfRow.IdempotencyKey != nil && *rfRow.IdempotencyKey != "" {
 			existing, err := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
 			if err == nil && existing != nil {
+				if existing.AmountPaise != req.AmountPaise || norm.NFC.String(existing.Reason) != req.Reason {
+					return &refundValidationErr{msg: "idempotency key conflict: refund already exists with different amount or reason", status: http.StatusConflict}
+				}
 				*rfRow = *existing
 				return nil
 			}
@@ -168,7 +173,7 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		if err != nil {
 			return fmt.Errorf("get refunded paise: %w", err)
 		}
-		if alreadyRefunded+req.AmountPaise > int64(paymentAmt) {
+		if req.AmountPaise > int64(paymentAmt)-alreadyRefunded {
 			return &refundValidationErr{msg: fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded)}
 		}
 
@@ -375,7 +380,8 @@ type dueAllocInfo struct {
 }
 
 type refundValidationErr struct {
-	msg string
+	msg    string
+	status int
 }
 
 func (e *refundValidationErr) Error() string { return e.msg }
@@ -402,6 +408,100 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 
 	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
 }
+
+// GetPaymentRefundHistory handles GET /owner/payments/:id/refunds and GET /manager/payments/:id/refunds.
+// It returns the remaining refundable balance, list of historical refunds,
+// and any nonterminal pending operation for a payment.
+func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	if h.GatewayPaymentRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
+		return
+	}
+	p, err := h.GatewayPaymentRepo.GetByID(c.Request.Context(), paymentID)
+	if err != nil || p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+		return
+	}
+
+	if h.TenantStore != nil {
+		tenant, err := h.TenantStore.GetByID(c.Request.Context(), p.TenantID)
+		if err != nil || tenant == nil || tenant.PropertyID != pid {
+			c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+			return
+		}
+	} else if p.PropertyID != nil && *p.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+		return
+	}
+
+	refunds, err := h.GatewayPaymentRepo.ListRefundsByPayment(c.Request.Context(), p.ID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed loading refunds"})
+		return
+	}
+
+	type refundSummary struct {
+		ID              uuid.UUID `json:"id"`
+		RefundReference *string   `json:"refund_reference,omitempty"`
+		AmountPaise     int64     `json:"amount_paise"`
+		Status          string    `json:"status"`
+		Reason          string    `json:"reason"`
+		CreatedAt       time.Time `json:"created_at"`
+		UpdatedAt       time.Time `json:"updated_at"`
+	}
+
+	list := make([]refundSummary, 0, len(refunds))
+	var refundedPaise int64
+	var reservedPaise int64
+	var pendingOp *refundSummary
+
+	for _, rf := range refunds {
+		item := refundSummary{
+			ID:              rf.ID,
+			RefundReference: rf.RefundReference,
+			AmountPaise:     rf.AmountPaise,
+			Status:          rf.Status,
+			Reason:          rf.Reason,
+			CreatedAt:       rf.CreatedAt,
+			UpdatedAt:       rf.UpdatedAt,
+		}
+		list = append(list, item)
+		switch rf.Status {
+		case domain.RefundStatusSucceeded:
+			refundedPaise += rf.AmountPaise
+		case domain.RefundStatusInitiated, domain.RefundStatusPending, domain.RefundStatusOnHold:
+			reservedPaise += rf.AmountPaise
+			if pendingOp == nil {
+				pendingOp = &item
+			}
+		}
+	}
+
+	remainingPaise := int64(p.Amount) - (refundedPaise + reservedPaise)
+	if remainingPaise < 0 {
+		remainingPaise = 0
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"payment_id":                 p.ID,
+		"original_amount_paise":      p.Amount,
+		"refunded_amount_paise":      refundedPaise,
+		"reserved_amount_paise":      reservedPaise,
+		"remaining_refundable_paise": remainingPaise,
+		"refunds":                    list,
+		"pending_operation":          pendingOp,
+	})
+}
+
 
 // ManagerRefundPayment handles POST /manager/payments/:id/refund.
 // It verifies that the property owner has enabled allow_manager_refunds in property settings.
@@ -438,6 +538,76 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 }
 
 var validRefundReasonRegex = regexp.MustCompile(`^[\p{L}\p{M}\p{N}\x{200C}\x{200D} .,_'/-]+$`)
+
+// Bind refund OTPs to the full payment UUID within otp_requests.purpose (32 chars).
+// This keeps payout approval codes and codes for other payments out of this flow.
+func paymentRefundPurpose(id uuid.UUID) string {
+	return "rf" + base64.RawURLEncoding.EncodeToString(id[:])
+}
+
+func (h *Handlers) RequestPaymentRefundOTP(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		return
+	}
+	if claims.Role == domain.RoleManager {
+		if h.OnboardingSettings == nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+			return
+		}
+		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
+		if err != nil || s == nil || !s.AllowManagerRefunds {
+			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+			return
+		}
+	}
+	if h.GatewayPaymentRepo == nil || h.TenantStore == nil || h.Auth == nil || h.UserStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund authorization unavailable"})
+		return
+	}
+	p, err := h.GatewayPaymentRepo.GetByID(c.Request.Context(), paymentID)
+	if err != nil || p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+		return
+	}
+	tenant, err := h.TenantStore.GetByID(c.Request.Context(), p.TenantID)
+	if err != nil || tenant == nil || tenant.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
+		return
+	}
+	user, err := h.UserStore.GetByID(c.Request.Context(), uid)
+	if err != nil || user == nil || strings.TrimSpace(user.Phone) == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "registered phone required for refund authorization"})
+		return
+	}
+	channel, destination, err := h.Auth.RequestStepUpOTPWithChannel(c.Request.Context(), user.Phone, paymentRefundPurpose(paymentID), nil)
+	if err != nil {
+		if errors.Is(err, auth.ErrRateLimited) {
+			respondErr(c, clientErrWithCode(http.StatusTooManyRequests, "please wait before requesting another code", apierr.CodeAuthRateLimited))
+		} else if errors.Is(err, auth.ErrNoDeliveryChannel) {
+			respondErr(c, clientErrWithCode(http.StatusUnprocessableEntity, "no delivery channel available", apierr.CodeAuthNoDeliveryChannel))
+		} else {
+			respondErr(c, err)
+		}
+		return
+	}
+	if channel == "sms" {
+		destination = maskPhone(destination)
+	}
+	c.JSON(http.StatusOK, gin.H{"channel": channel, "destination": destination})
+}
 
 func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
@@ -524,6 +694,9 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 
 	// Cryptographic step-up / dual-control enforcement. Runs after the idempotent replay
 	// lookup above, so a retry of a completed request does not need a fresh one-time code.
+	// The client cannot choose an unrelated OTP purpose or payout batch.
+	req.StepUpAuthInput.Purpose = paymentRefundPurpose(paymentID)
+	req.StepUpAuthInput.BatchID = nil
 	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
 		return nil, errors.New("step up verification failed")
 	}
@@ -581,7 +754,11 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	if err != nil {
 		var vErr *refundValidationErr
 		if errors.As(err, &vErr) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": vErr.msg})
+			status := vErr.status
+			if status == 0 {
+				status = http.StatusBadRequest
+			}
+			c.JSON(status, gin.H{"error": vErr.msg})
 			return nil, err
 		}
 		respondErr(c, err)
@@ -610,10 +787,9 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	}
 
 	// Step C: External Gateway Call (ZERO row locks held during external I/O)
-	cfIdempotencyKey := idempotencyKey
-	if _, err := uuid.Parse(idempotencyKey); err != nil {
-		cfIdempotencyKey = uuid.NewSHA1(uuid.NameSpaceURL, []byte(idempotencyKey)).String()
-	}
+	// The public key is scoped to a payment locally. Namespace the provider key
+	// by the persisted refund identity to prevent cross-payment key collisions.
+	cfIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+rfRow.ID.String())).String()
 	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
 	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
@@ -646,7 +822,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	rfRow.Status = respStatus
 	rfRow.CFRefundID = &cfResp.CFRefundID
 	rfRow.ProviderRefundID = &cfResp.CFRefundID
-	if rfRow.Status == "onhold" {
+	if rfRow.Status == domain.RefundStatusOnHold {
 		slog.Warn("ALERT: cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
 			"refund_id", rfRow.ID, "payment_id", p.ID)
 	}

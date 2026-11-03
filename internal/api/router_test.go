@@ -101,7 +101,7 @@ func TestRouterVerificationSuite(t *testing.T) {
 			path:         "/",
 			expectedCode: http.StatusOK,
 			expectedType: "text/html",
-			bodyContains: "<title>pg-app</title>",
+			bodyContains: "id=\"root\"",
 		},
 		{
 			name:         "SPA Client Route Fallback",
@@ -109,7 +109,7 @@ func TestRouterVerificationSuite(t *testing.T) {
 			path:         "/tenant/dashboard",
 			expectedCode: http.StatusOK,
 			expectedType: "text/html",
-			bodyContains: "<title>pg-app</title>",
+			bodyContains: "id=\"root\"",
 		},
 		{
 			name:         "API Route Gated by Auth (Returns 401 JSON, NOT HTML)",

@@ -561,9 +561,10 @@ func TestImportStatements_MirrorFailsFirst_ThenRetryConverges(t *testing.T) {
 		t.Fatalf("attempt 1 expected HTTP 500, got %d", w1.Code)
 	}
 
-	// Verify bank_transactions row was NOT committed before the ledger failure!
-	if bankStore.inserted != 0 {
-		t.Fatalf("bank transaction was committed before ledger succeeded! inserted=%d", bankStore.inserted)
+	// The bank row is durable before the ledger call. Its deterministic source ID
+	// must let re-import repair the missing mirror rather than skip it forever.
+	if bankStore.inserted != 1 {
+		t.Fatalf("expected one durable bank row, inserted=%d", bankStore.inserted)
 	}
 
 	// Attempt 2: Ledger issue resolved -> Retry must succeed and post exactly 1 journal entry

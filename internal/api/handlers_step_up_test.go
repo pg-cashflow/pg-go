@@ -1,14 +1,82 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
+
+type authorizationUserStore struct {
+	refundStepUpUserStore
+	lookupErr error
+}
+
+func (s *authorizationUserStore) GetByPropertyAndRole(context.Context, uuid.UUID, domain.Role) ([]domain.User, error) {
+	return s.owners, s.lookupErr
+}
+
+type authorizationFirebaseService struct {
+	stubPayoutAuthService
+	identity auth.FirebaseIdentity
+}
+
+func (s *authorizationFirebaseService) VerifyFirebaseStepUp(context.Context, string, time.Duration) (auth.FirebaseIdentity, error) {
+	return s.identity, nil
+}
+
+func TestFinancialAuthorizationWithoutMakerRequiresStepUp(t *testing.T) {
+	uid, pid := uuid.New(), uuid.New()
+	user := &domain.User{ID: uid, Phone: "+919000000001"}
+	h := &Handlers{Deps: Deps{
+		UserStore: &refundStepUpUserStore{owners: []domain.User{*user, {ID: uuid.New()}}, user: user},
+		Auth:      &refundStepUpAuthService{validOTP: "123456"},
+	}}
+	for _, otp := range []string{"", "123456"} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/refund", nil)
+		mode, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, StepUpAuthInput{OTP: otp})
+		if otp == "" && ok {
+			t.Fatal("multiple owners incorrectly substituted for approval")
+		}
+		if otp != "" && (!ok || mode != "solo_owner_reauth") {
+			t.Fatalf("valid step-up rejected: %s %v", mode, ok)
+		}
+	}
+}
+
+func TestFinancialAuthorizationFailsClosedOnOwnerLookupError(t *testing.T) {
+	h := &Handlers{Deps: Deps{UserStore: &authorizationUserStore{lookupErr: errors.New("database timeout")}}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/refund", nil)
+	if _, ok := h.verifyDualControlOrStepUp(c, uuid.New(), uuid.New(), nil, StepUpAuthInput{}); ok || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("lookup error must deny with 503, got %d", w.Code)
+	}
+}
+
+func TestFinancialAuthorizationRejectsUnverifiedEmailFallback(t *testing.T) {
+	uid := uuid.New()
+	user := &domain.User{ID: uid, Email: "owner@example.test"}
+	h := &Handlers{Deps: Deps{
+		UserStore: &refundStepUpUserStore{user: user},
+		Auth:      &authorizationFirebaseService{identity: auth.FirebaseIdentity{UID: "unlinked-user", Email: user.Email, EmailVerified: false}},
+	}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/refund", nil)
+	if _, ok := h.verifyDualControlOrStepUp(c, uuid.New(), uid, nil, StepUpAuthInput{FirebaseIDToken: "token"}); ok {
+		t.Fatal("unverified email must not authorize another account's action")
+	}
+}
 
 func TestVerifyDualControlOrStepUp_FailsClosedWhenUnconfigured(t *testing.T) {
 	gin.SetMode(gin.TestMode)

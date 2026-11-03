@@ -120,10 +120,9 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 
 	h := &Handlers{
 		Deps: Deps{
-			Pool: nil,
-			UserStore: &mockDualControlUserStore{
-				owners: []domain.User{{ID: ownerID}, {ID: uuid.New()}},
-			},
+			Pool:      nil,
+			UserStore: &refundStepUpUserStore{owners: []domain.User{{ID: ownerID}}, user: &domain.User{ID: ownerID, Phone: "+919000000001"}},
+			Auth:      &refundStepUpAuthService{validOTP: "123456"},
 		},
 	}
 	// Inject mock through unexported/exported accessor pattern
@@ -239,7 +238,7 @@ func TestOwnerSettlementHandlers_UnitScenarios(t *testing.T) {
 	})
 
 	t.Run("POST /owner/settlements/:id/resolve resolves discrepancy", func(t *testing.T) {
-		payload := `{"notes":"Verified manually with bank statement"}`
+		payload := `{"notes":"Verified manually with bank statement","otp":"123456"}`
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/settlements/%s/resolve", stlmID), bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")

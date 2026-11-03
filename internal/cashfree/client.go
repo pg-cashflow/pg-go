@@ -90,12 +90,13 @@ func (c *Client) WithBaseURL(override string) *Client {
 }
 
 type createOrderBody struct {
-	OrderID       string         `json:"order_id"`
-	OrderAmount   json.Number    `json:"order_amount"`
-	OrderCurrency string         `json:"order_currency"`
-	Customer      map[string]any `json:"customer_details"`
-	OrderMeta     map[string]any `json:"order_meta"`
-	OrderNote     string         `json:"order_note,omitempty"`
+	OrderID         string         `json:"order_id"`
+	OrderAmount     json.Number    `json:"order_amount"`
+	OrderCurrency   string         `json:"order_currency"`
+	OrderExpiryTime string         `json:"order_expiry_time"`
+	Customer        map[string]any `json:"customer_details"`
+	OrderMeta       map[string]any `json:"order_meta"`
+	OrderNote       string         `json:"order_note,omitempty"`
 }
 
 type createOrderResp struct {
@@ -115,9 +116,7 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	}
 	exp := c.now().Add(expiryDur).UTC()
 
-	orderMeta := map[string]any{
-		"order_expiry_time": exp.Format(time.RFC3339),
-	}
+	orderMeta := map[string]any{}
 	if c.cfg.ReturnURL != "" {
 		orderMeta["return_url"] = c.cfg.ReturnURL
 	}
@@ -128,12 +127,13 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	}
 
 	body := createOrderBody{
-		OrderID:       orderID,
-		OrderAmount:   json.Number(FormatPaiseToRupees(amountPaise)),
-		OrderCurrency: "INR",
-		Customer:      map[string]any{"customer_id": customerID, "customer_phone": customerPhone},
-		OrderMeta:     orderMeta,
-		OrderNote:     note,
+		OrderID:         orderID,
+		OrderAmount:     json.Number(FormatPaiseToRupees(amountPaise)),
+		OrderCurrency:   "INR",
+		OrderExpiryTime: exp.Format(time.RFC3339),
+		Customer:        map[string]any{"customer_id": customerID, "customer_phone": customerPhone},
+		OrderMeta:       orderMeta,
+		OrderNote:       note,
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint()+"/orders", bytes.NewReader(raw))
@@ -154,6 +154,9 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	var out createOrderResp
 	if err := json.Unmarshal(b, &out); err != nil {
 		return "", nil, err
+	}
+	if strings.TrimSpace(out.PaymentSessionID) == "" {
+		return "", nil, fmt.Errorf("cashfree create order: missing payment_session_id")
 	}
 	return out.PaymentSessionID, &exp, nil
 }
