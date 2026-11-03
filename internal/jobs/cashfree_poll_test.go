@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -537,6 +538,11 @@ type stubRefundResubmitClient struct {
 	fetchDetails *cashfree.RefundDetails
 	fetchErr     error
 	createCalls  int
+	lastOrderID  string
+	lastRefundID string
+	lastAmount   int64
+	lastReason   string
+	lastIdempKey string
 	createdResp  *cashfree.RefundDetails
 	createErr    error
 }
@@ -547,6 +553,11 @@ func (s *stubRefundResubmitClient) FetchRefundStatus(context.Context, string, st
 
 func (s *stubRefundResubmitClient) CreateRefund(_ context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error) {
 	s.createCalls++
+	s.lastOrderID = orderID
+	s.lastRefundID = refundID
+	s.lastAmount = amountPaise
+	s.lastReason = reason
+	s.lastIdempKey = idempotencyKey
 	return s.createdResp, s.createErr
 }
 
@@ -590,8 +601,61 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 	if resubmitClient.createCalls != 1 {
 		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
 	}
+	expectedIdempKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:retry:"+refID.String())).String()
+	if resubmitClient.lastIdempKey != expectedIdempKey {
+		t.Fatalf("expected idempotency key %s, got %s", expectedIdempKey, resubmitClient.lastIdempKey)
+	}
+	if _, err := uuid.Parse(resubmitClient.lastIdempKey); err != nil {
+		t.Fatalf("idempotency key is not a valid UUID: %v", err)
+	}
+	expectedReason := fmt.Sprintf("Refund %s", refRef)
+	if resubmitClient.lastReason != expectedReason {
+		t.Fatalf("expected refund note %q, got %q", expectedReason, resubmitClient.lastReason)
+	}
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "succeeded" {
 		t.Fatalf("expected resubmitted refund to reconcile to succeeded, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
+func TestCashfreePollReconcilesRejectedRefundToFailed(t *testing.T) {
+	refRef := "rf_rejected_1"
+	refID := uuid.New()
+	cfRefID := "cf_rf_rejected_1"
+	staleCreatedAt := time.Now().UTC().Add(-5 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_rej_1"}`),
+		Status:          "pending",
+		AmountPaise:     200000,
+		Reason:          "Deposit return",
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	client := &stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "REJECTED",
+			AmountPaise:  200000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: client,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
+		t.Fatalf("expected rejected refund to reconcile to failed, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }

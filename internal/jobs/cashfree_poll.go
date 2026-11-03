@@ -262,7 +262,9 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && time.Since(ref.CreatedAt) < 24*time.Hour {
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, ref.Reason, "retry:"+refundID)
+					retryIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:retry:"+ref.ID.String())).String()
+					refundNote := fmt.Sprintf("Refund %s", refundID)
+					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, refundNote, retryIdempotencyKey)
 					if createErr == nil && createdDetails != nil {
 						details = createdDetails
 						err = nil

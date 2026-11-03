@@ -143,9 +143,9 @@ func NormalizeRefundStatus(raw string) string {
 		return RefundStatusSucceeded
 	case "onhold", "on_hold":
 		return RefundStatusOnHold
-	case "pending":
+	case "pending", "pending_approval":
 		return RefundStatusPending
-	case "failed":
+	case "failed", "rejected":
 		return RefundStatusFailed
 	case "cancelled", "canceled":
 		return RefundStatusCancelled
