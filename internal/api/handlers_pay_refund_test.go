@@ -67,6 +67,28 @@ func (m *mockCFClient) FetchSuccessfulPayment(ctx context.Context, orderID strin
 	return "", "", 0, false, nil
 }
 
+func (m *mockCFClient) CancelRefund(ctx context.Context, orderID, refundID, remarks string) (*cashfree.RefundDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failRefund {
+		if m.refundErr != nil {
+			return nil, m.refundErr
+		}
+		return nil, errors.New("gateway rejected cancel refund")
+	}
+	return &cashfree.RefundDetails{
+		CFRefundID:   "cf_ref_mock_cancel",
+		RefundID:     refundID,
+		OrderID:      orderID,
+		RefundStatus: "CANCELLED",
+		RefundReason: remarks,
+	}, nil
+}
+
+func (m *mockCFClient) IsSandbox() bool {
+	return true
+}
+
 type mockRefundPaymentRepo struct {
 	mu           sync.Mutex
 	payments     map[uuid.UUID]*domain.Payment
@@ -1969,4 +1991,343 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCancelRefund_Scenarios(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	ownerID := uuid.New()
+	managerID := uuid.New()
+	paymentID := uuid.New()
+	tenantID := uuid.New()
+	cfOrderID := "order_test_cancel"
+
+	setupCancelHandler := func(cfClient CashfreeClient) (*Handlers, *mockRefundPaymentRepo) {
+		gwRepo := newMockRefundPaymentRepo()
+		owner := &domain.User{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner, Phone: "+919000000001"}
+		manager := &domain.User{ID: managerID, PropertyID: &propID, Role: domain.RoleManager, Phone: "+919000000002"}
+		userStore := &refundStepUpUserStore{owners: []domain.User{*owner}, user: owner}
+		authSvc := &refundStepUpAuthService{validOTP: "123456"}
+
+		h := &Handlers{
+			Deps: Deps{
+				GatewayPaymentRepo: gwRepo,
+				CashfreeClient:     cfClient,
+				UserStore:          userStore,
+				Auth:               authSvc,
+				RefundTxRunner:     &fakeRefundTxRunner{gwRepo: gwRepo},
+				OnboardingSettings: &fakeOnboardingSettingsRepo{
+					settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
+						propID: {
+							PropertyID:          propID,
+							AllowManagerRefunds: true,
+						},
+					},
+				},
+			},
+		}
+		_ = manager // used in manager test
+		return h, gwRepo
+	}
+
+	t.Run("successful cancellation of ONHOLD refund releases reservation", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_test_cancel_12345"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusOnHold,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancelled by owner due to bank top up delay",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", w.Code, w.Body.String())
+		}
+
+		updated, err := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if err != nil || updated == nil {
+			t.Fatalf("failed reloading refund: %v", err)
+		}
+		if updated.Status != domain.RefundStatusCancelled {
+			t.Errorf("expected status cancelled, got %s", updated.Status)
+		}
+	})
+
+	t.Run("gateway rejection keeps local reservation held and returns 502", func(t *testing.T) {
+		cfClient := &mockCFClient{failRefund: true}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_test_cancel_reject"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusOnHold,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancelled by owner",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("expected 502 Bad Gateway on gateway failure, got %d", w.Code)
+		}
+
+		// Verify row in database remains ONHOLD and was NOT cancelled locally
+		updated, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if updated.Status != domain.RefundStatusOnHold {
+			t.Errorf("expected status to remain on_hold, got %s", updated.Status)
+		}
+	})
+
+	t.Run("reject cancel for fresh in-flight initiated refund (409 Conflict)", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_fresh_flight"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusInitiated,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-30 * time.Second), // Fresh in-flight (< 2 min)
+			UpdatedAt:       time.Now().Add(-30 * time.Second),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancelled immediately",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict for in-flight refund, got %d (body: %s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("reject cancel for non-owner source refunds", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_dash_source"
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusPending,
+			Source:          "dashboard", // Non-owner source
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Attempting dashboard cancel",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for non-owner refund, got %d", w.Code)
+		}
+	})
+
+	t.Run("step-up OTP required for refund cancellation", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_otp_test"
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusOnHold,
+			Source:          "owner",
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		// Send wrong OTP
+		body := map[string]any{
+			"reason": "Cancelled without proper OTP",
+			"otp":    "999999",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized for invalid OTP, got %d", w.Code)
+		}
+	})
+
+	t.Run("manager cancel respects allow_manager_refunds setting", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+		// Disable manager refunds
+		h.OnboardingSettings = &fakeOnboardingSettingsRepo{
+			settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
+				propID: {
+					PropertyID:          propID,
+					AllowManagerRefunds: false,
+				},
+			},
+		}
+
+		rfRef := "rf_mgr_cancel"
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusOnHold,
+			Source:          "owner",
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     managerID,
+			PropertyID: &propID,
+			Role:       domain.RoleManager,
+		})
+		body := map[string]any{
+			"reason": "Manager attempting cancel",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/manager/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.ManagerCancelRefund(c)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden when manager refunds are disabled, got %d", w.Code)
+		}
+	})
+	_ = tenantID
 }

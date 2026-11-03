@@ -278,15 +278,29 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 	}, nil
 }
 
-// CancelRefund cancels an eligible non-terminal (such as ONHOLD) refund at Cashfree.
-func (c *Client) CancelRefund(ctx context.Context, orderID, refundID string) (*RefundDetails, error) {
+type CancelRefundRequest struct {
+	RefundStatus string `json:"refund_status"`
+	Remarks      string `json:"remarks,omitempty"`
+}
+
+// CancelRefund cancels an eligible non-terminal (such as ONHOLD or PENDING) refund at Cashfree.
+func (c *Client) CancelRefund(ctx context.Context, orderID, refundID, remarks string) (*RefundDetails, error) {
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint()+"/orders/"+orderID+"/refunds/"+refundID, nil)
+	body := CancelRefundRequest{
+		RefundStatus: "CANCELLED",
+		Remarks:      remarks,
+	}
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("cashfree marshal cancel refund: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint()+"/orders/"+orderID+"/refunds/"+refundID, bytes.NewReader(buf))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	c.sign(req)
 	resp, err := c.http.Do(req)
 	if err != nil {

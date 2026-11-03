@@ -91,6 +91,14 @@ func (m *mockVerifyCFClient) FetchRefundStatus(_ context.Context, _, _ string) (
 	return nil, nil
 }
 
+func (m *mockVerifyCFClient) CancelRefund(_ context.Context, _, _, _ string) (*cashfree.RefundDetails, error) {
+	return nil, nil
+}
+
+func (m *mockVerifyCFClient) IsSandbox() bool {
+	return false
+}
+
 type mockVerifyPayService struct {
 	settledDues []uuid.UUID
 	settledTxns []string

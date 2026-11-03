@@ -325,20 +325,23 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 			log.Warn("cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
 				"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
 		}
+		var reconcileErr error
 		if newStatus != ref.Status {
 			if reconciler, ok := j.Refunds.(RefundReconciler); ok {
 				if err := reconciler.ReconcileRefundTransition(ctx, &ref, newStatus); err != nil {
+					reconcileErr = err
 					log.Error("cashfree poll reconcile refund failed", "refund_id", refundID, "status", newStatus, "err", err)
 				}
 			} else {
 				ref.Status = newStatus
 				ref.UpdatedAt = time.Now().UTC()
 				if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
+					reconcileErr = err
 					log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
 				}
 			}
 		}
-		if (newStatus == "succeeded" || ref.Status == "succeeded") && j.Referrals != nil {
+		if reconcileErr == nil && (newStatus == "succeeded" || ref.Status == "succeeded") && j.Referrals != nil {
 			if dueLister, ok := j.Refunds.(RefundDueLister); ok {
 				if dueIDs, err := dueLister.GetRefundDueIDs(ctx, ref.ID); err == nil {
 					for _, dueID := range dueIDs {

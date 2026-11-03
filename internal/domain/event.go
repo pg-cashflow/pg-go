@@ -38,6 +38,7 @@ const (
 	EvtPaymentReportSubmitted   EventType = "PaymentReportSubmitted"
 	EvtPaymentReportRejected    EventType = "PaymentReportRejected"
 	EvtPaymentDisputed          EventType = "PaymentDisputed"
+	EvtPaymentRefundCancelled   EventType = "PaymentRefundCancelled"
 	EvtUnappliedReceiptHeld     EventType = "UnappliedReceiptHeld"
 	EvtUnappliedReceiptResolved EventType = "UnappliedReceiptResolved"
 

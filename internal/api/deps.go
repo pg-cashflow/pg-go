@@ -299,6 +299,8 @@ type CashfreeClient interface {
 	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 	FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error)
+	CancelRefund(ctx context.Context, orderID, refundID, remarks string) (*cashfree.RefundDetails, error)
+	IsSandbox() bool
 }
 
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC

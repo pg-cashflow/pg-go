@@ -502,10 +502,19 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 	})
 }
 
+type OwnerCancelRefundRequest struct {
+	Reason string `json:"reason" binding:"required,min=3,max=100"`
+	StepUpAuthInput
+}
+
 // OwnerCancelRefund handles POST /owner/payments/:id/refunds/:refund_id/cancel.
 // Cancels a non-terminal (such as ONHOLD or INITIATED) refund, freeing held reservations.
 func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
 	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
 	if !ok {
 		return
 	}
@@ -518,6 +527,55 @@ func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
 		return
 	}
 
+	var req OwnerCancelRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason required (3-100 characters)"})
+		return
+	}
+
+	h.executeCancelRefund(c, pid, uid, paymentID, refundID, req)
+}
+
+// ManagerCancelRefund handles POST /manager/payments/:id/refunds/:refund_id/cancel.
+// It verifies that the property owner has enabled allow_manager_refunds in property settings.
+func (h *Handlers) ManagerCancelRefund(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if h.OnboardingSettings != nil {
+		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
+		if err != nil || s == nil || !s.AllowManagerRefunds {
+			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+			return
+		}
+	} else {
+		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	refundID, ok := ParseUUIDParam(c, "refund_id")
+	if !ok {
+		return
+	}
+
+	var req OwnerCancelRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason required (3-100 characters)"})
+		return
+	}
+
+	h.executeCancelRefund(c, pid, uid, paymentID, refundID, req)
+}
+
+func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refundID uuid.UUID, req OwnerCancelRefundRequest) {
 	if h.GatewayPaymentRepo == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
 		return
@@ -530,8 +588,29 @@ func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
 		return
 	}
 
+	// Restrict cancellation to owner-initiated refunds.
+	// Dashboard-created and auto-refund records are managed by the gateway directly.
+	if rf.Source != "owner" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only owner-initiated refunds can be cancelled"})
+		return
+	}
+
 	if isTerminalRefund(rf.Status) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "refund is already in terminal status"})
+		return
+	}
+
+	// Guard against race condition with in-flight creation:
+	// If refund is in 'initiated' status and less than 2 minutes old, reject cancel to prevent race with Cashfree call.
+	if rf.Status == domain.RefundStatusInitiated && time.Since(rf.CreatedAt) < 2*time.Minute {
+		c.JSON(http.StatusConflict, gin.H{"error": "refund is currently in flight; please wait 2 minutes before cancelling"})
+		return
+	}
+
+	// Require cryptographic step-up verification before cancelling reserved money.
+	req.StepUpAuthInput.Purpose = paymentRefundPurpose(paymentID)
+	req.StepUpAuthInput.BatchID = nil
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
 		return
 	}
 
@@ -539,22 +618,26 @@ func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
 	if rf.RefundReference != nil {
 		targetRef = *rf.RefundReference
 	}
-	if targetRef != "" && h.CashfreeClient != nil {
-		if canceler, ok := h.CashfreeClient.(interface {
-			CancelRefund(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
-		}); ok {
-			var orderPayload struct {
-				OrderID string `json:"order_id"`
-			}
-			if len(rf.RawPayload) > 0 {
-				_ = json.Unmarshal(rf.RawPayload, &orderPayload)
-			}
-			if orderPayload.OrderID != "" {
-				_, cancelErr := canceler.CancelRefund(ctx, orderPayload.OrderID, targetRef)
-				if cancelErr != nil {
-					slog.Warn("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
-				}
-			}
+
+	// If the refund was dispatched to Cashfree (or has an order_id / reference), attempt cancellation at gateway.
+	var orderPayload struct {
+		OrderID string `json:"order_id"`
+	}
+	if len(rf.RawPayload) > 0 {
+		_ = json.Unmarshal(rf.RawPayload, &orderPayload)
+	}
+
+	if orderPayload.OrderID != "" && targetRef != "" && h.CashfreeClient != nil {
+		cfResp, cancelErr := h.CashfreeClient.CancelRefund(ctx, orderPayload.OrderID, targetRef, req.Reason)
+		if cancelErr != nil {
+			slog.Error("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
+			return
+		}
+		if cfResp != nil && domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
+			slog.Warn("gateway returned non-cancelled status on cancel", "status", cfResp.RefundStatus, "refund_id", rf.ID)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund status is not cancelled; reservation remains held"})
+			return
 		}
 	}
 
@@ -564,12 +647,29 @@ func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
 		return
 	}
 
-	rf.Status = "cancelled"
+	rf.Status = domain.RefundStatusCancelled
 	rf.UpdatedAt = time.Now().UTC()
 	if err := runner.CleanupFailedRefund(ctx, rf); err != nil {
 		slog.Error("cleanup cancelled refund failed", "error", err, "refund_id", rf.ID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed cancelling refund"})
 		return
+	}
+
+	// Audit trail: publish refund cancelled event
+	if h.Events != nil {
+		eventData, _ := json.Marshal(map[string]any{
+			"payment_id": paymentID,
+			"refund_id":  rf.ID,
+			"amount":     rf.AmountPaise,
+			"reason":     req.Reason,
+			"actor_id":   uid,
+		})
+		_ = h.Events.Publish(ctx, domain.Event{
+			PropertyID: pid,
+			EventType:  domain.EvtPaymentRefundCancelled,
+			OccurredAt: rf.UpdatedAt,
+			Payload:    eventData,
+		})
 	}
 
 	c.JSON(http.StatusOK, rf)
