@@ -89,6 +89,11 @@ func (c *Client) WithBaseURL(override string) *Client {
 	return c
 }
 
+// IsSandbox reports whether the client operates against Cashfree Sandbox.
+func (c *Client) IsSandbox() bool {
+	return strings.EqualFold(c.cfg.Env, "sandbox")
+}
+
 type createOrderBody struct {
 	OrderID         string         `json:"order_id"`
 	OrderAmount     json.Number    `json:"order_amount"`
@@ -256,6 +261,58 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, fmt.Errorf("cashfree fetch refund json: %w", err)
+	}
+	parsedAmount, err := ParseRupeesToPaise(raw.RefundAmount.String())
+	if err != nil {
+		return nil, fmt.Errorf("cashfree parse refund amount: %w", err)
+	}
+	return &RefundDetails{
+		CFRefundID:   raw.CFRefundID.String(),
+		RefundID:     raw.RefundID,
+		OrderID:      raw.OrderID,
+		CFPaymentID:  raw.CFPaymentID.String(),
+		RefundStatus: strings.ToUpper(strings.TrimSpace(raw.RefundStatus)),
+		AmountPaise:  parsedAmount,
+		RefundType:   raw.RefundType,
+		RefundReason: raw.RefundReason,
+	}, nil
+}
+
+// CancelRefund cancels an eligible non-terminal (such as ONHOLD) refund at Cashfree.
+func (c *Client) CancelRefund(ctx context.Context, orderID, refundID string) (*RefundDetails, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint()+"/orders/"+orderID+"/refunds/"+refundID, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
+	}
+	var raw struct {
+		CFRefundID   json.Number `json:"cf_refund_id"`
+		RefundID     string      `json:"refund_id"`
+		OrderID      string      `json:"order_id"`
+		CFPaymentID  json.Number `json:"cf_payment_id"`
+		RefundStatus string      `json:"refund_status"`
+		RefundAmount json.Number `json:"refund_amount"`
+		RefundType   string      `json:"refund_type"`
+		RefundReason string      `json:"refund_reason"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("cashfree cancel refund json: %w", err)
 	}
 	parsedAmount, err := ParseRupeesToPaise(raw.RefundAmount.String())
 	if err != nil {

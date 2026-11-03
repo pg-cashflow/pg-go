@@ -70,6 +70,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
 	owner.GET("/payments/:id/refunds", h.GetPaymentRefundHistory)
 	owner.POST("/payments/:id/refund/request-otp", userOrIPRateLimit(3.0/60, 3), h.RequestPaymentRefundOTP)
+	owner.POST("/payments/:id/refunds/:refund_id/cancel", h.OwnerCancelRefund)
 	owner.GET("/events", h.ListEvents)
 	owner.GET("/reconciliation", h.Reconciliation)
 

@@ -599,6 +599,22 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 	}
 
 	// Step 1: Unlocked ancestry resolution
+	var p *domain.Payment
+	if ref.CFPaymentID != "" {
+		if payment, err := h.GatewayPaymentRepo.GetByCFPaymentID(ctx, ref.CFPaymentID); err == nil && payment != nil {
+			p = payment
+		}
+	}
+	if p == nil && ref.OrderID != "" && h.IntentStore != nil {
+		if intent, err := h.IntentStore.GetByOrderID(ctx, ref.OrderID); err == nil && intent != nil {
+			if intent.CFPaymentID != nil && *intent.CFPaymentID != "" {
+				if payment, err := h.GatewayPaymentRepo.GetByCFPaymentID(ctx, *intent.CFPaymentID); err == nil && payment != nil {
+					p = payment
+				}
+			}
+		}
+	}
+
 	var existingRef *domain.GatewayRefund
 	if ref.RefundID != "" {
 		var err error
@@ -618,20 +634,19 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			return
 		}
 	}
-	var p *domain.Payment
-	if existingRef != nil {
+
+	// Validate ancestry scoping: if payment was resolved, existingRef must belong to that payment
+	if p != nil && existingRef != nil && existingRef.PaymentID != p.ID {
+		slog.Warn("refund webhook: refund reference matches another payment; ignoring cross-payment match",
+			"refund_id", ref.RefundID, "existing_payment_id", existingRef.PaymentID, "target_payment_id", p.ID)
+		existingRef = nil
+	}
+
+	if p == nil && existingRef != nil {
 		var err error
 		p, err = h.GatewayPaymentRepo.GetByID(ctx, existingRef.PaymentID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			slog.Error("refund webhook: failed to query payment by id", "err", err, "payment_id", existingRef.PaymentID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving payment"})
-			return
-		}
-	} else if ref.CFPaymentID != "" {
-		var err error
-		p, err = h.GatewayPaymentRepo.GetByCFPaymentID(ctx, ref.CFPaymentID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			slog.Error("refund webhook: failed to query payment by cf_payment_id", "err", err, "cf_payment_id", ref.CFPaymentID)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error resolving payment"})
 			return
 		}
@@ -713,13 +728,21 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			return
 		}
 
-		if h.Referrals != nil && dbRefundStatus == domain.RefundStatusSucceeded && rfRow != nil {
+		if h.Referrals != nil && dbRefundStatus == domain.RefundStatusSucceeded {
 			payRepo := postgres.NewPaymentRepo(h.Pool)
-			if dueIDs, err := payRepo.GetRefundDueIDs(ctx, rfRow.ID); err == nil {
-				for _, dueID := range dueIDs {
-					if dueID != uuid.Nil {
-						if err := h.Referrals.ReverseFirstRentPayment(ctx, dueID, p.ID); err != nil {
-							slog.Warn("referral reverse on refund webhook failed", "due_id", dueID, "payment_id", p.ID, "err", err)
+			targetRefundID := uuid.Nil
+			if rfRow != nil {
+				targetRefundID = rfRow.ID
+			} else if existingRef != nil {
+				targetRefundID = existingRef.ID
+			}
+			if targetRefundID != uuid.Nil {
+				if dueIDs, err := payRepo.GetRefundDueIDs(ctx, targetRefundID); err == nil {
+					for _, dueID := range dueIDs {
+						if dueID != uuid.Nil {
+							if err := h.Referrals.ReverseFirstRentPayment(ctx, dueID, p.ID); err != nil {
+								slog.Warn("referral reverse on refund webhook failed", "due_id", dueID, "payment_id", p.ID, "err", err)
+							}
 						}
 					}
 				}

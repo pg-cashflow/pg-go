@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ import (
 const (
 	CashfreePollStale       = 10 * time.Minute
 	CashfreeRefundPollStale = 2 * time.Minute
+	CashfreePollLockName    = "cashfree_poll"
 )
 
 type IntentStaleLister interface {
@@ -264,6 +266,21 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
 					retryIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:retry:"+ref.ID.String())).String()
 					refundNote := fmt.Sprintf("Refund %s", refundID)
+					if detector, ok := j.RefundClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
+						upperReason := strings.ToUpper(ref.Reason)
+						var sandboxOutcome string
+						switch {
+						case strings.Contains(upperReason, "FAILED"):
+							sandboxOutcome = "FAILED"
+						case strings.Contains(upperReason, "PENDING"):
+							sandboxOutcome = "PENDING"
+						case strings.Contains(upperReason, "SUCCESS"):
+							sandboxOutcome = "SUCCESS"
+						}
+						if sandboxOutcome != "" {
+							refundNote = fmt.Sprintf("Refund %s %s", refundID, sandboxOutcome)
+						}
+					}
 					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, refundNote, retryIdempotencyKey)
 					if createErr == nil && createdDetails != nil {
 						details = createdDetails
@@ -320,14 +337,14 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 					log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
 				}
 			}
-			if newStatus == "succeeded" && j.Referrals != nil {
-				if dueLister, ok := j.Refunds.(RefundDueLister); ok {
-					if dueIDs, err := dueLister.GetRefundDueIDs(ctx, ref.ID); err == nil {
-						for _, dueID := range dueIDs {
-							if dueID != uuid.Nil {
-								if err := j.Referrals.ReverseFirstRentPayment(ctx, dueID, ref.PaymentID); err != nil {
-									log.Warn("cashfree poll referral reverse failed", "due_id", dueID, "payment_id", ref.PaymentID, "err", err)
-								}
+		}
+		if (newStatus == "succeeded" || ref.Status == "succeeded") && j.Referrals != nil {
+			if dueLister, ok := j.Refunds.(RefundDueLister); ok {
+				if dueIDs, err := dueLister.GetRefundDueIDs(ctx, ref.ID); err == nil {
+					for _, dueID := range dueIDs {
+						if dueID != uuid.Nil {
+							if err := j.Referrals.ReverseFirstRentPayment(ctx, dueID, ref.PaymentID); err != nil {
+								log.Warn("cashfree poll referral reverse failed", "due_id", dueID, "payment_id", ref.PaymentID, "err", err)
 							}
 						}
 					}

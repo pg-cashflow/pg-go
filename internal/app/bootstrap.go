@@ -666,7 +666,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "cashfree_refund_poller")
+					release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, jobs.CashfreePollLockName)
 					if err != nil {
 						bg.logger.Error("cashfree refund poller lock failed", "err", err)
 						continue

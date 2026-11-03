@@ -336,13 +336,15 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 		corrNote := fmt.Sprintf("Correction for payment %s: %s", orig.ID, in.Reason)
 		var corrUTRPtr *string
 		if normUTR != "" {
-			corrUTRPtr = &normUTR
+			// If normUTR matches the original payment's UTR, do NOT assign it to the new row.
+			// Reusing orig.UPITxnID causes a PostgreSQL unique-violation (23505) because
+			// payments.upi_txn_id has a table-wide UNIQUE constraint, and the original payment
+			// record remains in the table. The original UTR is permanently preserved on the
+			// original record and linked via financial_corrections(original_payment_id).
+			if orig.UPITxnID == nil || normUTR != *orig.UPITxnID {
+				corrUTRPtr = &normUTR
+			}
 		}
-		// NOTE: When normUTR == "", corrUTRPtr remains nil. Reusing orig.UPITxnID causes
-		// a PostgreSQL unique-violation (23505) because payments.upi_txn_id has a table-wide
-		// UNIQUE constraint, and the original payment record remains in the table.
-		// The original UTR is permanently preserved on the original record and linked via
-		// financial_corrections(original_payment_id).
 		corrected := &domain.Payment{
 			PropertyID: &due.PropertyID,
 			DueID:      orig.DueID,

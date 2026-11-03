@@ -365,7 +365,7 @@ func recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *postgres.DueRep
 
 type OwnerRefundRequest struct {
 	AmountPaise int64  `json:"amount_paise" binding:"required,gt=0"`
-	Reason      string `json:"reason" binding:"required,max=400"`
+	Reason      string `json:"reason" binding:"required,max=100"`
 	StepUpAuthInput
 }
 
@@ -500,6 +500,79 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 		"refunds":                    list,
 		"pending_operation":          pendingOp,
 	})
+}
+
+// OwnerCancelRefund handles POST /owner/payments/:id/refunds/:refund_id/cancel.
+// Cancels a non-terminal (such as ONHOLD or INITIATED) refund, freeing held reservations.
+func (h *Handlers) OwnerCancelRefund(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	refundID, ok := ParseUUIDParam(c, "refund_id")
+	if !ok {
+		return
+	}
+
+	if h.GatewayPaymentRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	rf, err := h.GatewayPaymentRepo.GetRefundByID(ctx, refundID)
+	if err != nil || rf == nil || rf.PaymentID != paymentID || rf.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "refund not found"})
+		return
+	}
+
+	if isTerminalRefund(rf.Status) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "refund is already in terminal status"})
+		return
+	}
+
+	targetRef := ""
+	if rf.RefundReference != nil {
+		targetRef = *rf.RefundReference
+	}
+	if targetRef != "" && h.CashfreeClient != nil {
+		if canceler, ok := h.CashfreeClient.(interface {
+			CancelRefund(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
+		}); ok {
+			var orderPayload struct {
+				OrderID string `json:"order_id"`
+			}
+			if len(rf.RawPayload) > 0 {
+				_ = json.Unmarshal(rf.RawPayload, &orderPayload)
+			}
+			if orderPayload.OrderID != "" {
+				_, cancelErr := canceler.CancelRefund(ctx, orderPayload.OrderID, targetRef)
+				if cancelErr != nil {
+					slog.Warn("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
+				}
+			}
+		}
+	}
+
+	runner := h.getRefundTxRunner()
+	if runner == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database pool unavailable"})
+		return
+	}
+
+	rf.Status = "cancelled"
+	rf.UpdatedAt = time.Now().UTC()
+	if err := runner.CleanupFailedRefund(ctx, rf); err != nil {
+		slog.Error("cleanup cancelled refund failed", "error", err, "refund_id", rf.ID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed cancelling refund"})
+		return
+	}
+
+	c.JSON(http.StatusOK, rf)
 }
 
 
@@ -792,6 +865,23 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	cfIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+rfRow.ID.String())).String()
 	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
 	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
+	if detector, ok := h.CashfreeClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
+		sandboxOutcome := strings.ToUpper(strings.TrimSpace(c.GetHeader("X-Sandbox-Refund-Result")))
+		if sandboxOutcome != "SUCCESS" && sandboxOutcome != "FAILED" && sandboxOutcome != "PENDING" {
+			upperReason := strings.ToUpper(req.Reason)
+			switch {
+			case strings.Contains(upperReason, "FAILED"):
+				sandboxOutcome = "FAILED"
+			case strings.Contains(upperReason, "PENDING"):
+				sandboxOutcome = "PENDING"
+			case strings.Contains(upperReason, "SUCCESS"):
+				sandboxOutcome = "SUCCESS"
+			}
+		}
+		if sandboxOutcome != "" {
+			cfNote = fmt.Sprintf("Refund %s %s", targetRefundRef, sandboxOutcome)
+		}
+	}
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)

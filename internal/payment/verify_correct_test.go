@@ -357,4 +357,57 @@ func TestCorrectPayment(t *testing.T) {
 			t.Fatalf("expected corrected payment UPITxnID to be nil to prevent UTR collision, got %s", *corrected.UPITxnID)
 		}
 	})
+
+	t.Run("correction resubmitting identical original UTR leaves UPITxnID nil and avoids 23505 collision", func(t *testing.T) {
+		dueID3 := uuid.New()
+		paymentID3 := uuid.New()
+		utr3 := "IDENTICALUTR999"
+		origPayment3 := &domain.Payment{
+			ID:         paymentID3,
+			DueID:      dueID3,
+			TenantID:   tenantID,
+			Amount:     700000,
+			UPITxnID:   &utr3,
+			MatchedBy:  domain.MatchedByManual,
+			RecordedBy: &user,
+		}
+		due3 := &domain.Due{
+			ID:             dueID3,
+			PropertyID:     propID,
+			TenantID:       tenantID,
+			DueCode:        "DUE-03",
+			Amount:         0,
+			OriginalAmount: 700000,
+			Status:         domain.DueStatusPaid,
+		}
+		dues3 := &stubDues{byID: map[uuid.UUID]*domain.Due{dueID3: due3}}
+		pays3 := &correctionStubPayments{
+			created: []*domain.Payment{origPayment3},
+			byTxn:   map[string]*domain.Payment{utr3: origPayment3},
+		}
+		tenants3 := &stubTenants{byID: map[uuid.UUID]*domain.Tenant{tenantID: {ID: tenantID, PropertyID: propID}}}
+		svc3 := NewService(dues3, pays3, tenants3, nil, pub)
+
+		corr, err := svc3.CorrectPayment(ctx, CorrectPaymentInput{
+			PropertyID:      propID,
+			PaymentID:       paymentID3,
+			CorrectedAmount: 650000,
+			CorrectedUTR:    utr3, // Resubmitting the exact same UTR
+			Reason:          "Amount adjusted from 7000 to 6500 while keeping original UTR",
+			CorrectedBy:     user,
+		})
+		if err != nil {
+			t.Fatalf("expected successful correction without UTR collision, got error: %v", err)
+		}
+		if corr == nil {
+			t.Fatal("expected correction record returned")
+		}
+		if len(pays3.created) != 3 {
+			t.Fatalf("expected 3 payments in history, got %d", len(pays3.created))
+		}
+		corrected := pays3.created[2]
+		if corrected.UPITxnID != nil {
+			t.Fatalf("expected corrected payment UPITxnID to be nil to prevent self-collision with original payment, got %s", *corrected.UPITxnID)
+		}
+	})
 }

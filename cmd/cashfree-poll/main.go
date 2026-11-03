@@ -77,7 +77,7 @@ func main() {
 		Referrals:    referralSvc,
 		Log:          slog.Default(),
 	}
-	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "cashfree_poll")
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, jobs.CashfreePollLockName)
 	if err != nil {
 		log.Fatalf("failed to acquire job lock: %v", err)
 	}
