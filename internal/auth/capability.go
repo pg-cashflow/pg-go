@@ -27,11 +27,32 @@ const (
 	maxCapabilityCacheEntries = 1024
 )
 
+// IsSensitiveCapability returns true for money-moving and financial mutation capabilities
+// that must bypass replica-local in-memory caching to ensure immediate revocation propagation.
+func IsSensitiveCapability(cap string) bool {
+	switch cap {
+	case "refunds.issue", "expenses.post", "expenses.void":
+		return true
+	default:
+		return false
+	}
+}
+
 // RequireAnyCapability allows the owner. A manager must hold at least one of the named grants.
 // A nil checker fails closed with HTTP 503 for managers. cmd/server always sets a checker.
-// Database errors fail closed with HTTP 503. Grants are cached for 30 seconds.
-// Memory is bounded to maxCapabilityCacheEntries with active eviction.
+// Database errors fail closed with HTTP 503. Low-risk grants are cached for 30 seconds.
+// Sensitive financial capabilities ("refunds.issue", "expenses.post", "expenses.void") bypass caching.
 func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.HandlerFunc {
+	return requireCapabilityInternal(checker, false, caps...)
+}
+
+// RequireFreshCapability enforces fresh authorization directly against the capability store
+// without consulting or populating any replica-local memory cache.
+func RequireFreshCapability(checker CapabilityChecker, caps ...string) gin.HandlerFunc {
+	return requireCapabilityInternal(checker, true, caps...)
+}
+
+func requireCapabilityInternal(checker CapabilityChecker, forceFresh bool, caps ...string) gin.HandlerFunc {
 	var mu sync.Mutex
 	cache := make(map[string]capHit)
 	return func(c *gin.Context) {
@@ -56,18 +77,22 @@ func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.Handler
 		now := time.Now()
 		var allowed bool
 		for _, cap := range caps {
+			isFresh := forceFresh || IsSensitiveCapability(cap)
 			key := claims.PropertyID.String() + "|" + claims.UserID.String() + "|" + cap
-			mu.Lock()
-			hit, found := cache[key]
-			if found && now.Sub(hit.at) < capabilityCacheTTL {
-				mu.Unlock()
-				if hit.ok {
-					allowed = true
-					break
+
+			if !isFresh {
+				mu.Lock()
+				hit, found := cache[key]
+				if found && now.Sub(hit.at) < capabilityCacheTTL {
+					mu.Unlock()
+					if hit.ok {
+						allowed = true
+						break
+					}
+					continue
 				}
-				continue
+				mu.Unlock()
 			}
-			mu.Unlock()
 
 			hasCap, err := checker.HasActive(c.Request.Context(), *claims.PropertyID, claims.UserID, cap)
 			if err != nil {
@@ -75,31 +100,33 @@ func RequireAnyCapability(checker CapabilityChecker, caps ...string) gin.Handler
 				return
 			}
 
-			mu.Lock()
-			if len(cache) >= maxCapabilityCacheEntries {
-				for k, v := range cache {
-					if now.Sub(v.at) >= capabilityCacheTTL {
-						delete(cache, k)
-					}
-				}
+			if !isFresh {
+				mu.Lock()
 				if len(cache) >= maxCapabilityCacheEntries {
-					var oldestKey string
-					var oldestTime time.Time
-					first := true
 					for k, v := range cache {
-						if first || v.at.Before(oldestTime) {
-							oldestKey = k
-							oldestTime = v.at
-							first = false
+						if now.Sub(v.at) >= capabilityCacheTTL {
+							delete(cache, k)
 						}
 					}
-					if !first {
-						delete(cache, oldestKey)
+					if len(cache) >= maxCapabilityCacheEntries {
+						var oldestKey string
+						var oldestTime time.Time
+						first := true
+						for k, v := range cache {
+							if first || v.at.Before(oldestTime) {
+								oldestKey = k
+								oldestTime = v.at
+								first = false
+							}
+						}
+						if !first {
+							delete(cache, oldestKey)
+						}
 					}
 				}
+				cache[key] = capHit{ok: hasCap, at: now}
+				mu.Unlock()
 			}
-			cache[key] = capHit{ok: hasCap, at: now}
-			mu.Unlock()
 
 			if hasCap {
 				allowed = true

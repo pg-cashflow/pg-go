@@ -63,16 +63,23 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		exec := func(sql string, args ...any) {
 			_, _ = pool.Exec(ctx, sql, args...)
 		}
-		exec(`DELETE FROM payout_payees WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM gateway_refunds WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM gateway_settlements WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM bank_transactions WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE property_id IN ($1, $2)) OR due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM payment_tokens WHERE due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM payment_intents WHERE due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM push_subscriptions WHERE tenant_id IN (SELECT id FROM tenants WHERE property_id IN ($1, $2))`, propID, crossPropID)
-		exec(`DELETE FROM payment_reports WHERE property_id IN ($1, $2)`, propID, crossPropID)
-		exec(`DELETE FROM payments WHERE property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM payout_payees WHERE phone = '+919876543219' OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM bank_transactions WHERE txn_id IN ('TXNBANK9988', 'UTR202609301234') OR dedup_hash IN ('dedup_hash_9988', 'dedup_hash_1234') OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM gateway_settlements WHERE cf_settlement_id = 'CF_SETTLE_99' OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM refund_allocations WHERE refund_id IN (SELECT id FROM gateway_refunds WHERE cf_refund_id = 'CF_REF_88' OR payment_id IN (SELECT id FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901')) OR property_id IN ($1, $2))`, propID, crossPropID)
+		exec(`DELETE FROM gateway_refunds WHERE cf_refund_id = 'CF_REF_88' OR payment_id IN (SELECT id FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901')) OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM unmatched_gateway_receipts WHERE payment_id IN (SELECT id FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901'))`)
+		exec(`DELETE FROM referral_credit_entries WHERE payment_id IN (SELECT id FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901'))`)
+		exec(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901')) OR payment_id IN (SELECT id FROM payments WHERE property_id IN ($1, $2)) OR due_id IN (SELECT id FROM dues WHERE property_id IN ($1, $2))`, propID, crossPropID)
+		exec(`DELETE FROM payment_reports WHERE property_id IN ($1, $2) OR upi_txn_id = 'UTR77665544'`, propID, crossPropID)
+		exec(`DELETE FROM payments WHERE upi_txn_id IN ('UTR99887766', 'UTR11223344', '412345678901') OR property_id IN ($1, $2)`, propID, crossPropID)
+		exec(`DELETE FROM payout_payees WHERE phone = '+919876543219'`)
+		exec(`DELETE FROM payment_allocations WHERE due_id IN (SELECT id FROM dues WHERE due_code IN ('DUE-JAN1', 'DUE-SUR1') OR due_code LIKE 'DUE-E%')`)
+		exec(`DELETE FROM payment_tokens WHERE due_id IN (SELECT id FROM dues WHERE due_code IN ('DUE-JAN1', 'DUE-SUR1') OR due_code LIKE 'DUE-E%')`)
+		exec(`DELETE FROM payment_intents WHERE due_id IN (SELECT id FROM dues WHERE due_code IN ('DUE-JAN1', 'DUE-SUR1') OR due_code LIKE 'DUE-E%')`)
+		exec(`DELETE FROM payment_reports WHERE due_id IN (SELECT id FROM dues WHERE due_code IN ('DUE-JAN1', 'DUE-SUR1') OR due_code LIKE 'DUE-E%')`)
+		exec(`DELETE FROM dues WHERE due_code IN ('DUE-JAN1', 'DUE-SUR1') OR due_code LIKE 'DUE-E%'`)
+		exec(`DELETE FROM tenants WHERE phone IN ('+919876543217', '+919876543216') OR phone LIKE '+916888888%'`)
 		exec(`DELETE FROM dues WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM join_requests WHERE property_id IN ($1, $2)`, propID, crossPropID)
 		exec(`DELETE FROM inspections WHERE property_id IN ($1, $2)`, propID, crossPropID)
@@ -127,6 +134,8 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	rahulSharmaPhone := phonePrefix + "2040"
 	sureshPhone := phonePrefix + "1050"
 	crossRahulPhone := phonePrefix + "9990"
+	hindiTenantPhone := phonePrefix + "3050"
+	teluguTenantPhone := phonePrefix + "3060"
 
 	_, err = pool.Exec(ctx, `
 		INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
@@ -137,11 +146,12 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 			($5, $4, 'Rahul Sharma', '204', $10, 'active', 500000, 5),
 			($6, $4, 'Suresh Kumar', '105', $11, 'active', 450000, 5),
 			($12, $13, 'Cross Rahul', '999', $14, 'active', 500000, 5),
-			($15, $4, 'राहुल वर्मा', '305', '+919876543217', 'active', 500000, 5),
-			($16, $4, 'రాహుల్ రెడ్డి', '306', '+919876543216', 'active', 500000, 5)`,
+			($15, $4, 'राहुल वर्मा', '305', $17, 'active', 500000, 5),
+			($16, $4, 'రాహుల్ రెడ్డి', '306', $18, 'active', 500000, 5)`,
 		rahul201ID, rahul202ID, rahul303ID, propID, rahulSharmaID, sureshID,
 		rahul201Phone, rahul202Phone, rahul303Phone, rahulSharmaPhone, sureshPhone,
 		crossRahulID, crossPropID, crossRahulPhone, hindiTenantID, teluguTenantID,
+		hindiTenantPhone, teluguTenantPhone,
 	)
 	if err != nil {
 		t.Fatalf("seed tenants failed: %v", err)
@@ -151,7 +161,7 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 	for i := 1; i <= 12; i++ {
 		extraTenantID := uuid.New()
 		extraDueID := uuid.New()
-		extraPhone := fmt.Sprintf("+916888888%03d", 500+i)
+		extraPhone := fmt.Sprintf("%s5%02d", phonePrefix, i)
 		_, err = pool.Exec(ctx, `
 			INSERT INTO tenants (id, property_id, name, room_number, phone, status, rent_amount, due_day)
 			VALUES ($1, $2, $3, $4, $5, 'active', 500000, 5)`,

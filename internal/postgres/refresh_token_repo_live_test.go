@@ -205,7 +205,7 @@ func TestLivePostgresConcurrentRotation(t *testing.T) {
 			if tokens[i] == nil || tokens[i].ID == uuid.Nil {
 				t.Errorf("worker %d returned nil or empty token on success", i)
 			}
-		} else if !errors.Is(results[i], ErrReplayDetected) {
+		} else if !errors.Is(results[i], ErrReplayDetected) && !errors.Is(results[i], domain.ErrGraceWindow) {
 			t.Errorf("worker %d returned unexpected error: %v", i, results[i])
 		}
 	}

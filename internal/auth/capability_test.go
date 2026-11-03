@@ -227,3 +227,82 @@ func TestRequireAnyCapability_NilCheckerFailsClosed(t *testing.T) {
 		t.Fatalf("expected 200 for owner caller, got %d", wOwner.Code)
 	}
 }
+
+func TestRequireCapability_SensitiveFinancialBypassesCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+
+	for _, capName := range []string{"refunds.issue", "expenses.post", "expenses.void"} {
+		t.Run(capName, func(t *testing.T) {
+			checker := &countingCapabilityChecker{allow: true}
+			handler := RequireCapability(capName, checker)
+
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(ContextClaimsKey, &Claims{UserID: userID, Role: domain.RoleManager, PropertyID: &propID})
+				c.Next()
+			})
+			r.POST("/financial-action", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+			// Request 1: allowed, count 1
+			w1 := httptest.NewRecorder()
+			r.ServeHTTP(w1, httptest.NewRequest(http.MethodPost, "/financial-action", nil))
+			if w1.Code != http.StatusOK {
+				t.Fatalf("expected 200 on first call, got %d", w1.Code)
+			}
+			if checker.count.Load() != 1 {
+				t.Fatalf("expected count 1, got %d", checker.count.Load())
+			}
+
+			// Request 2: must query checker again (fresh check, bypasses cache)
+			w2 := httptest.NewRecorder()
+			r.ServeHTTP(w2, httptest.NewRequest(http.MethodPost, "/financial-action", nil))
+			if w2.Code != http.StatusOK {
+				t.Fatalf("expected 200 on second call, got %d", w2.Code)
+			}
+			if checker.count.Load() != 2 {
+				t.Fatalf("expected fresh check count 2 for sensitive capability, got %d", checker.count.Load())
+			}
+
+			// Revoke grant: immediately takes effect on next request
+			checker.allow = false
+			w3 := httptest.NewRecorder()
+			r.ServeHTTP(w3, httptest.NewRequest(http.MethodPost, "/financial-action", nil))
+			if w3.Code != http.StatusForbidden {
+				t.Fatalf("expected immediate 403 upon revocation, got %d", w3.Code)
+			}
+			if checker.count.Load() != 3 {
+				t.Fatalf("expected check count 3, got %d", checker.count.Load())
+			}
+		})
+	}
+}
+
+func TestRequireFreshCapability_ExplicitBypass(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	userID := uuid.New()
+
+	checker := &countingCapabilityChecker{allow: true}
+	handler := RequireFreshCapability(checker, "tenants.view")
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(ContextClaimsKey, &Claims{UserID: userID, Role: domain.RoleManager, PropertyID: &propID})
+		c.Next()
+	})
+	r.GET("/fresh", handler, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, httptest.NewRequest(http.MethodGet, "/fresh", nil))
+	if w1.Code != http.StatusOK || checker.count.Load() != 1 {
+		t.Fatalf("request 1 failed")
+	}
+
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, httptest.NewRequest(http.MethodGet, "/fresh", nil))
+	if w2.Code != http.StatusOK || checker.count.Load() != 2 {
+		t.Fatalf("request 2 did not perform fresh check, count=%d", checker.count.Load())
+	}
+}
