@@ -533,4 +533,67 @@ func TestCashfreePollLeavesInitiatedRefundWhenOrderIDEmpty(t *testing.T) {
 	}
 }
 
+type stubRefundResubmitClient struct {
+	fetchDetails *cashfree.RefundDetails
+	fetchErr     error
+	createCalls  int
+	createdResp  *cashfree.RefundDetails
+	createErr    error
+}
+
+func (s *stubRefundResubmitClient) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+	return s.fetchDetails, s.fetchErr
+}
+
+func (s *stubRefundResubmitClient) CreateRefund(_ context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error) {
+	s.createCalls++
+	return s.createdResp, s.createErr
+}
+
+func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
+	refRef := "rf_resubmit_1"
+	refID := uuid.New()
+	cfRefID := "cf_rf_resubmitted_999"
+	staleCreatedAt := time.Now().UTC().Add(-5 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_resubmit_1"}`),
+		Status:          "initiated",
+		AmountPaise:     150000,
+		Reason:          "Tenant early deposit return",
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	resubmitClient := &stubRefundResubmitClient{
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "refund not found"},
+		createdResp: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "SUCCESS",
+			AmountPaise:  150000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: resubmitClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if resubmitClient.createCalls != 1 {
+		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
+	}
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "succeeded" {
+		t.Fatalf("expected resubmitted refund to reconcile to succeeded, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
 var _ GatewaySettler = (*payment.Service)(nil)

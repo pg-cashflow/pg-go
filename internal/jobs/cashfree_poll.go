@@ -75,6 +75,13 @@ type RefundStatusFetcher interface {
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 }
 
+// RefundResubmitter extends RefundStatusFetcher to support automated resubmission
+// for refunds that crashed before initial gateway dispatch.
+type RefundResubmitter interface {
+	RefundStatusFetcher
+	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
+}
+
 // CashfreePollJob settles created intents whose webhook was missed, and reconciles stuck refunds.
 type CashfreePollJob struct {
 	Intents          IntentStaleLister
@@ -247,18 +254,49 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		if err != nil {
 			var apiErr *cashfree.APIError
 			isNotFound := errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
-			if isNotFound && ref.Status == "initiated" && time.Since(ref.CreatedAt) > 30*time.Minute && hasVerifiedOrderID {
-				log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
-					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
-				if reconciler, ok := j.Refunds.(RefundReconciler); ok {
-					if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, "failed"); recErr != nil {
-						log.Error("cashfree poll reconcile failed refund error", "refund_id", refundID, "err", recErr)
+			if isNotFound && ref.Status == "initiated" && hasVerifiedOrderID {
+				// The refund was not found at Cashfree (404). This can occur if the application
+				// crashed after committing the initiated refund row locally, but before the HTTP
+				// call to Cashfree completed. If the client implements RefundResubmitter and
+				// the record is still within 24 hours, attempt automated idempotent resubmission.
+				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && time.Since(ref.CreatedAt) < 24*time.Hour {
+					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
+						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
+					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, ref.Reason, "retry:"+refundID)
+					if createErr == nil && createdDetails != nil {
+						details = createdDetails
+						err = nil
+					} else if createErr != nil {
+						var createApiErr *cashfree.APIError
+						if errors.As(createErr, &createApiErr) && createApiErr.StatusCode >= 400 && createApiErr.StatusCode < 500 && createApiErr.StatusCode != http.StatusConflict && createApiErr.StatusCode != http.StatusTooManyRequests {
+							log.Warn("cashfree poll: resubmitted refund rejected definitively; marking failed",
+								"order_id", orderID, "refund_id", refundID, "err", createErr)
+							if reconciler, ok := j.Refunds.(RefundReconciler); ok {
+								_ = reconciler.ReconcileRefundTransition(ctx, &ref, "failed")
+							}
+							continue
+						}
+						log.Error("cashfree poll: resubmit refund temporary error", "order_id", orderID, "refund_id", refundID, "err", createErr)
+						continue
 					}
+				} else if time.Since(ref.CreatedAt) > 30*time.Minute {
+					log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
+						"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
+					if reconciler, ok := j.Refunds.(RefundReconciler); ok {
+						if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, "failed"); recErr != nil {
+							log.Error("cashfree poll reconcile failed refund error", "refund_id", refundID, "err", recErr)
+						}
+					}
+					continue
+				} else {
+					log.Info("cashfree poll: refund not yet visible at gateway; waiting for grace window",
+						"order_id", orderID, "refund_id", refundID)
+					continue
 				}
 			} else {
 				log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "has_verified_order_id", hasVerifiedOrderID, "err", err)
+				continue
 			}
-			continue
 		}
 		if details == nil {
 			continue
