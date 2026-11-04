@@ -127,7 +127,28 @@ func NewService(repo KYCRepo, cashfree CashfreeKYCClient, cfg Config) *Service {
 
 // --- Consent ------------------------------------------------------------------
 
-// RecordConsent persists the tenant's explicit DPDP consent before any
+func (s *Service) acquireLease(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (uuid.UUID, bool, error) {
+	leaseToken := uuid.New()
+	if fenced, ok := s.repo.(interface {
+		TryAcquireInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID, ttl time.Duration) (bool, error)
+	}); ok {
+		locked, err := fenced.TryAcquireInFlightLockWithToken(ctx, tenantID, leaseToken, ttl)
+		return leaseToken, locked, err
+	}
+	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, ttl)
+	return leaseToken, locked, err
+}
+
+func (s *Service) releaseLease(ctx context.Context, tenantID, leaseToken uuid.UUID) {
+	if fenced, ok := s.repo.(interface {
+		ReleaseInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID) error
+	}); ok {
+		_ = fenced.ReleaseInFlightLockWithToken(ctx, tenantID, leaseToken)
+		return
+	}
+	_ = s.repo.ReleaseInFlightLock(ctx, tenantID)
+}
+
 // RecordConsent persists the tenant's explicit DPDP consent before any
 // verification can proceed. Idempotent: if active consent exists for this version,
 // it returns the existing consent record without creating duplicates.
@@ -137,12 +158,6 @@ func (s *Service) RecordConsent(
 	purpose, consentVersion, consentText,
 	ip, userAgent, actor string,
 ) (*domain.KYCConsent, error) {
-	if existing, err := s.repo.GetActiveConsentByTenant(ctx, tenantID); err == nil && existing != nil {
-		if existing.ConsentVersion == consentVersion && existing.IsActive() {
-			return existing, nil
-		}
-	}
-
 	if consentText == "" {
 		consentText = "I agree to my identity details being verified and stored for PG occupancy records in compliance with the DPDP Act."
 	}
@@ -150,6 +165,16 @@ func (s *Service) RecordConsent(
 	h := sha256.New()
 	h.Write([]byte(fmt.Sprintf("%s:%s", consentVersion, consentText)))
 	hash := hex.EncodeToString(h.Sum(nil))
+
+	if existing, err := s.repo.GetActiveConsentByTenant(ctx, tenantID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) && !errors.Is(err, domain.ErrVerificationNotFound) {
+			return nil, fmt.Errorf("kyc service: check active consent: %w", err)
+		}
+	} else if existing != nil {
+		if existing.ConsentVersion == consentVersion && existing.Purpose == purpose && existing.ConsentTextHash == hash && existing.IsActive() {
+			return existing, nil
+		}
+	}
 
 	c := &domain.KYCConsent{
 		TenantID:        tenantID,
@@ -299,8 +324,8 @@ func (s *Service) VerifyAadhaarDocument(
 		return nil, ErrNoActiveConsent
 	}
 
-	// 2. Acquire distributed in-flight lease FIRST (30s TTL, Cloud Run multi-instance guard)
-	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	// 2. Acquire distributed in-flight lease FIRST (60s TTL, fenced multi-instance guard)
+	leaseToken, locked, err := s.acquireLease(ctx, tenantID, 60*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
 	}
@@ -308,7 +333,7 @@ func (s *Service) VerifyAadhaarDocument(
 		return nil, domain.ErrVerificationInProgress
 	}
 	defer func() {
-		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+		s.releaseLease(context.Background(), tenantID, leaseToken)
 	}()
 
 	// 3. Under lease lock: pre-check active verification status and enforce 60s cooldown
@@ -465,7 +490,7 @@ func (s *Service) InitiateAadhaarOTP(
 		return "", ErrNoActiveConsent
 	}
 
-	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	leaseToken, locked, err := s.acquireLease(ctx, tenantID, 60*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
 	}
@@ -473,7 +498,7 @@ func (s *Service) InitiateAadhaarOTP(
 		return "", domain.ErrVerificationInProgress
 	}
 	defer func() {
-		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+		s.releaseLease(context.Background(), tenantID, leaseToken)
 	}()
 
 	if s.cashfree == nil {
@@ -663,7 +688,7 @@ func (s *Service) CompleteAadhaarOTP(
 	refID, otp string,
 	actor string,
 ) (*domain.KYCVerification, error) {
-	locked, err := s.repo.TryAcquireInFlightLock(ctx, tenantID, 30*time.Second)
+	leaseToken, locked, err := s.acquireLease(ctx, tenantID, 60*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
 	}
@@ -671,7 +696,7 @@ func (s *Service) CompleteAadhaarOTP(
 		return nil, domain.ErrVerificationInProgress
 	}
 	defer func() {
-		_ = s.repo.ReleaseInFlightLock(context.Background(), tenantID)
+		s.releaseLease(context.Background(), tenantID, leaseToken)
 	}()
 
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", refID)

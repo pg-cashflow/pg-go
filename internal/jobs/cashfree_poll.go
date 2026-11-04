@@ -244,6 +244,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 			if resolver, ok := j.Refunds.(PaymentOrderResolver); ok {
 				if oid, err := resolver.GetPaymentOrderID(ctx, ref.PaymentID); err == nil && oid != "" {
 					orderID = oid
+					hasVerifiedOrderID = true
 				}
 			}
 		}
@@ -264,7 +265,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && time.Since(ref.CreatedAt) < 24*time.Hour {
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-					retryIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:retry:"+ref.ID.String())).String()
+					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
 					refundNote := fmt.Sprintf("Refund %s", refundID)
 					if detector, ok := j.RefundClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
 						upperReason := strings.ToUpper(ref.Reason)
@@ -345,6 +346,15 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 		}
 		if details == nil {
 			continue
+		}
+		if details.AmountPaise > 0 && details.AmountPaise != ref.AmountPaise {
+			log.Error("cashfree poll refund amount mismatch; leaving initiated for manual investigation",
+				"order_id", orderID, "refund_id", refundID, "gateway_amount", details.AmountPaise, "local_amount", ref.AmountPaise)
+			continue
+		}
+		if details.CFRefundID != "" && (ref.CFRefundID == nil || *ref.CFRefundID == "") {
+			ref.CFRefundID = &details.CFRefundID
+			ref.ProviderRefundID = &details.CFRefundID
 		}
 		newStatus := domain.NormalizeRefundStatus(details.RefundStatus)
 		if newStatus == domain.RefundStatusOnHold {

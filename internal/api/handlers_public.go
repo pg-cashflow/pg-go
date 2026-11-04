@@ -402,13 +402,11 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 // AuthLogout handles POST /auth/logout.
 // Revokes the presented refresh token family and clears the cookie.
 func (h *Handlers) AuthLogout(c *gin.Context) {
+	var revokeErr error
 	if cookie, err := c.Cookie(RefreshCookieName); err == nil && strings.TrimSpace(cookie) != "" {
-		if revokeErr := h.Auth.RevokeSession(c.Request.Context(), cookie); revokeErr != nil {
+		if err := h.Auth.RevokeSession(c.Request.Context(), cookie); err != nil {
+			revokeErr = err
 			// Log the failure so it appears in audit trails and on-call alerts.
-			// The cookie is still cleared and the client receives 200; a DB blip
-			// during logout must not leave the user unable to sign out from their
-			// device. The token will expire naturally within the refresh TTL, and
-			// the family-revocation path will catch a replay if the token is reused.
 			slog.Error("AuthLogout: failed to revoke session in DB",
 				"error", revokeErr,
 				"path", c.Request.URL.Path,
@@ -416,6 +414,13 @@ func (h *Handlers) AuthLogout(c *gin.Context) {
 		}
 	}
 	h.clearRefreshCookie(c)
+	if revokeErr != nil {
+		c.JSON(http.StatusAccepted, gin.H{
+			"ok":      false,
+			"warning": "local session cleared; remote session revocation failed",
+		})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

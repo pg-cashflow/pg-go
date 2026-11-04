@@ -147,6 +147,8 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	}
 	c.sign(req)
 	req.Header.Set("Content-Type", "application/json")
+	orderIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:order:"+orderID)).String()
+	req.Header.Set("x-idempotency-key", orderIdempotencyKey)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", nil, err
@@ -427,7 +429,7 @@ func (c *Client) sign(req *http.Request) {
 	req.Header.Set("x-client-secret", c.cfg.SecretKey)
 	ver := c.cfg.APIVersion
 	if ver == "" {
-		ver = "2025-01-01"
+		ver = "2026-01-01"
 	}
 	req.Header.Set("x-api-version", ver)
 }

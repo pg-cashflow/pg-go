@@ -317,6 +317,20 @@ func (r *KYCRepo) InitiateVerificationTx(
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
+		// 1b. Validate and lock active consent inside the transaction: must belong to tenant and not be revoked
+		var consentExists int
+		err = tx.QueryRow(ctx, `
+			SELECT 1 FROM kyc_consent 
+			WHERE id = $1 AND tenant_id = $2 AND revoked_at IS NULL
+			FOR UPDATE
+		`, consentID, tenantID).Scan(&consentExists)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrConsentRevoked
+			}
+			return fmt.Errorf("kyc: lock active consent: %w", err)
+		}
+
 		// 2. Check for active (pending, pending_manual_review, or verified) verification
 		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
@@ -863,15 +877,20 @@ func (r *KYCRepo) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 // TryAcquireInFlightLock attempts to acquire a short-lived atomic lease for in-flight KYC verification.
 // Returns true if acquired, false if a non-expired lease already exists.
 func (r *KYCRepo) TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (bool, error) {
+	return r.TryAcquireInFlightLockWithToken(ctx, tenantID, uuid.New(), ttl)
+}
+
+// TryAcquireInFlightLockWithToken acquires a leased lock with a specific fencing token.
+func (r *KYCRepo) TryAcquireInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID, ttl time.Duration) (bool, error) {
 	now := time.Now().UTC()
 	cutoff := now.Add(-ttl)
 	tag, err := r.pool.Exec(ctx, `
-		INSERT INTO kyc_in_flight_lock (tenant_id, locked_at)
-		VALUES ($1, $2)
+		INSERT INTO kyc_in_flight_lock (tenant_id, lease_token, locked_at)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (tenant_id)
-		DO UPDATE SET locked_at = EXCLUDED.locked_at
-		WHERE kyc_in_flight_lock.locked_at <= $3
-	`, tenantID, now, cutoff)
+		DO UPDATE SET lease_token = EXCLUDED.lease_token, locked_at = EXCLUDED.locked_at
+		WHERE kyc_in_flight_lock.locked_at <= $4
+	`, tenantID, leaseToken, now, cutoff)
 	if err != nil {
 		return false, fmt.Errorf("kyc: acquire in-flight lock: %w", err)
 	}
@@ -885,6 +904,17 @@ func (r *KYCRepo) ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) e
 	`, tenantID)
 	if err != nil {
 		return fmt.Errorf("kyc: release in-flight lock: %w", err)
+	}
+	return nil
+}
+
+// ReleaseInFlightLockWithToken removes the in-flight lease only if owned by leaseToken.
+func (r *KYCRepo) ReleaseInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID) error {
+	_, err := r.pool.Exec(ctx, `
+		DELETE FROM kyc_in_flight_lock WHERE tenant_id = $1 AND lease_token = $2
+	`, tenantID, leaseToken)
+	if err != nil {
+		return fmt.Errorf("kyc: release in-flight lock with token: %w", err)
 	}
 	return nil
 }

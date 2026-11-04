@@ -146,8 +146,8 @@ func TestRequireSameOrigin(t *testing.T) {
 	})
 }
 
-// TestAuthLogoutClearsOnRevokeError ensures AuthLogout still returns 200 and clears
-// the cookie even when RevokeSession fails (the error must not be silently discarded).
+// TestAuthLogoutClearsOnRevokeError ensures AuthLogout returns 202 Accepted and clears
+// the cookie when RevokeSession fails (truthful reporting of partial revocation failure).
 func TestAuthLogoutClearsOnRevokeError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -167,8 +167,8 @@ func TestAuthLogoutClearsOnRevokeError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 from AuthLogout, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 Accepted from AuthLogout on revocation error, got %d", w.Code)
 	}
 	cookie := w.Header().Get("Set-Cookie")
 	if cookie == "" {

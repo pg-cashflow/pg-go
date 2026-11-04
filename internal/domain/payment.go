@@ -77,6 +77,12 @@ type GatewayRefund struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
+// CashfreeRefundIdempotencyKey derives the deterministic UUID provider idempotency key for a refund row.
+// Reused identically across initial dispatch and background recovery retries.
+func CashfreeRefundIdempotencyKey(refundID uuid.UUID) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+refundID.String())).String()
+}
+
 type RefundAllocation struct {
 	ID          uuid.UUID  `json:"id"`
 	RefundID    uuid.UUID  `json:"refund_id"`

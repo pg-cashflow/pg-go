@@ -971,9 +971,9 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	}
 
 	// Step C: External Gateway Call (ZERO row locks held during external I/O)
-	// The public key is scoped to a payment locally. Namespace the provider key
-	// by the persisted refund identity to prevent cross-payment key collisions.
-	cfIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+rfRow.ID.String())).String()
+	// The public key is scoped to a payment locally. Use canonical provider idempotency key
+	// persisted/derived from the refund row ID so recovery retries use the exact same key.
+	cfIdempotencyKey := domain.CashfreeRefundIdempotencyKey(rfRow.ID)
 	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
 	cfNote := resolveRefundNote(c, h.CashfreeClient, targetRefundRef, req.Reason)
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)

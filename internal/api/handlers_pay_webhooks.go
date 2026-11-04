@@ -598,6 +598,20 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		return
 	}
 
+	// Step 0: Validate mandatory identity fields
+	if (ref.CFRefundID == "" && ref.RefundID == "") || ref.OrderID == "" || ref.RefundAmount <= 0 {
+		slog.Error("refund webhook: missing required identity fields",
+			"order_id", ref.OrderID, "cf_refund_id", ref.CFRefundID, "refund_id", ref.RefundID, "amount", ref.RefundAmount)
+		if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, ref.OrderID, ref.CFPaymentID, nil, ref.RefundAmount, "missing_required_identity_fields", evtRecord.RawPayload); err != nil {
+			slog.Error("failed recording unmatched receipt for invalid refund webhook", "err", err)
+		}
+		if evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", nil)
+		}
+		c.Status(http.StatusOK)
+		return
+	}
+
 	// Step 1: Unlocked ancestry resolution
 	var p *domain.Payment
 	if ref.CFPaymentID != "" {
@@ -637,9 +651,31 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 	// Validate ancestry scoping: if payment was resolved, existingRef must belong to that payment
 	if p != nil && existingRef != nil && existingRef.PaymentID != p.ID {
-		slog.Warn("refund webhook: refund reference matches another payment; ignoring cross-payment match",
+		slog.Error("refund webhook: refund reference matches another payment; quarantining cross-payment conflict",
 			"refund_id", ref.RefundID, "existing_payment_id", existingRef.PaymentID, "target_payment_id", p.ID)
-		existingRef = nil
+		if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, ref.OrderID, ref.CFPaymentID, &p.ID, ref.RefundAmount, "refund_payment_mismatch", evtRecord.RawPayload); err != nil {
+			slog.Error("failed recording unmatched receipt for refund mismatch", "order_id", ref.OrderID, "err", err)
+		}
+		if evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", nil)
+		}
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Validate amount scoping: existing refund row amount must match incoming webhook amount
+	if existingRef != nil && existingRef.AmountPaise != ref.RefundAmount {
+		slog.Error("refund webhook: refund amount mismatch with existing record; quarantining",
+			"refund_id", ref.RefundID, "existing_amount", existingRef.AmountPaise, "webhook_amount", ref.RefundAmount)
+		targetPayID := existingRef.PaymentID
+		if err := h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, ref.OrderID, ref.CFPaymentID, &targetPayID, ref.RefundAmount, "refund_amount_mismatch", evtRecord.RawPayload); err != nil {
+			slog.Error("failed recording unmatched receipt for refund amount mismatch", "order_id", ref.OrderID, "err", err)
+		}
+		if evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", nil)
+		}
+		c.Status(http.StatusOK)
+		return
 	}
 
 	if p == nil && existingRef != nil {
@@ -682,7 +718,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 			txPayRepo := postgres.NewPaymentRepo(tx)
 
 			// In-transaction deduplication
-			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", ref.Type, ref.CFRefundID, ref.RefundStatus)
+			dedupeEntityID := ref.CFRefundID
+			if dedupeEntityID == "" {
+				dedupeEntityID = ref.RefundID
+			}
+			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", ref.Type, dedupeEntityID, ref.RefundStatus)
 			if err != nil {
 				return err
 			}

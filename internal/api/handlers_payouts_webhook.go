@@ -145,12 +145,25 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	if evtType == "BULK_TRANSFER_REJECTED" {
 		rawBatchID := strings.TrimPrefix(data.BatchTransferID, "pgo_")
 		if bID, err := uuid.Parse(rawBatchID); err == nil {
-			slog.Error("CRITICAL: CASHFREE BULK TRANSFER REJECTED",
+			slog.Error("CRITICAL: CASHFREE BULK TRANSFER REJECTED (setting batch dispatch_unknown for item reconciliation)",
 				"batch_id", bID,
 				"reason", data.StatusDescription,
 				"code", data.StatusCode,
 			)
-			_ = repo.SetBatchFailed(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription))
+			// Do not mark entire batch failed; set dispatch_unknown to preserve partial success and reconcile children
+			_ = repo.SetBatchDispatchUnknown(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription))
+			if h.OutboxEvents != nil {
+				payload, _ := json.Marshal(map[string]any{
+					"batch_id": bID.String(),
+					"reason":   data.StatusDescription,
+					"code":     data.StatusCode,
+				})
+				_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+					EventType: "payout_batch_rejected",
+					Payload:   payload,
+					CreatedAt: time.Now().UTC(),
+				})
+			}
 		}
 		c.Status(http.StatusOK)
 		return
@@ -162,6 +175,19 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			"event_type", evtType,
 			"description", data.StatusDescription,
 		)
+		if h.OutboxEvents != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"event_type":   evtType,
+				"description":  data.StatusDescription,
+				"alert_status": data.Status,
+				"received_at":  time.Now().UTC(),
+			})
+			_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+				EventType: "payout_low_balance_alert",
+				Payload:   payload,
+				CreatedAt: time.Now().UTC(),
+			})
+		}
 		c.Status(http.StatusOK)
 		return
 	}

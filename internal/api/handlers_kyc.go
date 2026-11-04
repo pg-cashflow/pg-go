@@ -206,10 +206,9 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	if locale == "" {
 		locale = c.GetHeader("Accept-Language")
 	}
-	consentText := body.ConsentText
-	if consentText == "" {
-		consentText = kycsvc.ResolveConsentText(body.ConsentVersion, locale)
-	}
+	// Canonical server-owned consent text guarantees cryptographic proof of what was displayed.
+	// Client-authored strings are ignored to prevent tampering with DPDP consent evidence.
+	consentText := kycsvc.ResolveConsentText(body.ConsentVersion, locale)
 
 	ip := c.ClientIP()
 	ua := c.Request.UserAgent()
@@ -689,6 +688,7 @@ func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Content-Type-Options", "nosniff")
+	slog.Info("audit: KYC identity document accessed", "verification_id", id, "property_id", propertyID, "actor", c.GetString("user_id"))
 	ct := http.DetectContentType(b)
 	c.Data(http.StatusOK, ct, b)
 }
@@ -733,6 +733,7 @@ func (h *Handlers) OwnerKYCDocument(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Content-Type-Options", "nosniff")
+	slog.Info("audit: KYC identity document accessed", "verification_id", id, "property_id", propertyID, "actor", c.GetString("user_id"))
 	c.Data(http.StatusOK, sniffed, b)
 }
 
