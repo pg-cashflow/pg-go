@@ -168,6 +168,13 @@ func TestClassifyAadhaarError(t *testing.T) {
 			expectedCls:  FailureSystemFault,
 		},
 		{
+			name:         "Client secret belongs to test environment",
+			httpStatus:   400,
+			msg:          "Client secret belongs to test environment",
+			expectedCode: "PROVIDER_CONFIG_ERROR",
+			expectedCls:  FailureSystemFault,
+		},
+		{
 			name:         "Unrecognized failure fails open to recoverable",
 			httpStatus:   400,
 			msg:          "Unexpected format error",

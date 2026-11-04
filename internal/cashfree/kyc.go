@@ -216,7 +216,6 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 	}
 	body := map[string]string{
 		"aadhaar_number": strings.TrimSpace(aadhaarNumber),
-		"uid":            strings.TrimSpace(aadhaarNumber),
 	}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -378,6 +377,9 @@ func ClassifyAadhaarError(httpStatus int, message string) (code string, class Aa
 	switch {
 	case httpStatus == 401 || httpStatus == 403 || strings.Contains(m, "unauthorized") || strings.Contains(m, "ip not whitelisted"):
 		return "PROVIDER_AUTH_ERROR", FailureSystemFault
+	case strings.Contains(m, "client secret belongs to test environment") ||
+		strings.Contains(m, "client secret belongs to production"):
+		return "PROVIDER_CONFIG_ERROR", FailureSystemFault
 	case httpStatus >= 500:
 		return "PROVIDER_ERROR", FailureSystemFault
 	case httpStatus == 422 || strings.Contains(m, "insufficient balance"):

@@ -1364,6 +1364,30 @@ func (r *KYCRepo) CountAndRecordOTPAttemptTx(
 	return count, err
 }
 
+// RefundOTPAttemptTx removes the most recent OTP attempt record for a tenant
+// when an upstream provider fault (e.g. 5xx, insufficient balance) occurs.
+func (r *KYCRepo) RefundOTPAttemptTx(ctx context.Context, tenantID uuid.UUID) error {
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var exists int
+		if err := tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists); err != nil {
+			return fmt.Errorf("kyc: lock tenant for otp refund: %w", err)
+		}
+		_, err := tx.Exec(ctx, `
+			DELETE FROM kyc_otp_attempt_log
+			WHERE id = (
+				SELECT id FROM kyc_otp_attempt_log
+				WHERE tenant_id = $1
+				ORDER BY created_at DESC
+				LIMIT 1
+			)
+		`, tenantID)
+		if err != nil {
+			return fmt.Errorf("kyc: refund otp attempt: %w", err)
+		}
+		return nil
+	})
+}
+
 // RecordGuardianConsentTx atomically records guardian details on the tenant record
 // and appends a cryptographically chained entry to kyc_audit_log.
 func (r *KYCRepo) RecordGuardianConsentTx(

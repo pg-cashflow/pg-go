@@ -461,11 +461,6 @@ func (c *Client) signKYC(req *http.Request) error {
 	}
 	req.Header.Set("x-client-id", clientID)
 	req.Header.Set("x-client-secret", secretKey)
-	ver := c.cfg.APIVersion
-	if ver == "" {
-		ver = "2025-01-01"
-	}
-	req.Header.Set("x-api-version", ver)
 
 	if strings.EqualFold(c.cfg.KYCAuthMode, "signature") {
 		if c.cfg.KYCPublicKey == nil {

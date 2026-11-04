@@ -264,6 +264,12 @@ func (f *fakeRepo) CountAndRecordOTPAttemptTx(_ context.Context, _ uuid.UUID, ma
 	f.otpAttemptCount++
 	return f.otpAttemptCount, nil
 }
+func (f *fakeRepo) RefundOTPAttemptTx(_ context.Context, _ uuid.UUID) error {
+	if f.otpAttemptCount > 0 {
+		f.otpAttemptCount--
+	}
+	return nil
+}
 func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, _ string) (*domain.Tenant, error) {
 	now := time.Now().UTC()
 	return &domain.Tenant{
@@ -330,6 +336,77 @@ func newTestService(repo *fakeRepo, cf kycsvc.CashfreeKYCClient) *kycsvc.Service
 	})
 }
 
+func TestInitiateAadhaarOTP_ProviderFaultRefundsQuota(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		otpAttemptCount: 1,
+	}
+	cf := &fakeCashfree{
+		requestOTPErr: &cashfree.APIError{
+			StatusCode: 500,
+			Body:       "internal gateway server error",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+	// Initial count was 1, CountAndRecord incremented to 2, provider error should refund back to 1
+	if repo.otpAttemptCount != 1 {
+		t.Fatalf("expected attempt count to be refunded to 1, got %d", repo.otpAttemptCount)
+	}
+}
+
+func TestCompleteAadhaarOTP_RetryOnTransientError(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	attempts := 0
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+		completeVTxFn: func(id uuid.UUID) (*domain.KYCVerification, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient database connection timeout")
+			}
+			now := time.Now().UTC()
+			return &domain.KYCVerification{
+				ID:                id,
+				TenantID:          tenantID,
+				Status:            domain.KYCStatusVerified,
+				VendorReferenceID: "cf_aadhaar_otp_ref_100",
+				VerifiedAt:        &now,
+			}, nil
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "654321", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", v.Status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 complete attempts (1 failure + 1 retry), got %d", attempts)
+	}
+}
+
 // ---- Tests -------------------------------------------------------------------
 
 func TestRecordConsent(t *testing.T) {
@@ -372,7 +449,7 @@ func TestVerifySecureQR_NoConsent(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newTestService(repo, &fakeCashfree{})
 
-	// Any raw QR string — should fail on consent gate before QR decode.
+	// Any raw QR string Ã¢â‚¬â€ should fail on consent gate before QR decode.
 	_, err := svc.VerifySecureQR(context.Background(), uuid.New(), "some-qr-payload", "tenant:abc")
 	if !errors.Is(err, kycsvc.ErrNoActiveConsent) {
 		t.Errorf("expected ErrNoActiveConsent, got %v", err)
@@ -754,6 +831,147 @@ func TestInitiateAadhaarOTP_CashfreeValidation(t *testing.T) {
 	})
 }
 
+func TestInitiateAadhaarOTP_ProviderFaultRefundsQuota(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		otpAttemptCount: 1,
+	}
+	cf := &fakeCashfree{
+		requestOTPErr: &cashfree.APIError{
+			StatusCode: 500,
+			Body:       "internal gateway server error",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+	if repo.otpAttemptCount != 1 {
+		t.Fatalf("expected attempt count to be refunded to 1, got %d", repo.otpAttemptCount)
+	}
+}
+
+func TestCompleteAadhaarOTP_RetryOnTransientError(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	attempts := 0
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+		completeVTxFn: func(id uuid.UUID) (*domain.KYCVerification, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient database connection timeout")
+			}
+			now := time.Now().UTC()
+			return &domain.KYCVerification{
+				ID:                id,
+				TenantID:          tenantID,
+				Status:            domain.KYCStatusVerified,
+				VendorReferenceID: "cf_aadhaar_otp_ref_100",
+				VerifiedAt:        &now,
+			}, nil
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "654321", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", v.Status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 complete attempts (1 failure + 1 retry), got %d", attempts)
+	}
+}
+
+func TestInitiateAadhaarOTP_ProviderFaultRefundsQuota(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		otpAttemptCount: 1,
+	}
+	cf := &fakeCashfree{
+		requestOTPErr: &cashfree.APIError{
+			StatusCode: 500,
+			Body:       "internal gateway server error",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+	// Initial count was 1, CountAndRecord incremented to 2, provider error should refund back to 1
+	if repo.otpAttemptCount != 1 {
+		t.Fatalf("expected attempt count to be refunded to 1, got %d", repo.otpAttemptCount)
+	}
+}
+
+func TestCompleteAadhaarOTP_RetryOnTransientError(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	attempts := 0
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+		completeVTxFn: func(id uuid.UUID) (*domain.KYCVerification, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient database connection timeout")
+			}
+			now := time.Now().UTC()
+			return &domain.KYCVerification{
+				ID:                id,
+				TenantID:          tenantID,
+				Status:            domain.KYCStatusVerified,
+				VendorReferenceID: "cf_aadhaar_otp_ref_100",
+				VerifiedAt:        &now,
+			}, nil
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "654321", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", v.Status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 complete attempts (1 failure + 1 retry), got %d", attempts)
+	}
+}
+
 func TestCompleteAadhaarOTP_AutoVerified(t *testing.T) {
 	tenantID := uuid.New()
 	verifID := uuid.New()
@@ -1000,6 +1218,77 @@ func TestCompleteAadhaarOTP_FailureClassificationAndRetryBudget(t *testing.T) {
 			t.Errorf("did not expect INVALID_DOB_FORMAT when status is INVALID")
 		}
 	})
+}
+
+func TestInitiateAadhaarOTP_ProviderFaultRefundsQuota(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		otpAttemptCount: 1,
+	}
+	cf := &fakeCashfree{
+		requestOTPErr: &cashfree.APIError{
+			StatusCode: 500,
+			Body:       "internal gateway server error",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected provider error, got nil")
+	}
+	// Initial count was 1, CountAndRecord incremented to 2, provider error should refund back to 1
+	if repo.otpAttemptCount != 1 {
+		t.Fatalf("expected attempt count to be refunded to 1, got %d", repo.otpAttemptCount)
+	}
+}
+
+func TestCompleteAadhaarOTP_RetryOnTransientError(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	attempts := 0
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			Status:            domain.KYCStatusPending,
+			VendorReferenceID: "cf_aadhaar_otp_ref_100",
+		},
+		completeVTxFn: func(id uuid.UUID) (*domain.KYCVerification, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient database connection timeout")
+			}
+			now := time.Now().UTC()
+			return &domain.KYCVerification{
+				ID:                id,
+				TenantID:          tenantID,
+				Status:            domain.KYCStatusVerified,
+				VendorReferenceID: "cf_aadhaar_otp_ref_100",
+				VerifiedAt:        &now,
+			}, nil
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.CompleteAadhaarOTP(context.Background(), tenantID, "ref_100", "654321", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", v.Status)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 complete attempts (1 failure + 1 retry), got %d", attempts)
+	}
 }
 
 func TestRejectManualReview_Success(t *testing.T) {

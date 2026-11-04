@@ -975,24 +975,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	// by the persisted refund identity to prevent cross-payment key collisions.
 	cfIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+rfRow.ID.String())).String()
 	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
-	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
-	if detector, ok := h.CashfreeClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
-		sandboxOutcome := strings.ToUpper(strings.TrimSpace(c.GetHeader("X-Sandbox-Refund-Result")))
-		if sandboxOutcome != "SUCCESS" && sandboxOutcome != "FAILED" && sandboxOutcome != "PENDING" {
-			upperReason := strings.ToUpper(req.Reason)
-			switch {
-			case strings.Contains(upperReason, "FAILED"):
-				sandboxOutcome = "FAILED"
-			case strings.Contains(upperReason, "PENDING"):
-				sandboxOutcome = "PENDING"
-			case strings.Contains(upperReason, "SUCCESS"):
-				sandboxOutcome = "SUCCESS"
-			}
-		}
-		if sandboxOutcome != "" {
-			cfNote = fmt.Sprintf("Refund %s %s", targetRefundRef, sandboxOutcome)
-		}
-	}
+	cfNote := resolveRefundNote(c, h.CashfreeClient, targetRefundRef, req.Reason)
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
@@ -1026,6 +1009,20 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	if rfRow.Status == domain.RefundStatusOnHold {
 		slog.Warn("ALERT: cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
 			"refund_id", rfRow.ID, "payment_id", p.ID)
+		if h.OutboxEvents != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"refund_id":    rfRow.ID.String(),
+				"payment_id":   p.ID.String(),
+				"amount_paise": req.AmountPaise,
+				"reason":       "gateway_balance_insufficient",
+			})
+			_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
+				EventType:  "refund_on_hold",
+				PropertyID: pid,
+				ActorRole:  string(domain.RoleOwner),
+				Payload:    payload,
+			})
+		}
 	}
 
 	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
@@ -1050,4 +1047,29 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 
 	c.JSON(http.StatusOK, rfRow)
 	return rfRow, nil
+}
+
+// resolveRefundNote applies sandbox simulation parameters only when running against a sandbox gateway client.
+func resolveRefundNote(c *gin.Context, client CashfreeClient, targetRefundRef, reason string) string {
+	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
+	detector, ok := client.(interface{ IsSandbox() bool })
+	if !ok || !detector.IsSandbox() {
+		return cfNote
+	}
+	sandboxOutcome := strings.ToUpper(strings.TrimSpace(c.GetHeader("X-Sandbox-Refund-Result")))
+	if sandboxOutcome != "SUCCESS" && sandboxOutcome != "FAILED" && sandboxOutcome != "PENDING" {
+		upperReason := strings.ToUpper(reason)
+		switch {
+		case strings.Contains(upperReason, "FAILED"):
+			sandboxOutcome = "FAILED"
+		case strings.Contains(upperReason, "PENDING"):
+			sandboxOutcome = "PENDING"
+		case strings.Contains(upperReason, "SUCCESS"):
+			sandboxOutcome = "SUCCESS"
+		}
+	}
+	if sandboxOutcome != "" {
+		return fmt.Sprintf("Refund %s %s", targetRefundRef, sandboxOutcome)
+	}
+	return cfNote
 }

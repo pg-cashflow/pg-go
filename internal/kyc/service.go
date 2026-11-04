@@ -86,6 +86,7 @@ type KYCRepo interface {
 	VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error)
 	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
 	CountAndRecordOTPAttemptTx(ctx context.Context, tenantID uuid.UUID, maxAllowed int, window time.Duration) (int, error)
+	RefundOTPAttemptTx(ctx context.Context, tenantID uuid.UUID) error
 	RecordGuardianConsentTx(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
 }
 
@@ -518,7 +519,11 @@ func (s *Service) InitiateAadhaarOTP(
 		} else {
 			msg = err.Error()
 		}
-		return "", s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, httpStatus, msg, actor, err)
+		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, httpStatus, msg, actor, err)
+		if fail.Class == cashfree.FailureSystemFault {
+			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
+		}
+		return "", fail
 	}
 
 	// Validate Cashfree response: require status SUCCESS and a non-empty ref_id before persisting any verification record.
@@ -537,40 +542,44 @@ func (s *Service) InitiateAadhaarOTP(
 			}
 		}
 		underlying := fmt.Errorf("aadhaar otp request failed: status=%s, message=%s", statusStr, msg)
-		return "", s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, 200, msg, actor, underlying)
+		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, nil, 200, msg, actor, underlying)
+		if fail.Class == cashfree.FailureSystemFault {
+			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
+		}
+		return "", fail
 	}
 
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", res.RefID)
 
-	// Wrap InitiateVerificationTx with one retry on transient failure to avoid
+	// Wrap InitiateVerificationTx with retries on transient failure to avoid
 	// orphaning a billed UIDAI OTP where the tenant receives an SMS but our DB
 	// has no record of the vendorRefID.
-	_, err = s.repo.InitiateVerificationTx(ctx,
-		tenantID, consent.ID,
-		domain.KYCMethodAadhaarOTP,
-		"cashfree_aadhaar_otp", vendorRefID, actor,
-	)
-	if err != nil {
-		slog.Warn("kyc: initial InitiateVerificationTx failed, retrying once",
-			"tenant_id", tenantID,
-			"vendor_ref_id", vendorRefID,
-			"err", err,
-		)
-		time.Sleep(100 * time.Millisecond)
-		_, err = s.repo.InitiateVerificationTx(ctx,
+	var initErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, initErr = s.repo.InitiateVerificationTx(ctx,
 			tenantID, consent.ID,
 			domain.KYCMethodAadhaarOTP,
 			"cashfree_aadhaar_otp", vendorRefID, actor,
 		)
+		if initErr == nil {
+			break
+		}
+		slog.Warn("kyc: InitiateVerificationTx failed, retrying",
+			"tenant_id", tenantID,
+			"vendor_ref_id", vendorRefID,
+			"attempt", attempt+1,
+			"err", initErr,
+		)
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
 	}
-	if err != nil {
+	if initErr != nil {
 		slog.Error("CRITICAL: orphaned billed Aadhaar OTP — failed to persist verification record after Cashfree success",
 			"tenant_id", tenantID,
 			"ref_id", res.RefID,
 			"vendor_ref_id", vendorRefID,
-			"err", err,
+			"err", initErr,
 		)
-		return "", fmt.Errorf("kyc service: initiate aadhaar otp record: %w", err)
+		return "", fmt.Errorf("kyc service: initiate aadhaar otp record: %w", initErr)
 	}
 
 	return res.RefID, nil
@@ -733,13 +742,32 @@ func (s *Service) CompleteAadhaarOTP(
 	}
 
 	// AUTO-VERIFIED: Government authenticated via direct UIDAI OTP
-	verified, err := s.repo.CompleteVerificationTx(ctx,
-		pending.ID, res.MaskedUID, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
-		now, expiresAt, majorityDate, actor,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: complete aadhaar otp: %w", err)
+	var verified *domain.KYCVerification
+	var completeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		verified, completeErr = s.repo.CompleteVerificationTx(ctx,
+			pending.ID, res.MaskedUID, identityHash, isDedupable,
+			s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
+			now, expiresAt, majorityDate, actor,
+		)
+		if completeErr == nil {
+			break
+		}
+		if errors.Is(completeErr, domain.ErrVerificationNotPending) {
+			current, checkErr := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
+			if checkErr == nil && current != nil && current.Status == domain.KYCStatusVerified {
+				return current, nil
+			}
+		}
+		slog.Warn("kyc: CompleteVerificationTx failed, retrying",
+			"verification_id", pending.ID,
+			"attempt", attempt+1,
+			"err", completeErr,
+		)
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
+	}
+	if completeErr != nil {
+		return nil, fmt.Errorf("kyc service: complete aadhaar otp: %w", completeErr)
 	}
 
 	return verified, nil
