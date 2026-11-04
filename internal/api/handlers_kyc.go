@@ -138,6 +138,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.already_verified"))
 	case errors.Is(err, domain.ErrVerificationInProgress):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.in_flight"))
+	case errors.Is(err, domain.ErrDailyOTPLimitExceeded):
+		return clientErrWithCode(http.StatusTooManyRequests, err.Error(), apierr.Code("kyc.daily_limit_exceeded"))
 	case errors.Is(err, domain.ErrConsentRevoked):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.consent_revoked"))
 	case errors.Is(err, kycsvc.ErrUnsupportedDocumentType):

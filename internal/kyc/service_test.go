@@ -60,6 +60,8 @@ type fakeRepo struct {
 	failVTxFn               func(id uuid.UUID, reason string) error
 	clearDupFn              func(id uuid.UUID, reason string) error
 	recordFailureAndCountFn func(reasonCode string) (int, error)
+	otpAttemptCount         int
+	countAndRecordOTPFn     func(maxAllowed int) (int, error)
 }
 
 func (f *fakeRepo) RecordConsent(_ context.Context, c *domain.KYCConsent, _ string) error {
@@ -252,6 +254,16 @@ func (f *fakeRepo) RecordFailureAndCount(_ context.Context, _ uuid.UUID, _ domai
 	}
 	return 1, nil
 }
+func (f *fakeRepo) CountAndRecordOTPAttemptTx(_ context.Context, _ uuid.UUID, maxAllowed int, _ time.Duration) (int, error) {
+	if f.countAndRecordOTPFn != nil {
+		return f.countAndRecordOTPFn(maxAllowed)
+	}
+	if f.otpAttemptCount >= maxAllowed {
+		return f.otpAttemptCount, domain.ErrDailyOTPLimitExceeded
+	}
+	f.otpAttemptCount++
+	return f.otpAttemptCount, nil
+}
 func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, _ string) (*domain.Tenant, error) {
 	now := time.Now().UTC()
 	return &domain.Tenant{
@@ -265,13 +277,14 @@ func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID
 }
 
 type fakeCashfree struct {
-	ocrResp        *cashfree.SmartOCRResponse
-	ocrErr         error
-	ocrCalled      bool
-	requestOTPErr  error
-	requestOTPResp *cashfree.AadhaarOTPInitResult
-	verifyOTPErr   error
-	verifyOTPResp  *cashfree.AadhaarOTPVerifyResult
+	ocrResp          *cashfree.SmartOCRResponse
+	ocrErr           error
+	ocrCalled        bool
+	requestOTPErr    error
+	requestOTPResp   *cashfree.AadhaarOTPInitResult
+	requestOTPCalled bool
+	verifyOTPErr     error
+	verifyOTPResp    *cashfree.AadhaarOTPVerifyResult
 }
 
 func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
@@ -279,6 +292,7 @@ func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ s
 	return f.ocrResp, f.ocrErr
 }
 func (f *fakeCashfree) RequestAadhaarOTP(_ context.Context, _ string) (*cashfree.AadhaarOTPInitResult, error) {
+	f.requestOTPCalled = true
 	if f.requestOTPErr != nil {
 		return nil, f.requestOTPErr
 	}
@@ -570,6 +584,70 @@ func TestInitiateAadhaarOTP_HappyPath(t *testing.T) {
 	_, err = svc.InitiateAadhaarOTP(context.Background(), tenantID, "123456789012", "tenant:"+tenantID.String())
 	if !errors.Is(err, kycsvc.ErrInvalidAadhaarNumber) {
 		t.Errorf("expected ErrInvalidAadhaarNumber for invalid aadhaar, got %v", err)
+	}
+}
+
+func TestInitiateAadhaarOTP_DailyLimitExceeded(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		otpAttemptCount: domain.MaxDailyAadhaarOTPRequests, // already at limit
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if !errors.Is(err, domain.ErrDailyOTPLimitExceeded) {
+		t.Fatalf("expected ErrDailyOTPLimitExceeded when at quota, got %v", err)
+	}
+	if cf.requestOTPCalled {
+		t.Fatal("expected Cashfree RequestAadhaarOTP NOT to be called when daily quota is exceeded")
+	}
+}
+
+func TestInitiateAadhaarOTP_PersistRetryOnTransientError(t *testing.T) {
+	tenantID := uuid.New()
+	attempts := 0
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		initiateVTxFn: func() (*domain.KYCVerification, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("transient db network hiccup")
+			}
+			return &domain.KYCVerification{
+				ID:                uuid.New(),
+				TenantID:          tenantID,
+				Method:            domain.KYCMethodAadhaarOTP,
+				VendorReferenceID: "cf_aadhaar_otp_123456",
+				Status:            domain.KYCStatusPending,
+			}, nil
+		},
+	}
+	cf := &fakeCashfree{}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	refID, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got %v", err)
+	}
+	if refID != "123456" {
+		t.Fatalf("expected refID '123456', got %s", refID)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected exactly 2 initiate attempts (1 failure + 1 retry), got %d", attempts)
 	}
 }
 

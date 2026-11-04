@@ -403,7 +403,17 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 // Revokes the presented refresh token family and clears the cookie.
 func (h *Handlers) AuthLogout(c *gin.Context) {
 	if cookie, err := c.Cookie(RefreshCookieName); err == nil && strings.TrimSpace(cookie) != "" {
-		_ = h.Auth.RevokeSession(c.Request.Context(), cookie)
+		if revokeErr := h.Auth.RevokeSession(c.Request.Context(), cookie); revokeErr != nil {
+			// Log the failure so it appears in audit trails and on-call alerts.
+			// The cookie is still cleared and the client receives 200; a DB blip
+			// during logout must not leave the user unable to sign out from their
+			// device. The token will expire naturally within the refresh TTL, and
+			// the family-revocation path will catch a replay if the token is reused.
+			slog.Error("AuthLogout: failed to revoke session in DB",
+				"error", revokeErr,
+				"path", c.Request.URL.Path,
+			)
+		}
 	}
 	h.clearRefreshCookie(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

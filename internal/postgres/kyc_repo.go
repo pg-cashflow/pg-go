@@ -1322,6 +1322,48 @@ func (r *KYCRepo) RecordFailureAndCount(
 	return count, err
 }
 
+// CountAndRecordOTPAttemptTx checks whether a tenant has exceeded their allowed
+// Aadhaar OTP request quota within the trailing window under a tenant row lock.
+// If within quota, it inserts an attempt record into kyc_otp_attempt_log.
+// Returns ErrDailyOTPLimitExceeded if the quota is reached.
+func (r *KYCRepo) CountAndRecordOTPAttemptTx(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	maxAllowed int,
+	window time.Duration,
+) (int, error) {
+	var count int
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var exists int
+		if err := tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists); err != nil {
+			return fmt.Errorf("kyc: lock tenant for otp attempt: %w", err)
+		}
+
+		windowSecs := int(window.Seconds())
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM kyc_otp_attempt_log
+			WHERE tenant_id = $1
+			  AND created_at > now() - make_interval(secs => $2)
+		`, tenantID, windowSecs).Scan(&count); err != nil {
+			return fmt.Errorf("kyc: count otp attempts: %w", err)
+		}
+
+		if count >= maxAllowed {
+			return domain.ErrDailyOTPLimitExceeded
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO kyc_otp_attempt_log (tenant_id, created_at)
+			VALUES ($1, now())
+		`, tenantID); err != nil {
+			return fmt.Errorf("kyc: insert otp attempt log: %w", err)
+		}
+		count++
+		return nil
+	})
+	return count, err
+}
+
 // RecordGuardianConsentTx atomically records guardian details on the tenant record
 // and appends a cryptographically chained entry to kyc_audit_log.
 func (r *KYCRepo) RecordGuardianConsentTx(

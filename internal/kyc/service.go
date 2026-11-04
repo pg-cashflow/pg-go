@@ -30,12 +30,11 @@ import (
 
 // Sentinel errors surfaced to HTTP handlers for client-safe 4xx responses.
 var (
-	ErrNoActiveConsent       = errors.New("kyc: no active consent — record consent before initiating verification")
-	ErrQRSignatureInvalid    = errors.New("kyc: QR signature verification failed — UIDAI key not configured or payload corrupted")
-	ErrQRDataIncomplete      = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
-	ErrCashfreeUnavailable   = errors.New("kyc: verification unavailable — cashfree is not configured")
-	ErrDigiLockerUnavailable = ErrCashfreeUnavailable // Deprecated alias
-	ErrInvalidAadhaarNumber  = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
+	ErrNoActiveConsent      = errors.New("kyc: no active consent — record consent before initiating verification")
+	ErrQRSignatureInvalid   = errors.New("kyc: QR signature verification failed — UIDAI key not configured or payload corrupted")
+	ErrQRDataIncomplete     = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
+	ErrCashfreeUnavailable  = errors.New("kyc: verification unavailable — cashfree is not configured")
+	ErrInvalidAadhaarNumber = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
 )
 
 // PermanentError is an interface implemented by errors that represent an
@@ -86,6 +85,7 @@ type KYCRepo interface {
 	GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error)
 	VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error)
 	RecordFailureAndCount(ctx context.Context, tenantID uuid.UUID, method domain.KYCMethod, reasonCode string, windowMinutes int) (int, error)
+	CountAndRecordOTPAttemptTx(ctx context.Context, tenantID uuid.UUID, maxAllowed int, window time.Duration) (int, error)
 	RecordGuardianConsentTx(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
 }
 
@@ -182,7 +182,7 @@ func (s *Service) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 
 // VerifySecureQR provides the offline Aadhaar QR fallback path.
 //
-// Consent gate: enforced — same invariant as DigiLocker initiation.
+// Consent gate: enforced — same invariant as Aadhaar OTP initiation.
 // Signature verification: performed in-process by aadhaar.DecodeAadhaarQR with
 // the UIDAI RSA-SHA256 public key loaded at startup.
 // The pending+complete cycle is synchronous (no async webhook).
@@ -498,6 +498,15 @@ func (s *Service) InitiateAadhaarOTP(
 		}
 	}
 
+	// Gate on daily OTP attempt limit before making the billed UIDAI call.
+	_, err = s.repo.CountAndRecordOTPAttemptTx(ctx, tenantID, domain.MaxDailyAadhaarOTPRequests, 24*time.Hour)
+	if err != nil {
+		if errors.Is(err, domain.ErrDailyOTPLimitExceeded) {
+			return "", err
+		}
+		return "", fmt.Errorf("kyc service: check daily otp quota: %w", err)
+	}
+
 	res, err := s.cashfree.RequestAadhaarOTP(ctx, cleanedNum)
 	if err != nil {
 		var httpStatus int
@@ -533,12 +542,34 @@ func (s *Service) InitiateAadhaarOTP(
 
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", res.RefID)
 
+	// Wrap InitiateVerificationTx with one retry on transient failure to avoid
+	// orphaning a billed UIDAI OTP where the tenant receives an SMS but our DB
+	// has no record of the vendorRefID.
 	_, err = s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
 		domain.KYCMethodAadhaarOTP,
 		"cashfree_aadhaar_otp", vendorRefID, actor,
 	)
 	if err != nil {
+		slog.Warn("kyc: initial InitiateVerificationTx failed, retrying once",
+			"tenant_id", tenantID,
+			"vendor_ref_id", vendorRefID,
+			"err", err,
+		)
+		time.Sleep(100 * time.Millisecond)
+		_, err = s.repo.InitiateVerificationTx(ctx,
+			tenantID, consent.ID,
+			domain.KYCMethodAadhaarOTP,
+			"cashfree_aadhaar_otp", vendorRefID, actor,
+		)
+	}
+	if err != nil {
+		slog.Error("CRITICAL: orphaned billed Aadhaar OTP — failed to persist verification record after Cashfree success",
+			"tenant_id", tenantID,
+			"ref_id", res.RefID,
+			"vendor_ref_id", vendorRefID,
+			"err", err,
+		)
 		return "", fmt.Errorf("kyc service: initiate aadhaar otp record: %w", err)
 	}
 

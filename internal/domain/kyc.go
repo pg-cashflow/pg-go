@@ -41,12 +41,17 @@ const (
 // to prevent divergence between HTTP 429 rate limiting and logical attempts remaining.
 const AadhaarOTPMaxAttempts = 3
 
+// MaxDailyAadhaarOTPRequests defines the daily quota for initiating Aadhaar OTPs per tenant
+// to prevent billed-call abuse.
+const MaxDailyAadhaarOTPRequests = 5
+
 var (
 	ErrAlreadyVerified        = errors.New("kyc: tenant is already verified")
 	ErrVerificationNotFound   = errors.New("kyc: verification record not found")
 	ErrConsentRevoked         = errors.New("kyc: consent revoked")
 	ErrVerificationNotPending = errors.New("kyc: verification is not in pending status")
 	ErrVerificationInProgress = errors.New("kyc: verification already in progress")
+	ErrDailyOTPLimitExceeded  = errors.New("kyc: daily aadhaar otp request limit exceeded")
 )
 
 const (

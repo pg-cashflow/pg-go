@@ -3,8 +3,10 @@ package api
 import (
 	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -123,4 +125,113 @@ func isTrustedProxyPeer(remoteAddr string, trusted []string) bool {
 		}
 	}
 	return false
+}
+
+// RequireSameOrigin rejects state-mutating requests whose Origin header does
+// not match the server's own host. It is a defense-in-depth layer behind
+// SameSite=Strict cookies; it does not replace them.
+//
+// Rules (applied in order):
+//  1. No Origin header AND no Sec-Fetch-Site header → pass through.
+//     Native mobile apps and curl do not set either; blocking them here would
+//     break legitimate non-browser clients.
+//  2. Sec-Fetch-Site present → accept only "same-origin" or "none".
+//     "same-site" is rejected; it allows cross-site navigation in some configs.
+//  3. Origin present → its host must equal the request Host header host.
+//     "null" origin (sandboxed iframe, local file) is always rejected.
+//
+// allowedOrigins is the same slice passed to the CORS middleware. When non-empty
+// the Origin must be in that set regardless of rule 3. This prevents a spoofed
+// Host header from widening the check on misconfigured reverse-proxy setups.
+func RequireSameOrigin(allowedOrigins []string) gin.HandlerFunc {
+	// Pre-parse allowed origins to bare host+port strings for fast lookup.
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if u, err := url.Parse(o); err == nil && u.Host != "" {
+			allowed[strings.ToLower(u.Host)] = struct{}{}
+		}
+	}
+
+	return func(c *gin.Context) {
+		sfs := c.GetHeader("Sec-Fetch-Site")
+		origin := strings.TrimSpace(c.GetHeader("Origin"))
+
+		// Rule 1: neither header is present → not a browser fetch, pass through.
+		if sfs == "" && origin == "" {
+			c.Next()
+			return
+		}
+
+		// Rule 2: Sec-Fetch-Site is present and must be same-origin or none.
+		if sfs != "" {
+			if sfs != "same-origin" && sfs != "none" {
+				slog.Warn("RequireSameOrigin: rejected cross-site request",
+					"sec_fetch_site", sfs,
+					"origin", origin,
+					"path", c.Request.URL.Path,
+					"remote_addr", c.Request.RemoteAddr,
+				)
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+				return
+			}
+			// Sec-Fetch-Site is authoritative; skip Origin check.
+			c.Next()
+			return
+		}
+
+		// Rule 3: Origin header is present (Sec-Fetch-Site is absent, e.g. older Safari).
+		if origin == "null" {
+			slog.Warn("RequireSameOrigin: rejected null origin",
+				"path", c.Request.URL.Path,
+				"remote_addr", c.Request.RemoteAddr,
+			)
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+			return
+		}
+
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" {
+			slog.Warn("RequireSameOrigin: malformed Origin header",
+				"origin", origin,
+				"path", c.Request.URL.Path,
+			)
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+			return
+		}
+		originHost := strings.ToLower(parsed.Host)
+
+		// If an explicit allow-list is configured, the origin must be in it.
+		if len(allowed) > 0 {
+			if _, ok := allowed[originHost]; !ok {
+				slog.Warn("RequireSameOrigin: Origin not in allowed list",
+					"origin", origin,
+					"path", c.Request.URL.Path,
+					"remote_addr", c.Request.RemoteAddr,
+				)
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+				return
+			}
+			c.Next()
+			return
+		}
+
+		// Fall back to comparing against the Host header.
+		requestHost := strings.ToLower(c.Request.Host)
+		if requestHost == "" {
+			// Host is required by HTTP/1.1; reject if absent.
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+			return
+		}
+		if originHost != requestHost {
+			slog.Warn("RequireSameOrigin: Origin/Host mismatch",
+				"origin_host", originHost,
+				"request_host", requestHost,
+				"path", c.Request.URL.Path,
+				"remote_addr", c.Request.RemoteAddr,
+			)
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "cross-origin request rejected"})
+			return
+		}
+		c.Next()
+	}
 }

@@ -17,11 +17,15 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	api.GET("/join/invite/:code", ipRateLimit(60.0/60, 100), h.LookupInvite)
 	api.GET("/owner/calendar.ics", h.OwnerCalendarICS)
 
-	api.POST("/auth/otp/request", ipRateLimit(3.0/60, 5), h.OTPRequest)
-	api.POST("/auth/otp/verify", ipRateLimit(10.0/60, 20), h.OTPVerify)
-	api.POST("/auth/firebase", ipRateLimit(60.0/60, 100), h.FirebaseAuth)
-	api.POST("/auth/refresh", cookieOrIPRateLimit(RefreshCookieName, 30.0/60, 60), h.AuthRefresh)
-	api.POST("/auth/logout", h.AuthLogout)
+	// RequireSameOrigin is defense-in-depth behind SameSite=Strict cookies.
+	// It rejects browser-initiated cross-origin POSTs without preventing
+	// legitimate non-browser clients (native app, curl) that send no Origin.
+	sameOrigin := RequireSameOrigin(d.CORSAllowedOrigins)
+	api.POST("/auth/otp/request", sameOrigin, ipRateLimit(3.0/60, 5), h.OTPRequest)
+	api.POST("/auth/otp/verify", sameOrigin, ipRateLimit(10.0/60, 20), h.OTPVerify)
+	api.POST("/auth/firebase", sameOrigin, ipRateLimit(60.0/60, 100), h.FirebaseAuth)
+	api.POST("/auth/refresh", sameOrigin, cookieOrIPRateLimit(RefreshCookieName, 30.0/60, 60), h.AuthRefresh)
+	api.POST("/auth/logout", sameOrigin, h.AuthLogout)
 	api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
 	api.GET("/auth/sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.GetActiveSessions)
 	api.DELETE("/auth/sessions/:id", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.DeleteSession)
