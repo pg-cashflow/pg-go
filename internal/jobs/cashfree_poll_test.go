@@ -548,6 +548,9 @@ type stubRefundResubmitClient struct {
 }
 
 func (s *stubRefundResubmitClient) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+	if s.createCalls > 0 && s.fetchDetails != nil {
+		return s.fetchDetails, nil
+	}
 	return s.fetchDetails, s.fetchErr
 }
 
@@ -656,6 +659,54 @@ func TestCashfreePollReconcilesRejectedRefundToFailed(t *testing.T) {
 
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
 		t.Fatalf("expected rejected refund to reconcile to failed, got id=%s status=%s",
+			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+}
+
+func TestCashfreePollResubmitDuplicateDoesNotMarkFailed(t *testing.T) {
+	refRef := "rf_dup_exists_1"
+	refID := uuid.New()
+	cfRefID := "cf_rf_dup_exists_1"
+	staleCreatedAt := time.Now().UTC().Add(-5 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_dup_1"}`),
+		Status:          "initiated",
+		AmountPaise:     150000,
+		Reason:          "Deposit refund duplicate test",
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	resubmitClient := &stubRefundResubmitClient{
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "not found"},
+		createErr: &cashfree.APIError{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Body:       `{"message":"refund_id already exists","code":"refund_already_exists"}`,
+		},
+		fetchDetails: &cashfree.RefundDetails{
+			CFRefundID:   cfRefID,
+			RefundID:     refRef,
+			RefundStatus: "SUCCESS",
+			AmountPaise:  150000,
+		},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: resubmitClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "succeeded" {
+		t.Fatalf("expected duplicate refund to re-query status and reconcile to succeeded, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }

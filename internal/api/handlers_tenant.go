@@ -383,14 +383,26 @@ func (h *Handlers) TenantAadhaar(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "aadhaar last-4 already set"})
 			return
 		}
-		if t.AadhaarLast4 == nil || *t.AadhaarLast4 != last4 {
+		nameChanged := data.Name != "" && data.Name != t.Name
+		last4Changed := t.AadhaarLast4 == nil || *t.AadhaarLast4 != last4
+		if last4Changed || nameChanged {
 			cloned := *t
-			cloned.AadhaarLast4 = &last4
+			if last4Changed {
+				cloned.AadhaarLast4 = &last4
+			}
+			if nameChanged {
+				cloned.Name = data.Name
+			}
 			if err := h.TenantStore.Update(c.Request.Context(), &cloned); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 				return
 			}
-			t.AadhaarLast4 = &last4
+			if last4Changed {
+				t.AadhaarLast4 = &last4
+			}
+			if nameChanged {
+				t.Name = data.Name
+			}
 			auth.InvalidateTenantCache(t.ID)
 		}
 	}

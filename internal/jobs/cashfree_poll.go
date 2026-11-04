@@ -287,16 +287,42 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						err = nil
 					} else if createErr != nil {
 						var createApiErr *cashfree.APIError
-						if errors.As(createErr, &createApiErr) && createApiErr.StatusCode >= 400 && createApiErr.StatusCode < 500 && createApiErr.StatusCode != http.StatusConflict && createApiErr.StatusCode != http.StatusTooManyRequests {
-							log.Warn("cashfree poll: resubmitted refund rejected definitively; marking failed",
-								"order_id", orderID, "refund_id", refundID, "err", createErr)
-							if reconciler, ok := j.Refunds.(RefundReconciler); ok {
-								_ = reconciler.ReconcileRefundTransition(ctx, &ref, "failed")
+						if errors.As(createErr, &createApiErr) {
+							// If Cashfree reports the refund already exists (e.g. 409 or 400 refund_already_exists),
+							// do not mark failed. Re-query status from gateway.
+							isDuplicate := createApiErr.StatusCode == http.StatusConflict ||
+								strings.Contains(strings.ToLower(createApiErr.Body), "already_exists") ||
+								strings.Contains(strings.ToLower(createApiErr.Body), "already exists") ||
+								strings.Contains(strings.ToLower(createErr.Error()), "already exists")
+
+							if isDuplicate {
+								log.Info("cashfree poll: resubmitted refund already exists at gateway; re-fetching status",
+									"order_id", orderID, "refund_id", refundID)
+								if fetched, fetchErr := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID); fetchErr == nil && fetched != nil {
+									details = fetched
+									err = nil
+									createErr = nil
+								} else {
+									continue
+								}
+							} else if createApiErr.StatusCode == http.StatusUnauthorized || createApiErr.StatusCode == http.StatusForbidden {
+								// Authentication/permission failure is a gateway config error, not a refund rejection.
+								log.Error("cashfree poll: resubmit refund authentication rejected (check credentials/IP)",
+									"order_id", orderID, "refund_id", refundID, "status", createApiErr.StatusCode)
+								continue
+							} else if createApiErr.StatusCode >= 400 && createApiErr.StatusCode < 500 && createApiErr.StatusCode != http.StatusTooManyRequests {
+								log.Warn("cashfree poll: resubmitted refund rejected definitively; marking failed",
+									"order_id", orderID, "refund_id", refundID, "err", createErr)
+								if reconciler, ok := j.Refunds.(RefundReconciler); ok {
+									_ = reconciler.ReconcileRefundTransition(ctx, &ref, "failed")
+								}
+								continue
 							}
+						}
+						if createErr != nil {
+							log.Error("cashfree poll: resubmit refund temporary error", "order_id", orderID, "refund_id", refundID, "err", createErr)
 							continue
 						}
-						log.Error("cashfree poll: resubmit refund temporary error", "order_id", orderID, "refund_id", refundID, "err", createErr)
-						continue
 					}
 				} else if time.Since(ref.CreatedAt) > 30*time.Minute {
 					log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",

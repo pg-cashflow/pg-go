@@ -20,12 +20,12 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.POST("/push/subscribe", h.TenantPushSubscribe)
 	tenant.POST("/aadhaar", h.TenantIDRateLimit(10.0/60, 5), h.TenantAadhaar)
 
-	tenant.POST("/kyc/consent", h.TenantKYCConsent)
+	tenant.POST("/kyc/consent", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCConsent)
 	tenant.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
 	tenant.POST("/kyc/qr/verify", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCSecureQRVerify)
 	tenant.POST("/kyc/aadhaar/otp/request", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
 	tenant.POST("/kyc/aadhaar/otp/verify", h.TenantIDRateLimit(10.0/60, domain.AadhaarOTPMaxAttempts), h.TenantKYCAadhaarOTPVerify)
-	tenant.POST("/kyc/revoke", h.TenantKYCRevoke)
+	tenant.POST("/kyc/revoke", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCRevoke)
 	tenant.GET("/kyc/status", h.TenantKYCStatus)
 
 	// --- gated: requires the KYC onboarding gate (default-deny) ---

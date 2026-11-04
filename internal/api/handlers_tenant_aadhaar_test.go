@@ -121,6 +121,44 @@ func TestTenantAadhaarValidatesLast4Format(t *testing.T) {
 	}
 }
 
+func TestTenantAadhaarPersistsNameOverride(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	existing := "9012"
+	ten := &domain.Tenant{
+		ID:           uuid.New(),
+		PropertyID:   uuid.New(),
+		Name:         "Old Name",
+		AadhaarLast4: &existing,
+	}
+	store := &stubTenantStore{t: ten}
+	h := &Handlers{Deps: Deps{TenantStore: store}}
+	r := gin.New()
+	r.POST("/tenant/aadhaar", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, ten)
+		h.TenantAadhaar(c)
+	})
+
+	body, _ := json.Marshal(map[string]any{
+		"consent":   true,
+		"uid_last4": "9012",
+		"name":      "New Name",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/tenant/aadhaar", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if store.updates != 1 {
+		t.Fatalf("expected 1 update, got %d", store.updates)
+	}
+	if ten.Name != "New Name" {
+		t.Fatalf("expected tenant name to be %q, got %q", "New Name", ten.Name)
+	}
+}
+
 func TestAllowedReportImage(t *testing.T) {
 	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'}
 	if !allowedReportImage(jpeg) {

@@ -69,6 +69,9 @@ type liveHarness struct {
 
 func newLiveHarness(t *testing.T) *liveHarness {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping live database test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	_ = godotenv.Load("../.env")
 	_ = godotenv.Load(".env")

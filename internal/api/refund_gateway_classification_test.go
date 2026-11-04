@@ -26,6 +26,16 @@ func TestClassifyRefundGatewayError(t *testing.T) {
 			want: RefundAmbiguousFailure,
 		},
 		{
+			name: "401 unauthorized yields ambiguous to preserve reservation on config/cred failure",
+			err:  &cashfree.APIError{StatusCode: http.StatusUnauthorized, Status: "401 Unauthorized"},
+			want: RefundAmbiguousFailure,
+		},
+		{
+			name: "403 forbidden yields ambiguous to preserve reservation on IP/perm failure",
+			err:  &cashfree.APIError{StatusCode: http.StatusForbidden, Status: "403 Forbidden"},
+			want: RefundAmbiguousFailure,
+		},
+		{
 			name: "429 rate limit yields ambiguous to preserve reservation",
 			err:  &cashfree.APIError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests"},
 			want: RefundAmbiguousFailure,

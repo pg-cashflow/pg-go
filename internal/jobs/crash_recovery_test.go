@@ -25,6 +25,9 @@ import (
 // 3. Reruns cmd/billing-cycle to completion.
 // 4. Asserts zero duplicate rent dues and a balanced financial ledger.
 func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping crash recovery live DB test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 
@@ -174,6 +177,9 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 // 4. Resume worker with valid context; confirm processing completes cleanly.
 // 5. Retry worker; assert zero duplicate journal lines and balanced ledger.
 func TestGate07_CrashRecovery_OutboxWorkerInterrupted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping crash recovery live DB test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 

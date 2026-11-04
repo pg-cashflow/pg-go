@@ -44,6 +44,9 @@ var allBinaries = []string{
 // fail fast with non-zero POSIX exit codes when executed without required environment variables,
 // while deprecated binaries emit their notice cleanly.
 func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	for _, bin := range allBinaries {
 		t.Run(bin, func(t *testing.T) {
 			cmdPath := filepath.Join("..", "..", "cmd", bin)
@@ -106,6 +109,9 @@ func TestGate12_BinariesMissingEnvFailFast(t *testing.T) {
 // 1. -help exits 0.
 // 2. An invalid flag exits non-zero (POSIX exit code 2).
 func TestGate12_HelpFlagAndInvalidFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	for _, bin := range allBinaries {
 		t.Run(bin+"_help", func(t *testing.T) {
 			cmdPath := filepath.Join("..", "..", "cmd", bin)
@@ -146,6 +152,9 @@ func TestGate12_HelpFlagAndInvalidFlag(t *testing.T) {
 // TestGate12_JobBinariesIdempotentLiveRun verifies that background jobs run cleanly against
 // the database with exit code 0 and are safe to run twice (idempotent).
 func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 
@@ -199,6 +208,9 @@ func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
 // TestGate12_CashfreePollDormantWhenUnconfigured validates that cmd/cashfree-poll
 // exits 0 gracefully when Cashfree credentials are intentionally omitted.
 func TestGate12_CashfreePollDormantWhenUnconfigured(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 
@@ -240,6 +252,9 @@ func TestGate12_CashfreePollDormantWhenUnconfigured(t *testing.T) {
 // TestGate12_MigrateExecution validates that cmd/migrate runs cleanly
 // against the test database and emits the completion message with exit code 0.
 func TestGate12_MigrateExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 
@@ -323,6 +338,9 @@ func getFreePort(t *testing.T) string {
 // TestGate12_ServerGracefulShutdown validates that cmd/server responds
 // to SIGINT/Interrupt, drains active connections, and terminates cleanly.
 func TestGate12_ServerGracefulShutdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow exec CLI test in short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 
