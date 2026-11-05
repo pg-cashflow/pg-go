@@ -326,11 +326,11 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						}
 					}
 				} else if time.Since(ref.CreatedAt) > 30*time.Minute {
-					log.Warn("cashfree poll refund not found at gateway after grace period; marking failed",
+					log.Warn("cashfree poll refund not found at gateway after grace period; marking on_hold for manual review",
 						"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
 					if reconciler, ok := j.Refunds.(RefundReconciler); ok {
-						if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, "failed"); recErr != nil {
-							log.Error("cashfree poll reconcile failed refund error", "refund_id", refundID, "err", recErr)
+						if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, domain.RefundStatusOnHold); recErr != nil {
+							log.Error("cashfree poll reconcile on_hold refund error", "refund_id", refundID, "err", recErr)
 						}
 					}
 					continue

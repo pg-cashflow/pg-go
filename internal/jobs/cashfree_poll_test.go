@@ -425,7 +425,7 @@ func TestCashfreePollReconcilesStuckRefundClawsBackReferral(t *testing.T) {
 	}
 }
 
-func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
+func TestCashfreePollReconcilesStuckInitiatedRefundToOnHoldOn404(t *testing.T) {
 	refRef := "rf_orphan_1"
 	refID := uuid.New()
 	staleCreatedAt := time.Now().UTC().Add(-45 * time.Minute)
@@ -454,8 +454,8 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToFailedOn404(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != "failed" {
-		t.Fatalf("expected orphan initiated refund to reconcile to failed, got id=%s status=%s",
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != domain.RefundStatusOnHold {
+		t.Fatalf("expected orphan initiated refund to reconcile to on_hold, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }
@@ -604,7 +604,7 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 	if resubmitClient.createCalls != 1 {
 		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
 	}
-	expectedIdempKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:retry:"+refID.String())).String()
+	expectedIdempKey := domain.CashfreeRefundIdempotencyKey(refID)
 	if resubmitClient.lastIdempKey != expectedIdempKey {
 		t.Fatalf("expected idempotency key %s, got %s", expectedIdempKey, resubmitClient.lastIdempKey)
 	}

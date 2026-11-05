@@ -38,6 +38,8 @@ type Config struct {
 	CashfreePGSecretKey          string
 	CashfreeKYCAppID             string
 	CashfreeKYCSecretKey         string
+	CashfreeKYCAuthMode          string // "ip" (default) | "signature"
+	CashfreeKYCPublicKeyPEM      string // PEM-encoded RSA public key for KYC signature auth
 	CashfreeEnv                  string
 	CashfreeWebhookSecret        string
 	WebhookTimestampToleranceSec int
@@ -58,6 +60,8 @@ type Config struct {
 	// Aadhaar document bytes (document_bytes, attested_photo_bytes) at rest.
 	// Set via KYC_DOC_CRYPTO_KEY. Empty = encryption disabled (dev/CI safe).
 	KYCDocCryptoKey                   string
+	KYCVerificationValidityDays       int
+	RefundWindowDays                  int
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
 	CashfreePayoutAPIVersion          string
@@ -127,6 +131,8 @@ func Load() (*Config, error) {
 		CashfreePGSecretKey:               envFirst("CASHFREE_PG_SECRET_KEY", "CASHFREE_SECRET_KEY"),
 		CashfreeKYCAppID:                  os.Getenv("CASHFREE_KYC_APP_ID"),
 		CashfreeKYCSecretKey:              os.Getenv("CASHFREE_KYC_SECRET_KEY"),
+		CashfreeKYCAuthMode:               strings.ToLower(strings.TrimSpace(envOr("CASHFREE_KYC_AUTH_MODE", "ip"))),
+		CashfreeKYCPublicKeyPEM:           loadKYCPublicKeyPEM(),
 		CashfreeEnv:                       envOr("CASHFREE_ENV", "sandbox"),
 		CashfreeWebhookSecret:             envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),
 		CashfreePayoutClientID:            os.Getenv("CF_PAYOUT_CLIENT_ID"),
@@ -145,6 +151,8 @@ func Load() (*Config, error) {
 		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
+		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 365),
+		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 120),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
@@ -398,6 +406,19 @@ func loadPayoutPublicKeyPEM() string {
 		return raw
 	}
 	if path := strings.TrimSpace(os.Getenv("CF_PAYOUT_PUBLIC_KEY_PATH")); path != "" {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}
+
+func loadKYCPublicKeyPEM() string {
+	if raw := strings.TrimSpace(os.Getenv("CASHFREE_KYC_PUBLIC_KEY")); raw != "" {
+		return raw
+	}
+	if path := strings.TrimSpace(os.Getenv("CASHFREE_KYC_PUBLIC_KEY_PATH")); path != "" {
 		data, err := os.ReadFile(path)
 		if err == nil {
 			return strings.TrimSpace(string(data))

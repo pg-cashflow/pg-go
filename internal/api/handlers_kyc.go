@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -688,7 +689,7 @@ func (h *Handlers) OwnerTenantKYCPhoto(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Content-Type-Options", "nosniff")
-	slog.Info("audit: KYC identity document accessed", "verification_id", id, "property_id", propertyID, "actor", c.GetString("user_id"))
+	slog.Info("audit: KYC identity photo accessed", "tenant_id", tenantID, "property_id", propertyID, "actor", c.GetString("user_id"))
 	ct := http.DetectContentType(b)
 	c.Data(http.StatusOK, ct, b)
 }

@@ -491,7 +491,11 @@ func (h *Handlers) OwnerVerifyPayee(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"payee": payee})
+	c.JSON(http.StatusOK, gin.H{
+		"payee":               payee,
+		"verification_status": "owner_attested",
+		"verification_method": "owner_attestation",
+	})
 }
 
 // OwnerListPayees handles GET /owner/payouts/payees.

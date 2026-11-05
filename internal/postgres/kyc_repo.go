@@ -269,7 +269,7 @@ func (r *KYCRepo) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 				document_url = NULL,
 				ocr_data = NULL,
 				updated_at = $2
-			WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
+			WHERE tenant_id = $1
 		`, tenantID, now)
 		if err != nil {
 			return fmt.Errorf("kyc: revoke verification records: %w", err)
@@ -638,6 +638,26 @@ func (r *KYCRepo) GetVerificationByVendorRefID(ctx context.Context, vendorRefID 
 		FROM kyc_verification
 		WHERE vendor_reference_id = $1
 	`, vendorRefID))
+}
+
+// UpdateVendorRefIDTx updates the unique vendor_reference_id on an existing verification record.
+func (r *KYCRepo) UpdateVendorRefIDTx(ctx context.Context, verificationID uuid.UUID, vendorRefID string) error {
+	now := time.Now().UTC()
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE kyc_verification
+			SET vendor_reference_id = $2,
+				updated_at = $3
+			WHERE id = $1
+		`, verificationID, vendorRefID, now)
+		if err != nil {
+			return fmt.Errorf("kyc: update vendor_reference_id: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrVerificationNotFound
+		}
+		return nil
+	})
 }
 
 // CheckDuplicateIdentity checks if an active, verified identity hash matches another tenant.

@@ -103,6 +103,17 @@ func (c *Config) ValidateForRealDeployment() error {
 	if (kycAppID != "" && kycSecret == "") || (kycAppID == "" && kycSecret != "") {
 		errs = append(errs, "both CASHFREE_KYC_APP_ID and CASHFREE_KYC_SECRET_KEY must be provided")
 	}
+	if strings.EqualFold(c.CashfreeKYCAuthMode, "signature") {
+		if strings.TrimSpace(c.CashfreeKYCPublicKeyPEM) == "" {
+			errs = append(errs, "CASHFREE_KYC_PUBLIC_KEY is required when CASHFREE_KYC_AUTH_MODE is 'signature'")
+		} else {
+			if _, err := cashfree.ParseRSAPublicKeyOrCertificate([]byte(c.CashfreeKYCPublicKeyPEM)); err != nil {
+				errs = append(errs, fmt.Sprintf("CASHFREE_KYC_PUBLIC_KEY must be a valid PEM-encoded RSA public key or certificate: %v", err))
+			}
+		}
+	} else if c.CashfreeKYCAuthMode != "" && c.CashfreeKYCAuthMode != "ip" {
+		errs = append(errs, fmt.Sprintf("CASHFREE_KYC_AUTH_MODE must be either 'signature' or 'ip' (got %q)", c.CashfreeKYCAuthMode))
+	}
 
 	// --- Cashfree Payout key pairs, fundsource, and webhook secret ---
 	payoutClientID := strings.TrimSpace(c.CashfreePayoutClientID)
