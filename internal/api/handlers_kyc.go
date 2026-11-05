@@ -594,6 +594,59 @@ type recordGuardianConsentBody struct {
 	GuardianPhone string  `json:"guardian_phone" binding:"required"`
 	Relationship  string  `json:"relationship" binding:"required,oneof=parent legal_guardian"`
 	ReferenceID   *string `json:"reference_id"`
+	OTP           *string `json:"otp"`
+}
+
+type requestGuardianConsentOTPBody struct {
+	GuardianPhone string `json:"guardian_phone" binding:"required,e164|len=10"`
+}
+
+// OwnerRequestGuardianConsentOTP handles POST /api/owner/tenants/:id/kyc/guardian-consent/request-otp.
+func (h *Handlers) OwnerRequestGuardianConsentOTP(c *gin.Context) {
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	tenant, err := h.TenantStore.GetByID(c.Request.Context(), tenantID)
+	if err != nil || tenant.PropertyID != propertyID {
+		apierr.RespondClientErr(c, http.StatusNotFound, "tenant not found", apierr.CodeRequestInvalidId)
+		return
+	}
+
+	var body requestGuardianConsentOTPBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "invalid guardian phone", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	if h.Auth == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth service unavailable"})
+		return
+	}
+
+	purpose := fmt.Sprintf("guardian_consent:%s", tenantID)
+	channel, destination, err := h.Auth.RequestStepUpOTPWithChannel(c.Request.Context(), body.GuardianPhone, purpose, nil)
+	if err != nil {
+		if errors.Is(err, auth.ErrRateLimited) {
+			respondErr(c, clientErrWithCode(http.StatusTooManyRequests, "please wait before requesting another code", apierr.CodeAuthRateLimited))
+		} else if errors.Is(err, auth.ErrNoDeliveryChannel) {
+			respondErr(c, clientErrWithCode(http.StatusUnprocessableEntity, "no delivery channel available", apierr.CodeAuthNoDeliveryChannel))
+		} else {
+			respondErr(c, err)
+		}
+		return
+	}
+
+	if channel == "sms" {
+		destination = maskPhone(destination)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "channel": channel, "destination": destination})
 }
 
 // OwnerRecordGuardianConsent handles POST /api/owner/tenants/:id/kyc/guardian-consent.
@@ -633,6 +686,19 @@ func (h *Handlers) OwnerRecordGuardianConsent(c *gin.Context) {
 	refID := fmt.Sprintf("guard_manual_%s", uuid.New().String())
 	if body.ReferenceID != nil && *body.ReferenceID != "" {
 		refID = *body.ReferenceID
+	}
+
+	if body.OTP != nil && strings.TrimSpace(*body.OTP) != "" {
+		if h.Auth == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth service unavailable"})
+			return
+		}
+		purpose := fmt.Sprintf("guardian_consent:%s", tenantID)
+		if err := h.Auth.VerifyStepUpOTPSpecific(c.Request.Context(), body.GuardianPhone, strings.TrimSpace(*body.OTP), purpose, nil); err != nil {
+			apierr.RespondClientErr(c, http.StatusUnauthorized, "invalid guardian verification code", apierr.CodeAuthInvalidOtp)
+			return
+		}
+		refID = fmt.Sprintf("guard_otp_%s", uuid.New().String())
 	}
 
 	updatedTenant, err := svc.RecordGuardianConsent(

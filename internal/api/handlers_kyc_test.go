@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -920,6 +921,106 @@ func TestOwnerRecordGuardianConsent_Success(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOwnerRequestGuardianConsentOTP_Success(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	tenantID := uuid.New()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+	tenant := &domain.Tenant{
+		ID:         tenantID,
+		PropertyID: propertyID,
+		Name:       "Minor Tenant",
+		Status:     domain.TenantStatusActive,
+	}
+	tStore := &stubTenantStoreForKYC{tenant: tenant}
+	authStub := &stubAuthService{}
+	h := &Handlers{Deps: Deps{
+		KYCSvc:      &fakeKYCSvc{},
+		TenantStore: tStore,
+		Auth:        authStub,
+	}}
+	r.POST("/api/owner/tenants/:id/kyc/guardian-consent/request-otp", h.OwnerRequestGuardianConsentOTP)
+
+	payload := `{"guardian_phone":"+919876543210"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/kyc/guardian-consent/request-otp", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOwnerRecordGuardianConsent_WithOTP(t *testing.T) {
+	propertyID := uuid.New()
+	ownerID := uuid.New()
+	tenantID := uuid.New()
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			Role:       domain.RoleOwner,
+			PropertyID: &propertyID,
+		})
+		c.Next()
+	})
+	tenant := &domain.Tenant{
+		ID:         tenantID,
+		PropertyID: propertyID,
+		Name:       "Minor Tenant",
+		Status:     domain.TenantStatusActive,
+	}
+	tStore := &stubTenantStoreForKYC{tenant: tenant}
+	authStub := &stubAuthService{}
+	h := &Handlers{Deps: Deps{
+		KYCSvc:      &fakeKYCSvc{},
+		TenantStore: tStore,
+		Auth:        authStub,
+	}}
+	r.POST("/api/owner/tenants/:id/kyc/guardian-consent", h.OwnerRecordGuardianConsent)
+
+	// Subtest 1: Invalid OTP -> 401
+	{
+		authStub.verifyOTPErr = errors.New("invalid otp")
+		payload := `{"guardian_name":"Parent One","guardian_phone":"+919876543210","relationship":"parent","otp":"000000"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/kyc/guardian-consent", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized for invalid OTP, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Subtest 2: Valid OTP -> 200 with guard_otp_ prefix
+	{
+		authStub.verifyOTPErr = nil
+		payload := `{"guardian_name":"Parent One","guardian_phone":"+919876543210","relationship":"parent","otp":"654321"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/kyc/guardian-consent", strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for valid OTP, got %d: %s", w.Code, w.Body.String())
+		}
 	}
 }
 
