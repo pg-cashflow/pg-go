@@ -657,9 +657,9 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	}
 
 	if bg.cfClient != nil && bg.paymentRepo != nil {
-		bg.logger.Info("cashfree refund poller started", "interval", "5m", "stale_after", "2m")
+		bg.logger.Info("cashfree refund poller started", "interval", "2m", "stale_after", "2m")
 		go func() {
-			ticker := time.NewTicker(5 * time.Minute)
+			ticker := time.NewTicker(2 * time.Minute)
 			defer ticker.Stop()
 			for {
 				select {
