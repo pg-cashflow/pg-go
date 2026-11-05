@@ -209,7 +209,11 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	}
 	// Canonical server-owned consent text guarantees cryptographic proof of what was displayed.
 	// Client-authored strings are ignored to prevent tampering with DPDP consent evidence.
-	consentText := kycsvc.ResolveConsentText(body.ConsentVersion, locale)
+	consentText, err := kycsvc.ResolveConsentText(body.ConsentVersion, locale)
+	if err != nil {
+		apierr.RespondBindErr(c, "unsupported consent_version", apierr.CodeRequestInvalidBody)
+		return
+	}
 
 	ip := c.ClientIP()
 	ua := c.Request.UserAgent()

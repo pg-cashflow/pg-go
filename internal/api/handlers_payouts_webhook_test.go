@@ -1013,6 +1013,61 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("transfer_success_with_acknowledged_zero_is_ignored", func(t *testing.T) {
+		itemID := uuid.New()
+		updateCalled := false
+		zero := 0
+
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					Status:      domain.PayoutProcessing,
+					BatchID:     nil,
+					AmountPaise: 50000,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_SUCCESS",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID: "cf_tr_unack",
+			Status:       "SUCCESS",
+			StatusCode:   "COMPLETED",
+			Acknowledged: &zero,
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when acknowledged is 0")
+		}
+	})
+
 	t.Run("bulk_transfer_rejected_sets_batch_failed", func(t *testing.T) {
 		batchID := uuid.New()
 		var failedBatchID uuid.UUID

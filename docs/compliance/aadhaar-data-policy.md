@@ -27,7 +27,8 @@ In strict compliance with UIDAI regulations:
   - `masked_uid`: Formatted as `"XXXXXXXX1234"`.
   - `identity_hash`: Salted HMAC-SHA256 representation used exclusively for deduplication and duplicate-tenant detection.
   - `name`, `dob`, `gender`, `care_of`, and address: Demographic attributes required for municipal tenant registry.
-  - `attested_photo_bytes`: Standard facial biometric photograph extracted from UIDAI-signed QR or DigiLocker package for on-site manager badge matching.
+  - `attested_photo_bytes`: Standard facial biometric photograph extracted from UIDAI-signed QR or DigiLocker package for on-site manager badge matching, encrypted at rest with AES-256-GCM.
+  - `document_bytes` & `ocr_data`: Uploaded identity document binaries and extracted verification demographics (for manual review fallbacks), encrypted at rest with AES-256-GCM and retained strictly for tenancy duration under police verification and municipal recordkeeping mandates. Erased atomically upon `RevokeConsent` or account closure.
 
 ---
 

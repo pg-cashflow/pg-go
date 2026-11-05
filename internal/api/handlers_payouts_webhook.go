@@ -41,6 +41,7 @@ type PayoutWebhookData struct {
 	StatusCode        string  `json:"status_code"`
 	StatusDescription string  `json:"status_description"`
 	UTR               *string `json:"utr"`
+	Acknowledged      *int    `json:"acknowledged,omitempty"`
 	AcknowledgedAt    *string `json:"acknowledged_at"`
 	SettledAt         *string `json:"settled_at"`
 }
@@ -313,11 +314,13 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	switch evtType {
 	case "TRANSFER_SUCCESS":
 		// Cashfree Transfers V2: A transfer is settled only when status is SUCCESS and status_code is COMPLETED.
-		if !strings.EqualFold(data.Status, "SUCCESS") || !strings.EqualFold(data.StatusCode, "COMPLETED") {
+		// If acknowledged is explicitly present and 0, the transfer is unacknowledged and not terminal.
+		if (data.Acknowledged != nil && *data.Acknowledged == 0) || !strings.EqualFold(data.Status, "SUCCESS") || !strings.EqualFold(data.StatusCode, "COMPLETED") {
 			slog.Warn("payout webhook TRANSFER_SUCCESS unconfirmed: status or status_code not completed",
 				"item_id", item.ID,
 				"status", data.Status,
 				"status_code", data.StatusCode,
+				"acknowledged", data.Acknowledged,
 			)
 			if evtRecord.ID != uuid.Nil {
 				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "ignored_unconfirmed", nil)

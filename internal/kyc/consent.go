@@ -1,5 +1,15 @@
 package kyc
 
+import (
+	"errors"
+	"fmt"
+)
+
+var (
+	// ErrUnsupportedConsentVersion indicates an unregistered consent version string.
+	ErrUnsupportedConsentVersion = errors.New("kyc: unsupported consent version")
+)
+
 // CanonicalConsentCatalog maps (version -> locale -> canonical consent text).
 var CanonicalConsentCatalog = map[string]map[string]string{
 	"v1.0": {
@@ -11,17 +21,18 @@ var CanonicalConsentCatalog = map[string]map[string]string{
 }
 
 // ResolveConsentText returns the canonical server-owned text for a given version and locale.
-// Falls back to en-IN if the locale or version is not found in the catalog.
-func ResolveConsentText(version, locale string) string {
+// It returns ErrUnsupportedConsentVersion if the requested version is not in the canonical catalog.
+// Falls back to en-IN if the locale is not found for a supported version.
+func ResolveConsentText(version, locale string) (string, error) {
 	if version == "" {
 		version = "v1.0"
 	}
 	byLocale, ok := CanonicalConsentCatalog[version]
 	if !ok {
-		byLocale = CanonicalConsentCatalog["v1.0"]
+		return "", fmt.Errorf("%w: %q", ErrUnsupportedConsentVersion, version)
 	}
 	if text, ok := byLocale[locale]; ok && text != "" {
-		return text
+		return text, nil
 	}
-	return CanonicalConsentCatalog["v1.0"]["en-IN"]
+	return byLocale["en-IN"], nil
 }

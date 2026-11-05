@@ -224,6 +224,50 @@ func ResetTokenVersionCache() {
 	tokenVersionMu.Unlock()
 }
 
+var (
+	revokedFamilyMu    sync.RWMutex
+	revokedFamilyCache = make(map[uuid.UUID]time.Time)
+)
+
+// InvalidateFamily records a revoked token family so that any outstanding
+// 15-minute access token carrying this family_id is immediately rejected
+// by sessionStillValid with 403 Forbidden (CodeAuthAccessRevoked).
+func InvalidateFamily(familyID uuid.UUID) {
+	if familyID == uuid.Nil {
+		return
+	}
+	revokedFamilyMu.Lock()
+	revokedFamilyCache[familyID] = time.Now().Add(AccessTokenTTL)
+	revokedFamilyMu.Unlock()
+}
+
+// IsFamilyRevoked checks whether the given family_id has been explicitly revoked.
+func IsFamilyRevoked(familyID uuid.UUID) bool {
+	if familyID == uuid.Nil {
+		return false
+	}
+	revokedFamilyMu.RLock()
+	expiresAt, ok := revokedFamilyCache[familyID]
+	revokedFamilyMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if time.Now().Before(expiresAt) {
+		return true
+	}
+	revokedFamilyMu.Lock()
+	delete(revokedFamilyCache, familyID)
+	revokedFamilyMu.Unlock()
+	return false
+}
+
+// ResetRevokedFamilyCache clears all cached revoked family IDs (primarily for testing).
+func ResetRevokedFamilyCache() {
+	revokedFamilyMu.Lock()
+	revokedFamilyCache = make(map[uuid.UUID]time.Time)
+	revokedFamilyMu.Unlock()
+}
+
 func getCachedTokenVersion(userID uuid.UUID) (int, bool) {
 	tokenVersionMu.RLock()
 	hit, ok := tokenVersionCache[userID]
@@ -327,9 +371,24 @@ func sweepExpiredCaches(now time.Time) {
 		}
 	}
 	tenantCacheMu.Unlock()
+
+	revokedFamilyMu.Lock()
+	for k, exp := range revokedFamilyCache {
+		if now.After(exp) {
+			delete(revokedFamilyCache, k)
+		}
+	}
+	revokedFamilyMu.Unlock()
 }
 
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
+	if claims.FamilyID != nil && *claims.FamilyID != uuid.Nil {
+		if IsFamilyRevoked(*claims.FamilyID) {
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return false
+		}
+	}
+
 	if users == nil {
 		return true
 	}

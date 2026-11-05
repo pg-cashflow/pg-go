@@ -2,6 +2,9 @@ package postgres
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/pg-cashflow/pg-go/internal/crypto"
@@ -163,5 +166,59 @@ func TestKYCRepo_Crypto_InvalidKeyFailsClosed(t *testing.T) {
 	_, err = repo.decryptBytes([]byte("test"))
 	if err == nil {
 		t.Fatalf("expected error on decrypt with malformed key")
+	}
+}
+
+type mockKYCRow struct {
+	ocrData *string
+}
+
+func (m *mockKYCRow) Scan(dest ...any) error {
+	if len(dest) != 26 {
+		return fmt.Errorf("expected 26 destinations, got %d", len(dest))
+	}
+	if ptr, ok := dest[20].(**string); ok {
+		*ptr = m.ocrData
+	}
+	return nil
+}
+
+func TestKYCRepo_Crypto_OCRDataFieldEncryptionAndDualRead(t *testing.T) {
+	key := bytes.Repeat([]byte{0x77}, 32)
+	repo := NewKYCRepo(nil, key)
+
+	originalOCR := `{"name":"Aadhaar User","dob":"1995-06-15","gender":"M"}`
+
+	// 1. Simulate encryption as performed in SubmitManualReviewTx
+	encOCR, err := repo.encryptBytes([]byte(originalOCR))
+	if err != nil {
+		t.Fatalf("encryptBytes failed: %v", err)
+	}
+	encJSON, err := json.Marshal(map[string]any{
+		"encrypted":  true,
+		"ciphertext": base64.StdEncoding.EncodeToString(encOCR),
+	})
+	if err != nil {
+		t.Fatalf("marshal encrypted ocr failed: %v", err)
+	}
+	encStr := string(encJSON)
+
+	// 2. Scan row containing encrypted OCR data
+	vEnc, err := repo.scanKYCVerification(&mockKYCRow{ocrData: &encStr})
+	if err != nil {
+		t.Fatalf("scanKYCVerification failed: %v", err)
+	}
+	if vEnc.OCRData == nil || *vEnc.OCRData != originalOCR {
+		t.Fatalf("expected transparently decrypted OCR data %q, got %v", originalOCR, vEnc.OCRData)
+	}
+
+	// 3. Scan legacy unencrypted row (dual-read backward compatibility)
+	legacyOCR := `{"name":"Legacy User","dob":"1992-01-01"}`
+	vLegacy, err := repo.scanKYCVerification(&mockKYCRow{ocrData: &legacyOCR})
+	if err != nil {
+		t.Fatalf("scanKYCVerification failed for legacy row: %v", err)
+	}
+	if vLegacy.OCRData == nil || *vLegacy.OCRData != legacyOCR {
+		t.Fatalf("expected legacy OCR data %q to be preserved unchanged, got %v", legacyOCR, vLegacy.OCRData)
 	}
 }

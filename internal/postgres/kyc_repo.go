@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -145,7 +146,7 @@ const (
 	kycAuditCols = `id, tenant_id, actor, action, detail_hash, prev_hash, created_at`
 )
 
-func scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
+func (r *KYCRepo) scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
 	var v domain.KYCVerification
 	err := row.Scan(
 		&v.ID, &v.TenantID, &v.ConsentID, &v.VendorName, &v.VendorReferenceID,
@@ -159,6 +160,21 @@ func scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
 			return nil, domain.ErrVerificationNotFound
 		}
 		return nil, err
+	}
+	if v.OCRData != nil && *v.OCRData != "" {
+		var encWrapper struct {
+			Encrypted  bool   `json:"encrypted"`
+			Ciphertext string `json:"ciphertext"`
+		}
+		if err := json.Unmarshal([]byte(*v.OCRData), &encWrapper); err == nil && encWrapper.Encrypted && encWrapper.Ciphertext != "" {
+			cipherBytes, err := base64.StdEncoding.DecodeString(encWrapper.Ciphertext)
+			if err == nil {
+				if dec, err := r.decryptBytes(cipherBytes); err == nil {
+					decStr := string(dec)
+					v.OCRData = &decStr
+				}
+			}
+		}
 	}
 	return &v, nil
 }
@@ -332,7 +348,7 @@ func (r *KYCRepo) InitiateVerificationTx(
 		}
 
 		// 2. Check for active (pending, pending_manual_review, or verified) verification
-		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+		existing, err := r.scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
 			WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
@@ -400,7 +416,7 @@ func (r *KYCRepo) InitiateVerificationTx(
 		}
 
 		// 3. Insert new pending verification record
-		newVerification, err = scanKYCVerification(tx.QueryRow(ctx, `
+		newVerification, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			INSERT INTO kyc_verification (
 				tenant_id, consent_id, vendor_name, vendor_reference_id,
 				method, status, created_at, updated_at
@@ -463,7 +479,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 		}
 
 		// 3. Now acquire row lock on kyc_verification
-		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+		existing, err := r.scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
 			WHERE id = $1
@@ -515,7 +531,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 		if !expiresAt.IsZero() {
 			expiresAtParam = expiresAt
 		}
-		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+		updated, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
 				masked_uid = $2,
@@ -624,7 +640,7 @@ func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UU
 
 // GetActiveVerificationByTenant retrieves any currently pending, under-review, or verified verification for a tenant.
 func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
-	return scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE tenant_id = $1 AND status IN ('pending', 'verified', 'pending_manual_review')
@@ -633,7 +649,7 @@ func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uu
 
 // GetVerificationByVendorRefID retrieves a verification record by its unique vendor reference ID.
 func (r *KYCRepo) GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-	return scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE vendor_reference_id = $1
@@ -855,7 +871,7 @@ func (r *KYCRepo) appendAuditLogTx(ctx context.Context, tx pgx.Tx, tenantID uuid
 // tenant regardless of status — used by the owner view which needs to surface
 // even failed/revoked/expired records.
 func (r *KYCRepo) GetLatestVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
-	return scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE tenant_id = $1
@@ -1012,12 +1028,28 @@ func (r *KYCRepo) SubmitManualReviewTx(
 			return fmt.Errorf("kyc: encrypt document bytes: %w", err)
 		}
 
+		ocrToStore := ocrData
+		if ocrData != "" && (len(r.cryptoKey) == 32 || r.keyRing != nil) {
+			encOCR, err := r.encryptBytes([]byte(ocrData))
+			if err != nil {
+				return fmt.Errorf("kyc: encrypt ocr data: %w", err)
+			}
+			encJSON, err := json.Marshal(map[string]any{
+				"encrypted":  true,
+				"ciphertext": base64.StdEncoding.EncodeToString(encOCR),
+			})
+			if err != nil {
+				return fmt.Errorf("kyc: marshal encrypted ocr data: %w", err)
+			}
+			ocrToStore = string(encJSON)
+		}
+
 		isDedupable := true
 		if maskedUID == "XXXX" || identityHash == "" {
 			isDedupable = false
 		}
 
-		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+		updated, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'pending_manual_review',
 				masked_uid = $2,
@@ -1030,7 +1062,7 @@ func (r *KYCRepo) SubmitManualReviewTx(
 				updated_at = $9
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, ocrData, documentURL, encDocBytes, documentContentType, isDedupable, now))
+		`, verificationID, maskedUID, identityHash, ocrToStore, documentURL, encDocBytes, documentContentType, isDedupable, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
 		}
@@ -1154,7 +1186,7 @@ func (r *KYCRepo) ApproveManualReviewTx(
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
-		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+		existing, err := r.scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
 			WHERE id = $1
@@ -1168,7 +1200,7 @@ func (r *KYCRepo) ApproveManualReviewTx(
 			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
 		}
 
-		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+		updated, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
 				reviewed_by = $2,
@@ -1265,7 +1297,7 @@ func (r *KYCRepo) RejectManualReviewTx(
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
-		existing, err := scanKYCVerification(tx.QueryRow(ctx, `
+		existing, err := r.scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
 			WHERE id = $1
@@ -1279,7 +1311,7 @@ func (r *KYCRepo) RejectManualReviewTx(
 			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
 		}
 
-		updated, err = scanKYCVerification(tx.QueryRow(ctx, `
+		updated, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'rejected',
 				reviewed_by = $2,
@@ -1322,7 +1354,7 @@ func (r *KYCRepo) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) 
 
 	var list []domain.KYCVerification
 	for rows.Next() {
-		v, err := scanKYCVerification(rows)
+		v, err := r.scanKYCVerification(rows)
 		if err != nil {
 			return nil, fmt.Errorf("kyc: scan pending review: %w", err)
 		}
@@ -1333,7 +1365,7 @@ func (r *KYCRepo) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) 
 
 // GetVerificationByID fetches a single verification record by its primary key UUID.
 func (r *KYCRepo) GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error) {
-	return scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE id = $1

@@ -804,6 +804,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			if preUser.TenantID != nil && s.tenants != nil {
 				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
+						InvalidateFamily(existingRT.FamilyID)
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
 					}
 					return "", "", nil, ErrTenantVacated
@@ -828,6 +829,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
 				if terr == nil && t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
+						InvalidateFamily(rotatedRT.FamilyID)
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 					}
 					return "", "", nil, ErrTenantVacated
@@ -863,6 +865,7 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		t, err := s.tenants.GetByID(ctx, *user.TenantID)
 		if err == nil && t != nil && !t.CanSignIn() {
 			if s.refreshRepo != nil {
+				InvalidateFamily(rotatedRT.FamilyID)
 				_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 			}
 			return "", "", nil, ErrTenantVacated
@@ -901,6 +904,7 @@ func (s *Service) RevokeSession(ctx context.Context, plaintextToken string) erro
 	if err != nil {
 		return nil
 	}
+	InvalidateFamily(rt.FamilyID)
 	return s.refreshRepo.RevokeFamily(ctx, rt.FamilyID)
 }
 
@@ -935,6 +939,7 @@ func (s *Service) ListSessions(ctx context.Context, userID uuid.UUID, currentFam
 
 // RevokeDeviceSession revokes an individual session family belonging to the user.
 func (s *Service) RevokeDeviceSession(ctx context.Context, userID, familyID uuid.UUID) error {
+	InvalidateFamily(familyID)
 	if s.refreshRepo == nil {
 		return nil
 	}
@@ -957,6 +962,13 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, userID uuid.UUID, cur
 	}
 	if activeFamily == uuid.Nil {
 		return ErrNoCurrentSession
+	}
+	if sessions, err := s.refreshRepo.ListActiveSessions(ctx, userID); err == nil {
+		for _, sess := range sessions {
+			if sess.ID != activeFamily {
+				InvalidateFamily(sess.ID)
+			}
+		}
 	}
 	return s.refreshRepo.RevokeAllExceptFamily(ctx, userID, activeFamily)
 }

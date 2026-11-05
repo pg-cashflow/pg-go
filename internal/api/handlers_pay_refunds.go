@@ -859,15 +859,19 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("invalid provider")
 	}
 
-	// 120-day eligibility window check (aligned with Cashfree published policy)
+	// Eligibility window check (aligned with Cashfree policy and merchant config)
 	now := time.Now().UTC()
 	paymentTime := p.CreatedAt
 	if !p.MatchedAt.IsZero() {
 		paymentTime = p.MatchedAt
 	}
-	if now.Sub(paymentTime) > 120*24*time.Hour {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "payment is older than 120 days and cannot be refunded via gateway"})
-		return nil, errors.New("older than 120 days")
+	windowDays := h.RefundWindowDays
+	if windowDays <= 0 {
+		windowDays = 120
+	}
+	if now.Sub(paymentTime) > time.Duration(windowDays)*24*time.Hour {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("payment is older than %d days and cannot be refunded via gateway", windowDays)})
+		return nil, fmt.Errorf("older than %d days", windowDays)
 	}
 
 	// Idempotency key handling: standard Idempotency-Key with X-Idempotency-Key fallback
