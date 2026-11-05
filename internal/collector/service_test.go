@@ -239,12 +239,11 @@ func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
 	}
 }
 
-
 type recoveringIntentMgr struct {
-	claimed     *domain.PaymentIntent
+	claimed      *domain.PaymentIntent
 	transitioned bool
-	sessionID   string
-	failed      bool
+	sessionID    string
+	failed       bool
 }
 
 func (m *recoveringIntentMgr) Create(context.Context, *domain.PaymentIntent) error { return nil }
@@ -274,10 +273,10 @@ func (m *recoveringIntentMgr) GetByID(ctx context.Context, id uuid.UUID) (*domai
 }
 
 type timingOutCF struct {
-	createCalls int
+	createCalls   int
 	getOrderCalls int
-	activeOrder *cashfree.OrderDetails
-	getOrderErr error
+	activeOrder   *cashfree.OrderDetails
+	getOrderErr   error
 }
 
 func (c *timingOutCF) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {

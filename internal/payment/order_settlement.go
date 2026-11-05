@@ -430,4 +430,3 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 	}
 	return nil
 }
-

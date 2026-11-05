@@ -3,8 +3,8 @@ package payment
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -88,7 +88,6 @@ func (m *MockPaymentProvider) GetOrder(ctx context.Context, orderID string) (*ca
 		ExpiresAt:        order.ExpiresAt,
 	}, nil
 }
-
 
 func (m *MockPaymentProvider) FetchPayment(ctx context.Context, orderID string) (*ProviderPayment, error) {
 	m.mu.Lock()

@@ -709,7 +709,6 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 	c.JSON(http.StatusOK, rf)
 }
 
-
 // ManagerRefundPayment handles POST /manager/payments/:id/refund.
 // It verifies that the property owner has enabled allow_manager_refunds in property settings.
 func (h *Handlers) ManagerRefundPayment(c *gin.Context) {

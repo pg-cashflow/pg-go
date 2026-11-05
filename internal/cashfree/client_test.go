@@ -222,7 +222,6 @@ func TestClient_WithBaseURL(t *testing.T) {
 	}
 }
 
-
 func TestCancelRefund(t *testing.T) {
 	var gotMethod string
 	var gotPath string
