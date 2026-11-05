@@ -49,6 +49,11 @@ type LedgerOutboxInserter interface {
 	InsertLedgerOutboxEventTx(ctx context.Context, tx pgx.Tx, evt *domain.LedgerOutboxEvent) error
 }
 
+// GatewayPaymentSettler settles a due against a gateway transaction.
+type GatewayPaymentSettler interface {
+	GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, bankRef string, dedupKey ...string) (*domain.Payment, error)
+}
+
 // OrderSettlementConfig configures OrderSettlementService.
 type OrderSettlementConfig struct {
 	Pool               *pgxpool.Pool
@@ -56,7 +61,7 @@ type OrderSettlementConfig struct {
 	IntentStore        PaymentIntentRepository
 	LedgerOutboxRepo   LedgerOutboxInserter
 	FinanceEnabled     bool
-	Payments           *Service
+	Payments           GatewayPaymentSettler
 }
 
 // OrderSettlementService performs canonical, idempotent settlement for gateway orders.
@@ -67,7 +72,7 @@ type OrderSettlementService struct {
 	intentStore        PaymentIntentRepository
 	ledgerOutboxRepo   LedgerOutboxInserter
 	financeEnabled     bool
-	payments           *Service
+	payments           GatewayPaymentSettler
 }
 
 // NewOrderSettlementService constructs an OrderSettlementService.

@@ -245,9 +245,18 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 		return errors.New("database pool unavailable")
 	}
 	return postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var curStatus string
+		err := tx.QueryRow(ctx, `SELECT status FROM gateway_refunds WHERE id = $1 FOR UPDATE`, rfRow.ID).Scan(&curStatus)
+		if err == nil && domain.NormalizeRefundStatus(curStatus) == domain.RefundStatusSucceeded {
+			return fmt.Errorf("cannot cleanup refund %s: already succeeded", rfRow.ID)
+		}
+
 		txPayRepo := postgres.NewPaymentRepo(tx)
 		if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
 			return fmt.Errorf("mark refund failed: %w", err)
+		}
+		if domain.NormalizeRefundStatus(rfRow.Status) == domain.RefundStatusSucceeded {
+			return fmt.Errorf("cannot cleanup refund %s: status is succeeded", rfRow.ID)
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
 			return fmt.Errorf("delete refund allocations: %w", err)
@@ -464,6 +473,18 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 	var refundedPaise int64
 	var reservedPaise int64
 	var pendingOp *refundSummary
+	var hasAgg bool
+
+	if aggRepo, ok := h.GatewayPaymentRepo.(interface {
+		GetPaymentRefundAggregates(ctx context.Context, paymentID uuid.UUID) (int64, int64, error)
+	}); ok {
+		rf, res, aErr := aggRepo.GetPaymentRefundAggregates(c.Request.Context(), p.ID)
+		if aErr == nil {
+			refundedPaise = rf
+			reservedPaise = res
+			hasAgg = true
+		}
+	}
 
 	for _, rf := range refunds {
 		item := refundSummary{
@@ -476,14 +497,16 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 			UpdatedAt:       rf.UpdatedAt,
 		}
 		list = append(list, item)
-		switch rf.Status {
-		case domain.RefundStatusSucceeded:
-			refundedPaise += rf.AmountPaise
-		case domain.RefundStatusInitiated, domain.RefundStatusPending, domain.RefundStatusOnHold:
-			reservedPaise += rf.AmountPaise
-			if pendingOp == nil {
-				pendingOp = &item
+		if !hasAgg {
+			switch rf.Status {
+			case domain.RefundStatusSucceeded:
+				refundedPaise += rf.AmountPaise
+			case domain.RefundStatusInitiated, domain.RefundStatusPending, domain.RefundStatusOnHold:
+				reservedPaise += rf.AmountPaise
 			}
+		}
+		if pendingOp == nil && (rf.Status == domain.RefundStatusInitiated || rf.Status == domain.RefundStatusPending || rf.Status == domain.RefundStatusOnHold) {
+			pendingOp = &item
 		}
 	}
 

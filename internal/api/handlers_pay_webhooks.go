@@ -17,10 +17,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
-	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
-	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 const maxWebhookBody = 1 << 20
@@ -193,6 +191,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "record unmatched receipt failed"})
 				return
 			}
+			if evtRecord.ID != uuid.Nil {
+				reason := "amount_mismatch"
+				_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "unmatched", &reason)
+			}
 		}
 		c.Status(http.StatusOK)
 		return
@@ -225,340 +227,25 @@ func (h *Handlers) SettleGatewayOrder(
 	if h.OrderSettler != nil {
 		return h.OrderSettler.SettleGatewayOrder(ctx, orderID, cfPaymentID, txnID, amountPaise, intent, rawPayload)
 	}
-
-	if intent == nil && h.IntentStore != nil {
-		var err error
-		intent, err = h.IntentStore.GetByOrderID(ctx, orderID)
-		if err != nil {
-			return err
-		}
+	settler := h.getOrderSettler()
+	if settler == nil {
+		return errors.New("order settlement service unavailable")
 	}
-	if intent == nil {
-		return errors.New("payment intent unavailable")
+	return settler.SettleGatewayOrder(ctx, orderID, cfPaymentID, txnID, amountPaise, intent, rawPayload)
+}
+
+func (h *Handlers) getOrderSettler() payment.OrderGatewaySettler {
+	if h.OrderSettler != nil {
+		return h.OrderSettler
 	}
-
-	if intent.AmountPaise > 0 && amountPaise != intent.AmountPaise {
-		if h.GatewayPaymentRepo != nil {
-			_ = h.GatewayPaymentRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, "amount_mismatch", rawPayload)
-		}
-		return fmt.Errorf("settle amount mismatch: expected %d paise, got %d paise", intent.AmountPaise, amountPaise)
-	}
-
-	if h.Pool != nil && h.GatewayPaymentRepo != nil {
-		return postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-			txPayRepo := postgres.NewPaymentRepo(tx)
-			txDueRepo := postgres.NewDueRepo(tx)
-			txIntentRepo := postgres.NewPaymentIntentRepo(tx)
-
-			// Step 1: In-transaction deduplication on natural key (PAYMENT_SETTLED, cfPaymentID)
-			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_SETTLED", cfPaymentID, "")
-			if err != nil {
-				return err
-			}
-			if !firstSeen {
-				return nil // already processed by either webhook or verify
-			}
-
-			// Step 2: Dues snapshot from payment_intent_dues
-			snapshot, err := txIntentRepo.GetDuesSnapshot(ctx, intent.ID)
-			if err != nil {
-				return fmt.Errorf("get dues snapshot: %w", err)
-			}
-			if len(snapshot) == 0 {
-				snapshot = []domain.PaymentIntentDue{{DueID: intent.DueID, AmountPaise: int64(intent.AmountPaise)}}
-			}
-
-			// Step 3: Resolve first due to determine tenantID and propertyID
-			due0, err := txDueRepo.GetByID(ctx, snapshot[0].DueID)
-			if err != nil {
-				return err
-			}
-			tenantID := due0.TenantID
-			ctx = requestscope.WithPropertyID(ctx, due0.PropertyID)
-			if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", due0.PropertyID.String()); err != nil {
-				return fmt.Errorf("set webhook property scope: %w", err)
-			}
-
-			// Step 4: Acquire locks strictly top-down: tenants -> dues -> payment_intents
-			var dummy uuid.UUID
-			if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-
-			allClosed := true
-			lockedDues := make(map[uuid.UUID]*domain.Due)
-			for _, item := range snapshot {
-				d, err := txDueRepo.GetByIDForUpdate(ctx, item.DueID)
-				if err != nil {
-					return err
-				}
-				lockedDues[d.ID] = d
-				if d.Status == domain.DueStatusPending || d.Status == domain.DueStatusPartial {
-					allClosed = false
-				}
-			}
-
-			var lockedIntent domain.PaymentIntent
-			err = tx.QueryRow(ctx, `SELECT id, status FROM payment_intents WHERE id=$1 FOR UPDATE`, intent.ID).Scan(&lockedIntent.ID, &lockedIntent.Status)
-			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			if lockedIntent.Status == domain.IntentPaid {
-				return nil // already paid
-			}
-
-			at := time.Now().UTC()
-
-			if allClosed {
-				// UNAPPLIED / RACE LOSER BRANCH (e.g. cash paid offline or duplicate payment)
-				// Guard against duplicate insert if payment was already recorded
-				var existingCount int
-				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
-					return nil
-				}
-
-				failureReason := "due_already_settled"
-				if lockedIntent.Status == "superseded" {
-					failureReason = "session_superseded"
-				}
-				if err := txPayRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, failureReason, rawPayload); err != nil {
-					return err
-				}
-
-				note := "unapplied duplicate: dues already closed, pending owner refund or manual allocation"
-				p := &domain.Payment{
-					DueID:             snapshot[0].DueID,
-					TenantID:          tenantID,
-					UPITxnID:          &txnID,
-					CFPaymentID:       &cfPaymentID,
-					Amount:            amountPaise,
-					MatchedBy:         domain.MatchedByCashfree,
-					MatchedAt:         at,
-					IsUnapplied:       true,
-					RawNote:           &note,
-					SkipOutboxEnqueue: true,
-				}
-				if err := txPayRepo.Create(ctx, p); err != nil {
-					if errors.Is(err, domain.ErrDuplicateTxn) {
-						return nil
-					}
-					return err
-				}
-
-				if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfPaymentID); err != nil {
-					return err
-				}
-				if h.Finance != nil {
-					if h.LedgerOutboxRepo == nil {
-						return fmt.Errorf("CRITICAL: LedgerOutboxRepo is required when Finance is enabled")
-					}
-					payload, err := json.Marshal(domain.PaymentMirrorPayload{
-						PropertyID:  due0.PropertyID,
-						PaymentID:   p.ID,
-						IsUnapplied: true,
-						MatchedAt:   p.MatchedAt,
-						MatchedBy:   p.MatchedBy,
-						AmountPaise: int64(p.Amount),
-					})
-					if err != nil {
-						return err
-					}
-					outboxEvt := &domain.LedgerOutboxEvent{
-						EventType:      "payment_mirror",
-						PropertyID:     due0.PropertyID,
-						SourceID:       p.ID,
-						Payload:        payload,
-						IdempotencyKey: fmt.Sprintf("payment_mirror:%s", p.ID.String()),
-						MaxAttempts:    5,
-					}
-					if err := h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
-						return err
-					}
-				}
-				return nil
-			}
-
-			// APPLIED TO OPEN DUES BRANCH
-			// Guard against duplicate insert if payment was already recorded
-			var existingCount int
-			if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingCount); err == nil && existingCount > 0 {
-				return nil
-			}
-
-			p := &domain.Payment{
-				DueID:             snapshot[0].DueID,
-				TenantID:          tenantID,
-				UPITxnID:          &txnID,
-				CFPaymentID:       &cfPaymentID,
-				Amount:            amountPaise,
-				MatchedBy:         domain.MatchedByCashfree,
-				MatchedAt:         at,
-				IsUnapplied:       false,
-				SkipOutboxEnqueue: true,
-			}
-			if err := txPayRepo.Create(ctx, p); err != nil {
-				if errors.Is(err, domain.ErrDuplicateTxn) {
-					return nil
-				}
-				return err
-			}
-
-			remainingPaise := amountPaise
-			var allocations []finance.PaymentAllocationItem
-			for _, item := range snapshot {
-				if remainingPaise <= 0 {
-					break
-				}
-				targetDue := lockedDues[item.DueID]
-				if targetDue.Status != domain.DueStatusPending && targetDue.Status != domain.DueStatusPartial {
-					continue
-				}
-				allocPaise := int64(targetDue.Amount)
-				if allocPaise > remainingPaise {
-					allocPaise = remainingPaise
-				}
-				if err := txPayRepo.CreateAllocation(ctx, p.ID, targetDue.ID, allocPaise); err != nil {
-					return err
-				}
-				allocations = append(allocations, finance.PaymentAllocationItem{
-					AmountPaise: allocPaise,
-					DueKind:     targetDue.Kind,
-				})
-				credit := targetDue.ApplyPayment(allocPaise, at)
-				if err := txDueRepo.Update(ctx, targetDue); err != nil {
-					return err
-				}
-				if targetDue.Status == domain.DueStatusPaid {
-					if _, err := tx.Exec(ctx, `UPDATE payment_tokens SET used=TRUE WHERE due_id=$1 AND used=FALSE`, targetDue.ID); err != nil {
-						return err
-					}
-				}
-				if credit > 0 {
-					if _, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, credit); err != nil {
-						return err
-					}
-				}
-				remainingPaise -= allocPaise
-			}
-			unappliedPaise := remainingPaise
-			if unappliedPaise > 0 {
-				if _, err := tx.Exec(ctx, `UPDATE tenants SET credit_balance_paise = credit_balance_paise + $2 WHERE id=$1`, tenantID, unappliedPaise); err != nil {
-					return err
-				}
-			}
-
-			if err := txIntentRepo.MarkPaid(ctx, intent.ID, cfPaymentID); err != nil {
-				return err
-			}
-			if h.Finance != nil {
-				if h.LedgerOutboxRepo == nil {
-					return fmt.Errorf("CRITICAL: LedgerOutboxRepo is required when Finance is enabled")
-				}
-				allocPayloads := make([]domain.PaymentAllocationItemPayload, 0, len(allocations))
-				for _, a := range allocations {
-					allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
-						AmountPaise: a.AmountPaise,
-						DueKind:     string(a.DueKind),
-					})
-				}
-				if len(allocPayloads) == 0 {
-					allocPayloads = append(allocPayloads, domain.PaymentAllocationItemPayload{
-						AmountPaise: int64(p.Amount),
-						DueKind:     string(due0.Kind),
-					})
-				}
-				payload, err := json.Marshal(domain.PaymentMirrorPayload{
-					PropertyID:     due0.PropertyID,
-					PaymentID:      p.ID,
-					Allocations:    allocPayloads,
-					UnappliedPaise: unappliedPaise,
-					IsUnapplied:    false,
-					MatchedAt:      p.MatchedAt,
-					MatchedBy:      p.MatchedBy,
-					AmountPaise:    int64(p.Amount),
-				})
-				if err != nil {
-					return err
-				}
-				outboxEvt := &domain.LedgerOutboxEvent{
-					EventType:      "payment_mirror",
-					PropertyID:     due0.PropertyID,
-					SourceID:       p.ID,
-					Payload:        payload,
-					IdempotencyKey: fmt.Sprintf("payment_mirror:%s", p.ID.String()),
-					MaxAttempts:    5,
-				}
-				if err := h.LedgerOutboxRepo.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	}
-
-	// Legacy fallback path for test stubs without a pgxpool
-	if h.GatewayPaymentRepo != nil && cfPaymentID != "" {
-		firstSeen, err := h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_SETTLED", cfPaymentID, "")
-		if err != nil {
-			return err
-		}
-		if !firstSeen {
-			return nil // already processed
-		}
-	}
-	if cfPaymentID != "" && h.IntentStore != nil {
-		if existing, err := h.IntentStore.GetByCFPaymentID(ctx, cfPaymentID); err == nil && existing != nil && existing.Status == domain.IntentPaid {
-			return nil
-		}
-	}
-	if h.Payments != nil {
-		var duesToSettle []domain.PaymentIntentDue
-		if h.IntentStore != nil {
-			duesToSettle, _ = h.IntentStore.GetDuesSnapshot(ctx, intent.ID)
-		}
-		if len(duesToSettle) == 0 {
-			duesToSettle = []domain.PaymentIntentDue{{DueID: intent.DueID, AmountPaise: amountPaise}}
-		}
-		var settledCount int
-		for _, item := range duesToSettle {
-			itemTxn := txnID
-			if len(duesToSettle) > 1 {
-				itemTxn = fmt.Sprintf("%s:due:%s", txnID, item.DueID)
-			}
-			dedupKey := ""
-			if cfPaymentID != "" {
-				if len(duesToSettle) > 1 {
-					dedupKey = fmt.Sprintf("cashfree:pg:%s:due:%s", cfPaymentID, item.DueID)
-				} else {
-					dedupKey = fmt.Sprintf("cashfree:pg:%s", cfPaymentID)
-				}
-			}
-			var err error
-			if dedupKey != "" {
-				_, err = h.Payments.GatewaySettle(ctx, item.DueID, item.AmountPaise, itemTxn, dedupKey)
-			} else {
-				_, err = h.Payments.GatewaySettle(ctx, item.DueID, item.AmountPaise, itemTxn)
-			}
-			if err != nil {
-				if errors.Is(err, payment.ErrDuplicateTxn) {
-					settledCount++
-					continue
-				}
-				if errors.Is(err, payment.ErrDueNotOpen) || errors.Is(err, payment.ErrEmptyTxnID) {
-					continue
-				}
-				return err
-			}
-			settledCount++
-		}
-		if settledCount == 0 {
-			return nil
-		}
-	}
-	if cfPaymentID != "" && h.IntentStore != nil {
-		_ = h.IntentStore.MarkPaid(ctx, intent.ID, cfPaymentID)
-	}
-	return nil
+	return payment.NewOrderSettlementService(payment.OrderSettlementConfig{
+		Pool:               h.Pool,
+		GatewayPaymentRepo: h.GatewayPaymentRepo,
+		IntentStore:        h.IntentStore,
+		LedgerOutboxRepo:   h.LedgerOutboxRepo,
+		FinanceEnabled:     h.FinanceEnabled || h.Finance != nil,
+		Payments:           h.Payments,
+	})
 }
 
 func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent) {

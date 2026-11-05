@@ -60,6 +60,11 @@ func (a *CashfreeAdapter) CreateUPIOrder(ctx context.Context, orderID string, am
 	return order.PaymentSessionID, order.ExpiresAt, nil
 }
 
+// GetOrder fetches order details and current status from Cashfree.
+func (a *CashfreeAdapter) GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error) {
+	return a.client.GetOrder(ctx, orderID)
+}
+
 func (a *CashfreeAdapter) FetchPayment(ctx context.Context, orderID string) (*ProviderPayment, error) {
 	cfPaymentID, bankRef, amountPaise, ok, err := a.client.FetchSuccessfulPayment(ctx, orderID)
 	if err != nil {

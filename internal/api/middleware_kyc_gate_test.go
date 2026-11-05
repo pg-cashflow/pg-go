@@ -28,6 +28,7 @@ func TestRequireKYCOnboardingPassed(t *testing.T) {
 	}{
 		{"verified passes", false, true, &domain.KYCVerification{Status: domain.KYCStatusVerified}, nil, http.StatusOK},
 		{"pending owner review passes", false, true, &domain.KYCVerification{Status: domain.KYCStatusPendingManualReview}, nil, http.StatusOK},
+		{"expired blocked", false, true, &domain.KYCVerification{Status: domain.KYCStatusExpired}, nil, http.StatusForbidden},
 		{"no verification blocked", false, true, nil, nil, http.StatusForbidden},
 		{"status lookup error blocked", false, true, nil, errors.New("db unavailable"), http.StatusForbidden},
 		{"nil kyc service blocked", true, true, nil, nil, http.StatusForbidden},

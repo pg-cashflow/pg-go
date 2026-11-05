@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/gamification"
 	"github.com/pg-cashflow/pg-go/internal/payment"
@@ -1203,6 +1204,10 @@ type fakeCashfreeOrders struct{}
 
 func (f *fakeCashfreeOrders) CreateUPIOrder(_ context.Context, _ string, _ int64, _, _ string) (string, *time.Time, error) {
 	return "sess_test", nil, nil
+}
+
+func (f *fakeCashfreeOrders) GetOrder(_ context.Context, _ string) (*cashfree.OrderDetails, error) {
+	return nil, nil
 }
 
 func TestOwnerDashboardSummaryAndMonthlyCashFlow(t *testing.T) {

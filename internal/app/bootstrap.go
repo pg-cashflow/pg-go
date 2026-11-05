@@ -481,6 +481,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		GatewayPaymentRepo:          maintPaymentRepo,
 		WebhookToleranceSec:         cfg.WebhookTimestampToleranceSec,
 		WebhookAPIVersion:           cfg.WebhookAPIVersion,
+		RefundWindowDays:            cfg.RefundWindowDays,
 		Pool:                        maintPool,
 		AppPool:                     appPool,
 		Collector:                   collectorSvc,

@@ -698,6 +698,16 @@ func (r *PaymentRepo) GetRefundByPaymentAndIdempotency(ctx context.Context, paym
 	return scanRefund(r.db.QueryRow(ctx, `SELECT `+refundCols+` FROM gateway_refunds WHERE payment_id=$1 AND idempotency_key=$2`, paymentID, idempotencyKey))
 }
 
+func (r *PaymentRepo) GetPaymentRefundAggregates(ctx context.Context, paymentID uuid.UUID) (refundedPaise int64, reservedPaise int64, err error) {
+	err = r.db.QueryRow(ctx, `
+		SELECT 
+			COALESCE(SUM(CASE WHEN status = 'succeeded' THEN amount_paise ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status IN ('initiated', 'pending', 'on_hold') THEN amount_paise ELSE 0 END), 0)
+		FROM gateway_refunds
+		WHERE payment_id = $1`, paymentID).Scan(&refundedPaise, &reservedPaise)
+	return refundedPaise, reservedPaise, err
+}
+
 func (r *PaymentRepo) GetPaymentRefundedPaise(ctx context.Context, paymentID uuid.UUID) (int64, error) {
 	var total int64
 	err := r.db.QueryRow(ctx, `
@@ -877,7 +887,11 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 		txDueRepo := NewDueRepo(tx)
 		var primaryDue *domain.Due
 		if p.DueID != uuid.Nil {
-			primaryDue, _ = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
+			var pDueErr error
+			primaryDue, pDueErr = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
+			if pDueErr != nil && !errors.Is(pDueErr, pgx.ErrNoRows) {
+				return fmt.Errorf("lock primary due for refund reconcile: %w", pDueErr)
+			}
 		}
 
 		if err := tx.QueryRow(ctx, `SELECT id FROM payments WHERE id = $1 FOR UPDATE`, p.ID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -914,29 +928,41 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 			}
 			var existingAllocs []allocItem
 			allocRows, qErr := tx.Query(ctx, `SELECT due_id, amount_paise FROM refund_allocations WHERE refund_id = $1`, ref.ID)
-			if qErr == nil {
-				for allocRows.Next() {
-					var item allocItem
-					if err := allocRows.Scan(&item.dueID, &item.amountPaise); err == nil && item.dueID != uuid.Nil {
-						existingAllocs = append(existingAllocs, item)
-					}
+			if qErr != nil {
+				return fmt.Errorf("query refund allocations: %w", qErr)
+			}
+			for allocRows.Next() {
+				var item allocItem
+				if err := allocRows.Scan(&item.dueID, &item.amountPaise); err != nil {
+					allocRows.Close()
+					return fmt.Errorf("scan refund allocation: %w", err)
 				}
-				allocRows.Close()
+				if item.dueID != uuid.Nil {
+					existingAllocs = append(existingAllocs, item)
+				}
+			}
+			allocRows.Close()
+			if err := allocRows.Err(); err != nil {
+				return fmt.Errorf("iterate refund allocations: %w", err)
 			}
 
 			var mirrorAllocs []domain.RefundAllocationItemPayload
 			if len(existingAllocs) > 0 {
 				for _, item := range existingAllocs {
 					targetDue, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
-					if err == nil && targetDue != nil {
-						if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
-							return err
-						}
-						mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-							AmountPaise: item.amountPaise,
-							DueKind:     string(targetDue.Kind),
-						})
+					if err != nil {
+						return fmt.Errorf("get due %s for update: %w", item.dueID, err)
 					}
+					if targetDue == nil {
+						return fmt.Errorf("due %s not found for update", item.dueID)
+					}
+					if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
+						return err
+					}
+					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+						AmountPaise: item.amountPaise,
+						DueKind:     string(targetDue.Kind),
+					})
 				}
 			} else if !p.IsUnapplied {
 				pAllocRows, paErr := tx.Query(ctx, `

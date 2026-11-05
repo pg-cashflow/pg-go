@@ -508,9 +508,9 @@ func (s *Service) InitiateAadhaarOTP(
 	}
 
 	// KYC-1: Under the distributed lock, pre-check active verification status before
-	// issuing a billed UIDAI OTP request. The 30s in-flight lock alone is a concurrent-request
+	// issuing a billed UIDAI OTP request. The 60s in-flight lock alone is a concurrent-request
 	// guard; this check is the sequential-request guard. Without it, a tenant who is already
-	// verified (or has a pending OTP from >30s ago once the lock expires) can re-trigger
+	// verified (or has a pending OTP from >60s ago once the lock expires) can re-trigger
 	// a new billed UIDAI call repeatedly. Mirrors the identical guard in VerifyAadhaarDocument.
 	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
 	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {

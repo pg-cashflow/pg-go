@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -284,5 +285,58 @@ func TestCancelRefund(t *testing.T) {
 
 	if ref.CFRefundID != "888777" || ref.RefundStatus != "CANCELLED" || ref.AmountPaise != 250000 {
 		t.Fatalf("unexpected refund response details: %+v", ref)
+	}
+}
+
+func TestGetOrder(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-client-id") != "app_1" || r.Header.Get("x-client-secret") != "sec_1" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/orders/order_found" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{
+				"cf_order_id": "2149460581",
+				"order_id": "order_found",
+				"order_status": "ACTIVE",
+				"payment_session_id": "session_abc123",
+				"order_amount": 150.00,
+				"order_expiry_time": "2026-12-01T12:00:00Z"
+			}`))
+			return
+		}
+		if r.URL.Path == "/orders/order_missing" {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "order not found", "code": "order_not_found"}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1"}).WithBaseURL(ts.URL)
+
+	ord, err := c.GetOrder(context.Background(), "order_found")
+	if err != nil {
+		t.Fatalf("GetOrder failed: %v", err)
+	}
+	if ord.OrderID != "order_found" || ord.CFOrderID != "2149460581" || ord.OrderStatus != "ACTIVE" {
+		t.Fatalf("unexpected order: %+v", ord)
+	}
+	if ord.PaymentSessionID != "session_abc123" || ord.OrderAmountPaise != 15000 {
+		t.Fatalf("unexpected session or amount: %+v", ord)
+	}
+	if ord.ExpiresAt == nil || ord.ExpiresAt.IsZero() {
+		t.Fatal("expected non-nil ExpiresAt")
+	}
+
+	_, notFoundErr := c.GetOrder(context.Background(), "order_missing")
+	if notFoundErr == nil {
+		t.Fatal("expected error for missing order")
+	}
+	var apiErr *APIError
+	if !errors.As(notFoundErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 APIError, got: %v", notFoundErr)
 	}
 }

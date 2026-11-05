@@ -68,6 +68,7 @@ type Deps struct {
 	AppPool             *pgxpool.Pool
 	DBCluster           *postgres.DBCluster
 	RefundTxRunner      RefundTxRunner
+	RefundWindowDays    int
 	CalendarTokenStore  CalendarTokenStore
 
 	Gamification      *gamification.Service
@@ -175,17 +176,13 @@ func NewRouter(d Deps) *gin.Engine {
 	}
 
 	if d.OrderSettler == nil {
-		var paySvc *payment.Service
-		if p, ok := d.Payments.(*payment.Service); ok {
-			paySvc = p
-		}
 		d.OrderSettler = payment.NewOrderSettlementService(payment.OrderSettlementConfig{
 			Pool:               d.Pool,
 			GatewayPaymentRepo: d.GatewayPaymentRepo,
 			IntentStore:        d.IntentStore,
 			LedgerOutboxRepo:   d.LedgerOutboxRepo,
 			FinanceEnabled:     d.FinanceEnabled || d.Finance != nil,
-			Payments:           paySvc,
+			Payments:           d.Payments,
 		})
 	}
 

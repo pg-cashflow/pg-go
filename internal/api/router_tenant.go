@@ -8,10 +8,9 @@ import (
 // registerTenantRoutes wires tenant routes in two explicit groups.
 //
 // Exempt (no KYC onboarding gate): the profile, the identity steps the gate depends on,
-// push setup, and lifecycle status. Keep this list short.
+// dues viewing, payment history, push setup, and lifecycle status.
 //
-// Gated (default): every other tenant route, including dues and payments, requires the
-// KYC onboarding gate. Add new routes to the gated group unless they are identity steps.
+// Gated: amenities and auxiliary features requiring KYC onboarding completion.
 func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	// --- exempt from the KYC onboarding gate ---
 	tenant.GET("/me", h.TenantMe)
@@ -28,22 +27,23 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.POST("/kyc/revoke", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCRevoke)
 	tenant.GET("/kyc/status", h.TenantKYCStatus)
 
-	// --- gated: requires the KYC onboarding gate (default-deny) ---
-	gated := tenant.Group("", h.RequireKYCOnboardingPassed())
+	// Financial obligations: viewing dues and payment receipts is accessible
+	// even if KYC has expired or is under review, so tenants can see their balance.
+	tenant.GET("/dues", h.TenantDues)
+	tenant.GET("/dues/options", h.TenantDuesOptions)
+	tenant.GET("/payments", h.TenantPayments)
+	tenant.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
 
-	gated.GET("/dues", h.TenantDues)
-	gated.GET("/dues/options", h.TenantDuesOptions)
-
-	// payment routes strictly enforce KYC verification (status == verified)
-	payGated := gated.Group("", h.RequireKYCVerified())
+	// Payment routes enforce KYC verification based on property policy (RequireKYCBeforePay)
+	payGated := tenant.Group("", h.RequireKYCIfPolicyEnforced())
 	payGated.GET("/dues/:id/qr", h.TenantDueQR)
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	payGated.GET("/dues/:id/pay", h.TenantDuePay)
 	payGated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
 	payGated.POST("/dues/:id/reports", h.TenantSubmitReport)
 
-	gated.GET("/payments", h.TenantPayments)
-	gated.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
+	// --- gated: requires the KYC onboarding gate (default-deny) ---
+	gated := tenant.Group("", h.RequireKYCOnboardingPassed())
 
 	gated.GET("/points", h.TenantPoints)
 	gated.GET("/rewards", h.TenantRewards)

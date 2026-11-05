@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"sync"
 	"time"
 )
@@ -72,6 +73,22 @@ func (m *MockPaymentProvider) CreateUPIOrder(ctx context.Context, orderID string
 	}
 	return order.PaymentSessionID, order.ExpiresAt, nil
 }
+func (m *MockPaymentProvider) GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	order, ok := m.Orders[orderID]
+	if !ok {
+		return nil, &cashfree.APIError{StatusCode: 404, Status: "404 Not Found", Body: "order not found"}
+	}
+	return &cashfree.OrderDetails{
+		OrderID:          order.OrderID,
+		PaymentSessionID: order.PaymentSessionID,
+		OrderAmountPaise: order.AmountPaise,
+		OrderStatus:      order.Status,
+		ExpiresAt:        order.ExpiresAt,
+	}, nil
+}
+
 
 func (m *MockPaymentProvider) FetchPayment(ctx context.Context, orderID string) (*ProviderPayment, error) {
 	m.mu.Lock()

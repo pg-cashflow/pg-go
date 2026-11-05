@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -65,6 +66,10 @@ func (c *countingOrderCreator) CreateUPIOrder(ctx context.Context, orderID strin
 	atomic.AddInt32(&c.count, 1)
 	exp := time.Now().Add(30 * time.Minute)
 	return "sess_single_active", &exp, nil
+}
+
+func (c *countingOrderCreator) GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error) {
+	return nil, nil
 }
 
 // TestConcurrency_TestC_DoubleTapOrderCreation verifies that concurrent calls to PayIntent

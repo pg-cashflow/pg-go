@@ -2,11 +2,13 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -33,6 +35,10 @@ func (s *stubCF) CreateUPIOrder(context.Context, string, int64, string, string) 
 	s.n++
 	exp := time.Now().Add(time.Hour)
 	return "sess_1", &exp, nil
+}
+
+func (s *stubCF) GetOrder(context.Context, string) (*cashfree.OrderDetails, error) {
+	return nil, nil
 }
 
 func TestPayIntentManualIncludesVPA(t *testing.T) {
@@ -230,5 +236,106 @@ func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
 	}
 	if !store.createdWithDues {
 		t.Fatal("expected CreateWithDues to be called")
+	}
+}
+
+
+type recoveringIntentMgr struct {
+	claimed     *domain.PaymentIntent
+	transitioned bool
+	sessionID   string
+	failed      bool
+}
+
+func (m *recoveringIntentMgr) Create(context.Context, *domain.PaymentIntent) error { return nil }
+func (m *recoveringIntentMgr) LatestOpenForDue(context.Context, uuid.UUID) (*domain.PaymentIntent, error) {
+	return nil, pgx.ErrNoRows
+}
+func (m *recoveringIntentMgr) ClaimInitiatingIntent(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, amounts []int64, totalAmountPaise int64, orderID string, minRemaining time.Duration) (*domain.PaymentIntent, bool, bool, error) {
+	m.claimed = &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: orderID,
+		AmountPaise:     totalAmountPaise,
+		Status:          domain.IntentInitiating,
+	}
+	return m.claimed, false, false, nil
+}
+func (m *recoveringIntentMgr) TransitionCreated(ctx context.Context, intentID uuid.UUID, sessionID string, expiresAt *time.Time) error {
+	m.transitioned = true
+	m.sessionID = sessionID
+	return nil
+}
+func (m *recoveringIntentMgr) TransitionFailed(ctx context.Context, intentID uuid.UUID) error {
+	m.failed = true
+	return nil
+}
+func (m *recoveringIntentMgr) GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
+	return m.claimed, nil
+}
+
+type timingOutCF struct {
+	createCalls int
+	getOrderCalls int
+	activeOrder *cashfree.OrderDetails
+	getOrderErr error
+}
+
+func (c *timingOutCF) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
+	c.createCalls++
+	return "", nil, errors.New("gateway timeout 504")
+}
+
+func (c *timingOutCF) GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error) {
+	c.getOrderCalls++
+	return c.activeOrder, c.getOrderErr
+}
+
+func TestEnsureCashfree_RecoversActiveOrderOnCreateTimeout(t *testing.T) {
+	exp := time.Now().Add(30 * time.Minute)
+	cf := &timingOutCF{
+		activeOrder: &cashfree.OrderDetails{
+			OrderID:          "test-order-1",
+			OrderStatus:      "ACTIVE",
+			PaymentSessionID: "recovered_session_123",
+			ExpiresAt:        &exp,
+		},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE999", Amount: 120000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err != nil {
+		t.Fatalf("expected recovered session, got err: %v", err)
+	}
+	if intent.PaymentSessionID != "recovered_session_123" {
+		t.Fatalf("expected recovered_session_123, got: %s", intent.PaymentSessionID)
+	}
+	if !mgr.transitioned || mgr.failed {
+		t.Fatalf("expected transition to created, transitioned=%v failed=%v", mgr.transitioned, mgr.failed)
+	}
+	if cf.getOrderCalls != 1 {
+		t.Fatalf("expected 1 GetOrder call, got: %d", cf.getOrderCalls)
+	}
+}
+
+func TestEnsureCashfree_MarksFailedOnConfirmedNotFound(t *testing.T) {
+	cf := &timingOutCF{
+		getOrderErr: &cashfree.APIError{StatusCode: 404, Status: "404 Not Found"},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE888", Amount: 120000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err == nil {
+		t.Fatal("expected error on failed create with 404")
+	}
+	if !mgr.failed {
+		t.Fatal("expected intent to be transitioned to failed when Cashfree confirmed 404")
 	}
 }

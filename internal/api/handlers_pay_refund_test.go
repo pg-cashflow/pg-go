@@ -605,8 +605,8 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	// 3. Reject: Older Than 120 Days
-	t.Run("refund older than 120 days", func(t *testing.T) {
+	// 3. Reject: Older Than 180 Days
+	t.Run("refund older than 180 days", func(t *testing.T) {
 		gwRepo := newMockRefundPaymentRepo()
 		cfClient := &mockCFClient{}
 		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
@@ -620,7 +620,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			Provider:          "cashfree",
 			CFPaymentID:       &cfPayID,
 			ProviderPaymentID: &cfPayID,
-			CreatedAt:         time.Now().Add(-125 * 24 * time.Hour), // 125 days ago
+			CreatedAt:         time.Now().Add(-185 * 24 * time.Hour), // 185 days ago
 		}
 		_ = gwRepo.Create(context.Background(), oldPayment)
 
@@ -646,7 +646,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 Bad Request on 120-day expired payment, got %d", rec.Code)
+			t.Fatalf("expected 400 Bad Request on 180-day expired payment, got %d", rec.Code)
 		}
 	})
 

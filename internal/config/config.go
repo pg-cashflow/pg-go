@@ -152,7 +152,7 @@ func Load() (*Config, error) {
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
 		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 365),
-		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 120),
+		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 180),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),

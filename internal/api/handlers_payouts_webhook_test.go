@@ -1120,6 +1120,36 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("low_balance_alert_dashboard_ping_without_signature_headers_returns_200", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           &mockPayoutWebhookStore{},
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Type: "LOW_BALANCE_ALERT",
+		}
+		data := PayoutWebhookData{
+			StatusDescription: "Dashboard Test Ping",
+		}
+		env.Data, _ = json.Marshal(data)
+		raw, _ := json.Marshal(env)
+
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for dashboard test ping, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 type seqPayoutAudit struct {

@@ -220,6 +220,69 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 	return "", "", 0, false, nil
 }
 
+type OrderDetails struct {
+	CFOrderID        string
+	OrderID          string
+	OrderStatus      string
+	PaymentSessionID string
+	OrderAmountPaise int64
+	ExpiresAt        *time.Time
+}
+
+// GetOrder fetches order details and current status from Cashfree by order ID.
+func (c *Client) GetOrder(ctx context.Context, orderID string) (*OrderDetails, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/orders/"+orderID, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.sign(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
+	}
+	var raw struct {
+		CFOrderID        json.Number `json:"cf_order_id"`
+		OrderID          string      `json:"order_id"`
+		OrderStatus      string      `json:"order_status"`
+		PaymentSessionID string      `json:"payment_session_id"`
+		OrderAmount      json.Number `json:"order_amount"`
+		OrderExpiryTime  string      `json:"order_expiry_time"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("cashfree get order json: %w", err)
+	}
+	parsedAmount, err := ParseRupeesToPaise(raw.OrderAmount.String())
+	if err != nil {
+		return nil, fmt.Errorf("cashfree parse order amount: %w", err)
+	}
+	var exp *time.Time
+	if strings.TrimSpace(raw.OrderExpiryTime) != "" {
+		if t, tErr := time.Parse(time.RFC3339, raw.OrderExpiryTime); tErr == nil {
+			exp = &t
+		}
+	}
+	return &OrderDetails{
+		CFOrderID:        raw.CFOrderID.String(),
+		OrderID:          raw.OrderID,
+		OrderStatus:      strings.ToUpper(strings.TrimSpace(raw.OrderStatus)),
+		PaymentSessionID: strings.TrimSpace(raw.PaymentSessionID),
+		OrderAmountPaise: parsedAmount,
+		ExpiresAt:        exp,
+	}, nil
+}
+
 type RefundDetails struct {
 	CFRefundID   string
 	RefundID     string
