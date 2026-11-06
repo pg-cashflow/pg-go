@@ -88,24 +88,30 @@ func (r *PayoutRepo) SetMirrorer(m DepartureMirrorer) {
 
 const payeeCols = `id, property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
 	account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
-	key_version, is_verified, verified_by, verified_at, created_at, updated_at`
+	key_version, is_verified, verification_status, verification_method,
+	verification_ref, name_at_bank, name_match_score, name_match_result,
+	verified_by, verified_at, created_at, updated_at`
 
 func scanPayee(row pgx.Row) (*domain.PayoutPayee, error) {
 	var p domain.PayoutPayee
 	err := row.Scan(
 		&p.ID, &p.PropertyID, &p.TenantID, &p.PayeeType, &p.Name, &p.Phone, &p.AccountNumberEncrypted,
 		&p.AccountNumberLast4, &p.AccountNumberHash, &p.IFSC, &p.BankName, &p.UPIVPA,
-		&p.KeyVersion, &p.IsVerified, &p.VerifiedBy, &p.VerifiedAt, &p.CreatedAt, &p.UpdatedAt,
+		&p.KeyVersion, &p.IsVerified, &p.VerificationStatus, &p.VerificationMethod,
+		&p.VerificationRef, &p.NameAtBank, &p.NameMatchScore, &p.NameMatchResult,
+		&p.VerifiedBy, &p.VerifiedAt, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if p.IsVerified {
-		p.VerificationStatus = domain.PayeeVerificationOwnerAttested
-		p.VerificationMethod = "owner_attestation"
-	} else {
-		p.VerificationStatus = domain.PayeeVerificationUnverified
-		p.VerificationMethod = ""
+	if p.VerificationStatus == "" {
+		if p.IsVerified {
+			p.VerificationStatus = domain.PayeeVerificationOwnerAttested
+			p.VerificationMethod = "owner_attestation"
+		} else {
+			p.VerificationStatus = domain.PayeeVerificationUnverified
+			p.VerificationMethod = ""
+		}
 	}
 	return &p, nil
 }
@@ -117,16 +123,33 @@ func (r *PayoutRepo) CreatePayee(ctx context.Context, p *domain.PayoutPayee) err
 	if p.KeyVersion == 0 {
 		p.KeyVersion = 1
 	}
+	if p.VerificationStatus == "" {
+		if p.IsVerified {
+			p.VerificationStatus = domain.PayeeVerificationOwnerAttested
+		} else {
+			p.VerificationStatus = domain.PayeeVerificationUnverified
+		}
+	}
 	return r.db.QueryRow(ctx, `
 		INSERT INTO payout_payees (
 			property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
 			account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
-			key_version, is_verified, verified_by, verified_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			key_version, is_verified, verification_status, verification_method,
+			verification_ref, name_at_bank, name_match_score, name_match_result,
+			verified_by, verified_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11,
+			$12, $13, $14, $15,
+			$16, $17, $18, $19,
+			$20, $21, $22, $23
+		)
 		RETURNING id`,
 		p.PropertyID, p.TenantID, p.PayeeType, p.Name, p.Phone, p.AccountNumberEncrypted,
 		p.AccountNumberLast4, p.AccountNumberHash, p.IFSC, p.BankName, p.UPIVPA,
-		p.KeyVersion, p.IsVerified, p.VerifiedBy, p.VerifiedAt, p.CreatedAt, p.UpdatedAt,
+		p.KeyVersion, p.IsVerified, p.VerificationStatus, p.VerificationMethod,
+		p.VerificationRef, p.NameAtBank, p.NameMatchScore, p.NameMatchResult,
+		p.VerifiedBy, p.VerifiedAt, p.CreatedAt, p.UpdatedAt,
 	).Scan(&p.ID)
 }
 
@@ -134,10 +157,82 @@ func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy
 	now := time.Now().UTC()
 	return scanPayee(r.db.QueryRow(ctx, `
 		UPDATE payout_payees
-		SET is_verified = TRUE, verified_by = $3, verified_at = $4, updated_at = $4
+		SET is_verified = TRUE,
+		    verification_status = 'owner_attested',
+		    verification_method = 'owner_attestation',
+		    verified_by = $3,
+		    verified_at = $4,
+		    updated_at = $4
 		WHERE id = $1 AND property_id = $2
 		RETURNING `+payeeCols,
 		id, propertyID, verifiedBy, now,
+	))
+}
+
+func (r *PayoutRepo) SaveVerifiedTenantPayee(ctx context.Context, p *domain.PayoutPayee) (*domain.PayoutPayee, error) {
+	now := time.Now().UTC()
+	p.CreatedAt = now
+	p.UpdatedAt = now
+	if p.KeyVersion == 0 {
+		p.KeyVersion = 1
+	}
+	p.IsVerified = true
+	p.VerificationStatus = domain.PayeeVerificationProviderVerified
+	p.VerificationMethod = "cashfree_bank_sync"
+	p.VerifiedAt = &now
+
+	query := `
+		INSERT INTO payout_payees (
+			property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
+			account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
+			key_version, is_verified, verification_status, verification_method,
+			verification_ref, name_at_bank, name_match_score, name_match_result,
+			verified_by, verified_at, created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10, $11,
+			$12, $13, $14, $15,
+			$16, $17, $18, $19,
+			$20, $21, $22, $23
+		)
+		ON CONFLICT (property_id, tenant_id, account_number_hash, payee_type)
+		WHERE payee_type IN ('tenant_deposit', 'guardian_deposit')
+		DO UPDATE SET
+			name = EXCLUDED.name,
+			phone = EXCLUDED.phone,
+			account_number_encrypted = EXCLUDED.account_number_encrypted,
+			account_number_last4 = EXCLUDED.account_number_last4,
+			ifsc = EXCLUDED.ifsc,
+			bank_name = EXCLUDED.bank_name,
+			upi_vpa = EXCLUDED.upi_vpa,
+			key_version = EXCLUDED.key_version,
+			is_verified = TRUE,
+			verification_status = EXCLUDED.verification_status,
+			verification_method = EXCLUDED.verification_method,
+			verification_ref = EXCLUDED.verification_ref,
+			name_at_bank = EXCLUDED.name_at_bank,
+			name_match_score = EXCLUDED.name_match_score,
+			name_match_result = EXCLUDED.name_match_result,
+			verified_at = EXCLUDED.verified_at,
+			updated_at = EXCLUDED.updated_at
+		RETURNING ` + payeeCols
+
+	return scanPayee(r.db.QueryRow(ctx, query,
+		p.PropertyID, p.TenantID, p.PayeeType, p.Name, p.Phone, p.AccountNumberEncrypted,
+		p.AccountNumberLast4, p.AccountNumberHash, p.IFSC, p.BankName, p.UPIVPA,
+		p.KeyVersion, p.IsVerified, p.VerificationStatus, p.VerificationMethod,
+		p.VerificationRef, p.NameAtBank, p.NameMatchScore, p.NameMatchResult,
+		p.VerifiedBy, p.VerifiedAt, p.CreatedAt, p.UpdatedAt,
+	))
+}
+
+func (r *PayoutRepo) GetPayeeByTenant(ctx context.Context, propertyID, tenantID uuid.UUID) (*domain.PayoutPayee, error) {
+	return scanPayee(r.db.QueryRow(ctx, `
+		SELECT `+payeeCols+`
+		FROM payout_payees
+		WHERE property_id = $1 AND tenant_id = $2
+		ORDER BY is_verified DESC, updated_at DESC LIMIT 1`,
+		propertyID, tenantID,
 	))
 }
 
@@ -1375,23 +1470,19 @@ func (r *PayoutRepo) SettleDepartureUnderLock(ctx context.Context, params Settle
 			targetPayeeID := *params.PayeeID
 
 			// Step 13: Lock payout_payee and verify property ownership and tenant binding
-			var payee domain.PayoutPayee
-			err = tx.QueryRow(ctx, `
+			payeePtr, err := scanPayee(tx.QueryRow(ctx, `
 				SELECT `+payeeCols+`
 				FROM payout_payees
 				WHERE id = $1 AND property_id = $2
 				FOR UPDATE`, targetPayeeID, propertyID,
-			).Scan(
-				&payee.ID, &payee.PropertyID, &payee.TenantID, &payee.PayeeType, &payee.Name, &payee.Phone, &payee.AccountNumberEncrypted,
-				&payee.AccountNumberLast4, &payee.AccountNumberHash, &payee.IFSC, &payee.BankName, &payee.UPIVPA,
-				&payee.KeyVersion, &payee.IsVerified, &payee.VerifiedBy, &payee.VerifiedAt, &payee.CreatedAt, &payee.UpdatedAt,
-			)
+			))
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, fmt.Errorf("payee %s does not belong to property %s: %w", targetPayeeID, propertyID, domain.ErrForbidden)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("lock payee %s: %w", targetPayeeID, err)
 			}
+			payee := *payeePtr
 			if payee.TenantID == nil || *payee.TenantID != dep.TenantID {
 				return nil, fmt.Errorf("payee %s does not belong to tenant %s: %w", targetPayeeID, dep.TenantID, domain.ErrForbidden)
 			}

@@ -596,14 +596,7 @@ func (h *Handlers) ManagerCancelRefund(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.OnboardingSettings != nil {
-		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
-		if err != nil || s == nil || !s.AllowManagerRefunds {
-			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
-			return
-		}
-	} else {
-		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+	if _, ok := h.requireManagerRefunds(c, pid); !ok {
 		return
 	}
 	paymentID, ok := ParseUUIDParam(c, "id")
@@ -745,14 +738,8 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.OnboardingSettings != nil {
-		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
-		if err != nil || s == nil || !s.AllowManagerRefunds {
-			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
-			return
-		}
-	} else {
-		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+	limit, ok := h.requireManagerRefunds(c, pid)
+	if !ok {
 		return
 	}
 	paymentID, ok := ParseUUIDParam(c, "id")
@@ -765,7 +752,32 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 		return
 	}
 
+	if managerRefundExceedsLimit(limit, req.AmountPaise) {
+		apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
+		return
+	}
+
 	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
+}
+
+// requireManagerRefunds checks the owner toggle and returns the owner-set per-refund limit.
+// A nil limit means no limit. It writes a 403 and returns ok=false when the toggle is off.
+func (h *Handlers) requireManagerRefunds(c *gin.Context, pid uuid.UUID) (limit *int64, ok bool) {
+	if h.OnboardingSettings == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+		return nil, false
+	}
+	s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
+	if err != nil || s == nil || !s.AllowManagerRefunds {
+		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+		return nil, false
+	}
+	return s.ManagerRefundLimitPaise, true
+}
+
+// managerRefundExceedsLimit reports whether amountPaise is above the owner-set limit. A nil limit never blocks.
+func managerRefundExceedsLimit(limit *int64, amountPaise int64) bool {
+	return limit != nil && amountPaise > *limit
 }
 
 var validRefundReasonRegex = regexp.MustCompile(`^[\p{L}\p{M}\p{N}\x{200C}\x{200D} .,_'/-]+$`)

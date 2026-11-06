@@ -489,6 +489,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		CashfreeSecret:               cfg.CashfreeWebhookSecret,
 		CashfreeEnv:                  cfg.CashfreeEnv,
 		CashfreeClient:               cfClient,
+		BankVerifier:                 cfClient,
 		AuthTenantRepo:               tenantRepo,
 		AuthUserRepo:                 userRepo,
 		OutboxEvents:                 outboxRepo,

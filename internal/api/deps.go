@@ -303,6 +303,11 @@ type CashfreeClient interface {
 	IsSandbox() bool
 }
 
+// BankAccountVerifier provides synchronous penny-drop bank account verification.
+type BankAccountVerifier interface {
+	VerifyBankAccountSync(ctx context.Context, req cashfree.BankAccountVerificationRequest) (*cashfree.BankAccountVerificationResult, error)
+}
+
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC
 // routes respond 503 with a clear message so the rest of the app keeps running.
 // (Field declaration only; the interface is defined above.)

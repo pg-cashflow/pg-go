@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -192,7 +193,7 @@ func (h *Handlers) OwnerRefundUnappliedReceipt(c *gin.Context) {
 	if !ok {
 		return
 	}
-	h.processRefundUnappliedReceipt(c, pid, uid)
+	h.processRefundUnappliedReceipt(c, pid, uid, nil, false)
 }
 
 // ManagerRefundUnappliedReceipt handles POST /manager/payments/unapplied-receipts/:id/refund.
@@ -206,20 +207,14 @@ func (h *Handlers) ManagerRefundUnappliedReceipt(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.OnboardingSettings != nil {
-		s, err := h.OnboardingSettings.Get(c.Request.Context(), pid)
-		if err != nil || s == nil || !s.AllowManagerRefunds {
-			c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
-			return
-		}
-	} else {
-		c.JSON(http.StatusForbidden, gin.H{"error": "manager refunds disabled by property owner"})
+	limit, ok := h.requireManagerRefunds(c, pid)
+	if !ok {
 		return
 	}
-	h.processRefundUnappliedReceipt(c, pid, uid)
+	h.processRefundUnappliedReceipt(c, pid, uid, limit, true)
 }
 
-func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.UUID) {
+func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.UUID, managerLimit *int64, isManager bool) {
 	receiptID, ok := ParseUUIDParam(c, "id")
 	if !ok {
 		return
@@ -263,6 +258,11 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 	}
 	if receipt.Status == domain.ReceiptStatusResolved {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "receipt is already resolved"})
+		return
+	}
+
+	if isManager && managerRefundExceedsLimit(managerLimit, receipt.AmountPaise) {
+		apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
 		return
 	}
 

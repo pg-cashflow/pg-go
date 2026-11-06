@@ -58,6 +58,7 @@ type Deps struct {
 	CashfreeSecret     string
 	CashfreeEnv        string
 	CashfreeClient     CashfreeClient
+	BankVerifier       BankAccountVerifier
 
 	GatewayPaymentRepo  GatewayPaymentRepo
 	OrderSettler        payment.OrderGatewaySettler

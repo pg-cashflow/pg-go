@@ -85,8 +85,12 @@ const (
 	CodeFinanceInvalidSettings     Code = "finance.invalidSettings"
 
 	// Refund
-	CodeRefundReasonLength     Code = "payment.refundReasonLength"
-	CodeRefundReasonCharacters Code = "payment.refundReasonCharacters"
+	CodeRefundReasonLength         Code = "payment.refundReasonLength"
+	CodeRefundReasonCharacters     Code = "payment.refundReasonCharacters"
+	CodeRefundManagerLimitExceeded Code = "payment.refundManagerLimitExceeded"
+	CodeBankAccountInvalid         Code = "payment.bankAccountInvalid"
+	CodeBankNameMismatch           Code = "payment.bankNameMismatch"
+	CodeBankVerifierUnavailable    Code = "payment.bankVerifierUnavailable"
 
 	// Request & Bind
 	CodeRequestInvalidBody     Code = "request.invalidBody"
@@ -200,6 +204,10 @@ var AllCodes = []Code{
 
 	CodeRefundReasonLength,
 	CodeRefundReasonCharacters,
+	CodeRefundManagerLimitExceeded,
+	CodeBankAccountInvalid,
+	CodeBankNameMismatch,
+	CodeBankVerifierUnavailable,
 }
 
 // ErrorEnvelope is the standard JSON envelope emitted for client-facing errors.

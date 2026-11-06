@@ -51,8 +51,9 @@ type patchOnboardingSettingsBody struct {
 	JoinPendingTTLDays        *int   `json:"join_pending_ttl_days"`
 	ReferralEnabled           *bool  `json:"referral_enabled"`
 	JoinerDiscountBps         *int   `json:"joiner_discount_bps"`
-	ReferrerRewardBps         *int   `json:"referrer_reward_bps"`
-	AllowManagerRefunds       *bool  `json:"allow_manager_refunds"`
+	ReferrerRewardBps         *int                        `json:"referrer_reward_bps"`
+	AllowManagerRefunds       *bool                       `json:"allow_manager_refunds"`
+	ManagerRefundLimitPaise   postgres.NullableInt64Patch `json:"manager_refund_limit_paise"`
 }
 
 func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
@@ -85,6 +86,7 @@ func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
 		JoinerDiscountBps:         body.JoinerDiscountBps,
 		ReferrerRewardBps:         body.ReferrerRewardBps,
 		AllowManagerRefunds:       body.AllowManagerRefunds,
+		ManagerRefundLimitPaise:   body.ManagerRefundLimitPaise,
 	}
 	s, err := h.OnboardingSettings.Update(c.Request.Context(), pid, patch)
 	if err != nil {

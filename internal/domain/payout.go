@@ -46,6 +46,10 @@ type PayoutPayee struct {
 	IsVerified             bool                    `json:"is_verified"`
 	VerificationStatus     PayeeVerificationStatus `json:"verification_status"`
 	VerificationMethod     string                  `json:"verification_method,omitempty"`
+	VerificationRef        *string                 `json:"verification_ref,omitempty"`
+	NameAtBank             *string                 `json:"name_at_bank,omitempty"`
+	NameMatchScore         *float64                `json:"name_match_score,omitempty"`
+	NameMatchResult        *string                 `json:"name_match_result,omitempty"`
 	VerifiedBy             *uuid.UUID              `json:"verified_by,omitempty"`
 	VerifiedAt             *time.Time              `json:"verified_at,omitempty"`
 	CreatedAt              time.Time               `json:"created_at"`

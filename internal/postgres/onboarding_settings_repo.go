@@ -23,7 +23,7 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 			slot_invite_default_ttl_days, waitlist_enabled, waitlist_offer_ttl_hours, profile_schema_version,
 			require_kyc_before_pay, join_pending_ttl_days,
 			referral_enabled, joiner_discount_bps, referrer_reward_bps,
-			COALESCE(allow_manager_refunds, false)
+			COALESCE(allow_manager_refunds, false), manager_refund_limit_paise
 		FROM property_onboarding_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.DefaultRentPaise, &s.DefaultDepositPaise, &s.DefaultDueDay,
@@ -31,7 +31,7 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 		&s.SlotInviteDefaultTTLDays, &s.WaitlistEnabled, &s.WaitlistOfferTTLHours, &s.ProfileSchemaVersion,
 		&s.RequireKYCBeforePay, &s.JoinPendingTTLDays,
 		&s.ReferralEnabled, &s.JoinerDiscountBps, &s.ReferrerRewardBps,
-		&s.AllowManagerRefunds,
+		&s.AllowManagerRefunds, &s.ManagerRefundLimitPaise,
 	)
 	if err != nil {
 		return nil, err
@@ -148,6 +148,12 @@ func (r *OnboardingSettingsRepo) Update(ctx context.Context, propertyID uuid.UUI
 	}
 	if patch.AllowManagerRefunds != nil {
 		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET allow_manager_refunds=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.AllowManagerRefunds)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if patch.ManagerRefundLimitPaise.Set {
+		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET manager_refund_limit_paise=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, patch.ManagerRefundLimitPaise.Value)
 		if err != nil {
 			return nil, err
 		}

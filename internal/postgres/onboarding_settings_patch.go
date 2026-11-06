@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -24,6 +25,30 @@ type OnboardingSettingsPatch struct {
 	JoinerDiscountBps         *int
 	ReferrerRewardBps         *int
 	AllowManagerRefunds       *bool
+	// ManagerRefundLimitPaise distinguishes "field absent" (Set=false), "clear the limit"
+	// (Set=true, Value=nil) and "set a limit" (Set=true, Value!=nil).
+	ManagerRefundLimitPaise   NullableInt64Patch
+}
+
+// NullableInt64Patch is a tri-state PATCH value. JSON null clears, a number sets, absence leaves as is.
+type NullableInt64Patch struct {
+	Set   bool
+	Value *int64
+}
+
+// UnmarshalJSON is called only when the key is present, so any call means Set=true.
+func (n *NullableInt64Patch) UnmarshalJSON(b []byte) error {
+	n.Set = true
+	if string(b) == "null" {
+		n.Value = nil
+		return nil
+	}
+	var v int64
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	n.Value = &v
+	return nil
 }
 
 func (p OnboardingSettingsPatch) Validate() error {
@@ -46,6 +71,9 @@ func (p OnboardingSettingsPatch) Validate() error {
 	}
 	if p.JoinPendingTTLDays != nil && *p.JoinPendingTTLDays <= 0 {
 		return fmt.Errorf("%w: join_pending_ttl_days", ErrOnboardingSettingsInvalid)
+	}
+	if p.ManagerRefundLimitPaise.Set && p.ManagerRefundLimitPaise.Value != nil && *p.ManagerRefundLimitPaise.Value < 0 {
+		return fmt.Errorf("%w: manager_refund_limit_paise", ErrOnboardingSettingsInvalid)
 	}
 	if p.MaxExtraBedsPerRoom != nil && *p.MaxExtraBedsPerRoom < 0 {
 		return fmt.Errorf("%w: max_extra_beds_per_room", ErrOnboardingSettingsInvalid)
