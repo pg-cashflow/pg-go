@@ -96,17 +96,18 @@ type Deps struct {
 	FinanceEnabled      bool
 	IntelligenceEnabled bool
 
-	PayoutRepo                  *postgres.PayoutRepo
-	PayoutBatchRepo             PayoutBatchStore
-	PayoutWebhookRepo           PayoutWebhookStore
-	PayoutChecksumSecret        string
-	PayoutApprovalSigningKey    []byte
-	PayoutApprovalKeys          map[string][]byte
-	PayoutEncryptionKey         []byte
-	PayoutKeyRing               *crypto.KeyRing
-	CashfreePayoutWebhookSecret string
-	PayoutDispatcher            *finance.PayoutDispatcher
-	LedgerOutboxRepo            *postgres.LedgerOutboxRepo
+	PayoutRepo                   *postgres.PayoutRepo
+	PayoutBatchRepo              PayoutBatchStore
+	PayoutWebhookRepo            PayoutWebhookStore
+	PayoutChecksumSecret         string
+	PayoutApprovalSigningKey     []byte
+	PayoutApprovalKeys           map[string][]byte
+	PayoutEncryptionKey          []byte
+	PayoutKeyRing                *crypto.KeyRing
+	CashfreePayoutWebhookSecret  string
+	CashfreePayoutWebhookSecrets map[string]string
+	PayoutDispatcher             *finance.PayoutDispatcher
+	LedgerOutboxRepo             *postgres.LedgerOutboxRepo
 
 	AttendanceRepo *postgres.AttendanceRepo
 	AttendanceSvc  *attendance.Service

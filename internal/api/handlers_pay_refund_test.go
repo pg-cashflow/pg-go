@@ -469,6 +469,25 @@ func (f *fakeRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p 
 	return f.gwRepo.CreateOrUpdateRefund(ctx, rfRow)
 }
 
+type shortfallRefundTxRunner struct {
+	err error
+}
+
+func (s *shortfallRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return nil, nil
+}
+
+func (s *shortfallRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {
+	return nil
+}
+
+func (s *shortfallRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	return nil
+}
+
 func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 	propID := uuid.New()
 	userID := uuid.New()
@@ -605,8 +624,79 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	// 3. Reject: Older Than 180 Days
-	t.Run("refund older than 180 days", func(t *testing.T) {
+	// 2b. Reject: Allocation Shortfall
+	t.Run("refund allocation shortfall returns 422 with code", func(t *testing.T) {
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+
+		basePayment := &domain.Payment{
+			ID:                uuid.New(),
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			CFPaymentID:       &cfPayID,
+			ProviderPaymentID: &cfPayID,
+			CreatedAt:         time.Now(),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		shortfallRunner := &shortfallRefundTxRunner{
+			err: &refundValidationErr{
+				msg:    "refund allocation shortfall: 100000 paise unallocated across dues",
+				status: http.StatusUnprocessableEntity,
+				code:   apierr.CodePaymentRefundShortfall,
+			},
+		}
+		h := &Handlers{Deps: Deps{
+			RefundTxRunner:     shortfallRunner,
+			GatewayPaymentRepo: gwRepo,
+			CashfreeClient:     cfClient,
+			TenantStore:        tenantStore,
+			DueStore:           dueStore,
+			IntentStore:        intentStore,
+		}}
+
+		r := setupRefundRouter(h, propID, userID)
+
+		body := map[string]any{
+			"otp":          "123456",
+			"amount_paise": 550000,
+			"reason":       "Tenant request refund",
+		}
+		buf, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(buf))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "idem_test_shortfall")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expected 422 Unprocessable Entity on allocation shortfall, got %d (body: %s)", rec.Code, rec.Body.String())
+		}
+		var env apierr.ErrorEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("failed to decode error envelope: %v", err)
+		}
+		if env.Code != apierr.CodePaymentRefundShortfall {
+			t.Fatalf("expected code %s, got %s", apierr.CodePaymentRefundShortfall, env.Code)
+		}
+		if cfClient.refundCalls != 0 {
+			t.Errorf("expected 0 calls to Cashfree on validation failure, got %d", cfClient.refundCalls)
+		}
+	})
+
+	// 3. Reject: Older Than 120 Days
+	t.Run("refund older than 120 days", func(t *testing.T) {
 		gwRepo := newMockRefundPaymentRepo()
 		cfClient := &mockCFClient{}
 		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
@@ -620,7 +710,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 			Provider:          "cashfree",
 			CFPaymentID:       &cfPayID,
 			ProviderPaymentID: &cfPayID,
-			CreatedAt:         time.Now().Add(-185 * 24 * time.Hour), // 185 days ago
+			CreatedAt:         time.Now().Add(-125 * 24 * time.Hour), // 125 days ago (> 120 days default)
 		}
 		_ = gwRepo.Create(context.Background(), oldPayment)
 
@@ -646,7 +736,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		r.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 Bad Request on 180-day expired payment, got %d", rec.Code)
+			t.Fatalf("expected 400 Bad Request on 120-day expired payment, got %d", rec.Code)
 		}
 	})
 

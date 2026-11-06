@@ -383,7 +383,28 @@ func sweepExpiredCaches(now time.Time) {
 
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 	if claims.FamilyID != nil && *claims.FamilyID != uuid.Nil {
+		// Fast path in-memory check
 		if IsFamilyRevoked(*claims.FamilyID) {
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return false
+		}
+
+		// Durable database session-family lookup
+		checker, ok := users.(SessionFamilyChecker)
+		if !ok || checker == nil {
+			// Fail closed if durable session-family lookup is not configured
+			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+			return false
+		}
+
+		active, err := checker.IsFamilyActive(c.Request.Context(), *claims.FamilyID)
+		if err != nil {
+			c.Header("Retry-After", "3")
+			apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
+			return false
+		}
+		if !active {
+			InvalidateFamily(*claims.FamilyID)
 			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 			return false
 		}

@@ -196,6 +196,17 @@ func (r *UserRepo) IncrementTokenVersion(ctx context.Context, id uuid.UUID) erro
 	return nil
 }
 
+// IsFamilyActive checks whether a refresh token family has at least one active, unrevoked, unexpired token.
+func (r *UserRepo) IsFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error) {
+	var active bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM refresh_tokens
+			WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()
+		)`, familyID).Scan(&active)
+	return active, err
+}
+
 func (r *UserRepo) SetTenantID(ctx context.Context, userID, tenantID uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `UPDATE users SET tenant_id=$2 WHERE id=$1`, userID, tenantID)
 	return err

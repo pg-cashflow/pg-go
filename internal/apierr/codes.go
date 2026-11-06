@@ -58,6 +58,10 @@ const (
 	CodePaymentAmbiguousMatch        Code = "payment.ambiguousMatch"
 	CodePaymentNoMatch               Code = "payment.noMatch"
 	CodePaymentInvalidAmount         Code = "payment.invalidAmount"
+	CodePaymentRefundShortfall       Code = "payment.refundShortfall"
+	CodePaymentRefundExceedsBalance  Code = "payment.refundExceedsBalance"
+	CodePaymentRefundInFlight        Code = "payment.refundInFlight"
+	CodePaymentRefundNotEligible     Code = "payment.refundNotEligible"
 
 	// Finance
 	CodeFinanceDuplicateRequest    Code = "finance.duplicateRequest"
@@ -154,6 +158,10 @@ var AllCodes = []Code{
 	CodePaymentAmbiguousMatch,
 	CodePaymentNoMatch,
 	CodePaymentInvalidAmount,
+	CodePaymentRefundShortfall,
+	CodePaymentRefundExceedsBalance,
+	CodePaymentRefundInFlight,
+	CodePaymentRefundNotEligible,
 
 	CodeFinanceDuplicateRequest,
 	CodeFinanceIdempotencyRequired,

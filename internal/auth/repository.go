@@ -21,6 +21,11 @@ type UserLookup interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
 }
 
+// SessionFamilyChecker checks whether a session family is active in durable storage.
+type SessionFamilyChecker interface {
+	IsFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error)
+}
+
 // SessionStore supports live JWT checks and POST /auth/revoke-sessions.
 type SessionStore interface {
 	UserLookup

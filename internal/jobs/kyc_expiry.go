@@ -11,6 +11,7 @@ import (
 type KYCExpiryRepo interface {
 	ExpireLapsedVerifications(ctx context.Context, now time.Time) (int64, error)
 	ExpireStalePendingVerifications(ctx context.Context, cutoff time.Time) (int64, error)
+	ExpireStaleManualReviews(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 // KYCExpiryJob sweeps and expires stale pending verifications and lapsed verified records,
@@ -24,6 +25,10 @@ func NewKYCExpiryJob(repo KYCExpiryRepo) *KYCExpiryJob {
 }
 
 func (j *KYCExpiryJob) Run(ctx context.Context, now time.Time, pendingTTL time.Duration) error {
+	return j.RunWithManualReviewTTL(ctx, now, pendingTTL, 7*24*time.Hour)
+}
+
+func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time, pendingTTL, manualReviewTTL time.Duration) error {
 	// 1. Expire stale pending verification sessions past TTL (1 hour default)
 	pendingCutoff := now.Add(-pendingTTL)
 	stalePending, err := j.Repo.ExpireStalePendingVerifications(ctx, pendingCutoff)
@@ -37,9 +42,17 @@ func (j *KYCExpiryJob) Run(ctx context.Context, now time.Time, pendingTTL time.D
 		return fmt.Errorf("kyc job: expire lapsed verifications: %w", err)
 	}
 
+	// 3. Expire stale pending manual review verifications past retention cutoff
+	manualCutoff := now.Add(-manualReviewTTL)
+	staleManual, err := j.Repo.ExpireStaleManualReviews(ctx, manualCutoff)
+	if err != nil {
+		return fmt.Errorf("kyc job: expire stale manual reviews: %w", err)
+	}
+
 	slog.Info("kyc expiry sweep completed",
 		"stale_pending_expired", stalePending,
 		"lapsed_verified_expired", lapsed,
+		"stale_manual_expired", staleManual,
 	)
 	return nil
 }

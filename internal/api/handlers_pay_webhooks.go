@@ -23,6 +23,68 @@ import (
 
 const maxWebhookBody = 1 << 20
 
+// buildAllowedPaymentAuditPayload extracts allow-listed operational fields from payment webhooks
+// for audit persistence, stripping payer phone/email, card numbers, and authorization headers.
+func buildAllowedPaymentAuditPayload(evtType string, val any) []byte {
+	m := map[string]any{
+		"event_type": evtType,
+	}
+	switch v := val.(type) {
+	case cashfree.SuccessWebhook:
+		m["data"] = map[string]any{
+			"type":             v.Type,
+			"order_id":         v.OrderID,
+			"cf_payment_id":    v.CFPaymentID,
+			"bank_reference":   v.BankReference,
+			"amount_paise":     v.AmountPaise,
+			"payment_status":   v.PaymentStatus,
+			"payment_currency": v.PaymentCurrency,
+			"payment_time":     v.PaymentTime,
+		}
+	case cashfree.FailedWebhook:
+		m["data"] = map[string]any{
+			"type":           v.Type,
+			"order_id":       v.OrderID,
+			"cf_payment_id":  v.CFPaymentID,
+			"amount_paise":   v.AmountPaise,
+			"payment_status": v.PaymentStatus,
+			"failure_reason": v.FailureReason,
+		}
+	case cashfree.RefundWebhook:
+		m["data"] = map[string]any{
+			"type":           v.Type,
+			"is_auto_refund": v.IsAutoRefund,
+			"cf_refund_id":   v.CFRefundID,
+			"refund_id":      v.RefundID,
+			"order_id":       v.OrderID,
+			"cf_payment_id":  v.CFPaymentID,
+			"refund_status":  v.RefundStatus,
+			"refund_amount":  v.RefundAmount,
+			"refund_type":    v.RefundType,
+			"refund_reason":  v.RefundReason,
+		}
+	case cashfree.DisputeWebhook:
+		m["data"] = map[string]any{
+			"type":               v.Type,
+			"dispute_id":         v.DisputeID,
+			"order_id":           v.OrderID,
+			"cf_payment_id":      v.CFPaymentID,
+			"dispute_type":       v.DisputeType,
+			"dispute_status":     v.DisputeStatus,
+			"dispute_amount":     v.DisputeAmount,
+			"reason_code":        v.ReasonCode,
+			"reason_description": v.ReasonDescription,
+			"respond_by":         v.RespondBy,
+		}
+	default:
+		m["data"] = map[string]any{
+			"status": "unparsed_or_unknown",
+		}
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
 // CashfreeWebhook handles POST /webhooks/cashfree.
 func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBody+1))
@@ -59,12 +121,23 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		return
 	}
 
-	// Ingest raw arrival into webhook_events audit log
+	// Parse verified payload before audit ingestion to enforce data minimization
+	val, evtType, parseErr := cashfree.ParseWebhook(raw)
+	var allowedPayload []byte
+	if parseErr != nil {
+		allowedPayload = []byte(fmt.Sprintf(`{"error":"unparseable_payload","len":%d}`, len(raw)))
+		evtType = "UNPARSEABLE"
+	} else {
+		allowedPayload = buildAllowedPaymentAuditPayload(evtType, val)
+	}
+
+	// Ingest allow-listed arrival into webhook_events audit log
 	evtRecord := &domain.WebhookEvent{
 		Provider:         "cashfree",
+		EventType:        evtType,
 		Signature:        &sig,
 		TimestampHeader:  &ts,
-		RawPayload:       raw,
+		RawPayload:       allowedPayload,
 		ProcessingStatus: "received",
 	}
 	if h.GatewayPaymentRepo == nil {
@@ -78,19 +151,16 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		return
 	}
 
-	val, evtType, err := cashfree.ParseWebhook(raw)
-	if err != nil {
+	if parseErr != nil {
 		// DEAD-LETTER ISOLATION: mark error, alert owner, return 200 OK to stop gateway retry storms
-		errMsg := err.Error()
-		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+		errMsg := parseErr.Error()
+		if evtRecord.ID != uuid.Nil {
 			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "dead_letter", &errMsg)
 		}
-		slog.Default().Error("cashfree webhook dead-letter (unparseable payload)", "err", err)
+		slog.Default().Error("cashfree webhook dead-letter (unparseable payload)", "err", parseErr)
 		c.Status(http.StatusOK)
 		return
 	}
-
-	evtRecord.EventType = evtType
 
 	switch evtType {
 	case "PAYMENT_SUCCESS_WEBHOOK":

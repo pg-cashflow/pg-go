@@ -52,6 +52,57 @@ type PayoutWebhookData struct {
 	SettledAt         *string     `json:"settled_at"`
 }
 
+// buildAllowedPayoutAuditPayload extracts allow-listed operational fields from the payout webhook
+// for persistent audit storage. Sensitive beneficiary bank details, IFSC, and signature headers
+// are strictly omitted to enforce data minimization.
+func buildAllowedPayoutAuditPayload(env PayoutWebhookEnvelope, data PayoutWebhookData) []byte {
+	evtType := strings.ToUpper(strings.TrimSpace(env.Event))
+	if evtType == "" {
+		evtType = strings.ToUpper(strings.TrimSpace(env.Type))
+	}
+	if evtType == "" {
+		evtType = "PAYOUT"
+	}
+
+	dataMap := map[string]any{
+		"transfer_id":          data.TransferID,
+		"cf_transfer_id":       data.CFTransferID,
+		"batch_transfer_id":    data.BatchTransferID,
+		"cf_batch_transfer_id": data.CFBatchTransferID,
+		"status":               data.Status,
+		"status_code":          data.StatusCode,
+		"status_description":   data.StatusDescription,
+	}
+
+	if data.TransferAmount.String() != "" {
+		dataMap["transfer_amount"] = data.TransferAmount.String()
+	}
+	if data.UTR != nil {
+		dataMap["utr"] = *data.UTR
+	}
+	if data.TransferUTR != nil {
+		dataMap["transfer_utr"] = *data.TransferUTR
+	}
+	if data.Acknowledged != nil {
+		dataMap["acknowledged"] = *data.Acknowledged
+	}
+	if data.AcknowledgedAt != nil {
+		dataMap["acknowledged_at"] = *data.AcknowledgedAt
+	}
+	if data.SettledAt != nil {
+		dataMap["settled_at"] = *data.SettledAt
+	}
+
+	auditMap := map[string]any{
+		"event":      evtType,
+		"event_time": env.EventTime,
+		"data":       dataMap,
+	}
+
+	b, _ := json.Marshal(auditMap)
+	return b
+}
+
 // verifyPayoutLowBalanceBodySignature verifies the legacy field-signature format
 // Cashfree documents for its LOW_BALANCE_ALERT Dashboard test callback. The
 // exception is intentionally restricted to flat scalar fields: accepting
@@ -120,9 +171,30 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 
-	// Fail closed if CashfreePayoutWebhookSecret is unconfigured
-	secret := h.CashfreePayoutWebhookSecret
-	if secret == "" {
+	// Fail closed if payout webhook secret is unconfigured
+	var candidateSecrets []string
+	if len(h.CashfreePayoutWebhookSecrets) > 0 {
+		for _, s := range h.CashfreePayoutWebhookSecrets {
+			if strings.TrimSpace(s) != "" {
+				candidateSecrets = append(candidateSecrets, strings.TrimSpace(s))
+			}
+		}
+	}
+	if strings.TrimSpace(h.CashfreePayoutWebhookSecret) != "" {
+		trimmed := strings.TrimSpace(h.CashfreePayoutWebhookSecret)
+		found := false
+		for _, s := range candidateSecrets {
+			if s == trimmed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			candidateSecrets = append(candidateSecrets, trimmed)
+		}
+	}
+
+	if len(candidateSecrets) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payout webhook secret not configured"})
 		return
 	}
@@ -142,7 +214,12 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	validSig := false
 	usesBodySignature := false
 	if sig != "" && ts != "" {
-		validSig = cashfree.VerifyWebhookHMAC(secret, ts, string(raw), sig)
+		for _, s := range candidateSecrets {
+			if cashfree.VerifyWebhookHMAC(s, ts, string(raw), sig) {
+				validSig = true
+				break
+			}
+		}
 	}
 
 	// Cashfree's Dashboard "Test & Add" LOW_BALANCE_ALERT is the one documented
@@ -155,10 +232,15 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			bodySig = strings.TrimSpace(env.EventSignature)
 		}
 		bodyTS := strings.TrimSpace(env.Timestamp)
-		if bodySig != "" && bodyTS != "" && verifyPayoutLowBalanceBodySignature(secret, raw, bodySig) {
-			sig, ts = bodySig, bodyTS
-			validSig = true
-			usesBodySignature = true
+		if bodySig != "" && bodyTS != "" {
+			for _, s := range candidateSecrets {
+				if verifyPayoutLowBalanceBodySignature(s, raw, bodySig) {
+					sig, ts = bodySig, bodyTS
+					validSig = true
+					usesBodySignature = true
+					break
+				}
+			}
 		}
 	}
 
@@ -184,38 +266,39 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 
-	// REQ-WH-001: persist the verified payload before any payout mutation.
+	evtType := strings.ToUpper(strings.TrimSpace(env.Event))
+	if evtType == "" {
+		evtType = strings.ToUpper(strings.TrimSpace(env.Type))
+	}
+	if evtType == "" {
+		evtType = "PAYOUT"
+	}
+
+	var data PayoutWebhookData
+	if len(env.Data) > 0 {
+		_ = json.Unmarshal(env.Data, &data)
+	}
+
+	// REQ-WH-001: persist the verified allow-listed payload before any payout mutation.
 	audit := h.gatewayAuditStore()
 	if audit == nil {
 		slog.Error("payout webhook rejected: audit log unavailable")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit log service unavailable"})
 		return
 	}
+	allowedAuditPayload := buildAllowedPayoutAuditPayload(env, data)
 	evtRecord := &domain.WebhookEvent{
 		Provider:         "cashfree",
-		EventType:        "PAYOUT",
+		EventType:        evtType,
 		Signature:        &sig,
 		TimestampHeader:  &ts,
-		RawPayload:       raw,
+		RawPayload:       allowedAuditPayload,
 		ProcessingStatus: "received",
 	}
 	if err := audit.CreateWebhookEvent(c.Request.Context(), evtRecord); err != nil {
 		slog.Error("payout webhook forensic audit persistence failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
 		return
-	}
-
-	evtType := strings.ToUpper(strings.TrimSpace(env.Event))
-	if evtType == "" {
-		evtType = strings.ToUpper(strings.TrimSpace(env.Type))
-	}
-	if evtType != "" {
-		evtRecord.EventType = evtType
-	}
-
-	var data PayoutWebhookData
-	if len(env.Data) > 0 {
-		_ = json.Unmarshal(env.Data, &data)
 	}
 
 	slog.Info("cashfree payout webhook received",

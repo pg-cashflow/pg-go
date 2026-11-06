@@ -16,6 +16,30 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
+// buildAllowedSettlementAuditPayload extracts allow-listed operational fields from settlement webhooks
+// for audit persistence, ensuring no unnecessary fields are stored in webhook_events.
+func buildAllowedSettlementAuditPayload(parsed *cashfree.SettlementWebhookRecord) []byte {
+	if parsed == nil {
+		return []byte("{}")
+	}
+	m := map[string]any{
+		"event_type": "SETTLEMENT",
+		"data": map[string]any{
+			"settlement_id":      parsed.SettlementID,
+			"cf_settlement_id":   parsed.CFSettlementID,
+			"gross_amount_paise": parsed.GrossAmountPaise,
+			"net_amount_paise":   parsed.NetAmountPaise,
+			"fee_paise":          parsed.FeePaise,
+			"tax_paise":          parsed.TaxPaise,
+			"adjustment_paise":   parsed.AdjustmentPaise,
+			"settlement_utr":     parsed.SettlementUTR,
+			"event_time":         parsed.EventTime,
+		},
+	}
+	b, _ := json.Marshal(m)
+	return b
+}
+
 type resolveDiscrepancyBody struct {
 	Notes string `json:"notes" binding:"required"`
 	StepUpAuthInput
@@ -174,28 +198,30 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 		return
 	}
 
-	// 4. Audit raw payload into webhook_events
+	// 4. Parse verified payload before audit ingestion
+	parsed, err := cashfree.ParseSettlementWebhook(raw)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settlement payload"})
+		return
+	}
+
+	// 5. Audit allow-listed payload into webhook_events
 	if h.GatewayPaymentRepo == nil {
 		slog.Error("settlement webhook processing rejected: GatewayPaymentRepo is nil (audit log unavailable)")
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "audit log service unavailable"})
 		return
 	}
+	allowedPayload := buildAllowedSettlementAuditPayload(parsed)
 	if aerr := h.GatewayPaymentRepo.CreateWebhookEvent(c.Request.Context(), &domain.WebhookEvent{
 		Provider:         "cashfree",
+		EventType:        "SETTLEMENT",
 		Signature:        &signature,
 		TimestampHeader:  &timestamp,
-		RawPayload:       raw,
+		RawPayload:       allowedPayload,
 		ProcessingStatus: "received",
 	}); aerr != nil {
 		slog.Error("failed to persist settlement webhook audit event", "error", aerr)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
-		return
-	}
-
-	// 5. Parse payload with sanitized error
-	parsed, err := cashfree.ParseSettlementWebhook(raw)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settlement payload"})
 		return
 	}
 

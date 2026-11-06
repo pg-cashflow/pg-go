@@ -111,4 +111,3 @@ func TestCashfreePollWithOrderSettler_PassesFullIntentAndTransaction(t *testing.
 		t.Errorf("expected amount 125000, got %d", settler.amountPaise)
 	}
 }
-

@@ -67,6 +67,7 @@ type Config struct {
 	CashfreePayoutAPIVersion          string
 	CashfreePayoutFundsourceID        string
 	CashfreePayoutWebhookSecret       string
+	CashfreePayoutWebhookSecrets      map[string]string
 	CashfreePayoutEnv                 string
 	CashfreePayoutAutoDispatchEnabled bool
 	CashfreePayoutAuthMode            string // "signature" | "ip"
@@ -152,7 +153,7 @@ func Load() (*Config, error) {
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
 		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 365),
-		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 180),
+		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 120),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
@@ -169,6 +170,9 @@ func Load() (*Config, error) {
 	}
 	if keysStr := os.Getenv("PAYOUT_APPROVAL_KEYS"); keysStr != "" {
 		cfg.PayoutApprovalKeys = parseVersionedApprovalKeys(keysStr)
+	}
+	if secretsStr := os.Getenv("CF_PAYOUT_WEBHOOK_SECRETS"); secretsStr != "" {
+		cfg.CashfreePayoutWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
 		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)
@@ -236,6 +240,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.WebhookTimestampToleranceSec <= 0 {
 		return nil, fmt.Errorf("WEBHOOK_TIMESTAMP_TOLERANCE_SEC must be greater than 0 (got %d)", cfg.WebhookTimestampToleranceSec)
+	}
+	if cfg.RefundWindowDays < 1 || cfg.RefundWindowDays > 120 {
+		return nil, fmt.Errorf("REFUND_WINDOW_DAYS must be between 1 and 120 (got %d)", cfg.RefundWindowDays)
 	}
 	if cfg.CashfreePGBaseURL != "" {
 		if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") ||

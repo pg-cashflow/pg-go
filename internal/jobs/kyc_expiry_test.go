@@ -10,9 +10,12 @@ import (
 type mockKYCExpiryRepo struct {
 	lapsedCount  int64
 	pendingCount int64
+	manualCount  int64
 	lapsedErr    error
 	pendingErr   error
+	manualErr    error
 	cutoffPassed time.Time
+	manualCutoff time.Time
 	nowPassed    time.Time
 }
 
@@ -26,6 +29,11 @@ func (m *mockKYCExpiryRepo) ExpireStalePendingVerifications(ctx context.Context,
 	return m.pendingCount, m.pendingErr
 }
 
+func (m *mockKYCExpiryRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time) (int64, error) {
+	m.manualCutoff = cutoff
+	return m.manualCount, m.manualErr
+}
+
 func TestKYCExpiryJob_Run(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	ttl := 1 * time.Hour
@@ -33,6 +41,7 @@ func TestKYCExpiryJob_Run(t *testing.T) {
 	mockRepo := &mockKYCExpiryRepo{
 		lapsedCount:  3,
 		pendingCount: 5,
+		manualCount:  2,
 	}
 
 	job := NewKYCExpiryJob(mockRepo)
@@ -44,6 +53,10 @@ func TestKYCExpiryJob_Run(t *testing.T) {
 	expectedCutoff := now.Add(-ttl)
 	if !mockRepo.cutoffPassed.Equal(expectedCutoff) {
 		t.Errorf("cutoff = %v, want %v", mockRepo.cutoffPassed, expectedCutoff)
+	}
+	expectedManualCutoff := now.Add(-7 * 24 * time.Hour)
+	if !mockRepo.manualCutoff.Equal(expectedManualCutoff) {
+		t.Errorf("manualCutoff = %v, want %v", mockRepo.manualCutoff, expectedManualCutoff)
 	}
 	if !mockRepo.nowPassed.Equal(now) {
 		t.Errorf("now = %v, want %v", mockRepo.nowPassed, now)

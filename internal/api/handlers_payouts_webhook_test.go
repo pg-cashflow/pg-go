@@ -1386,3 +1386,149 @@ func TestPayoutWebhook_AuditAndDuplicate(t *testing.T) {
 		t.Fatalf("expected 1 status update, got %d", updates)
 	}
 }
+
+func TestPayoutWebhook_AuditDataMinimization(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "test_secret_32_bytes_audit_min_123"
+	itemID := uuid.New()
+	stubAudit := &stubGatewayRepo{}
+	mockStore := &mockPayoutWebhookStore{
+		getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+			return &domain.PayoutItem{
+				ID:          itemID,
+				Status:      domain.PayoutProcessing,
+				AmountPaise: 50000,
+			}, nil
+		},
+		updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfID, utr *string, settledAt *time.Time, failureReason *string) error {
+			return nil
+		},
+	}
+
+	h := &Handlers{Deps: Deps{
+		CashfreePayoutWebhookSecret: secret,
+		GatewayPaymentRepo:          stubAudit,
+		PayoutWebhookRepo:           mockStore,
+		WebhookToleranceSec:         300,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+	// Construct webhook with sensitive beneficiary bank details
+	rawJSON := fmt.Sprintf(`{
+		"event": "TRANSFER_SUCCESS",
+		"event_time": "%s",
+		"data": {
+			"transfer_id": "pgo_%s",
+			"cf_transfer_id": "cf_tr_12345",
+			"status": "SUCCESS",
+			"status_code": "COMPLETED",
+			"transfer_amount": "500.00",
+			"utr": "UTR12345678",
+			"beneficiary_details": {
+				"bank_account_number": "987654321098",
+				"ifsc": "HDFC0001234",
+				"phone": "9999999999",
+				"email": "beneficiary@example.com"
+			}
+		}
+	}`, time.Now().UTC().Format(time.RFC3339), itemID.String())
+
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	sig := signPayoutWebhook(secret, ts, []byte(rawJSON))
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader([]byte(rawJSON)))
+	req.Header.Set("x-webhook-signature", sig)
+	req.Header.Set("x-webhook-timestamp", ts)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if len(stubAudit.webhookEvents) != 1 {
+		t.Fatalf("expected 1 audit event, got %d", len(stubAudit.webhookEvents))
+	}
+	evt := stubAudit.webhookEvents[0]
+	if evt.EventType != "TRANSFER_SUCCESS" {
+		t.Errorf("expected EventType TRANSFER_SUCCESS, got %s", evt.EventType)
+	}
+
+	storedPayload := string(evt.RawPayload)
+	// Verify sensitive fields are stripped
+	for _, sensitive := range []string{"987654321098", "HDFC0001234", "beneficiary_details", "9999999999"} {
+		if strings.Contains(storedPayload, sensitive) {
+			t.Errorf("sensitive field %q must not be retained in audit raw_payload: %s", sensitive, storedPayload)
+		}
+	}
+	// Verify operational fields are retained
+	for _, operational := range []string{"pgo_" + itemID.String(), "cf_tr_12345", "SUCCESS", "COMPLETED", "UTR12345678"} {
+		if !strings.Contains(storedPayload, operational) {
+			t.Errorf("operational field %q must be retained in audit raw_payload: %s", operational, storedPayload)
+		}
+	}
+}
+
+func TestPayoutWebhook_SecretRotation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secretOld := "old_secret_key_32_bytes_long_1"
+	secretNew := "new_secret_key_32_bytes_long_2"
+	itemID := uuid.New()
+	stubAudit := &stubGatewayRepo{}
+	mockStore := &mockPayoutWebhookStore{
+		getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+			return &domain.PayoutItem{
+				ID:          itemID,
+				Status:      domain.PayoutProcessing,
+				AmountPaise: 1000,
+			}, nil
+		},
+		updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfID, utr *string, settledAt *time.Time, failureReason *string) error {
+			return nil
+		},
+	}
+
+	h := &Handlers{Deps: Deps{
+		CashfreePayoutWebhookSecrets: map[string]string{
+			"v1": secretOld,
+			"v2": secretNew,
+		},
+		GatewayPaymentRepo:  stubAudit,
+		PayoutWebhookRepo:   mockStore,
+		WebhookToleranceSec: 300,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+	makeReq := func(sec string) *http.Request {
+		raw := fmt.Sprintf(`{"event":"TRANSFER_FAILED","data":{"transfer_id":"pgo_%s","status":"FAILED"}}`, itemID)
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		sig := signPayoutWebhook(sec, ts, []byte(raw))
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader([]byte(raw)))
+		req.Header.Set("x-webhook-signature", sig)
+		req.Header.Set("x-webhook-timestamp", ts)
+		return req
+	}
+
+	// 1. Signed with old active secret succeeds
+	wOld := httptest.NewRecorder()
+	r.ServeHTTP(wOld, makeReq(secretOld))
+	if wOld.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for old secret during rotation, got %d: %s", wOld.Code, wOld.Body.String())
+	}
+
+	// 2. Signed with new secret succeeds
+	wNew := httptest.NewRecorder()
+	r.ServeHTTP(wNew, makeReq(secretNew))
+	if wNew.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for new secret during rotation, got %d: %s", wNew.Code, wNew.Body.String())
+	}
+
+	// 3. Signed with untrusted secret fails 401
+	wBad := httptest.NewRecorder()
+	r.ServeHTTP(wBad, makeReq("wrong_untrusted_secret_key_12345"))
+	if wBad.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for untrusted secret, got %d", wBad.Code)
+	}
+}

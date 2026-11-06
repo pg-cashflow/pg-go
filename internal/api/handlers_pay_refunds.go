@@ -178,11 +178,22 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 			return fmt.Errorf("get refunded paise: %w", err)
 		}
 		if req.AmountPaise > int64(paymentAmt)-alreadyRefunded {
-			return &refundValidationErr{msg: fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded)}
+			return &refundValidationErr{
+				msg:    fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded),
+				status: http.StatusBadRequest,
+				code:   apierr.CodePaymentRefundExceedsBalance,
+			}
 		}
 
 		// Calculate LIFO refund allocations across dues (due_date DESC)
-		if !isUnapplied && len(duesList) > 0 {
+		if !isUnapplied {
+			if len(duesList) == 0 {
+				return &refundValidationErr{
+					msg:    "payment has no associated dues for refund allocation",
+					status: http.StatusUnprocessableEntity,
+					code:   apierr.CodePaymentRefundShortfall,
+				}
+			}
 			remRefund := req.AmountPaise
 			for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
 				d := duesList[i]
@@ -215,6 +226,14 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 					dueKind:     d.kind,
 				})
 				remRefund -= allocAmt
+			}
+
+			if remRefund > 0 {
+				return &refundValidationErr{
+					msg:    fmt.Sprintf("refund allocation shortfall: %d paise unallocated across dues", remRefund),
+					status: http.StatusUnprocessableEntity,
+					code:   apierr.CodePaymentRefundShortfall,
+				}
 			}
 		}
 
@@ -395,6 +414,7 @@ type dueAllocInfo struct {
 type refundValidationErr struct {
 	msg    string
 	status int
+	code   apierr.Code
 }
 
 func (e *refundValidationErr) Error() string { return e.msg }
@@ -629,7 +649,7 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 	// Guard against race condition with in-flight creation:
 	// If refund is in 'initiated' status and less than 2 minutes old, reject cancel to prevent race with Cashfree call.
 	if rf.Status == domain.RefundStatusInitiated && time.Since(rf.CreatedAt) < 2*time.Minute {
-		c.JSON(http.StatusConflict, gin.H{"error": "refund is currently in flight; please wait 2 minutes before cancelling"})
+		apierr.RespondClientErr(c, http.StatusConflict, "refund is currently in flight; please wait 2 minutes before cancelling", apierr.CodePaymentRefundInFlight)
 		return
 	}
 
@@ -861,7 +881,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 
 	// Gateway check: Only cashfree provider payments can be refunded via PG API
 	if p.Provider != "cashfree" && p.MatchedBy != domain.MatchedByCashfree {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only cashfree gateway payments can be refunded via gateway"})
+		apierr.RespondClientErr(c, http.StatusBadRequest, "only cashfree gateway payments can be refunded via gateway", apierr.CodePaymentRefundNotEligible)
 		return nil, errors.New("invalid provider")
 	}
 
@@ -876,7 +896,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		windowDays = 120
 	}
 	if now.Sub(paymentTime) > time.Duration(windowDays)*24*time.Hour {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("payment is older than %d days and cannot be refunded via gateway", windowDays)})
+		apierr.RespondClientErr(c, http.StatusBadRequest, fmt.Sprintf("payment is older than %d days and cannot be refunded via gateway", windowDays), apierr.CodePaymentRefundNotEligible)
 		return nil, fmt.Errorf("older than %d days", windowDays)
 	}
 
@@ -886,11 +906,11 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		idempotencyKey = strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
 	}
 	if idempotencyKey == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header is required for refund operations"})
+		apierr.RespondClientErr(c, http.StatusBadRequest, "Idempotency-Key header is required for refund operations", apierr.CodeFinanceIdempotencyRequired)
 		return nil, errors.New("missing idempotency key")
 	}
 	if len(idempotencyKey) > 128 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key header cannot exceed 128 characters"})
+		apierr.RespondClientErr(c, http.StatusBadRequest, "Idempotency-Key header cannot exceed 128 characters", apierr.CodeRequestInvalidBody)
 		return nil, errors.New("idempotency key too long")
 	}
 
@@ -979,7 +999,11 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 			if status == 0 {
 				status = http.StatusBadRequest
 			}
-			c.JSON(status, gin.H{"error": vErr.msg})
+			if vErr.code != "" {
+				apierr.RespondClientErr(c, status, vErr.msg, vErr.code)
+			} else {
+				c.JSON(status, gin.H{"error": vErr.msg})
+			}
 			return nil, err
 		}
 		respondErr(c, err)

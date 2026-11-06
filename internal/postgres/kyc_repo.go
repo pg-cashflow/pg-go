@@ -737,6 +737,27 @@ func (r *KYCRepo) ExpireStalePendingVerifications(ctx context.Context, cutoff ti
 	return tag.RowsAffected(), nil
 }
 
+// ExpireStaleManualReviews batch expires pending_manual_review verifications past their TTL cutoff,
+// nulling document_bytes, document_url, and ocr_data to prevent indefinite PII retention.
+func (r *KYCRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE kyc_verification
+		SET status = 'expired',
+			document_bytes = NULL,
+			document_url = NULL,
+			ocr_data = NULL,
+			attested_photo_bytes = NULL,
+			photo_stored = FALSE,
+			failure_reason = 'expired by manual review TTL reaper',
+			updated_at = NOW()
+		WHERE status = 'pending_manual_review' AND created_at <= $1
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("kyc: expire stale manual reviews: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ExpireLapsedVerifications transitions verified records that have passed their expires_at date
 // to 'expired' and atomically nulls out tenants.aadhaar_last4 to prevent stale PII display.
 // Strictly enforces the global lock hierarchy (tenants -> kyc_verification) per tenant.

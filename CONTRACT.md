@@ -77,6 +77,10 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.invalidAmount`         | 400         | Payment     | Payment amount must be a positive integer                                        |
 | `payment.refundReasonLength`     | 400         | Payment     | Refund reason must be between 3 and 100 characters                               |
 | `payment.refundReasonCharacters` | 400         | Payment     | Refund reason contains disallowed special characters                             |
+| `payment.refundShortfall`        | 422         | Payment     | Refund amount cannot be completely allocated across associated dues              |
+| `payment.refundExceedsBalance`   | 400         | Payment     | Refund amount exceeds remaining payment balance                                  |
+| `payment.refundInFlight`         | 409         | Payment     | Refund is currently in flight; cancellation locked for 2 minutes                 |
+| `payment.refundNotEligible`      | 400         | Payment     | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)      |
 | `finance.duplicateRequest`      | 409         | Finance     | Duplicate idempotency key                                                        |
 | `finance.idempotencyRequired`   | 400         | Finance     | Idempotency-Key header is required                                               |
 | `finance.invalidAmount`         | 400         | Finance     | Invalid expense or payment amount                                                |
@@ -999,6 +1003,10 @@ Validation & error responses:
 | **Payment**     | `payment.invalidAmount`         | 400         | Payment amount in paise must be positive integer                                              |
 | **Payment**     | `payment.refundReasonLength`     | 400         | Refund reason must be between 3 and 100 characters                                           |
 | **Payment**     | `payment.refundReasonCharacters` | 400         | Refund reason contains disallowed special characters                                         |
+| **Payment**     | `payment.refundShortfall`        | 422         | Refund amount cannot be completely allocated across associated dues                          |
+| **Payment**     | `payment.refundExceedsBalance`   | 400         | Refund amount exceeds remaining payment balance                                              |
+| **Payment**     | `payment.refundInFlight`         | 409         | Refund is currently in flight; cancellation locked for 2 minutes                             |
+| **Payment**     | `payment.refundNotEligible`      | 400         | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)                  |
 | **Finance**     | `finance.duplicateRequest`      | 409         | Mutating financial request with duplicate Idempotency-Key                                     |
 | **Finance**     | `finance.idempotencyRequired`   | 400         | Idempotency-Key header is missing on mutating financial endpoint                              |
 | **Finance**     | `finance.invalidAmount`         | 400         | Financial amount in paise must be positive integer                                            |

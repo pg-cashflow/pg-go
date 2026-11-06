@@ -491,3 +491,103 @@ func TestTokenVersionCache_RevocationAfterInvalidation(t *testing.T) {
 		t.Fatalf("req3: expected 403 after invalidation, got %d", w3.Code)
 	}
 }
+
+type mockFamilyUserLookup struct {
+	user         *domain.User
+	familyActive bool
+	familyErr    error
+}
+
+func (m *mockFamilyUserLookup) GetByID(context.Context, uuid.UUID) (*domain.User, error) {
+	return m.user, nil
+}
+
+func (m *mockFamilyUserLookup) IsFamilyActive(context.Context, uuid.UUID) (bool, error) {
+	return m.familyActive, m.familyErr
+}
+
+func TestRequireOwner_FamilyBoundSessionRevocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "middleware-family-test-secret"
+	propID := uuid.New()
+	familyID := uuid.New()
+	user := &domain.User{
+		ID:           uuid.New(),
+		Role:         domain.RoleOwner,
+		PropertyID:   &propID,
+		TokenVersion: 1,
+	}
+
+	token, err := IssueAccessTokenWithFamily(secret, user, &familyID)
+	if err != nil {
+		t.Fatalf("IssueAccessTokenWithFamily: %v", err)
+	}
+
+	// 1. Active family in durable lookup passes
+	{
+		ResetRevokedFamilyCache()
+		lookup := &mockFamilyUserLookup{user: user, familyActive: true}
+		r := gin.New()
+		r.GET("/owner", RequireOwner(secret, lookup), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		req := httptest.NewRequest(http.MethodGet, "/owner", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for active family, got %d", w.Code)
+		}
+	}
+
+	// 2. Inactive/revoked family in durable lookup returns 403 Forbidden
+	{
+		ResetRevokedFamilyCache()
+		lookup := &mockFamilyUserLookup{user: user, familyActive: false}
+		r := gin.New()
+		r.GET("/owner", RequireOwner(secret, lookup), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		req := httptest.NewRequest(http.MethodGet, "/owner", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden for revoked family, got %d", w.Code)
+		}
+	}
+
+	// 3. Database error during durable lookup returns 503 Service Unavailable
+	{
+		ResetRevokedFamilyCache()
+		lookup := &mockFamilyUserLookup{user: user, familyErr: errors.New("database connection down")}
+		r := gin.New()
+		r.GET("/owner", RequireOwner(secret, lookup), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		req := httptest.NewRequest(http.MethodGet, "/owner", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 Service Unavailable on lookup error, got %d", w.Code)
+		}
+	}
+
+	// 4. Missing SessionFamilyChecker on family-bound token fails closed with 403 Forbidden
+	{
+		ResetRevokedFamilyCache()
+		plainLookup := &mockUserLookup{user: user}
+		r := gin.New()
+		r.GET("/owner", RequireOwner(secret, plainLookup), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		req := httptest.NewRequest(http.MethodGet, "/owner", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 Forbidden when family lookup is unconfigured, got %d", w.Code)
+		}
+	}
+}

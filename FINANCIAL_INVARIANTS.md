@@ -26,6 +26,7 @@ Every requirement, schema change, service implementation, database constraint, a
 | **INV-014** | Fail-Closed Gateway Ingestion | Strict Deserialization | Cashfree Webhooks & Ingestion | `internal/cashfree/decimal.go:17-86`<br>`internal/cashfree/webhook.go:113-296`<br>`internal/cashfree/webhook_test.go:156-200` |
 | **INV-015** | Non-Zero Failure Transparency | HTTP Handler Contracts | Owner & Manager Dashboards | `internal/api/handlers_owner_dashboard.go:457-461, 467-471, 481-485, 499-503` |
 | **INV-016** | KYC Identity Document Encryption & Caching | Crypto Service + HTTP Header | Identity Photos & Documents | `internal/postgres/kyc_repo.go:40-94`<br>`internal/app/bootstrap.go:214-234`<br>`cmd/kyc-expiry/main.go:58-62`<br>`internal/api/handlers_owner_tenants.go:583, 621` |
+| **INV-017** | Complete Refund Allocation Conservation | DB Trigger + Application | `gateway_refunds`, `refund_allocations` | `internal/api/handlers_pay_refunds.go:184-235`<br>`migrations/097_refund_allocation_sum_matches_refund_trigger.sql` |
 
 ---
 
@@ -205,3 +206,15 @@ Every requirement, schema change, service implementation, database constraint, a
   - `cmd/kyc-expiry/main.go:58-62` (CLI validation: `log.Fatalf` on invalid key length)
   - `internal/api/handlers_owner_tenants.go:583, 621` (`c.Header("Cache-Control", "no-store")`, `c.Header("X-Content-Type-Options", "nosniff")`)
   - `internal/api/router_manager.go:35` (`capOf("tenants.view")` capability gate on `/kyc/:id/document`)
+
+
+### INV-017 — Complete Refund Allocation Conservation
+> *Gateway refunds for applied payments shall allocate their entire amount across dues and never permit unallocated money leaks.*
+* **Scope**: `gateway_refunds`, `refund_allocations`, `/api/owner/payments/:id/refund`.
+* **Invariant**: For every refund on an applied payment (`payments.is_unapplied IS FALSE`), the sum of all associated `refund_allocations.amount_paise` must equal `gateway_refunds.amount_paise`.
+* **Enforcement**:
+  1. Application-level pre-validation inside `PrepareRefund`: returns HTTP 422 with `payment.refundShortfall` if any portion of the requested refund cannot be allocated to dues.
+  2. Engine-level deferred constraint trigger `trg_refund_allocation_sum_guard` firing `AFTER INSERT OR UPDATE ON gateway_refunds DEFERRABLE INITIALLY DEFERRED`. If allocations sum is unequal at transaction commit, PostgreSQL aborts the transaction with error code `23514`.
+* **Enforced In**:
+  - `internal/api/handlers_pay_refunds.go:184-235` (rejects `remRefund > 0` with `CodePaymentRefundShortfall`)
+  - `migrations/097_refund_allocation_sum_matches_refund_trigger.sql` (`fn_refund_allocation_sum_guard`)

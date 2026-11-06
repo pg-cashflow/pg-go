@@ -784,3 +784,53 @@ func TestLoad_AppEnvNormalization(t *testing.T) {
 		t.Fatalf("expected production validation error for normalized AppEnv, got %v", err)
 	}
 }
+
+func TestLoad_RefundWindowDays(t *testing.T) {
+	origWindow := os.Getenv("REFUND_WINDOW_DAYS")
+	defer func() {
+		if origWindow != "" {
+			_ = os.Setenv("REFUND_WINDOW_DAYS", origWindow)
+		} else {
+			_ = os.Unsetenv("REFUND_WINDOW_DAYS")
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+
+	// 1. Default should be 120
+	_ = os.Unsetenv("REFUND_WINDOW_DAYS")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error loading default refund window: %v", err)
+	}
+	if cfg.RefundWindowDays != 120 {
+		t.Fatalf("expected default RefundWindowDays to be 120, got %d", cfg.RefundWindowDays)
+	}
+
+	// 2. Custom valid value (e.g. 60)
+	_ = os.Setenv("REFUND_WINDOW_DAYS", "60")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected error loading valid refund window: %v", err)
+	}
+	if cfg.RefundWindowDays != 60 {
+		t.Fatalf("expected RefundWindowDays 60, got %d", cfg.RefundWindowDays)
+	}
+
+	// 3. Invalid value > 120 (e.g. 180) must fail
+	_ = os.Setenv("REFUND_WINDOW_DAYS", "180")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "REFUND_WINDOW_DAYS must be between 1 and 120") {
+		t.Fatalf("expected validation error for REFUND_WINDOW_DAYS > 120, got %v", err)
+	}
+
+	// 4. Invalid value <= 0 must fail
+	_ = os.Setenv("REFUND_WINDOW_DAYS", "0")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "REFUND_WINDOW_DAYS must be between 1 and 120") {
+		t.Fatalf("expected validation error for REFUND_WINDOW_DAYS <= 0, got %v", err)
+	}
+}
