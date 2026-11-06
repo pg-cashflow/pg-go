@@ -381,6 +381,13 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	}
 
 	cleanType := domain.PayeeType(strings.ToLower(strings.TrimSpace(body.PayeeType)))
+	switch cleanType {
+	case domain.PayeeTypeStaff, domain.PayeeTypeVendor, domain.PayeeTypeTenantDeposit, domain.PayeeTypeGuardianDeposit:
+		// valid
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payee_type"})
+		return
+	}
 	if cleanType == domain.PayeeTypeTenantDeposit || cleanType == domain.PayeeTypeGuardianDeposit {
 		if body.TenantID == nil || *body.TenantID == uuid.Nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id is required for deposit payees"})
@@ -431,7 +438,7 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	payee := &domain.PayoutPayee{
 		PropertyID:             pid,
 		TenantID:               body.TenantID,
-		PayeeType:              domain.PayeeType(body.PayeeType),
+		PayeeType:              cleanType,
 		Name:                   strings.TrimSpace(body.Name),
 		Phone:                  body.Phone,
 		AccountNumberEncrypted: encryptedAcct,

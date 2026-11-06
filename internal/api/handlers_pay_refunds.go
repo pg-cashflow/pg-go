@@ -304,7 +304,10 @@ func (r *postgresRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID
 		case "succeeded":
 			for _, item := range allocationsToCreate {
 				d, err := txDueRepo.GetByIDForUpdate(ctx, item.dueID)
-				if err == nil && d != nil {
+				if err != nil {
+					return fmt.Errorf("lock due %s for refund recompute: %w", item.dueID, err)
+				}
+				if d != nil {
 					if err := recomputeDueStatusUnderLock(ctx, txDueRepo, txPayRepo, d); err != nil {
 						return err
 					}

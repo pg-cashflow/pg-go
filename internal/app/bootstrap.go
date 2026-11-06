@@ -592,6 +592,39 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	auth.StartCacheSweeper(ctx, 5*time.Minute)
 
 	go func() {
+		runDaily := func() {
+			release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "daily_cleanup")
+			if err != nil {
+				bg.logger.Error("daily cleanup lock failed", "err", err)
+				return
+			}
+			if !acquired {
+				bg.logger.Debug("daily cleanup lock held by another instance, skipping")
+				return
+			}
+			defer func() { _ = release(ctx) }()
+
+			n, err := bg.outboxRepo.CleanupEvents(ctx, 30*24*time.Hour, 90*24*time.Hour)
+			if err != nil {
+				bg.logger.Error("outbox cleanup failed", "err", err)
+			} else {
+				bg.logger.Info("outbox cleanup complete", "deleted", n)
+			}
+			if pn, err := bg.refreshRepo.PurgeExpiredTokens(ctx, 24*time.Hour); err != nil {
+				bg.logger.Error("refresh token purge failed", "err", err)
+			} else if pn > 0 {
+				bg.logger.Info("refresh token purge complete", "deleted", pn)
+			}
+			if in, err := bg.maintReportRepo.PurgeExpiredImages(ctx, 30*24*time.Hour); err != nil {
+				bg.logger.Error("report image purge failed", "err", err)
+			} else if in > 0 {
+				bg.logger.Info("report image purge complete", "deleted", in)
+			}
+		}
+
+		// Run immediately on boot to guarantee cleanup on frequently restarting hosts
+		runDaily()
+
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for {
@@ -599,32 +632,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "daily_cleanup")
-				if err != nil {
-					bg.logger.Error("daily cleanup lock failed", "err", err)
-					continue
-				}
-				if !acquired {
-					bg.logger.Debug("daily cleanup lock held by another instance, skipping")
-					continue
-				}
-				n, err := bg.outboxRepo.CleanupEvents(ctx, 30*24*time.Hour, 90*24*time.Hour)
-				if err != nil {
-					bg.logger.Error("outbox cleanup failed", "err", err)
-				} else {
-					bg.logger.Info("outbox cleanup complete", "deleted", n)
-				}
-				if pn, err := bg.refreshRepo.PurgeExpiredTokens(ctx, 24*time.Hour); err != nil {
-					bg.logger.Error("refresh token purge failed", "err", err)
-				} else if pn > 0 {
-					bg.logger.Info("refresh token purge complete", "deleted", pn)
-				}
-				if in, err := bg.maintReportRepo.PurgeExpiredImages(ctx, 30*24*time.Hour); err != nil {
-					bg.logger.Error("report image purge failed", "err", err)
-				} else if in > 0 {
-					bg.logger.Info("report image purge complete", "deleted", in)
-				}
-				_ = release(ctx)
+				runDaily()
 			}
 		}
 	}()

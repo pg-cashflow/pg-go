@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,15 +26,15 @@ func buildAllowedSettlementAuditPayload(parsed *cashfree.SettlementWebhookRecord
 	m := map[string]any{
 		"event_type": "SETTLEMENT",
 		"data": map[string]any{
-			"settlement_id":      parsed.SettlementID,
+			"settlement_id":      parsed.CFSettlementID,
 			"cf_settlement_id":   parsed.CFSettlementID,
 			"gross_amount_paise": parsed.GrossAmountPaise,
 			"net_amount_paise":   parsed.NetAmountPaise,
-			"fee_paise":          parsed.FeePaise,
-			"tax_paise":          parsed.TaxPaise,
+			"fee_paise":          parsed.ServiceChargePaise,
+			"tax_paise":          parsed.ServiceTaxPaise,
 			"adjustment_paise":   parsed.AdjustmentPaise,
-			"settlement_utr":     parsed.SettlementUTR,
-			"event_time":         parsed.EventTime,
+			"settlement_utr":     parsed.UTR,
+			"event_time":         parsed.SettledOn,
 		},
 	}
 	b, _ := json.Marshal(m)
