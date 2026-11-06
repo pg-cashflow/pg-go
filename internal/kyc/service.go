@@ -353,71 +353,54 @@ func (s *Service) VerifyAadhaarDocument(
 		}
 	}
 
-	// 4. Billed network call outside DB transaction
+	// 4. Create durable pending verification record BEFORE dispatching billable Smart OCR call.
+	// This prevents orphaning a billed operation if a local DB failure occurs after provider success.
 	tenantName, err := s.repo.GetTenantName(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: fetch tenant name: %w", err)
+	}
+
+	intentRefID := fmt.Sprintf("intent_ocr_%s", uuid.New().String())
+	pending, err := s.repo.InitiateVerificationTx(ctx,
+		tenantID, consent.ID,
+		domain.KYCMethodOCR,
+		"cashfree_smart_ocr", intentRefID, actor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: initiate ocr verification intent: %w", err)
 	}
 
 	var resp *cashfree.SmartOCRResponse
 	if s.cashfree != nil {
 		resp, err = s.cashfree.UploadAadhaarDocument(ctx, bytes.NewReader(fileBytes), filename)
 		if err != nil {
+			_ = s.repo.FailVerificationTx(ctx, pending.ID, "OCR_UPLOAD_FAILED", actor)
 			return nil, fmt.Errorf("kyc service: upload aadhaar document: %w", err)
 		}
 	}
 
+	var vendorRefID string
+	var ocrBytes []byte
+	var maskedUID string
+	var identityHash string
+
 	if resp == nil || resp.Name == "" || resp.MaskedUID == "" {
-		// KYC-2: Use a UUID for the synthetic reference so the vendor_ref_id is collision-free
-		// under concurrent uploads. time.Now().UnixNano() is not guaranteed unique across
-		// goroutines on the same host within the same nanosecond.
-		// The distinct status suffix lets downstream queries and reviewers distinguish
-		// "OCR service unavailable" from "OCR returned a genuinely incomplete result".
+		// KYC-2: Synthetic reference ensures vendor_ref_id is collision-free under concurrent uploads.
 		syntheticID := uuid.New().String()
-		resp = &cashfree.SmartOCRResponse{
-			Status:    "PENDING_MANUAL_REVIEW_OCR_UNAVAILABLE",
-			Name:      tenantName,
-			MaskedUID: "XXXX",
+		vendorRefID = fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
+		maskedUID = "XXXX"
+		if resp != nil && resp.MaskedUID != "" {
+			maskedUID = resp.MaskedUID
 		}
-		vendorRefID := fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
-		_ = vendorRefID // assigned below via the shared path
-		// reassign so the shared vendorRefID line below picks it up
-		_ = fmt.Sprintf // keep import; vendorRefID is used immediately after the if/else
-		responseVendorRefID := fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
-		_ = responseVendorRefID
-		// Use a closure-captured value so both branches reach the same declaration below.
-		// Simpler: set a local overrideVendorRefID and use it after the block.
-		var overrideVendorRefID = fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
-		nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
-		canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
-		name := domain.NormalizeName(resp.Name)
-		identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
-		pending, err := s.repo.InitiateVerificationTx(ctx,
-			tenantID, consent.ID,
-			domain.KYCMethodOCR,
-			"cashfree_smart_ocr", overrideVendorRefID, actor,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("kyc service: initiate ocr verification: %w", err)
-		}
-		ocrBytes, _ := json.Marshal(map[string]any{
-			"name":          resp.Name,
-			"dob":           resp.DOB,
-			"gender":        resp.Gender,
-			"masked_uid":    resp.MaskedUID,
-			"qr_status":     resp.QRStatus,
+		nameMismatch := true
+		name := domain.NormalizeName(tenantName)
+		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, "", "", maskedUID)
+		ocrBytes, _ = json.Marshal(map[string]any{
+			"name":          tenantName,
+			"masked_uid":    maskedUID,
 			"name_mismatch": nameMismatch,
 			"ocr_status":    "UNAVAILABLE",
 		})
-		docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
-		underReview, err := s.repo.SubmitManualReviewTx(ctx,
-			pending.ID, resp.MaskedUID, identityHash,
-			string(ocrBytes), docURL, fileBytes, contentType, actor,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
-		}
-		return underReview, nil
 	} else {
 		slog.InfoContext(ctx, "cashfree smart ocr completed",
 			"tenant_id", tenantID,
@@ -427,38 +410,27 @@ func (s *Service) VerifyAadhaarDocument(
 			"qr_status", resp.QRStatus,
 			"has_photo", len(resp.PhotoBytes) > 0,
 		)
+		vendorRefID = fmt.Sprintf("cf_ocr_%v", resp.ReferenceID)
+		nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
+		canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
+		name := domain.NormalizeName(resp.Name)
+		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
+		maskedUID = resp.MaskedUID
+		ocrBytes, _ = json.Marshal(map[string]any{
+			"name":          resp.Name,
+			"dob":           resp.DOB,
+			"gender":        resp.Gender,
+			"masked_uid":    resp.MaskedUID,
+			"qr_status":     resp.QRStatus,
+			"name_mismatch": nameMismatch,
+		})
 	}
 
-	vendorRefID := fmt.Sprintf("cf_ocr_%v", resp.ReferenceID)
-	nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
+	_ = s.repo.UpdateVendorRefIDTx(ctx, pending.ID, vendorRefID)
 
-	// 6. Normalise demographics and compute identity hash
-	canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
-	name := domain.NormalizeName(resp.Name)
-	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
-
-	// 7. DB transaction 1: Initiate pending verification record
-	pending, err := s.repo.InitiateVerificationTx(ctx,
-		tenantID, consent.ID,
-		domain.KYCMethodOCR,
-		"cashfree_smart_ocr", vendorRefID, actor,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: initiate ocr verification: %w", err)
-	}
-
-	// 8. DB transaction 2: Manual upload requires human review -> pending_manual_review
-	ocrBytes, _ := json.Marshal(map[string]any{
-		"name":          resp.Name,
-		"dob":           resp.DOB,
-		"gender":        resp.Gender,
-		"masked_uid":    resp.MaskedUID,
-		"qr_status":     resp.QRStatus,
-		"name_mismatch": nameMismatch,
-	})
 	docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
 	underReview, err := s.repo.SubmitManualReviewTx(ctx,
-		pending.ID, resp.MaskedUID, identityHash,
+		pending.ID, maskedUID, identityHash,
 		string(ocrBytes), docURL, fileBytes, contentType, actor,
 	)
 	if err != nil {

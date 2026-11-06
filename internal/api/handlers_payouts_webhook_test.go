@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,27 @@ func signPayoutWebhook(secret, timestamp string, body []byte) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(timestamp))
 	h.Write(body)
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+func signLegacyPayoutBody(secret string, fields map[string]any) string {
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		if strings.EqualFold(key, "signature") || strings.EqualFold(key, "event_signature") {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var postData strings.Builder
+	for _, key := range keys {
+		value := fmt.Sprint(fields[key])
+		if value != "" && value != "<nil>" {
+			postData.WriteString(value)
+		}
+	}
+	h := hmac.New(sha256.New, []byte(secret))
+	_, _ = h.Write([]byte(postData.String()))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
@@ -179,11 +201,12 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:   fmt.Sprintf("pgo_%s", itemA.ID),
-			CFTransferID: cfTr1,
-			Status:       "SUCCESS",
-			StatusCode:   "COMPLETED",
-			UTR:          ptr("UTR88888888"),
+			TransferID:     fmt.Sprintf("pgo_%s", itemA.ID),
+			CFTransferID:   cfTr1,
+			Status:         "SUCCESS",
+			StatusCode:     "COMPLETED",
+			TransferAmount: json.Number("8000.00"),
+			UTR:            ptr("UTR88888888"),
 		}
 		payload.Data, _ = json.Marshal(data)
 		rawBody, _ := json.Marshal(payload)
@@ -479,6 +502,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			CFTransferID:      cfTr5,
 			Status:            "SUCCESS",
 			StatusCode:        "COMPLETED",
+			TransferAmount:    json.Number("6500.00"),
 			UTR:               ptr("UTR99999999"),
 			StatusDescription: "Transfer successful via outbox fallback",
 		}
@@ -666,10 +690,11 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 
 	makeEnv := func(evt string, itemID uuid.UUID) PayoutWebhookEnvelope {
 		data := PayoutWebhookData{
-			TransferID:   fmt.Sprintf("pgo_%s", itemID),
-			CFTransferID: "cf_tr_unit_1",
-			Status:       "SUCCESS",
-			StatusCode:   "COMPLETED",
+			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID:   "cf_tr_unit_1",
+			Status:         "SUCCESS",
+			StatusCode:     "COMPLETED",
+			TransferAmount: json.Number("10.00"),
 		}
 		dataBytes, _ := json.Marshal(data)
 		return PayoutWebhookEnvelope{
@@ -1148,6 +1173,80 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("transfer_acknowledged_settles_processing_item", func(t *testing.T) {
+		var gotStatus domain.PayoutItemStatus
+		var gotUTR string
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: id, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				gotStatus = status
+				if utr != nil {
+					gotUTR = *utr
+				}
+				return nil
+			},
+		}
+		h := &Handlers{Deps: Deps{
+			CashfreePayoutWebhookSecret: secret,
+			GatewayPaymentRepo:          &stubGatewayRepo{},
+			PayoutWebhookRepo:           mock,
+		}}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		env := makeEnv("TRANSFER_ACKNOWLEDGED", itemID)
+		var data PayoutWebhookData
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		data.TransferUTR = ptr("UTR-ACK-001")
+		env.Data, _ = json.Marshal(data)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if gotStatus != domain.PayoutSucceeded || gotUTR != "UTR-ACK-001" {
+			t.Fatalf("ACK event did not settle payout: status=%q utr=%q", gotStatus, gotUTR)
+		}
+	})
+
+	t.Run("transfer_settlement_amount_mismatch_is_not_applied", func(t *testing.T) {
+		updateCalled := false
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: id, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		h := &Handlers{Deps: Deps{
+			CashfreePayoutWebhookSecret: secret,
+			GatewayPaymentRepo:          &stubGatewayRepo{},
+			PayoutWebhookRepo:           mock,
+		}}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		env := makeEnv("TRANSFER_ACKNOWLEDGED", itemID)
+		var data PayoutWebhookData
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		data.TransferAmount = json.Number("10.01")
+		env.Data, _ = json.Marshal(data)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 acknowledgement for quarantined event, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("amount mismatch must not mutate payout status")
+		}
+	})
+
 	t.Run("low_balance_alert_returns_200", func(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
@@ -1176,7 +1275,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("low_balance_alert_dashboard_ping_without_signature_headers_returns_200", func(t *testing.T) {
+	t.Run("low_balance_alert_dashboard_ping_without_signature_is_rejected", func(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
@@ -1201,8 +1300,29 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 for unsigned dashboard test ping, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("low_balance_alert_dashboard_test_with_body_signature_is_accepted", func(t *testing.T) {
+		h := &Handlers{Deps: Deps{
+			CashfreePayoutWebhookSecret: secret,
+			GatewayPaymentRepo:          &stubGatewayRepo{},
+			PayoutWebhookRepo:           &mockPayoutWebhookStore{},
+		}}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		fields := map[string]any{"type": "LOW_BALANCE_ALERT", "timestamp": ts, "currentBalance": "8.53"}
+		fields["signature"] = signLegacyPayoutBody(secret, fields)
+		raw, _ := json.Marshal(fields)
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK for dashboard test ping, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("expected 200 for valid signed dashboard test event, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

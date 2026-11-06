@@ -3,12 +3,16 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,17 +37,74 @@ type PayoutWebhookEnvelope struct {
 
 // PayoutWebhookData holds fields for individual or batch payout notifications.
 type PayoutWebhookData struct {
-	TransferID        string  `json:"transfer_id"`
-	CFTransferID      string  `json:"cf_transfer_id"`
-	BatchTransferID   string  `json:"batch_transfer_id"`
-	CFBatchTransferID string  `json:"cf_batch_transfer_id"`
-	Status            string  `json:"status"`
-	StatusCode        string  `json:"status_code"`
-	StatusDescription string  `json:"status_description"`
-	UTR               *string `json:"utr"`
-	Acknowledged      *int    `json:"acknowledged,omitempty"`
-	AcknowledgedAt    *string `json:"acknowledged_at"`
-	SettledAt         *string `json:"settled_at"`
+	TransferID        string      `json:"transfer_id"`
+	CFTransferID      string      `json:"cf_transfer_id"`
+	BatchTransferID   string      `json:"batch_transfer_id"`
+	CFBatchTransferID string      `json:"cf_batch_transfer_id"`
+	Status            string      `json:"status"`
+	StatusCode        string      `json:"status_code"`
+	StatusDescription string      `json:"status_description"`
+	TransferAmount    json.Number `json:"transfer_amount"`
+	TransferUTR       *string     `json:"transfer_utr"`
+	UTR               *string     `json:"utr"`
+	Acknowledged      *int        `json:"acknowledged,omitempty"`
+	AcknowledgedAt    *string     `json:"acknowledged_at"`
+	SettledAt         *string     `json:"settled_at"`
+}
+
+// verifyPayoutLowBalanceBodySignature verifies the legacy field-signature format
+// Cashfree documents for its LOW_BALANCE_ALERT Dashboard test callback. The
+// exception is intentionally restricted to flat scalar fields: accepting
+// arbitrary nested values would make the signing representation ambiguous.
+func verifyPayoutLowBalanceBodySignature(secret string, raw []byte, signature string) bool {
+	if strings.TrimSpace(secret) == "" || strings.TrimSpace(signature) == "" {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || len(fields) == 0 {
+		return false
+	}
+	keys := make([]string, 0, len(fields))
+	values := make(map[string]string, len(fields))
+	for key, encoded := range fields {
+		lower := strings.ToLower(key)
+		if lower == "signature" || lower == "event_signature" {
+			continue
+		}
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		if err := decoder.Decode(&value); err != nil {
+			return false
+		}
+		switch v := value.(type) {
+		case string:
+			values[key] = v
+		case json.Number:
+			values[key] = v.String()
+		case bool:
+			values[key] = fmt.Sprint(v)
+		case nil:
+			values[key] = ""
+		default:
+			return false
+		}
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return false
+	}
+	sort.Strings(keys)
+	var postData strings.Builder
+	for _, key := range keys {
+		if values[key] != "" {
+			postData.WriteString(values[key])
+		}
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(postData.String()))
+	want := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(want), []byte(signature))
 }
 
 // CashfreePayoutWebhook handles POST /webhooks/cashfree/payouts.
@@ -66,53 +127,42 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 
-	sig := c.GetHeader("x-webhook-signature")
-	ts := c.GetHeader("x-webhook-timestamp")
-
 	var env PayoutWebhookEnvelope
-	hasParsedEnv := false
-	if sig == "" {
-		if err := json.Unmarshal(raw, &env); err == nil {
-			hasParsedEnv = true
-			if env.Signature != "" {
-				sig = env.Signature
-			} else if env.EventSignature != "" {
-				sig = env.EventSignature
-			}
-			if ts == "" {
-				if env.Timestamp != "" {
-					ts = env.Timestamp
-				} else if env.EventTime != "" {
-					ts = env.EventTime
-				}
-			}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid webhook JSON"})
+		return
+	}
+	evtTypePeek := strings.ToUpper(strings.TrimSpace(env.Event))
+	if evtTypePeek == "" {
+		evtTypePeek = strings.ToUpper(strings.TrimSpace(env.Type))
+	}
+
+	sig := strings.TrimSpace(c.GetHeader("x-webhook-signature"))
+	ts := strings.TrimSpace(c.GetHeader("x-webhook-timestamp"))
+	validSig := false
+	usesBodySignature := false
+	if sig != "" && ts != "" {
+		validSig = cashfree.VerifyWebhookHMAC(secret, ts, string(raw), sig)
+	}
+
+	// Cashfree's Dashboard "Test & Add" LOW_BALANCE_ALERT is the one documented
+	// exception to the V2 header contract: it carries its signature and timestamp
+	// in the JSON payload. Verify that event with the legacy Payouts field-signing
+	// algorithm, and never let that exception authenticate transfer events.
+	if !validSig && evtTypePeek == "LOW_BALANCE_ALERT" && sig == "" && ts == "" {
+		bodySig := strings.TrimSpace(env.Signature)
+		if bodySig == "" {
+			bodySig = strings.TrimSpace(env.EventSignature)
+		}
+		bodyTS := strings.TrimSpace(env.Timestamp)
+		if bodySig != "" && bodyTS != "" && verifyPayoutLowBalanceBodySignature(secret, raw, bodySig) {
+			sig, ts = bodySig, bodyTS
+			validSig = true
+			usesBodySignature = true
 		}
 	}
 
-	validSig := cashfree.VerifyWebhookHMAC(secret, ts, string(raw), sig)
-	if !validSig && sig != "" && ts != "" {
-		validSig = cashfree.VerifyWebhookHMAC(secret, "", string(raw), sig)
-	}
-
-	evtTypePeek := ""
-	if hasParsedEnv {
-		evtTypePeek = strings.ToUpper(strings.TrimSpace(env.Event))
-		if evtTypePeek == "" {
-			evtTypePeek = strings.ToUpper(strings.TrimSpace(env.Type))
-		}
-	} else {
-		var peek PayoutWebhookEnvelope
-		if err := json.Unmarshal(raw, &peek); err == nil {
-			evtTypePeek = strings.ToUpper(strings.TrimSpace(peek.Event))
-			if evtTypePeek == "" {
-				evtTypePeek = strings.ToUpper(strings.TrimSpace(peek.Type))
-			}
-		}
-	}
-
-	isLowBalanceTest := evtTypePeek == "LOW_BALANCE_ALERT" && (validSig || (sig == "" && strings.Contains(strings.ToLower(string(raw)), "test ping")))
-
-	if !validSig && !isLowBalanceTest {
+	if !validSig {
 		slog.Warn("cashfree payout webhook rejected: invalid hmac signature",
 			"remote_ip", c.ClientIP(),
 			"timestamp", ts,
@@ -125,11 +175,13 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	if tolerance <= 0 {
 		tolerance = 300
 	}
-	if ts != "" {
-		if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-			return
-		}
+	if ts == "" || cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()) != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or expired webhook timestamp"})
+		return
+	}
+	if usesBodySignature && evtTypePeek != "LOW_BALANCE_ALERT" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "body signatures are not valid for this event"})
+		return
 	}
 
 	// REQ-WH-001: persist the verified payload before any payout mutation.
@@ -151,16 +203,6 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		slog.Error("payout webhook forensic audit persistence failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
 		return
-	}
-
-	if !hasParsedEnv {
-		if err := json.Unmarshal(raw, &env); err != nil {
-			errMsg := err.Error()
-			_ = audit.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "dead_letter", &errMsg)
-			slog.Error("cashfree payout webhook dead-letter: unparseable envelope json", "err", err)
-			c.Status(http.StatusOK)
-			return
-		}
 	}
 
 	evtType := strings.ToUpper(strings.TrimSpace(env.Event))
@@ -201,18 +243,31 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				"reason", data.StatusDescription,
 				"code", data.StatusCode,
 			)
-			_ = repo.SetBatchFailed(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription))
+			if err := repo.SetBatchFailed(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription)); err != nil {
+				slog.Error("failed to persist rejected payout batch status", "batch_id", bID, "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch"})
+				return
+			}
 			if h.OutboxEvents != nil {
-				payload, _ := json.Marshal(map[string]any{
+				payload, marshalErr := json.Marshal(map[string]any{
 					"batch_id": bID.String(),
 					"reason":   data.StatusDescription,
 					"code":     data.StatusCode,
 				})
-				_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+				if marshalErr != nil {
+					slog.Error("failed to marshal rejected payout batch outbox", "batch_id", bID, "err", marshalErr)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
+					return
+				}
+				if err := h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
 					EventType: "payout_batch_rejected",
 					Payload:   payload,
 					CreatedAt: time.Now().UTC(),
-				})
+				}); err != nil {
+					slog.Error("failed to persist payout batch rejection outbox", "batch_id", bID, "err", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
+					return
+				}
 			}
 		}
 		c.Status(http.StatusOK)
@@ -226,17 +281,26 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			"description", data.StatusDescription,
 		)
 		if h.OutboxEvents != nil {
-			payload, _ := json.Marshal(map[string]any{
+			payload, marshalErr := json.Marshal(map[string]any{
 				"event_type":   evtType,
 				"description":  data.StatusDescription,
 				"alert_status": data.Status,
 				"received_at":  time.Now().UTC(),
 			})
-			_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+			if marshalErr != nil {
+				slog.Error("failed to marshal payout low-balance alert", "err", marshalErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout low-balance alert"})
+				return
+			}
+			if err := h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
 				EventType: "payout_low_balance_alert",
 				Payload:   payload,
 				CreatedAt: time.Now().UTC(),
-			})
+			}); err != nil {
+				slog.Error("failed to persist payout low-balance alert", "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout low-balance alert"})
+				return
+			}
 		}
 		c.Status(http.StatusOK)
 		return
@@ -312,18 +376,51 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	}
 
 	switch evtType {
-	case "TRANSFER_SUCCESS":
-		// Cashfree Transfers V2: A transfer is settled only when status is SUCCESS and status_code is COMPLETED.
-		// If acknowledged is explicitly present and 0, the transfer is unacknowledged and not terminal.
+	case "TRANSFER_SUCCESS", "TRANSFER_ACKNOWLEDGED":
+		// Transfers V2 may first report TRANSFER_SUCCESS with SENT_TO_BENEFICIARY.
+		// That is not beneficiary receipt. TRANSFER_ACKNOWLEDGED is the terminal
+		// bank-credit confirmation; both settlement paths still require SUCCESS,
+		// COMPLETED, and an exact match to the server-approved amount.
 		if (data.Acknowledged != nil && *data.Acknowledged == 0) || !strings.EqualFold(data.Status, "SUCCESS") || !strings.EqualFold(data.StatusCode, "COMPLETED") {
-			slog.Warn("payout webhook TRANSFER_SUCCESS unconfirmed: status or status_code not completed",
+			slog.Warn("payout webhook success not confirmed: status or status_code not completed",
 				"item_id", item.ID,
+				"event", evtType,
 				"status", data.Status,
 				"status_code", data.StatusCode,
 				"acknowledged", data.Acknowledged,
 			)
 			if evtRecord.ID != uuid.Nil {
 				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "ignored_unconfirmed", nil)
+			}
+			c.Status(http.StatusOK)
+			return
+		}
+		if item.Status == domain.PayoutFailed || item.Status == domain.PayoutRejected || item.Status == domain.PayoutReversed || item.Status == domain.PayoutRetriableFailed {
+			// Do not silently reopen a terminal failure on a late callback. The
+			// operator-facing reconciler must resolve this contradictory history.
+			slog.Error("payout webhook success conflicts with terminal local status; reconciliation required",
+				"item_id", item.ID, "event", evtType, "local_status", item.Status)
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "terminal_status_conflict", nil)
+			}
+			c.Status(http.StatusOK)
+			return
+		}
+		if strings.TrimSpace(data.TransferAmount.String()) == "" {
+			slog.Error("payout webhook settlement missing transfer_amount", "item_id", item.ID, "event", evtType)
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "missing_transfer_amount", nil)
+			}
+			c.Status(http.StatusOK)
+			return
+		}
+		providerAmountPaise, amountErr := cashfree.ParseRupeesToPaise(data.TransferAmount.String())
+		if amountErr != nil || providerAmountPaise != item.AmountPaise {
+			slog.Error("payout webhook settlement amount mismatch; refusing ledger/status mutation",
+				"item_id", item.ID, "expected_paise", item.AmountPaise,
+				"provider_amount", data.TransferAmount.String(), "parse_error", amountErr)
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "amount_mismatch", nil)
 			}
 			c.Status(http.StatusOK)
 			return
@@ -368,7 +465,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		}
 
 		utr := ""
-		if data.UTR != nil {
+		if data.TransferUTR != nil {
+			utr = *data.TransferUTR
+		} else if data.UTR != nil {
 			utr = *data.UTR
 		}
 
@@ -446,21 +545,6 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			return
 		}
 
-	case "TRANSFER_ACKNOWLEDGED":
-		// Guard against out-of-order re-opening of terminal items
-		if item.Status == domain.PayoutSucceeded ||
-			item.Status == domain.PayoutFailed ||
-			item.Status == domain.PayoutRejected ||
-			item.Status == domain.PayoutReversed ||
-			item.Status == domain.PayoutRetriableFailed {
-			slog.Info("payout webhook: ignoring TRANSFER_ACKNOWLEDGED for terminal item", "item_id", item.ID, "status", item.Status)
-			c.Status(http.StatusOK)
-			return
-		}
-		// Gateway accepted transfer into in-flight queue; keep processing
-		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutProcessing, &cfID, nil, nil, nil, item.BatchID) {
-			return
-		}
 	}
 
 	if evtRecord.ID != uuid.Nil {

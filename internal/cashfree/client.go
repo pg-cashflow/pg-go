@@ -79,9 +79,23 @@ func (c *Client) kycClient() *http.Client {
 func NewClient(cfg Config) *Client {
 	return &Client{
 		cfg:     cfg,
-		http:    &http.Client{Timeout: 15 * time.Second},
-		kycHTTP: &http.Client{Timeout: 35 * time.Second},
+		http:    newCashfreeHTTPClient(15 * time.Second),
+		kycHTTP: newCashfreeHTTPClient(35 * time.Second),
 		now:     time.Now,
+	}
+}
+
+// newCashfreeHTTPClient never follows redirects. Cashfree requests carry
+// x-client-secret (and, for some products, additional credentials); forwarding
+// those headers to a redirect target would create an avoidable credential leak.
+// A redirect is returned to the caller as a non-success response for explicit
+// handling rather than silently followed.
+func newCashfreeHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 }
 
@@ -158,7 +172,11 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return "", nil, fmt.Errorf("cashfree create order: %s %s", resp.Status, string(b))
+		return "", nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       string(b),
+		}
 	}
 	var out createOrderResp
 	if err := json.Unmarshal(b, &out); err != nil {

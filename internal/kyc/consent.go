@@ -24,7 +24,7 @@ var CanonicalConsentCatalog = map[string]map[string]string{
 // It returns ErrUnsupportedConsentVersion if the requested version is not in the canonical catalog.
 // Falls back to en-IN if the locale is not found for a supported version.
 func ResolveConsentText(version, locale string) (string, error) {
-	if version == "" {
+	if version == "" || version == "v1" {
 		version = "v1.0"
 	}
 	byLocale, ok := CanonicalConsentCatalog[version]

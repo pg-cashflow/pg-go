@@ -123,13 +123,16 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 
 		// Locked Idempotency Guard: check if an identical refund was already initiated while waiting for locks
 		if rfRow.IdempotencyKey != nil && *rfRow.IdempotencyKey != "" {
-			existing, err := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
-			if err == nil && existing != nil {
+			existing, lookupErr := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
+			if lookupErr == nil && existing != nil {
 				if existing.AmountPaise != req.AmountPaise || norm.NFC.String(existing.Reason) != req.Reason {
 					return &refundValidationErr{msg: "idempotency key conflict: refund already exists with different amount or reason", status: http.StatusConflict}
 				}
 				*rfRow = *existing
 				return nil
+			}
+			if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+				return fmt.Errorf("check refund idempotency under lock: %w", lookupErr)
 			}
 		}
 
@@ -436,19 +439,18 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
 		return
 	}
+	if h.TenantStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenant access verification unavailable"})
+		return
+	}
 	p, err := h.GatewayPaymentRepo.GetByID(c.Request.Context(), paymentID)
 	if err != nil || p == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
 		return
 	}
 
-	if h.TenantStore != nil {
-		tenant, err := h.TenantStore.GetByID(c.Request.Context(), p.TenantID)
-		if err != nil || tenant == nil || tenant.PropertyID != pid {
-			c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
-			return
-		}
-	} else if p.PropertyID != nil && *p.PropertyID != pid {
+	tenant, err := h.TenantStore.GetByID(c.Request.Context(), p.TenantID)
+	if err != nil || tenant == nil || tenant.PropertyID != pid {
 		c.JSON(http.StatusNotFound, gin.H{"error": "payment not found"})
 		return
 	}
@@ -838,6 +840,10 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cashfree client unavailable"})
 		return nil, errors.New("cashfree client unavailable")
 	}
+	if h.TenantStore == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenant access verification unavailable"})
+		return nil, errors.New("tenant access verification unavailable")
+	}
 
 	// Unlocked Read 1: Resolve payment
 	p, err := h.GatewayPaymentRepo.GetByID(ctx, paymentID)
@@ -889,8 +895,8 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	}
 
 	// Unlocked Read 2: Check if already initiated/completed with this idempotency key
-	existingRef, err := h.GatewayPaymentRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, idempotencyKey)
-	if err == nil && existingRef != nil {
+	existingRef, lookupErr := h.GatewayPaymentRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, idempotencyKey)
+	if lookupErr == nil && existingRef != nil {
 		if existingRef.AmountPaise != req.AmountPaise || norm.NFC.String(existingRef.Reason) != req.Reason {
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "idempotency key conflict: refund already exists with different amount or reason",
@@ -900,6 +906,11 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		}
 		c.JSON(http.StatusOK, existingRef)
 		return existingRef, nil
+	}
+	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		slog.Error("refund idempotency lookup failed", "payment_id", p.ID, "error", lookupErr)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund service temporarily unavailable"})
+		return nil, lookupErr
 	}
 
 	// Cryptographic step-up / dual-control enforcement. Runs after the idempotent replay

@@ -121,7 +121,7 @@ func NewPayoutClient(cfg PayoutConfig) *PayoutClient {
 	}
 	return &PayoutClient{
 		cfg:  cfg,
-		http: &http.Client{Timeout: 30 * time.Second},
+		http: newCashfreeHTTPClient(30 * time.Second),
 	}
 }
 

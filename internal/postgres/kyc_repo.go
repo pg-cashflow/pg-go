@@ -896,7 +896,7 @@ func (r *KYCRepo) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 		`, verificationID, now).Scan(&tenantID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("kyc: no flagged verification found for id %s", verificationID)
+				return fmt.Errorf("%w: no flagged verification found for id %s", domain.ErrVerificationNotFound, verificationID)
 			}
 			return fmt.Errorf("kyc: clear duplicate flag: %w", err)
 		}
@@ -1120,14 +1120,7 @@ func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, str
 		return decAttestedBytes, ct, nil
 	}
 
-	// Fallback to tenant profile ID photo if available
-	var idPhoto []byte
-	err = r.pool.QueryRow(ctx, `SELECT id_photo_bytes FROM tenants WHERE id = $1`, tenantID).Scan(&idPhoto)
-	if err == nil && len(idPhoto) > 0 {
-		ct := http.DetectContentType(idPhoto)
-		return idPhoto, ct, nil
-	}
-
+	// Do not fall back to operational profile photos; KYC review requires submitted document or attested photo.
 	return nil, "", nil
 }
 

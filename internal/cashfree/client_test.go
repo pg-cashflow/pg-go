@@ -115,6 +115,38 @@ func TestCreateUPIOrderRequiresPhone(t *testing.T) {
 	}
 }
 
+func TestCashfreePGClientDoesNotFollowRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		if got := r.Header.Get("x-client-secret"); got != "" {
+			t.Errorf("client secret leaked to redirect destination: %q", got)
+		}
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-client-secret") != "secret" {
+			t.Errorf("expected credential at Cashfree origin")
+		}
+		http.Redirect(w, r, target.URL+"/steal", http.StatusFound)
+	}))
+	defer source.Close()
+
+	c := NewClient(Config{AppID: "id", SecretKey: "secret", Env: "sandbox"}).WithBaseURL(source.URL)
+	_, _, err := c.CreateUPIOrder(context.Background(), "pg-redirect-test", 1000, "9999999999", "test")
+	if err == nil {
+		t.Fatal("expected redirect response to be treated as an error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 APIError, got %T %v", err, err)
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target was contacted %d times", targetHits)
+	}
+}
+
 func TestCreateUPIOrderWithReturnURL(t *testing.T) {
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -262,7 +262,8 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				// crashed after committing the initiated refund row locally, but before the HTTP
 				// call to Cashfree completed. If the client implements RefundResubmitter and
 				// the record is still within 24 hours, attempt automated idempotent resubmission.
-				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && time.Since(ref.CreatedAt) < 24*time.Hour {
+				refundAge := now.Sub(ref.CreatedAt)
+				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && refundAge >= 0 && refundAge < 24*time.Hour {
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
 					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
@@ -325,7 +326,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 							continue
 						}
 					}
-				} else if time.Since(ref.CreatedAt) > 30*time.Minute {
+				} else if refundAge > 30*time.Minute {
 					log.Warn("cashfree poll refund not found at gateway after grace period; marking on_hold for manual review",
 						"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
 					if reconciler, ok := j.Refunds.(RefundReconciler); ok {

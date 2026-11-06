@@ -18,6 +18,35 @@ import (
 	"github.com/google/uuid"
 )
 
+func TestCashfreePayoutClientDoesNotFollowRedirects(t *testing.T) {
+	var targetHits int
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits++
+		if got := r.Header.Get("x-client-secret"); got != "" {
+			t.Errorf("payout secret leaked to redirect destination: %q", got)
+		}
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-client-secret") != "test_sec" {
+			t.Errorf("expected payout credential at Cashfree origin")
+		}
+		http.Redirect(w, r, target.URL+"/steal", http.StatusFound)
+	}))
+	defer source.Close()
+
+	c := NewPayoutClient(PayoutConfig{ClientID: "test_cid", ClientSecret: "test_sec", FundsourceID: "fund_01"})
+	c.SetBaseOverride(source.URL)
+	_, err := c.CreateBeneficiary(context.Background(), CreateBeneficiaryRequest{BeneficiaryID: "bene_test"})
+	if err == nil {
+		t.Fatal("expected redirect response to be treated as an error")
+	}
+	if targetHits != 0 {
+		t.Fatalf("redirect target was contacted %d times", targetHits)
+	}
+}
+
 func TestDeriveBeneficiaryID(t *testing.T) {
 	payeeID := uuid.MustParse("12345678-1234-5678-1234-567812345678")
 	hashA := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
