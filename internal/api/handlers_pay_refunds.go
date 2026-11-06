@@ -1052,6 +1052,20 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	cfIdempotencyKey := domain.CashfreeRefundIdempotencyKey(rfRow.ID)
 	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
 	cfNote := resolveRefundNote(c, h.CashfreeClient, targetRefundRef, req.Reason)
+	var rawPayloadMap map[string]any
+	if len(orderPayload) > 0 {
+		_ = json.Unmarshal(orderPayload, &rawPayloadMap)
+	}
+	if rawPayloadMap == nil {
+		rawPayloadMap = make(map[string]any)
+	}
+	rawPayloadMap["refund_note"] = cfNote
+	if b, mErr := json.Marshal(rawPayloadMap); mErr == nil {
+		rfRow.RawPayload = b
+		if h.RefundStore != nil {
+			_ = h.RefundStore.CreateOrUpdateRefund(ctx, rfRow)
+		}
+	}
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
 	if cfErr != nil {
 		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)

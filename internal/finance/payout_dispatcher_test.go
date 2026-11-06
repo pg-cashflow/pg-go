@@ -499,3 +499,25 @@ func TestSanitizePayoutRemarks(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanBeneficiaryPhone(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"+91 98765 43210", "9876543210"},
+		{"+919876543210", "9876543210"},
+		{"09876543210", "9876543210"},
+		{"919876543210", "9876543210"},
+		{"9876543210", "9876543210"},
+		{" 98765-43210 ", "9876543210"},
+		{"12345", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		got := CleanBeneficiaryPhone(tc.input)
+		if got != tc.expected {
+			t.Errorf("CleanBeneficiaryPhone(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}

@@ -435,12 +435,23 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	salt := []byte(h.getChecksumSecret())
 	acctHash := domain.ComputeAccountHash(salt, acctIdentifier)
 
+	var phonePtr *string
+	if body.Phone != nil && strings.TrimSpace(*body.Phone) != "" {
+		norm := auth.NormalizePhone(*body.Phone)
+		if norm != "" {
+			phonePtr = &norm
+		} else {
+			raw := strings.TrimSpace(*body.Phone)
+			phonePtr = &raw
+		}
+	}
+
 	payee := &domain.PayoutPayee{
 		PropertyID:             pid,
 		TenantID:               body.TenantID,
 		PayeeType:              cleanType,
 		Name:                   strings.TrimSpace(body.Name),
-		Phone:                  body.Phone,
+		Phone:                  phonePtr,
 		AccountNumberEncrypted: encryptedAcct,
 		AccountNumberLast4:     last4,
 		AccountNumberHash:      acctHash,

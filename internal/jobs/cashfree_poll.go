@@ -268,19 +268,29 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
 					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
 					refundNote := fmt.Sprintf("Refund %s", refundID)
-					if detector, ok := j.RefundClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
-						upperReason := strings.ToUpper(ref.Reason)
-						var sandboxOutcome string
-						switch {
-						case strings.Contains(upperReason, "FAILED"):
-							sandboxOutcome = "FAILED"
-						case strings.Contains(upperReason, "PENDING"):
-							sandboxOutcome = "PENDING"
-						case strings.Contains(upperReason, "SUCCESS"):
-							sandboxOutcome = "SUCCESS"
+					if len(ref.RawPayload) > 0 {
+						var rawMap map[string]any
+						if err := json.Unmarshal(ref.RawPayload, &rawMap); err == nil {
+							if n, ok := rawMap["refund_note"].(string); ok && strings.TrimSpace(n) != "" {
+								refundNote = strings.TrimSpace(n)
+							}
 						}
-						if sandboxOutcome != "" {
-							refundNote = fmt.Sprintf("Refund %s %s", refundID, sandboxOutcome)
+					}
+					if refundNote == fmt.Sprintf("Refund %s", refundID) {
+						if detector, ok := j.RefundClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
+							upperReason := strings.ToUpper(ref.Reason)
+							var sandboxOutcome string
+							switch {
+							case strings.Contains(upperReason, "FAILED"):
+								sandboxOutcome = "FAILED"
+							case strings.Contains(upperReason, "PENDING"):
+								sandboxOutcome = "PENDING"
+							case strings.Contains(upperReason, "SUCCESS"):
+								sandboxOutcome = "SUCCESS"
+							}
+							if sandboxOutcome != "" {
+								refundNote = fmt.Sprintf("Refund %s %s", refundID, sandboxOutcome)
+							}
 						}
 					}
 					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, refundNote, retryIdempotencyKey)

@@ -403,8 +403,10 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 		BeneficiaryName: payee.Name,
 	}
 	if payee.Phone != nil {
-		req.BeneficiaryContact = &cashfree.BeneficiaryContactDetails{
-			BeneficiaryPhone: *payee.Phone,
+		if cleanPhone := CleanBeneficiaryPhone(*payee.Phone); cleanPhone != "" {
+			req.BeneficiaryContact = &cashfree.BeneficiaryContactDetails{
+				BeneficiaryPhone: cleanPhone,
+			}
 		}
 	}
 	if payee.UPIVPA != nil && strings.TrimSpace(*payee.UPIVPA) != "" {
@@ -567,4 +569,29 @@ func SanitizePayoutRemarks(purpose, refNum string) string {
 		return "Payout"
 	}
 	return result
+}
+
+// CleanBeneficiaryPhone standardizes Indian phone numbers into clean 10-digit format for Cashfree Beneficiary API.
+// It removes "+91", leading "0", and non-digit characters. If the result is not 10 digits, it returns "".
+func CleanBeneficiaryPhone(p string) string {
+	raw := strings.TrimSpace(p)
+	if raw == "" {
+		return ""
+	}
+	var digits strings.Builder
+	for _, r := range raw {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	d := digits.String()
+	if len(d) == 11 && strings.HasPrefix(d, "0") {
+		d = d[1:]
+	} else if len(d) == 12 && strings.HasPrefix(d, "91") {
+		d = d[2:]
+	}
+	if len(d) == 10 {
+		return d
+	}
+	return ""
 }
