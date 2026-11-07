@@ -130,14 +130,15 @@ func NormalizeUTR(raw string) (string, error) {
 }
 
 // Canonical refund status values matching the database check constraint:
-// CHECK (status IN ('initiated', 'pending', 'on_hold', 'succeeded', 'failed', 'cancelled'))
+// CHECK (status IN ('initiated', 'pending', 'on_hold', 'needs_review', 'succeeded', 'failed', 'cancelled'))
 const (
-	RefundStatusInitiated = "initiated"
-	RefundStatusPending   = "pending"
-	RefundStatusOnHold    = "on_hold"
-	RefundStatusSucceeded = "succeeded"
-	RefundStatusFailed    = "failed"
-	RefundStatusCancelled = "cancelled"
+	RefundStatusInitiated   = "initiated"
+	RefundStatusPending     = "pending"
+	RefundStatusOnHold      = "on_hold"
+	RefundStatusNeedsReview = "needs_review"
+	RefundStatusSucceeded   = "succeeded"
+	RefundStatusFailed      = "failed"
+	RefundStatusCancelled   = "cancelled"
 )
 
 // NormalizeRefundStatus normalizes provider refund status strings (such as Cashfree "ONHOLD" or "SUCCESS")
@@ -149,6 +150,8 @@ func NormalizeRefundStatus(raw string) string {
 		return RefundStatusSucceeded
 	case "onhold", "on_hold":
 		return RefundStatusOnHold
+	case "needs_review", "needsreview":
+		return RefundStatusNeedsReview
 	case "pending", "pending_approval":
 		return RefundStatusPending
 	case "failed", "rejected":

@@ -499,6 +499,14 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
 				return fmt.Errorf("update payout item approval pending status: %w", err)
 			}
+		case "PENDING", "RECEIVED", "PROCESSING":
+			// Cashfree Transfers V2: In-flight states. No local state mutation; await final settlement or reversal.
+			slog.Debug("payout batch reconcile: transfer in flight at gateway",
+				"transfer_id", st.TransferID,
+				"status", st.Status,
+				"status_code", st.StatusCode,
+			)
+			continue
 		case "REVERSED":
 			reason := "transfer reversed by bank"
 			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {

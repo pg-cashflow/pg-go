@@ -454,8 +454,8 @@ func TestCashfreePollReconcilesStuckInitiatedRefundToOnHoldOn404(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != domain.RefundStatusOnHold {
-		t.Fatalf("expected orphan initiated refund to reconcile to on_hold, got id=%s status=%s",
+	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != domain.RefundStatusNeedsReview {
+		t.Fatalf("expected orphan initiated refund to reconcile to needs_review, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
 	}
 }
@@ -604,12 +604,14 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 	if resubmitClient.createCalls != 1 {
 		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
 	}
-	expectedIdempKey := domain.CashfreeRefundIdempotencyKey(refID)
-	if resubmitClient.lastIdempKey != expectedIdempKey {
-		t.Fatalf("expected idempotency key %s, got %s", expectedIdempKey, resubmitClient.lastIdempKey)
+	if resubmitClient.lastIdempKey == domain.CashfreeRefundIdempotencyKey(refID) {
+		t.Fatalf("recovery retry must not reuse initial deterministic idempotency key %s", resubmitClient.lastIdempKey)
 	}
 	if _, err := uuid.Parse(resubmitClient.lastIdempKey); err != nil {
 		t.Fatalf("idempotency key is not a valid UUID: %v", err)
+	}
+	if resubmitClient.lastRefundID != refRef {
+		t.Fatalf("expected constant refund_id %q, got %q", refRef, resubmitClient.lastRefundID)
 	}
 	expectedReason := fmt.Sprintf("Refund %s", refRef)
 	if resubmitClient.lastReason != expectedReason {

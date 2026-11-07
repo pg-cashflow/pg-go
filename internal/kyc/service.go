@@ -288,7 +288,8 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 // Invariants enforced:
 //   - Network call (Cashfree multipart upload) executes outside database transaction.
 //   - Distributed lease (kyc_in_flight_lock) prevents double-billing across horizontal Cloud Run instances.
-//   - Demographic fields (Name, DOB, Gender) are ephemeral inputs to ComputeIdentityHash and IsNameMatch; zero demographic persistence.
+//   - In automatic verification, demographic fields (Name, DOB, Gender) are ephemeral inputs to ComputeIdentityHash and IsNameMatch; zero demographic persistence.
+//   - In manual review, demographic OCR data is stored encrypted and wiped upon review decision (approval, rejection, expiry, or revocation).
 //   - Attested photo crop is saved to kyc_verification.attested_photo_bytes (photo_stored=true).
 //   - tenant profile is updated with masked UID only (never overwrites name or operational id_photo_bytes).
 func (s *Service) VerifyAadhaarDocument(

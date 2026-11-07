@@ -71,6 +71,16 @@ func TestClassifyRefundGatewayError(t *testing.T) {
 			want: RefundAmbiguousFailure,
 		},
 		{
+			name: "400 bad request with refund_already_exists yields ambiguous failure",
+			err:  &cashfree.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Body: `{"message": "refund_already_exists"}`},
+			want: RefundAmbiguousFailure,
+		},
+		{
+			name: "400 bad request with already exists yields ambiguous failure",
+			err:  &cashfree.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Body: `{"message": "refund already exists for this order"}`},
+			want: RefundAmbiguousFailure,
+		},
+		{
 			name: "400 bad request yields definitive failure",
 			err:  &cashfree.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"},
 			want: RefundDefinitiveFailure,

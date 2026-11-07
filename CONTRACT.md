@@ -81,6 +81,10 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.refundExceedsBalance`   | 400         | Payment     | Refund amount exceeds remaining payment balance                                  |
 | `payment.refundInFlight`         | 409         | Payment     | Refund is currently in flight; cancellation locked for 2 minutes                 |
 | `payment.refundNotEligible`      | 400         | Payment     | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)      |
+| `payment.refundManagerLimitExceeded` | 403     | Payment     | Refund amount exceeds manager single refund limit                                 |
+| `payment.bankAccountInvalid`     | 422         | Payment     | Bank account is invalid, inactive, blocked, or unsupported at destination bank   |
+| `payment.bankNameMismatch`       | 422         | Payment     | Bank account holder name does not match tenant registered legal name             |
+| `payment.bankVerifierUnavailable`| 503         | Payment     | Bank verification service temporarily unavailable                                |
 | `finance.duplicateRequest`      | 409         | Finance     | Duplicate idempotency key                                                        |
 | `finance.idempotencyRequired`   | 400         | Finance     | Idempotency-Key header is required                                               |
 | `finance.invalidAmount`         | 400         | Finance     | Invalid expense or payment amount                                                |
@@ -1007,6 +1011,10 @@ Validation & error responses:
 | **Payment**     | `payment.refundExceedsBalance`   | 400         | Refund amount exceeds remaining payment balance                                              |
 | **Payment**     | `payment.refundInFlight`         | 409         | Refund is currently in flight; cancellation locked for 2 minutes                             |
 | **Payment**     | `payment.refundNotEligible`      | 400         | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)                  |
+| **Payment**     | `payment.refundManagerLimitExceeded` | 403     | Refund amount exceeds manager single refund limit                                            |
+| **Payment**     | `payment.bankAccountInvalid`     | 422         | Bank account is invalid, inactive, blocked, or unsupported at destination bank               |
+| **Payment**     | `payment.bankNameMismatch`       | 422         | Bank account holder name does not match tenant registered legal name                         |
+| **Payment**     | `payment.bankVerifierUnavailable`| 503         | Bank verification service temporarily unavailable                                            |
 | **Finance**     | `finance.duplicateRequest`      | 409         | Mutating financial request with duplicate Idempotency-Key                                     |
 | **Finance**     | `finance.idempotencyRequired`   | 400         | Idempotency-Key header is missing on mutating financial endpoint                              |
 | **Finance**     | `finance.invalidAmount`         | 400         | Financial amount in paise must be positive integer                                            |

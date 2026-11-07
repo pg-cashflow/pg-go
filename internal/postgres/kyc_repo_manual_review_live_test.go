@@ -125,6 +125,12 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	if rejected.RejectionReason == nil || *rejected.RejectionReason != "Blurry document" {
 		t.Fatalf("expected rejection reason 'Blurry document', got %v", rejected.RejectionReason)
 	}
+	if rejected.OCRData != nil && *rejected.OCRData != "" {
+		t.Fatalf("expected ocr_data to be wiped on rejection, got %v", *rejected.OCRData)
+	}
+	if rejected.DocumentURL != nil && *rejected.DocumentURL != "" {
+		t.Fatalf("expected document_url to be wiped on rejection, got %v", *rejected.DocumentURL)
+	}
 
 	// 6. Submit second verification and approve it
 	initVerif2, err := repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodOCR, "cashfree_doc", "cf_doc_456", "tenant:"+tenantID.String())
@@ -144,5 +150,11 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	}
 	if approved.ReviewedBy == nil || *approved.ReviewedBy != reviewerID {
 		t.Fatalf("expected reviewed_by %s, got %v", reviewerID, approved.ReviewedBy)
+	}
+	if approved.OCRData != nil && *approved.OCRData != "" {
+		t.Fatalf("expected ocr_data to be wiped on approval, got %v", *approved.OCRData)
+	}
+	if approved.DocumentURL != nil && *approved.DocumentURL != "" {
+		t.Fatalf("expected document_url to be wiped on approval, got %v", *approved.DocumentURL)
 	}
 }

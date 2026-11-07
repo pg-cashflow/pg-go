@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -94,6 +95,12 @@ func (h *Handlers) TenantRegisterRefundAccount(c *gin.Context) {
 		return
 	}
 
+	// Gate: Require verified KYC prior to registering refund bank account
+	if h.KYCSvc != nil && !h.IsKYCVerified(c.Request.Context(), t.ID) {
+		apierr.RespondClientErr(c, http.StatusForbidden, "kyc verification required before registering refund bank account", apierr.CodeAuthForbidden)
+		return
+	}
+
 	var verifier BankAccountVerifier
 	if h.BankVerifier != nil {
 		verifier = h.BankVerifier
@@ -111,18 +118,46 @@ func (h *Handlers) TenantRegisterRefundAccount(c *gin.Context) {
 		tenantPhone = *t.Phone
 	}
 
+	cleanName := SanitizeBankVerificationName(tenantLegalName)
+
 	verifyResult, err := verifier.VerifyBankAccountSync(c.Request.Context(), cashfree.BankAccountVerificationRequest{
 		BankAccount: cleanAccount,
 		IFSC:        cleanIFSC,
-		Name:        tenantLegalName,
+		Name:        cleanName,
 		Phone:       tenantPhone,
 	})
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "verification provider call failed", "details": err.Error()})
+		slog.Error("bank verification provider error", "err", err, "tenant_id", t.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "verification provider call failed"})
 		return
 	}
 
 	if !verifyResult.IsValid() {
+		code := strings.ToUpper(strings.TrimSpace(verifyResult.AccountStatusCode))
+		subCode := strings.ToUpper(strings.TrimSpace(verifyResult.SubCode))
+		msg := strings.ToUpper(strings.TrimSpace(verifyResult.Message))
+
+		if code == "INSUFFICIENT_BALANCE" || subCode == "INSUFFICIENT_BALANCE" || strings.Contains(msg, "INSUFFICIENT BALANCE") || strings.Contains(msg, "INSUFFICIENT_BALANCE") {
+			slog.Error("ALERT: Cashfree wallet insufficient balance for bank verification penny drop")
+			apierr.RespondClientErr(c, http.StatusServiceUnavailable, "bank verification service temporarily unavailable", apierr.CodeBankVerifierUnavailable)
+			return
+		}
+
+		if code == "INVALID_IFSC" || subCode == "INVALID_IFSC" || strings.Contains(msg, "INVALID IFSC") {
+			apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "the provided IFSC is invalid or not recognized by destination bank", apierr.CodeRequestInvalidBody)
+			return
+		}
+
+		if code == "ACCOUNT_BLOCKED" || strings.Contains(msg, "BLOCKED") || strings.Contains(msg, "FROZEN") {
+			apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "bank account is blocked or frozen at destination bank", apierr.CodeBankAccountInvalid)
+			return
+		}
+
+		if strings.Contains(code, "UNSUPPORTED") || strings.Contains(msg, "UNSUPPORTED") || strings.Contains(cleanIFSC, "PYTM") || strings.Contains(cleanIFSC, "DEUT") {
+			apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "destination bank is currently unsupported for automated penny-drop verification", apierr.CodeBankAccountInvalid)
+			return
+		}
+
 		apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "bank account is invalid or inactive at destination bank", apierr.CodeBankAccountInvalid)
 		return
 	}
@@ -216,13 +251,31 @@ func isAcceptableNameMatch(matchResult, matchScore string) bool {
 	if cleanRes == "DIRECT_MATCH" || cleanRes == "GOOD_PARTIAL_MATCH" {
 		return true
 	}
-	if cleanRes == "POOR_PARTIAL_MATCH" || cleanRes == "NO_MATCH" {
+	// Moderate partial match, poor partial match, and no match are not auto-accepted.
+	if cleanRes == "MODERATE_PARTIAL_MATCH" || cleanRes == "POOR_PARTIAL_MATCH" || cleanRes == "NO_MATCH" {
 		return false
 	}
+	// If no categorical match result is returned, accept only on high confidence numeric score.
 	if matchScore != "" {
 		if s, err := strconv.ParseFloat(matchScore, 64); err == nil {
-			return s >= 60.0
+			return s >= 85.0
 		}
 	}
 	return false
+}
+
+// SanitizeBankVerificationName cleans and formats a name according to Cashfree's allowed charset:
+// letters, numbers, spaces, and . - / &
+// Disallowed characters such as apostrophes (e.g. D'Souza) are sanitized to spaces.
+func SanitizeBankVerificationName(raw string) string {
+	s := strings.ReplaceAll(raw, "'", " ")
+	s = strings.ReplaceAll(s, "`", " ")
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == ' ' || r == '.' || r == '-' || r == '/' || r == '&' {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }

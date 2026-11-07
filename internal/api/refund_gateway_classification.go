@@ -21,6 +21,12 @@ const (
 	RefundAmbiguousFailure
 )
 
+// IsRefundDuplicateError reports whether a gateway error represents an already-existing refund
+// (such as 409 Conflict, or 400 Bad Request with a duplicate message body).
+func IsRefundDuplicateError(err error) bool {
+	return cashfree.IsRefundDuplicateError(err)
+}
+
 // ClassifyRefundGatewayError determines whether a Cashfree CreateRefund error is a definitive failure
 // (safe to clean up) or an ambiguous failure/conflict (must preserve reservation and reconcile).
 func ClassifyRefundGatewayError(err error) RefundGatewayDisposition {
@@ -39,6 +45,10 @@ func ClassifyRefundGatewayError(err error) RefundGatewayDisposition {
 			apiErr.StatusCode == http.StatusConflict ||
 			apiErr.StatusCode == http.StatusUnauthorized ||
 			apiErr.StatusCode == http.StatusForbidden {
+			return RefundAmbiguousFailure
+		}
+		// If Cashfree returns 400 with duplicate refund details, treat as ambiguous (preserve reservation for reconciliation)
+		if IsRefundDuplicateError(err) {
 			return RefundAmbiguousFailure
 		}
 		// Other 4xx errors (e.g. 400, 404, 422) are definitive client-level rejections.

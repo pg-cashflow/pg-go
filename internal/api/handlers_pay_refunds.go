@@ -1062,8 +1062,8 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	rawPayloadMap["refund_note"] = cfNote
 	if b, mErr := json.Marshal(rawPayloadMap); mErr == nil {
 		rfRow.RawPayload = b
-		if h.RefundStore != nil {
-			_ = h.RefundStore.CreateOrUpdateRefund(ctx, rfRow)
+		if h.GatewayPaymentRepo != nil {
+			_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
 		}
 	}
 	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)

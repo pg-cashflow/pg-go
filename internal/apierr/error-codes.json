@@ -81,5 +81,9 @@
   "push.endpointInvalid",
   "push.endpointConflict",
   "payment.refundReasonLength",
-  "payment.refundReasonCharacters"
+  "payment.refundReasonCharacters",
+  "payment.refundManagerLimitExceeded",
+  "payment.bankAccountInvalid",
+  "payment.bankNameMismatch",
+  "payment.bankVerifierUnavailable"
 ]

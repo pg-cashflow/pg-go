@@ -266,7 +266,9 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && refundAge >= 0 && refundAge < 24*time.Hour {
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
+					// Keep refundID constant (Cashfree deduplicates by refund_id), but use a fresh
+					// idempotency key per retry attempt to avoid replaying any cached 5xx gateway failure.
+					retryIdempotencyKey := uuid.NewString()
 					refundNote := fmt.Sprintf("Refund %s", refundID)
 					if len(ref.RawPayload) > 0 {
 						var rawMap map[string]any
@@ -302,10 +304,7 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						if errors.As(createErr, &createApiErr) {
 							// If Cashfree reports the refund already exists (e.g. 409 or 400 refund_already_exists),
 							// do not mark failed. Re-query status from gateway.
-							isDuplicate := createApiErr.StatusCode == http.StatusConflict ||
-								strings.Contains(strings.ToLower(createApiErr.Body), "already_exists") ||
-								strings.Contains(strings.ToLower(createApiErr.Body), "already exists") ||
-								strings.Contains(strings.ToLower(createErr.Error()), "already exists")
+							isDuplicate := cashfree.IsRefundDuplicateError(createErr)
 
 							if isDuplicate {
 								log.Info("cashfree poll: resubmitted refund already exists at gateway; re-fetching status",
@@ -337,11 +336,11 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 						}
 					}
 				} else if refundAge > 30*time.Minute {
-					log.Warn("cashfree poll refund not found at gateway after grace period; marking on_hold for manual review",
+					log.Warn("cashfree poll refund not found at gateway after grace period; marking needs_review for manual review",
 						"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
 					if reconciler, ok := j.Refunds.(RefundReconciler); ok {
-						if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, domain.RefundStatusOnHold); recErr != nil {
-							log.Error("cashfree poll reconcile on_hold refund error", "refund_id", refundID, "err", recErr)
+						if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, domain.RefundStatusNeedsReview); recErr != nil {
+							log.Error("cashfree poll reconcile needs_review refund error", "refund_id", refundID, "err", recErr)
 						}
 					}
 					continue

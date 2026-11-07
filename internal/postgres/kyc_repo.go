@@ -1221,6 +1221,9 @@ func (r *KYCRepo) ApproveManualReviewTx(
 				reviewed_at = $3,
 				verified_at = $3,
 				expires_at = $4,
+				document_url = NULL,
+				ocr_data = NULL,
+				attested_photo_bytes = NULL,
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`
@@ -1332,6 +1335,9 @@ func (r *KYCRepo) RejectManualReviewTx(
 				reviewed_at = $3,
 				rejection_reason = $4,
 				failure_reason = $4,
+				document_url = NULL,
+				ocr_data = NULL,
+				attested_photo_bytes = NULL,
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`
