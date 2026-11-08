@@ -650,6 +650,10 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	if bg.payoutDispatch != nil {
 		ledgerWorker.SetPayoutDispatcher(bg.payoutDispatch)
 	}
+	if bg.cfClient != nil && bg.paymentRepo != nil {
+		refundDispatcher := finance.NewRefundGatewayDispatcher(bg.paymentRepo, bg.cfClient)
+		ledgerWorker.SetRefundDispatcher(refundDispatcher)
+	}
 
 	if bg.payoutDispatch != nil {
 		payoutLister := postgres.NewPayoutRepo(bg.maintPool)

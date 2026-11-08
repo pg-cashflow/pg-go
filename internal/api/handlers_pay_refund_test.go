@@ -23,6 +23,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
@@ -207,7 +208,7 @@ func (m *mockRefundPaymentRepo) GetRefundByPaymentAndIdempotency(ctx context.Con
 	key := fmt.Sprintf("%s_%s", paymentID, idempotencyKey)
 	r, ok := m.refundByIdem[key]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, domain.ErrNotFound
 	}
 	return r, nil
 }
@@ -247,6 +248,13 @@ func (m *mockRefundPaymentRepo) CreateOrUpdateRefund(ctx context.Context, ref *d
 		key := fmt.Sprintf("%s_%s", ref.PaymentID, *ref.IdempotencyKey)
 		m.refundByIdem[key] = ref
 	}
+	return nil
+}
+func (m *mockRefundPaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ref.Status = newStatus
+	m.refunds[ref.ID] = ref
 	return nil
 }
 func (m *mockRefundPaymentRepo) CreateRefundAllocation(ctx context.Context, alloc *domain.RefundAllocation) error {
@@ -548,27 +556,28 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d: %s", rec.Code, rec.Body.String())
 		}
-		var resp domain.GatewayRefund
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		var wrapper struct {
+			Message string                `json:"message"`
+			Refund  *domain.GatewayRefund `json:"refund"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &wrapper); err != nil || wrapper.Refund == nil {
 			t.Fatalf("unmarshal refund response: %v", err)
 		}
+		resp := wrapper.Refund
 		if resp.AmountPaise != 550000 {
 			t.Errorf("expected amount 550000 paise, got %d", resp.AmountPaise)
 		}
-		if resp.Status != "succeeded" {
-			t.Errorf("expected status 'succeeded', got %s", resp.Status)
+		if resp.Status != "initiated" {
+			t.Errorf("expected status 'initiated', got %s", resp.Status)
 		}
 		if resp.RefundReference == nil || len(*resp.RefundReference) != 34 {
 			t.Errorf("expected 34-character refund reference, got %v", resp.RefundReference)
 		}
 		if resp.RefundReference != nil && strings.Contains(*resp.RefundReference, "_") {
 			t.Errorf("expected alphanumeric refund reference without underscore, got %s", *resp.RefundReference)
-		}
-		if cfClient.refundCalls != 1 {
-			t.Errorf("expected 1 call to Cashfree, got %d", cfClient.refundCalls)
 		}
 	})
 
@@ -792,7 +801,7 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		req1.Header.Set("X-Idempotency-Key", "idem_replay_key_999")
 		rec1 := httptest.NewRecorder()
 		r.ServeHTTP(rec1, req1)
-		if rec1.Code != http.StatusOK {
+		if rec1.Code != http.StatusAccepted {
 			t.Fatalf("first call failed: %d", rec1.Code)
 		}
 
@@ -802,13 +811,13 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		req2.Header.Set("X-Idempotency-Key", "idem_replay_key_999")
 		rec2 := httptest.NewRecorder()
 		r.ServeHTTP(rec2, req2)
-		if rec2.Code != http.StatusOK {
+		if rec2.Code != http.StatusOK && rec2.Code != http.StatusAccepted {
 			t.Fatalf("second call failed: %d", rec2.Code)
 		}
 
-		// Exact same gateway calls count -> Cashfree was NOT called a second time
-		if cfClient.refundCalls != 1 {
-			t.Fatalf("expected exactly 1 call to Cashfree, got %d", cfClient.refundCalls)
+		// Exact same gateway calls count -> Cashfree was NOT called on HTTP request path
+		if cfClient.refundCalls != 0 {
+			t.Fatalf("expected 0 calls to Cashfree on HTTP path, got %d", cfClient.refundCalls)
 		}
 
 		// Third call with SAME key but DIFFERENT amount must return 409 Conflict
@@ -887,17 +896,17 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		}
 		bufWithOTP, _ := json.Marshal(bodyWithOTP)
 
-		// Call 1: valid OTP -> succeeds with 200 OK
+		// Call 1: valid OTP -> succeeds with 202 Accepted
 		req1 := httptest.NewRequest(http.MethodPost, "/api/owner/payments/"+basePayment.ID.String()+"/refund", bytes.NewReader(bufWithOTP))
 		req1.Header.Set("Content-Type", "application/json")
 		req1.Header.Set("Idempotency-Key", "idem_stepup_retry_key")
 		rec1 := httptest.NewRecorder()
 		r.ServeHTTP(rec1, req1)
-		if rec1.Code != http.StatusOK {
+		if rec1.Code != http.StatusAccepted {
 			t.Fatalf("first call with valid OTP failed: %d: %s", rec1.Code, rec1.Body.String())
 		}
 
-		// Call 2: retry of same idempotency key with INVALID/EMPTY OTP -> must still return 200 OK with the refund
+		// Call 2: retry of same idempotency key with INVALID/EMPTY OTP -> must still return 200/202 with the refund
 		bodyNoOTP := map[string]any{
 			"amount_paise": 250000,
 			"reason":       "Step up test refund",
@@ -910,13 +919,13 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		req2.Header.Set("Idempotency-Key", "idem_stepup_retry_key")
 		rec2 := httptest.NewRecorder()
 		r.ServeHTTP(rec2, req2)
-		if rec2.Code != http.StatusOK {
+		if rec2.Code != http.StatusOK && rec2.Code != http.StatusAccepted {
 			t.Fatalf("retry with same idempotency key and empty OTP failed: %d: %s", rec2.Code, rec2.Body.String())
 		}
 
-		// Gateway must only have been called once
-		if cfClient.refundCalls != 1 {
-			t.Fatalf("expected exactly 1 Cashfree call, got %d", cfClient.refundCalls)
+		// Gateway was NOT called synchronously on HTTP path
+		if cfClient.refundCalls != 0 {
+			t.Fatalf("expected 0 synchronous Cashfree calls, got %d", cfClient.refundCalls)
 		}
 
 		// Call 3: NEW idempotency key with empty OTP must be rejected with 401 Unauthorized
@@ -983,8 +992,29 @@ func TestOwnerRefundPayment_UnitScenarios(t *testing.T) {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("expected 502 Bad Gateway on gateway failure, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted on initiated refund, got %d: %s", rec.Code, rec.Body.String())
+		}
+
+		var wrapper struct {
+			Message string                `json:"message"`
+			Refund  *domain.GatewayRefund `json:"refund"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &wrapper); err != nil || wrapper.Refund == nil {
+			t.Fatalf("unmarshal refund response: %v", err)
+		}
+		if wrapper.Refund.Status != "initiated" {
+			t.Errorf("expected initial status 'initiated', got %s", wrapper.Refund.Status)
+		}
+
+		// Dispatch via outbox dispatcher
+		dispatcher := finance.NewRefundGatewayDispatcher(gwRepo, cfClient)
+		if err := dispatcher.DispatchRefund(context.Background(), wrapper.Refund.ID); err != nil {
+			t.Fatalf("dispatch error: %v", err)
+		}
+		updated, _ := gwRepo.GetRefundByID(context.Background(), wrapper.Refund.ID)
+		if updated.Status != "failed" {
+			t.Errorf("expected refund to be marked failed by dispatcher on 4xx rejection, got %s", updated.Status)
 		}
 	})
 
@@ -2011,7 +2041,7 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 
 	for _, tc := range validCases {
 		t.Run("valid_"+tc.name, func(t *testing.T) {
-			_, basePayment, r, cfClient := setupHandler()
+			_, basePayment, r, _ := setupHandler()
 			body := map[string]any{
 				"otp":          "123456",
 				"amount_paise": 100000,
@@ -2024,24 +2054,19 @@ func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {
 			rec := httptest.NewRecorder()
 			r.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusOK {
-				t.Fatalf("expected 200 OK for valid reason %q, got %d (body: %s)", tc.reason, rec.Code, rec.Body.String())
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("expected 202 Accepted for valid reason %q, got %d (body: %s)", tc.reason, rec.Code, rec.Body.String())
 			}
 
-			// Verify Cashfree received a sanitized ASCII note, NOT the free-text reason
-			if !strings.HasPrefix(cfClient.lastReason, "Refund ") {
-				t.Errorf("expected Cashfree note to start with 'Refund ', got %q", cfClient.lastReason)
+			var wrapper struct {
+				Message string               `json:"message"`
+				Refund  domain.GatewayRefund `json:"refund"`
 			}
-			if cfClient.lastReason == tc.reason {
-				t.Errorf("Cashfree must NOT receive the raw free-text reason, got %q", cfClient.lastReason)
-			}
-
-			var resp domain.GatewayRefund
-			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			if err := json.Unmarshal(rec.Body.Bytes(), &wrapper); err != nil {
 				t.Fatalf("unmarshal response: %v", err)
 			}
-			if resp.Reason != strings.TrimSpace(tc.reason) {
-				t.Errorf("expected audit reason %q, got %q", tc.reason, resp.Reason)
+			if wrapper.Refund.Reason != strings.TrimSpace(tc.reason) {
+				t.Errorf("expected audit reason %q, got %q", tc.reason, wrapper.Refund.Reason)
 			}
 		})
 	}

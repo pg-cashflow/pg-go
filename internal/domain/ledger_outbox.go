@@ -19,6 +19,7 @@ const (
 	LedgerOutboxPayoutReversal      = "payout_reversal_mirror"
 	LedgerOutboxPayoutSettlement    = "payout_settlement_mirror"
 	LedgerOutboxCashRefundDisbursed = "cash_refund_disbursed_mirror"
+	LedgerOutboxRefundDispatch      = "gateway_refund_dispatch"
 )
 
 // LedgerOutboxEvent represents an atomic post-commit event for double-entry financial journals.
@@ -131,4 +132,11 @@ type CashRefundDisbursedMirrorPayload struct {
 	DepartureID uuid.UUID `json:"departure_id"`
 	AmountPaise int64     `json:"amount_paise"`
 	OccurredAt  time.Time `json:"occurred_at"`
+}
+
+// RefundDispatchPayload defines the serialized payload for gateway refund dispatch outbox events.
+type RefundDispatchPayload struct {
+	PropertyID uuid.UUID `json:"property_id"`
+	RefundID   uuid.UUID `json:"refund_id"`
+	PaymentID  uuid.UUID `json:"payment_id"`
 }

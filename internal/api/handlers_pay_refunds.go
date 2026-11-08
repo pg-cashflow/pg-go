@@ -254,6 +254,27 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 			}
 		}
 
+		// Enqueue gateway refund dispatch outbox event
+		dispatchPayload := domain.RefundDispatchPayload{
+			PropertyID: pid,
+			RefundID:   rfRow.ID,
+			PaymentID:  p.ID,
+		}
+		rawDispatchPayload, err := json.Marshal(dispatchPayload)
+		if err != nil {
+			return fmt.Errorf("marshal refund dispatch outbox: %w", err)
+		}
+		dispatchKey := fmt.Sprintf("refund_dispatch:%s", rfRow.ID)
+		_, err = tx.Exec(ctx, `
+			INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
+			ON CONFLICT (idempotency_key) DO NOTHING`,
+			domain.LedgerOutboxRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey,
+		)
+		if err != nil {
+			return fmt.Errorf("enqueue refund dispatch outbox: %w", err)
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -942,7 +963,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		c.JSON(http.StatusOK, existingRef)
 		return existingRef, nil
 	}
-	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+	if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) && !errors.Is(lookupErr, domain.ErrNotFound) && lookupErr.Error() != "not found" {
 		slog.Error("refund idempotency lookup failed", "payment_id", p.ID, "error", lookupErr)
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund service temporarily unavailable"})
 		return nil, lookupErr
@@ -1006,7 +1027,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("database pool unavailable")
 	}
 
-	allocationsToCreate, err := runner.PrepareRefund(ctx, pid, p, req, rfRow)
+	_, err = runner.PrepareRefund(ctx, pid, p, req, rfRow)
 	if err != nil {
 		var vErr *refundValidationErr
 		if errors.As(err, &vErr) {
@@ -1025,12 +1046,6 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, err
 	}
 
-	// Always resolve canonical refund reference from rfRow
-	targetRefundRef := refundRef
-	if rfRow.RefundReference != nil && *rfRow.RefundReference != "" {
-		targetRefundRef = *rfRow.RefundReference
-	}
-
 	// If this refund row was adopted from a racing or existing request
 	if rfRow.ID != originalRefundID {
 		if isTerminalRefund(rfRow.Status) || (rfRow.CFRefundID != nil && *rfRow.CFRefundID != "") {
@@ -1038,7 +1053,6 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 			return rfRow, nil
 		}
 		// Adopted row in non-terminal state without gateway ID: return 202.
-		// Do not call gateway again to avoid race and empty allocations.
 		c.JSON(http.StatusAccepted, gin.H{
 			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
 			"refund":  rfRow,
@@ -1046,96 +1060,12 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return rfRow, nil
 	}
 
-	// Step C: External Gateway Call (ZERO row locks held during external I/O)
-	// The public key is scoped to a payment locally. Use canonical provider idempotency key
-	// persisted/derived from the refund row ID so recovery retries use the exact same key.
-	cfIdempotencyKey := domain.CashfreeRefundIdempotencyKey(rfRow.ID)
-	// Send gateway a sanitized ASCII note to prevent PII leakage and non-ASCII encoding failures
-	cfNote := resolveRefundNote(c, h.CashfreeClient, targetRefundRef, req.Reason)
-	var rawPayloadMap map[string]any
-	if len(orderPayload) > 0 {
-		_ = json.Unmarshal(orderPayload, &rawPayloadMap)
-	}
-	if rawPayloadMap == nil {
-		rawPayloadMap = make(map[string]any)
-	}
-	rawPayloadMap["refund_note"] = cfNote
-	if b, mErr := json.Marshal(rawPayloadMap); mErr == nil {
-		rfRow.RawPayload = b
-		if h.GatewayPaymentRepo != nil {
-			_ = h.GatewayPaymentRepo.CreateOrUpdateRefund(ctx, rfRow)
-		}
-	}
-	cfResp, cfErr := h.CashfreeClient.CreateRefund(ctx, orderID, targetRefundRef, req.AmountPaise, cfNote, cfIdempotencyKey)
-	if cfErr != nil {
-		slog.Error("cashfree create refund error", "error", cfErr, "payment_id", p.ID, "refund_id", rfRow.ID)
-
-		if ClassifyRefundGatewayError(cfErr) == RefundDefinitiveFailure {
-			rfRow.Status = "failed"
-			// Use context.WithoutCancel so client disconnect does not abort cleanup
-			dbCtx := context.WithoutCancel(ctx)
-			if cleanupErr := runner.CleanupFailedRefund(dbCtx, rfRow); cleanupErr != nil {
-				slog.Error("refund cleanup after gateway failure", "error", cleanupErr, "refund_id", rfRow.ID)
-			}
-			respondErr(c, clientErr(http.StatusBadGateway, "gateway refund rejected by payment provider"))
-			return nil, cfErr
-		}
-
-		// Ambiguous gateway failure (timeout, dropped connection, 5xx, 429, or 409 conflict).
-		// Keep refund row in 'initiated' status and retain pre-allocated dues.
-		// Return 202 Accepted; the reconciler job or webhook will finalize the status.
-		c.JSON(http.StatusAccepted, gin.H{
-			"message": "refund processing or gateway response ambiguous; reconciliation in progress",
-			"refund":  rfRow,
-		})
-		return rfRow, nil
-	}
-
-	// Update status and provider IDs from gateway response
-	respStatus := domain.NormalizeRefundStatus(cfResp.RefundStatus)
-	rfRow.Status = respStatus
-	rfRow.CFRefundID = &cfResp.CFRefundID
-	rfRow.ProviderRefundID = &cfResp.CFRefundID
-	if rfRow.Status == domain.RefundStatusOnHold {
-		slog.Warn("ALERT: cashfree refund is ONHOLD at gateway; merchant account requires balance top-up",
-			"refund_id", rfRow.ID, "payment_id", p.ID)
-		if h.OutboxEvents != nil {
-			payload, _ := json.Marshal(map[string]any{
-				"refund_id":    rfRow.ID.String(),
-				"payment_id":   p.ID.String(),
-				"amount_paise": req.AmountPaise,
-				"reason":       "gateway_balance_insufficient",
-			})
-			_ = h.OutboxEvents.InsertEvent(c.Request.Context(), &domain.OutboxEvent{
-				EventType:  "refund_on_hold",
-				PropertyID: pid,
-				ActorRole:  string(domain.RoleOwner),
-				Payload:    payload,
-			})
-		}
-	}
-
-	// Settle or finalize in DB using context.WithoutCancel to survive client disconnect
-	dbCtx := context.WithoutCancel(ctx)
-	if settleErr := runner.SettleRefund(dbCtx, pid, p, req, rfRow, allocationsToCreate); settleErr != nil {
-		slog.Error("refund post-settlement failed; gateway accepted refund, reconciliation will settle",
-			"error", settleErr, "refund_id", rfRow.ID, "cf_refund_id", cfResp.CFRefundID)
-		c.JSON(http.StatusAccepted, gin.H{
-			"message": "refund accepted by gateway; ledger update in progress",
-			"refund":  rfRow,
-		})
-		return rfRow, nil
-	}
-
-	if rfRow.Status == "succeeded" && h.Referrals != nil {
-		for _, item := range allocationsToCreate {
-			if err := h.Referrals.ReverseFirstRentPayment(c.Request.Context(), item.dueID, p.ID); err != nil {
-				slog.Warn("referral reverse on refund failed", "due_id", item.dueID, "payment_id", p.ID, "err", err)
-			}
-		}
-	}
-
-	c.JSON(http.StatusOK, rfRow)
+	// Refund is persisted in status "initiated" and enqueued to outbox.
+	// The ledger outbox worker dispatches to Cashfree asynchronously.
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "refund initiated; processing via gateway outbox",
+		"refund":  rfRow,
+	})
 	return rfRow, nil
 }
 
