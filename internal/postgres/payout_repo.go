@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 type DepartureMirrorer interface {
@@ -524,6 +525,9 @@ func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, proper
 }
 
 func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {
+	if pid, ok := requestscope.PropertyIDFromContext(ctx); ok && pid != uuid.Nil {
+		_, _ = r.db.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", pid.String())
+	}
 	rows, err := r.db.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
 	if err != nil {
 		return nil, err
@@ -558,6 +562,9 @@ func scanBatch(row pgx.Row) (*domain.PayoutBatch, error) {
 }
 
 func (r *PayoutRepo) GetBatchByID(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error) {
+	if pid, ok := requestscope.PropertyIDFromContext(ctx); ok && pid != uuid.Nil {
+		_, _ = r.db.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", pid.String())
+	}
 	return scanBatch(r.db.QueryRow(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE id=$1`, id))
 }
 
@@ -772,6 +779,12 @@ func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.U
 		return nil, nil, fmt.Errorf("begin batch transfer tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	if pid, ok := requestscope.PropertyIDFromContext(ctx); ok && pid != uuid.Nil {
+		if _, err := tx.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", pid.String()); err != nil {
+			return nil, nil, fmt.Errorf("set local app.current_property_id: %w", err)
+		}
+	}
 
 	// 1. Lock batch FOR UPDATE
 	row := tx.QueryRow(ctx, `

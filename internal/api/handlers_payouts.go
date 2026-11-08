@@ -21,6 +21,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // ---------------------------------------------------------------------
@@ -1124,9 +1125,11 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
+			pctx := requestscope.WithPropertyID(ctx, pid)
+			if dErr := h.PayoutDispatcher.DispatchBatch(pctx, batchID); dErr != nil {
 				slog.Warn("inline payout batch dispatch failed, relying on ledger outbox worker",
 					"batch_id", batchID,
+					"property_id", pid,
 					"err", dErr,
 				)
 			}

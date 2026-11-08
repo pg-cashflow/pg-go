@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // LedgerMirrorer defines the interface for double-entry mirror posting.
@@ -243,7 +244,11 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 		if err != nil {
 			return fmt.Errorf("unmarshal payout batch transfer payload: %w", err)
 		}
-		return w.payoutDispatcher.DispatchBatch(ctx, batchID)
+		pctx := ctx
+		if evt.PropertyID != uuid.Nil {
+			pctx = requestscope.WithPropertyID(ctx, evt.PropertyID)
+		}
+		return w.payoutDispatcher.DispatchBatch(pctx, batchID)
 	case "payment_mirror":
 		var p domain.PaymentMirrorPayload
 		if err := json.Unmarshal(evt.Payload, &p); err != nil {
