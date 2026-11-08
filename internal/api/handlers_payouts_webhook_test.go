@@ -1212,6 +1212,46 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("transfer_acknowledged_with_acknowledged_status_code_settles_processing_item", func(t *testing.T) {
+		var gotStatus domain.PayoutItemStatus
+		var gotUTR string
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{ID: id, AmountPaise: 1000, Status: domain.PayoutProcessing}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				gotStatus = status
+				if utr != nil {
+					gotUTR = *utr
+				}
+				return nil
+			},
+		}
+		h := &Handlers{Deps: Deps{
+			CashfreePayoutWebhookSecret: secret,
+			GatewayPaymentRepo:          &stubGatewayRepo{},
+			PayoutWebhookRepo:           mock,
+		}}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		env := makeEnv("TRANSFER_ACKNOWLEDGED", itemID)
+		var data PayoutWebhookData
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		data.StatusCode = "ACKNOWLEDGED"
+		data.TransferUTR = ptr("UTR-ACK-002")
+		env.Data, _ = json.Marshal(data)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if gotStatus != domain.PayoutSucceeded || gotUTR != "UTR-ACK-002" {
+			t.Fatalf("ACK event with ACKNOWLEDGED status_code did not settle payout: status=%q utr=%q", gotStatus, gotUTR)
+		}
+	})
+
 	t.Run("transfer_settlement_amount_mismatch_is_not_applied", func(t *testing.T) {
 		updateCalled := false
 		mock := &mockPayoutWebhookStore{

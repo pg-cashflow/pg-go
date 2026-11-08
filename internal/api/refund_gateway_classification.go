@@ -47,11 +47,17 @@ func ClassifyRefundGatewayError(err error) RefundGatewayDisposition {
 			apiErr.StatusCode == http.StatusForbidden {
 			return RefundAmbiguousFailure
 		}
+		// 422 is Cashfree's documented idempotency error (same x-idempotency-key, different body).
+		// It proves a request with this key already reached the gateway and may have succeeded,
+		// so the reservation MUST be preserved for reconciliation.
+		if apiErr.StatusCode == http.StatusUnprocessableEntity {
+			return RefundAmbiguousFailure
+		}
 		// If Cashfree returns 400 with duplicate refund details, treat as ambiguous (preserve reservation for reconciliation)
 		if IsRefundDuplicateError(err) {
 			return RefundAmbiguousFailure
 		}
-		// Other 4xx errors (e.g. 400, 404, 422) are definitive client-level rejections.
+		// Other 4xx errors (e.g. 400, 404) are definitive client-level rejections.
 		return RefundDefinitiveFailure
 	}
 	// Transport, network errors, and context timeouts are ambiguous

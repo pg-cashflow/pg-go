@@ -415,6 +415,21 @@ func (h *Handlers) OwnerCreatePayee(c *gin.Context) {
 	var encryptedAcct []byte
 	if hasAcct {
 		raw := strings.TrimSpace(*body.AccountNum)
+		if !accountNumPattern.MatchString(raw) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid bank account number format (must be 6-34 alphanumeric characters)"})
+			return
+		}
+		if body.IFSC == nil || strings.TrimSpace(*body.IFSC) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ifsc is required for bank account payees"})
+			return
+		}
+		cleanIFSC := strings.ToUpper(strings.TrimSpace(*body.IFSC))
+		if !ifscPattern.MatchString(cleanIFSC) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid IFSC format (must be 11 characters, e.g. HDFC0001234)"})
+			return
+		}
+		body.IFSC = &cleanIFSC
+
 		acctIdentifier = raw
 		if len(raw) >= 4 {
 			l4 := raw[len(raw)-4:]

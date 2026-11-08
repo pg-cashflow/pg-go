@@ -463,8 +463,10 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		// Transfers V2 may first report TRANSFER_SUCCESS with SENT_TO_BENEFICIARY.
 		// That is not beneficiary receipt. TRANSFER_ACKNOWLEDGED is the terminal
 		// bank-credit confirmation; both settlement paths still require SUCCESS,
-		// COMPLETED, and an exact match to the server-approved amount.
-		if (data.Acknowledged != nil && *data.Acknowledged == 0) || !strings.EqualFold(data.Status, "SUCCESS") || !strings.EqualFold(data.StatusCode, "COMPLETED") {
+		// and completed/acknowledged status codes, and an exact match to the server-approved amount.
+		isCompletedCode := strings.EqualFold(data.StatusCode, "COMPLETED") ||
+			(evtType == "TRANSFER_ACKNOWLEDGED" && (strings.EqualFold(data.StatusCode, "ACKNOWLEDGED") || strings.EqualFold(data.StatusCode, "TRANSFER_ACKNOWLEDGED")))
+		if (data.Acknowledged != nil && *data.Acknowledged == 0) || !strings.EqualFold(data.Status, "SUCCESS") || !isCompletedCode {
 			slog.Warn("payout webhook success not confirmed: status or status_code not completed",
 				"item_id", item.ID,
 				"event", evtType,

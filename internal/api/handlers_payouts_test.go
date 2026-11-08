@@ -202,6 +202,59 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		owner.GET("/payouts/batches/:id/export", h.OwnerExportPayoutBatch)
 	}
 
+	// 0. Validate Bank Account Payee Rejection on Missing/Invalid IFSC
+	t.Run("POST /owner/payouts/payees - Bank account requires valid IFSC", func(t *testing.T) {
+		// Missing IFSC
+		bodyMissingIFSC := map[string]interface{}{
+			"tenant_id":      tenantID,
+			"payee_type":     "tenant_deposit",
+			"name":           "Test Bank Payee",
+			"account_number": "123456789012",
+		}
+		b1, _ := json.Marshal(bodyMissingIFSC)
+		w1 := httptest.NewRecorder()
+		r1, _ := http.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b1))
+		r1.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w1, r1)
+		if w1.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for missing IFSC, got %d: %s", w1.Code, w1.Body.String())
+		}
+
+		// Invalid IFSC format
+		bodyInvalidIFSC := map[string]interface{}{
+			"tenant_id":      tenantID,
+			"payee_type":     "tenant_deposit",
+			"name":           "Test Bank Payee",
+			"account_number": "123456789012",
+			"ifsc":           "INVALID_IFSC",
+		}
+		b2, _ := json.Marshal(bodyInvalidIFSC)
+		w2 := httptest.NewRecorder()
+		r2, _ := http.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b2))
+		r2.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w2, r2)
+		if w2.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for invalid IFSC, got %d: %s", w2.Code, w2.Body.String())
+		}
+
+		// Invalid Account Number format
+		bodyInvalidAcct := map[string]interface{}{
+			"tenant_id":      tenantID,
+			"payee_type":     "tenant_deposit",
+			"name":           "Test Bank Payee",
+			"account_number": "123", // too short (< 6)
+			"ifsc":           "HDFC0001234",
+		}
+		b3, _ := json.Marshal(bodyInvalidAcct)
+		w3 := httptest.NewRecorder()
+		r3, _ := http.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b3))
+		r3.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w3, r3)
+		if w3.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for short account number, got %d: %s", w3.Code, w3.Body.String())
+		}
+	})
+
 	// 1. Create Payee
 	var payeeID uuid.UUID
 	t.Run("POST /owner/payouts/payees", func(t *testing.T) {
@@ -922,6 +975,71 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 Bad Request on duplicate cash disbursal, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestOwnerCreatePayee_ValidationUnit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{}
+	r := gin.New()
+	propID := uuid.New()
+	userID := uuid.New()
+	r.POST("/owner/payouts/payees", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+	}, h.OwnerCreatePayee)
+
+	t.Run("rejects bank account without IFSC", func(t *testing.T) {
+		body := map[string]interface{}{
+			"payee_type":     "vendor",
+			"name":           "Vendor Name",
+			"account_number": "1234567890",
+		}
+		b, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for missing IFSC, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rejects bank account with invalid IFSC format", func(t *testing.T) {
+		body := map[string]interface{}{
+			"payee_type":     "vendor",
+			"name":           "Vendor Name",
+			"account_number": "1234567890",
+			"ifsc":           "INVALID_IFSC",
+		}
+		b, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid IFSC, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rejects bank account with invalid account number", func(t *testing.T) {
+		body := map[string]interface{}{
+			"payee_type":     "vendor",
+			"name":           "Vendor Name",
+			"account_number": "123",
+			"ifsc":           "HDFC0001234",
+		}
+		b, _ := json.Marshal(body)
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/owner/payouts/payees", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for short account number, got %d: %s", w.Code, w.Body.String())
 		}
 	})
 }

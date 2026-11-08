@@ -713,4 +713,51 @@ func TestCashfreePollResubmitDuplicateDoesNotMarkFailed(t *testing.T) {
 	}
 }
 
+type stubCounting429Client struct {
+	calls int
+}
+
+func (s *stubCounting429Client) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+	s.calls++
+	return nil, &cashfree.APIError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests"}
+}
+
+func TestCashfreePollStopsOn429RateLimit(t *testing.T) {
+	refRef1 := "rf_429_1"
+	ref1 := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef1,
+		RawPayload:      []byte(`{"order_id": "order_429_1"}`),
+		Status:          "pending",
+		AmountPaise:     10000,
+	}
+	refRef2 := "rf_429_2"
+	ref2 := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef2,
+		RawPayload:      []byte(`{"order_id": "order_429_2"}`),
+		Status:          "pending",
+		AmountPaise:     20000,
+	}
+
+	countingClient := &stubCounting429Client{}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{ref1, ref2}},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: countingClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatalf("expected nil on 429 rate limit backoff, got: %v", err)
+	}
+
+	if countingClient.calls != 1 {
+		t.Fatalf("expected exactly 1 call before rate limit abort, got: %d", countingClient.calls)
+	}
+}
+
 var _ GatewaySettler = (*payment.Service)(nil)

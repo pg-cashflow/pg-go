@@ -91,9 +91,9 @@ func TestClassifyRefundGatewayError(t *testing.T) {
 			want: RefundDefinitiveFailure,
 		},
 		{
-			name: "422 unprocessable entity yields definitive failure",
-			err:  &cashfree.APIError{StatusCode: http.StatusUnprocessableEntity, Status: "422 Unprocessable Entity"},
-			want: RefundDefinitiveFailure,
+			name: "422 idempotency error yields ambiguous to preserve reservation",
+			err:  &cashfree.APIError{StatusCode: http.StatusUnprocessableEntity, Status: "422 Unprocessable Entity", Body: `{"type":"idempotency_error"}`},
+			want: RefundAmbiguousFailure,
 		},
 	}
 

@@ -19,7 +19,9 @@ import (
 const (
 	CashfreePollStale       = 10 * time.Minute
 	CashfreeRefundPollStale = 2 * time.Minute
-	CashfreePollLockName    = "cashfree_poll"
+	// CashfreeRefundStuckAfter is the age after which a non-terminal refund is logged as a CRITICAL alert.
+	CashfreeRefundStuckAfter = 72 * time.Hour
+	CashfreePollLockName     = "cashfree_poll"
 )
 
 type IntentStaleLister interface {
@@ -253,9 +255,18 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				"refund_id", refundID, "payment_id", ref.PaymentID)
 			continue
 		}
+		if now.Sub(ref.CreatedAt) > CashfreeRefundStuckAfter {
+			log.Error("CRITICAL: refund non-terminal beyond stuck threshold; dues remain reserved, investigate at gateway",
+				"refund_id", refundID, "payment_id", ref.PaymentID, "status", ref.Status, "age_hours", int(now.Sub(ref.CreatedAt).Hours()))
+		}
 		details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 		if err != nil {
 			var apiErr *cashfree.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
+				// Rate limited: stop this run; the next scheduled run continues. Avoids hammering the gateway.
+				log.Warn("cashfree poll refund rate limited; deferring remaining refunds to next run", "refund_id", refundID)
+				return nil
+			}
 			isNotFound := errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 			if isNotFound && ref.Status == "initiated" && hasVerifiedOrderID {
 				// The refund was not found at Cashfree (404). This can occur if the application
