@@ -174,6 +174,14 @@ func (c *Config) ValidateForRealDeployment() error {
 				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTPS URL in production (got %q)", c.FrontendURL))
 			}
 		}
+		// In production, split-origin deployment is prohibited because SameSite=Strict cookies
+		// and state-changing same-origin checks require a single HTTPS origin for API and embedded PWA.
+		for _, origin := range c.CORSAllowedOrigins {
+			trimmed := strings.TrimSpace(origin)
+			if trimmed != "" && trimmed != frontendURL {
+				errs = append(errs, fmt.Sprintf("CORS_ALLOWED_ORIGINS is restricted in production: origin %q does not match PUBLIC_APP_URL %q (single-origin deployment required)", trimmed, frontendURL))
+			}
+		}
 	} else if frontendURL != "" {
 		u, err := url.ParseRequestURI(frontendURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {

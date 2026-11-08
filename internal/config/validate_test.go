@@ -686,3 +686,28 @@ func TestValidateForRealDeployment_PayoutAuthMode(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateForRealDeployment_ProductionCORSOriginRestrictions(t *testing.T) {
+	t.Run("production rejects differing CORS origin", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.AppEnv = "production"
+		cfg.FrontendURL = "https://app.pgcashflow.com"
+		cfg.MetricsSecret = "metrics-secret-min-16-chars"
+		cfg.CORSAllowedOrigins = []string{"https://other-domain.pages.dev"}
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "CORS_ALLOWED_ORIGINS is restricted in production") {
+			t.Fatalf("expected error for differing CORS origin in production, got: %v", err)
+		}
+	})
+
+	t.Run("production accepts matching CORS origin", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.AppEnv = "production"
+		cfg.FrontendURL = "https://app.pgcashflow.com"
+		cfg.MetricsSecret = "metrics-secret-min-16-chars"
+		cfg.CORSAllowedOrigins = []string{"https://app.pgcashflow.com"}
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected matching CORS origin to pass, got: %v", err)
+		}
+	})
+}

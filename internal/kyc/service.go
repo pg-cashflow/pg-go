@@ -4,7 +4,7 @@
 // duplicate-flag clearance.
 //
 // ADR-004 invariants enforced here:
-//   - Network calls (Cashfree document upload, UIDAI OTP request) always precede DB transactions.
+//   - A durable pending intent is committed before billable external calls; DB transactions and locks are not held across provider I/O.
 //   - Consent must be active before any verification can be initiated or QR verified.
 //   - Verification processing is idempotent: terminal-state verifications are no-ops.
 package kyc
@@ -427,7 +427,25 @@ func (s *Service) VerifyAadhaarDocument(
 		})
 	}
 
-	_ = s.repo.UpdateVendorRefIDTx(ctx, pending.ID, vendorRefID)
+	var updateRefErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		updateRefErr = s.repo.UpdateVendorRefIDTx(ctx, pending.ID, vendorRefID)
+		if updateRefErr == nil {
+			break
+		}
+		if attempt < 2 {
+			time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+		}
+	}
+	if updateRefErr != nil {
+		slog.ErrorContext(ctx, "kyc service: failed to persist vendor_ref_id after retries; failing verification",
+			"verification_id", pending.ID,
+			"vendor_ref_id", vendorRefID,
+			"err", updateRefErr,
+		)
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED", actor)
+		return nil, fmt.Errorf("kyc service: persist vendor ref id: %w", updateRefErr)
+	}
 
 	docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
 	underReview, err := s.repo.SubmitManualReviewTx(ctx,

@@ -834,3 +834,19 @@ func TestLoad_RefundWindowDays(t *testing.T) {
 		t.Fatalf("expected validation error for REFUND_WINDOW_DAYS <= 0, got %v", err)
 	}
 }
+
+func TestWebhookAPIVersion_DefaultIs2026_01_01(t *testing.T) {
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+	_ = os.Unsetenv("CASHFREE_API_VERSION")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error loading config: %v", err)
+	}
+	if cfg.WebhookAPIVersion != "2026-01-01" {
+		t.Fatalf("expected default WebhookAPIVersion to be 2026-01-01, got %q", cfg.WebhookAPIVersion)
+	}
+}

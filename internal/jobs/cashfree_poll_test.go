@@ -604,8 +604,9 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 	if resubmitClient.createCalls != 1 {
 		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
 	}
-	if resubmitClient.lastIdempKey == domain.CashfreeRefundIdempotencyKey(refID) {
-		t.Fatalf("recovery retry must not reuse initial deterministic idempotency key %s", resubmitClient.lastIdempKey)
+	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
+	if resubmitClient.lastIdempKey != expectedKey {
+		t.Fatalf("recovery retry must reuse deterministic idempotency key %s, got %s", expectedKey, resubmitClient.lastIdempKey)
 	}
 	if _, err := uuid.Parse(resubmitClient.lastIdempKey); err != nil {
 		t.Fatalf("idempotency key is not a valid UUID: %v", err)

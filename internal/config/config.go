@@ -148,7 +148,7 @@ func Load() (*Config, error) {
 		WebhookTimestampToleranceSec:      envIntOr("WEBHOOK_TIMESTAMP_TOLERANCE_SEC", 300),
 		OrderExpiryDuration:               envDurationOr("ORDER_EXPIRY_DURATION", 30*time.Minute),
 		OrderPollerBufferDuration:         envDurationOr("ORDER_POLLER_BUFFER_DURATION", 2*time.Hour),
-		WebhookAPIVersion:                 envOr("CASHFREE_API_VERSION", "2025-01-01"),
+		WebhookAPIVersion:                 envOr("CASHFREE_API_VERSION", "2026-01-01"),
 		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),

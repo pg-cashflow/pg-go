@@ -54,6 +54,8 @@ type fakeRepo struct {
 	lockAcquireErr          error
 	lockReleaseErr          error
 	releasedLockIDs         []uuid.UUID
+	updateVendorRefErr      error
+	updateVendorRefAttempts int
 	recordConsentFn         func(c *domain.KYCConsent) error
 	initiateVTxFn           func() (*domain.KYCVerification, error)
 	completeVTxFn           func(id uuid.UUID) (*domain.KYCVerification, error)
@@ -98,6 +100,10 @@ func (f *fakeRepo) InitiateVerificationTx(_ context.Context, tenantID, consentID
 	return v, nil
 }
 func (f *fakeRepo) UpdateVendorRefIDTx(_ context.Context, verificationID uuid.UUID, vendorRefID string) error {
+	f.updateVendorRefAttempts++
+	if f.updateVendorRefErr != nil {
+		return f.updateVendorRefErr
+	}
 	if f.verification != nil && f.verification.ID == verificationID {
 		f.verification.VendorReferenceID = vendorRefID
 	}
@@ -535,6 +541,49 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	}
 	if approved.Status != domain.KYCStatusVerified {
 		t.Fatalf("expected status verified after approval, got %s", approved.Status)
+	}
+}
+
+func TestVerifyAadhaarDocument_VendorRefPersistenceFailureFailsVerification(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       uuid.New(),
+			TenantID: tenantID,
+		},
+		tenantName:         "Ravi Kumar",
+		updateVendorRefErr: errors.New("db connection lost"),
+	}
+	qrStatus := domain.QRStatusSecure
+	cf := &fakeCashfree{
+		ocrResp: &cashfree.SmartOCRResponse{
+			ReferenceID: 123456,
+			Status:      "SUCCESS",
+			Name:        "Ravi Kumar",
+			DOB:         "1990-01-01",
+			Gender:      "M",
+			MaskedUID:   "1234",
+			QRStatus:    &qrStatus,
+			PhotoBytes:  []byte{0xDE, 0xAD, 0xBE, 0xEF},
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.VerifyAadhaarDocument(context.Background(), tenantID, strings.NewReader("%PDF-1.4 dummy pdf"), "aadhaar.pdf", "application/pdf", "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatalf("expected error on vendor ref persistence failure, got nil")
+	}
+	if v != nil {
+		t.Fatalf("expected nil verification, got %+v", v)
+	}
+	if repo.updateVendorRefAttempts != 3 {
+		t.Fatalf("expected 3 updateVendorRef attempts with retry, got %d", repo.updateVendorRefAttempts)
+	}
+	if repo.verification == nil || repo.verification.Status != domain.KYCStatusFailed {
+		t.Fatalf("expected verification to be marked failed, got %+v", repo.verification)
+	}
+	if repo.verification.FailureReason == nil || *repo.verification.FailureReason != "VENDOR_REF_PERSISTENCE_FAILED" {
+		t.Fatalf("expected failure reason VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
 	}
 }
 

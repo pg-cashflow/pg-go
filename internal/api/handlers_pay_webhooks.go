@@ -320,30 +320,45 @@ func (h *Handlers) getOrderSettler() payment.OrderGatewaySettler {
 
 func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent) {
 	ctx := c.Request.Context()
-	if h.Pool != nil && h.GatewayPaymentRepo != nil {
-		if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
-			txPayRepo := postgres.NewPaymentRepo(tx)
-			firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_FAILED_WEBHOOK", fail.CFPaymentID, "")
-			if err != nil || !firstSeen {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded')`, fail.OrderID); err != nil {
-				return err
-			}
-			return nil
-		}); txErr != nil {
-			// Transaction failure on payment-failed webhook — the intent status update or dedup insert failed.
-			// Log at ERROR for operator visibility; still return 200 OK to prevent gateway retry storms on
-			// a non-money-moving event. The webhook_events audit record is the authoritative receipt.
-			slog.Default().Error("PAYMENT_FAILED_WEBHOOK: transaction error updating payment_intents",
+	if h.Pool == nil || h.GatewayPaymentRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "persistence unavailable"})
+		return
+	}
+
+	if txErr := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+		txPayRepo := postgres.NewPaymentRepo(tx)
+		firstSeen, err := txPayRepo.RecordProcessedEvent(ctx, "cashfree", "PAYMENT_FAILED_WEBHOOK", fail.CFPaymentID, "")
+		if err != nil || !firstSeen {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded')`, fail.OrderID); err != nil {
+			return err
+		}
+		return nil
+	}); txErr != nil {
+		slog.Default().Error("PAYMENT_FAILED_WEBHOOK: transaction error updating payment_intents",
+			"order_id", fail.OrderID,
+			"cf_payment_id", fail.CFPaymentID,
+			"err", txErr,
+		)
+		if evtRecord != nil && evtRecord.ID != uuid.Nil {
+			errMsg := txErr.Error()
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "failed", &errMsg)
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process webhook transaction"})
+		return
+	}
+
+	if evtRecord != nil && evtRecord.ID != uuid.Nil {
+		if err := h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil); err != nil {
+			slog.Default().Error("PAYMENT_FAILED_WEBHOOK: failed to update audit event status",
 				"order_id", fail.OrderID,
 				"cf_payment_id", fail.CFPaymentID,
-				"err", txErr,
+				"err", err,
 			)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update audit event status"})
+			return
 		}
-	}
-	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
-		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
 	}
 	c.Status(http.StatusOK)
 }

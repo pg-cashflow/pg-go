@@ -698,6 +698,7 @@ func (h *Handlers) commitPayoutItem(
 		if batchID != nil {
 			if _, rollErr := repo.UpdateBatchStatusFromItemsTx(ctx, tx, *batchID); rollErr != nil {
 				slog.Error("failed rolling up batch status after payout webhook", "batch_id", *batchID, "err", rollErr)
+				return fmt.Errorf("roll up batch status %s: %w", *batchID, rollErr)
 			}
 		}
 		return nil
