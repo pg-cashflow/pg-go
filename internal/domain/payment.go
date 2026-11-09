@@ -78,7 +78,8 @@ type GatewayRefund struct {
 }
 
 // CashfreeRefundIdempotencyKey derives the deterministic UUID provider idempotency key for a refund row.
-// Reused identically across initial dispatch and background recovery retries.
+// Used for the first dispatch attempt only; recovery after a confirmed-absent refund rotates the key
+// because Cashfree replays the cached result (including 5xx) for a repeated key.
 func CashfreeRefundIdempotencyKey(refundID uuid.UUID) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+refundID.String())).String()
 }

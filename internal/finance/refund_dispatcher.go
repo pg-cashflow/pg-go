@@ -3,8 +3,10 @@ package finance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -111,8 +113,16 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 			return nil // definitive failure handled, do not retry outbox event
 		}
 
-		// Ambiguous failure: return error so outbox worker retries with backoff
-		return fmt.Errorf("cashfree refund ambiguous error: %w", cfErr)
+		// Cashfree stores the first result per idempotency key, including 5xx, and replays it.
+		// Retrying the same key after a server/transport error can therefore replay the error
+		// forever. Resolve by refund_id instead: adopt the gateway record if it exists, else
+		// create once more under a fresh key (refund_id stays the same, so the gateway rejects
+		// a true duplicate).
+		resolved, recoverErr := d.recoverAmbiguousCreate(ctx, orderID, refundRef, ref, cfNote, cfErr)
+		if recoverErr != nil {
+			return recoverErr // outbox worker retries with backoff
+		}
+		cfResp = resolved
 	}
 
 	respStatus := domain.NormalizeRefundStatus(cfResp.RefundStatus)
@@ -125,4 +135,51 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 	}
 
 	return nil
+}
+
+// RefundStatusFetcher is the optional read side of the Cashfree client used for recovery.
+type RefundStatusFetcher interface {
+	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
+}
+
+// isServerOrTransportError reports errors that mean "outcome unknown / not created",
+// as opposed to rate limits, auth or idempotency conflicts, which never justify a new key.
+func isServerOrTransportError(err error) bool {
+	var apiErr *cashfree.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 500
+	}
+	return true
+}
+
+// recoverAmbiguousCreate resolves an ambiguous CreateRefund failure by consulting the gateway.
+func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, orderID, refundRef string, ref *domain.GatewayRefund, note string, cause error) (*cashfree.RefundDetails, error) {
+	ambiguous := fmt.Errorf("cashfree refund ambiguous error: %w", cause)
+	fetcher, ok := d.client.(RefundStatusFetcher)
+	if !ok || !isServerOrTransportError(cause) {
+		return nil, ambiguous
+	}
+
+	details, fetchErr := fetcher.FetchRefundStatus(ctx, orderID, refundRef)
+	if fetchErr == nil && details != nil {
+		if details.AmountPaise > 0 && details.AmountPaise != ref.AmountPaise {
+			slog.Error("CRITICAL: refund amount mismatch at gateway; manual review required",
+				"refund_id", ref.ID, "local_paise", ref.AmountPaise, "gateway_paise", details.AmountPaise)
+			return nil, fmt.Errorf("refund dispatcher: refund %s gateway amount mismatch", ref.ID)
+		}
+		return details, nil
+	}
+
+	var apiErr *cashfree.APIError
+	if !errors.As(fetchErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		return nil, ambiguous
+	}
+
+	// Not created at the gateway: safe to retry under a fresh idempotency key.
+	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, uuid.NewString())
+	if createErr != nil {
+		slog.Error("refund dispatcher: re-create with fresh key failed", "error", createErr, "refund_id", ref.ID)
+		return nil, fmt.Errorf("cashfree refund ambiguous error: %w", createErr)
+	}
+	return fresh, nil
 }

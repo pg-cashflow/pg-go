@@ -277,9 +277,10 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && refundAge >= 0 && refundAge < 24*time.Hour {
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-					// Cashfree refund retry contract: retries of failed or timed-out requests
-					// must reuse the same provider idempotency key to prevent duplicate provider actions.
-					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
+					// Cashfree caches the first result per idempotency key (including 5xx) and replays it.
+					// The refund is confirmed absent (GET 404), so retry under a fresh key. Duplicate
+					// protection comes from the constant refund_id, which the gateway rejects if reused.
+					retryIdempotencyKey := uuid.NewString()
 					refundNote := fmt.Sprintf("Refund %s", refundID)
 					if len(ref.RawPayload) > 0 {
 						var rawMap map[string]any

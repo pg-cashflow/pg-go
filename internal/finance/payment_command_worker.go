@@ -119,7 +119,7 @@ func (w *PaymentCommandWorker) ProcessSingleCommand(ctx context.Context, id int6
 	}
 
 	if isDeadLetter && w.alerter != nil {
-		_ = w.alerter.NotifyDeadLetter(ctx, "payment_command", cmd.ID, cmd.IdempotencyKey, execErr.Error())
+		_ = w.alerter.NotifyPaymentCommandDeadLetter(ctx, cmd, execErr.Error())
 	}
 
 	return execErr
