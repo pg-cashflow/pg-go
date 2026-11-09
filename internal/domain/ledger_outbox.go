@@ -19,7 +19,6 @@ const (
 	LedgerOutboxPayoutReversal      = "payout_reversal_mirror"
 	LedgerOutboxPayoutSettlement    = "payout_settlement_mirror"
 	LedgerOutboxCashRefundDisbursed = "cash_refund_disbursed_mirror"
-	LedgerOutboxRefundDispatch      = "gateway_refund_dispatch"
 )
 
 // LedgerOutboxEvent represents an atomic post-commit event for double-entry financial journals.

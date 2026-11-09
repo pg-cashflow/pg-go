@@ -254,7 +254,7 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 			}
 		}
 
-		// Enqueue gateway refund dispatch outbox event
+		// Enqueue gateway refund dispatch into dedicated payment_commands outbox
 		dispatchPayload := domain.RefundDispatchPayload{
 			PropertyID: pid,
 			RefundID:   rfRow.ID,
@@ -262,17 +262,17 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		}
 		rawDispatchPayload, err := json.Marshal(dispatchPayload)
 		if err != nil {
-			return fmt.Errorf("marshal refund dispatch outbox: %w", err)
+			return fmt.Errorf("marshal refund dispatch command: %w", err)
 		}
 		dispatchKey := fmt.Sprintf("refund_dispatch:%s", rfRow.ID)
 		_, err = tx.Exec(ctx, `
-			INSERT INTO ledger_outbox_events (event_type, property_id, source_id, payload, idempotency_key, created_at)
-			VALUES ($1, $2, $3, $4, $5, NOW())
+			INSERT INTO payment_commands (command_type, property_id, source_id, payload, idempotency_key, status, max_attempts, created_at)
+			VALUES ($1, $2, $3, $4, $5, 'pending', 5, NOW())
 			ON CONFLICT (idempotency_key) DO NOTHING`,
-			domain.LedgerOutboxRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey,
+			domain.PaymentCommandRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey,
 		)
 		if err != nil {
-			return fmt.Errorf("enqueue refund dispatch outbox: %w", err)
+			return fmt.Errorf("enqueue refund dispatch command: %w", err)
 		}
 
 		return nil

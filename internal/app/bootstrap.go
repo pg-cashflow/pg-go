@@ -652,7 +652,9 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	}
 	if bg.cfClient != nil && bg.paymentRepo != nil {
 		refundDispatcher := finance.NewRefundGatewayDispatcher(bg.paymentRepo, bg.cfClient)
-		ledgerWorker.SetRefundDispatcher(refundDispatcher)
+		paymentCmdRepo := postgres.NewPaymentCommandRepo(bg.maintPool)
+		paymentCmdWorker := finance.NewPaymentCommandWorker(bg.maintPool, paymentCmdRepo, refundDispatcher, deadLetterAlerter)
+		go paymentCmdWorker.Start(ctx, 5*time.Second)
 	}
 
 	if bg.payoutDispatch != nil {

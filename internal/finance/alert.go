@@ -106,3 +106,41 @@ func (n *EmailDeadLetterNotifier) NotifyDeadLetter(ctx context.Context, evt *dom
 	}
 	return nil
 }
+
+// NotifyPaymentCommandDeadLetter dispatches a formatted critical email alert when a payment gateway command permanently fails.
+func (n *EmailDeadLetterNotifier) NotifyPaymentCommandDeadLetter(ctx context.Context, cmd *domain.PaymentCommand, failureErr string) error {
+	if n == nil || n.mailer == nil || n.adminEmail == "" {
+		return nil
+	}
+
+	subject := fmt.Sprintf("🚨 CRITICAL: Payment Command #%d Dead-Lettered", cmd.ID)
+	body := fmt.Sprintf(
+		"<h2>🚨 CRITICAL: Payment Command Failed</h2>"+
+			"<p>A gateway payment command has exceeded maximum retries (<b>%d attempts</b>) and failed to execute.</p>"+
+			"<table>"+
+			"<tr><td><b>Command ID:</b></td><td>%d</td></tr>"+
+			"<tr><td><b>Command Type:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Property ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Source ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Idempotency Key:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Created At:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Terminal Error:</b></td><td><code>%s</code></td></tr>"+
+			"</table>"+
+			"<br/>"+
+			"<p><b>Urgent Action Required:</b> Inspect the <code>payment_commands</code> table and investigate gateway connectivity or command payload.</p>",
+		cmd.MaxAttempts,
+		cmd.ID,
+		cmd.CommandType,
+		cmd.PropertyID,
+		cmd.SourceID,
+		cmd.IdempotencyKey,
+		cmd.CreatedAt.Format(time.RFC3339),
+		failureErr,
+	)
+	_ = n.mailer.Send(ctx, n.adminEmail, subject, body)
+	if n.smsGateway != nil && n.adminPhone != "" {
+		smsMsg := fmt.Sprintf("🚨 CRITICAL: Payment command #%d dead-lettered (%s). Immediate manual investigation required.", cmd.ID, cmd.CommandType)
+		_ = n.smsGateway.Send(ctx, n.adminPhone, smsMsg)
+	}
+	return nil
+}

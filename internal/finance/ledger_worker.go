@@ -95,7 +95,6 @@ type LedgerOutboxWorker struct {
 	mirrorer         LedgerMirrorer
 	alerter          DeadLetterNotifier
 	payoutDispatcher PayoutBatchDispatcher
-	refundDispatcher RefundDispatcher
 }
 
 func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, mirrorer LedgerMirrorer, alerter ...DeadLetterNotifier) *LedgerOutboxWorker {
@@ -114,11 +113,6 @@ func NewLedgerOutboxWorker(pool *pgxpool.Pool, repo *postgres.LedgerOutboxRepo, 
 // SetPayoutDispatcher sets the dispatcher for payout_batch_transfer events.
 func (w *LedgerOutboxWorker) SetPayoutDispatcher(d PayoutBatchDispatcher) {
 	w.payoutDispatcher = d
-}
-
-// SetRefundDispatcher sets the dispatcher for gateway_refund_dispatch events.
-func (w *LedgerOutboxWorker) SetRefundDispatcher(d RefundDispatcher) {
-	w.refundDispatcher = d
 }
 
 // SetAlerter sets or replaces the dead-letter notifier for this worker.
@@ -170,12 +164,6 @@ func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) e
 	if evt.EventType == "payout_batch_transfer" && w.payoutDispatcher == nil {
 		// Worker is not configured with a payout dispatcher (e.g. dev/staging or worker separation).
 		// Safely rollback without burning retry attempts or triggering dead-letter alert emails.
-		return nil
-	}
-
-	if evt.EventType == domain.LedgerOutboxRefundDispatch && w.refundDispatcher == nil {
-		// Worker is not configured with a refund dispatcher.
-		// Safely rollback without burning retry attempts.
 		return nil
 	}
 
@@ -369,19 +357,6 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 			return fmt.Errorf("mirrorer not configured")
 		}
 		return w.mirrorer.MirrorCashRefundDisbursed(ctx, p.PropertyID, p.DepartureID, p.AmountPaise, p.OccurredAt)
-	case domain.LedgerOutboxRefundDispatch:
-		if w.refundDispatcher == nil {
-			return fmt.Errorf("refund dispatcher not configured")
-		}
-		var p domain.RefundDispatchPayload
-		if err := json.Unmarshal(evt.Payload, &p); err != nil {
-			return fmt.Errorf("unmarshal refund dispatch payload: %w", err)
-		}
-		pctx := ctx
-		if evt.PropertyID != uuid.Nil {
-			pctx = requestscope.WithPropertyID(ctx, evt.PropertyID)
-		}
-		return w.refundDispatcher.DispatchRefund(pctx, p.RefundID)
 	default:
 		return fmt.Errorf("unrecognized ledger outbox event type '%s'", evt.EventType)
 	}
