@@ -764,6 +764,9 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.requirePropertyActiveModule(c, pid, "payouts") {
+		return
+	}
 	uid, ok := userIDFromClaims(c)
 	if !ok {
 		return
@@ -856,9 +859,11 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 				go func() {
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 					defer cancel()
-					if dErr := h.PayoutDispatcher.DispatchBatch(ctx, batchID); dErr != nil {
+					pctx := requestscope.WithPropertyID(ctx, pid)
+					if dErr := h.PayoutDispatcher.DispatchBatch(pctx, batchID); dErr != nil {
 						slog.Warn("auto-dispatch payout batch transfer failed inline, relying on ledger outbox worker",
 							"batch_id", batchID,
+							"property_id", pid,
 							"err", dErr,
 						)
 					}

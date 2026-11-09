@@ -774,6 +774,12 @@ func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID
 // InitiateBatchTransferTx atomically transitions an approved batch and its pending items to 'processing'
 // and enqueues a durable outbox event for asynchronous Cashfree dispatch.
 func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.UUID) (*domain.PayoutBatch, []domain.PayoutItem, error) {
+	if r.pool == nil {
+		return nil, nil, errors.New("database pool unavailable")
+	}
+	if r.outbox == nil {
+		return nil, nil, errors.New("outbox repository not configured")
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin batch transfer tx: %w", err)
@@ -875,10 +881,11 @@ func (r *PayoutRepo) InitiateBatchTransferTx(ctx context.Context, batchID uuid.U
 		IdempotencyKey: fmt.Sprintf("payout_batch_transfer:%s", batch.ID),
 		MaxAttempts:    5,
 	}
-	if r.outbox != nil {
-		if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
-			return nil, nil, fmt.Errorf("enqueue payout outbox event: %w", err)
-		}
+	if r.outbox == nil {
+		return nil, nil, errors.New("outbox repository not configured")
+	}
+	if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+		return nil, nil, fmt.Errorf("enqueue payout outbox event: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -1042,6 +1049,29 @@ func (r *PayoutRepo) ReconcilePayoutItemWithOutbox(
 			}
 		case domain.PayoutReversed:
 			if priorStatus != domain.PayoutReversed {
+				if priorStatus != domain.PayoutSucceeded {
+					// Ensure settlement journal event precedes reversal event in ledger outbox
+					sPayload, smErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+						PropertyID:   propertyID,
+						PayoutItemID: itemID,
+						AmountPaise:  amountPaise,
+						OccurredAt:   occurredAt,
+					})
+					if smErr != nil {
+						return fmt.Errorf("marshal payout settlement payload before reversal: %w", smErr)
+					}
+					sOutboxEvt := &domain.LedgerOutboxEvent{
+						EventType:      domain.LedgerOutboxPayoutSettlement,
+						PropertyID:     propertyID,
+						SourceID:       itemID,
+						Payload:        sPayload,
+						IdempotencyKey: fmt.Sprintf("payout_settled:%s", itemID),
+						MaxAttempts:    5,
+					}
+					if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, sOutboxEvt); err != nil {
+						return fmt.Errorf("insert payout settlement outbox event before reversal: %w", err)
+					}
+				}
 				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
 					PropertyID:   propertyID,
 					PayoutItemID: itemID,
@@ -1104,7 +1134,8 @@ func (r *PayoutRepo) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx
 		switch st {
 		case domain.PayoutSucceeded:
 			succeededCount++
-		case domain.PayoutFailed, domain.PayoutRejected, domain.PayoutRetriableFailed:
+		case domain.PayoutFailed, domain.PayoutRejected, domain.PayoutRetriableFailed,
+			domain.PayoutReversed, domain.PayoutCancelled:
 			failedCount++
 		default:
 			inFlightCount++

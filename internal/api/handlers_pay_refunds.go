@@ -1085,28 +1085,3 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	})
 	return rfRow, nil
 }
-
-// resolveRefundNote applies sandbox simulation parameters only when running against a sandbox gateway client.
-func resolveRefundNote(c *gin.Context, client CashfreeClient, targetRefundRef, reason string) string {
-	cfNote := fmt.Sprintf("Refund %s", targetRefundRef)
-	detector, ok := client.(interface{ IsSandbox() bool })
-	if !ok || !detector.IsSandbox() {
-		return cfNote
-	}
-	sandboxOutcome := strings.ToUpper(strings.TrimSpace(c.GetHeader("X-Sandbox-Refund-Result")))
-	if sandboxOutcome != "SUCCESS" && sandboxOutcome != "FAILED" && sandboxOutcome != "PENDING" {
-		upperReason := strings.ToUpper(reason)
-		switch {
-		case strings.Contains(upperReason, "FAILED"):
-			sandboxOutcome = "FAILED"
-		case strings.Contains(upperReason, "PENDING"):
-			sandboxOutcome = "PENDING"
-		case strings.Contains(upperReason, "SUCCESS"):
-			sandboxOutcome = "SUCCESS"
-		}
-	}
-	if sandboxOutcome != "" {
-		return fmt.Sprintf("Refund %s %s", targetRefundRef, sandboxOutcome)
-	}
-	return cfNote
-}

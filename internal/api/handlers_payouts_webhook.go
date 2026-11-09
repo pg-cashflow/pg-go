@@ -596,6 +596,20 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "unresolved property for ledger event"})
 				return
 			}
+			// Invariant: If item was not already marked Succeeded, ensure the settlement journal
+			// (Dr refund_payable / Cr bank) exists before posting the reversal (Dr bank / Cr refund_payable).
+			if item.Status != domain.PayoutSucceeded {
+				if sErr := h.Finance.MirrorPayoutSettled(ctx, propID, item.ID, item.AmountPaise, occurredAt); sErr != nil {
+					slog.Warn("failed inline settlement mirror prior to reversal, enqueuing settlement outbox event", "item_id", item.ID, "err", sErr)
+					sPayload, _ := json.Marshal(domain.PayoutSettlementMirrorPayload{
+						PropertyID:   propID,
+						PayoutItemID: item.ID,
+						AmountPaise:  item.AmountPaise,
+						OccurredAt:   occurredAt,
+					})
+					_ = h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutSettlement, item.ID, sPayload, fmt.Sprintf("payout_settled:%s", item.ID))
+				}
+			}
 			if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, occurredAt); err != nil {
 				slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
 				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
