@@ -690,28 +690,45 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 		_ = json.Unmarshal(rf.RawPayload, &orderPayload)
 	}
 
-	if orderPayload.OrderID != "" && targetRef != "" && h.CashfreeClient != nil {
-		cfResp, cancelErr := h.CashfreeClient.CancelRefund(ctx, orderPayload.OrderID, targetRef, req.Reason)
-		if cancelErr != nil {
-			var apiErr *cashfree.APIError
-			var statusCoder interface{ HTTPStatusCode() int }
-			isNotFound := (errors.As(cancelErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound) ||
-				(errors.As(cancelErr, &statusCoder) && statusCoder.HTTPStatusCode() == http.StatusNotFound) ||
-				strings.Contains(cancelErr.Error(), "status 404") ||
-				strings.Contains(cancelErr.Error(), "404 Not Found")
+	// Refund cancellation must verify gateway state to prevent releasing reservations while a queued
+	// outbox worker might still submit or settle the refund. Missing client or gateway identifiers
+	// must fail closed with reservation held.
+	if h.CashfreeClient == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "gateway client unavailable; reservation remains held"})
+		return
+	}
+	if orderPayload.OrderID == "" || targetRef == "" {
+		slog.Error("refund cancellation missing gateway order_id or reference", "refund_id", rf.ID)
+		c.JSON(http.StatusConflict, gin.H{"error": "gateway details missing; reservation remains held"})
+		return
+	}
 
-			if isNotFound && (rf.CFRefundID == nil || *rf.CFRefundID == "") {
-				slog.Info("refund not found at gateway and has no cf_refund_id; cancelling locally", "refund_id", rf.ID)
-			} else {
-				slog.Error("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
-				c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
-				return
-			}
-		} else if cfResp != nil && domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
-			slog.Warn("gateway returned non-cancelled status on cancel", "status", cfResp.RefundStatus, "refund_id", rf.ID)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund status is not cancelled; reservation remains held"})
+	cfResp, cancelErr := h.CashfreeClient.CancelRefund(ctx, orderPayload.OrderID, targetRef, req.Reason)
+	if cancelErr != nil {
+		var apiErr *cashfree.APIError
+		var statusCoder interface{ HTTPStatusCode() int }
+		isNotFound := (errors.As(cancelErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound) ||
+			(errors.As(cancelErr, &statusCoder) && statusCoder.HTTPStatusCode() == http.StatusNotFound) ||
+			strings.Contains(cancelErr.Error(), "status 404") ||
+			strings.Contains(cancelErr.Error(), "404 Not Found")
+
+		if isNotFound {
+			slog.Warn("gateway returned 404 on refund cancel; provider state unknown; reservation remains held", "refund_id", rf.ID)
+			c.JSON(http.StatusConflict, gin.H{"error": "gateway refund state unknown; reservation remains held"})
 			return
 		}
+		slog.Error("gateway cancel refund error", "error", cancelErr, "refund_id", rf.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
+		return
+	}
+	if cfResp == nil || domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
+		status := "empty"
+		if cfResp != nil {
+			status = cfResp.RefundStatus
+		}
+		slog.Warn("gateway returned non-cancelled status on cancel", "status", status, "refund_id", rf.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund status is not cancelled; reservation remains held"})
+		return
 	}
 
 	runner := h.getRefundTxRunner()

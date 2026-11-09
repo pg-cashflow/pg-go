@@ -689,12 +689,14 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 	payeeID := uuid.New()
 
 	makeEnv := func(evt string, itemID uuid.UUID) PayoutWebhookEnvelope {
+		ack := 1
 		data := PayoutWebhookData{
 			TransferID:     fmt.Sprintf("pgo_%s", itemID),
 			CFTransferID:   "cf_tr_unit_1",
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
 			TransferAmount: json.Number("10.00"),
+			Acknowledged:   &ack,
 		}
 		dataBytes, _ := json.Marshal(data)
 		return PayoutWebhookEnvelope{
@@ -1090,6 +1092,117 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 		if updateCalled {
 			t.Fatal("expected status update NOT to be called when acknowledged is 0")
+		}
+	})
+
+	t.Run("transfer_success_without_acknowledged_flag_is_ignored", func(t *testing.T) {
+		itemID := uuid.New()
+		updateCalled := false
+
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					Status:      domain.PayoutProcessing,
+					BatchID:     nil,
+					AmountPaise: 50000,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_SUCCESS",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID:   "cf_tr_no_ack",
+			Status:         "SUCCESS",
+			StatusCode:     "COMPLETED",
+			TransferAmount: json.Number("500.00"),
+			Acknowledged:   nil, // Missing acknowledged flag
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when acknowledged flag is missing on TRANSFER_SUCCESS")
+		}
+	})
+
+	t.Run("transfer_acknowledged_v2_without_acknowledged_flag_reaches_settlement", func(t *testing.T) {
+		itemID := uuid.New()
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					Status:      domain.PayoutProcessing,
+					PayeeID:     payeeID,
+					AmountPaise: 1000,
+				}, nil
+			},
+			getPayeeFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutPayee, error) {
+				return &domain.PayoutPayee{ID: payeeID, PropertyID: propID}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				return nil
+			},
+		}
+		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          &stubGatewayRepo{},
+				PayoutWebhookRepo:           mock,
+				Finance:                     finSvc,
+				LedgerOutboxRepo:            nil, // forces outbox failure after reaching settlement
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_ACKNOWLEDGED",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID:   "cf_tr_v2_ack",
+			Status:         "SUCCESS",
+			StatusCode:     "COMPLETED",
+			TransferAmount: json.Number("10.00"),
+			Acknowledged:   nil, // V2 ACK event does not require legacy acknowledged flag
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		// Reaching settlement without outbox repo returns 500 (proves it didn't exit early on ignored_unconfirmed)
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("expected 500 when attempting settlement without outbox repo, got %d (body: %s)", w.Code, w.Body.String())
 		}
 	})
 

@@ -431,3 +431,90 @@ func TestSignKYC_DedicatedKYCCredentials(t *testing.T) {
 		t.Errorf("expected x-client-secret 'KYC_SECRET_KEY', got %q (PG secret was reused!)", capturedSecret)
 	}
 }
+
+func TestSmartOCR_InvalidBase64PhotoFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reference_id": "ocr_ref_1",
+			"status":       "SUCCESS",
+			"ocr_data": map[string]any{
+				"name":  "Aadhaar Holder",
+				"uid":   "123456789012",
+				"image": "not_valid_base64_data!!!",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newKYCTestClient(srv)
+	dummyFile := strings.NewReader("fake image bytes")
+	_, err := client.UploadAadhaarDocument(context.Background(), dummyFile, "aadhaar.jpg")
+	if err == nil {
+		t.Fatal("expected error on invalid base64 photo, got nil")
+	}
+	var corruptErr *CorruptDocumentError
+	if !strings.Contains(err.Error(), "invalid base64") && !strings.Contains(err.Error(), "corrupt") {
+		t.Errorf("expected corrupt document error mentioning base64, got %v", err)
+	}
+	_ = corruptErr
+}
+
+func TestSmartOCR_OversizedResponseFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Write 1.1 MiB of spaces before closing
+		largePadding := make([]byte, 1100*1024)
+		for i := range largePadding {
+			largePadding[i] = ' '
+		}
+		_, _ = w.Write(largePadding)
+	}))
+	defer srv.Close()
+
+	client := newKYCTestClient(srv)
+	dummyFile := strings.NewReader("fake image bytes")
+	_, err := client.UploadAadhaarDocument(context.Background(), dummyFile, "aadhaar.jpg")
+	if err == nil {
+		t.Fatal("expected error on oversized response, got nil")
+	}
+	if !strings.Contains(err.Error(), "1 MiB") && !strings.Contains(err.Error(), "maximum size") {
+		t.Errorf("expected error mentioning 1 MiB limit, got %v", err)
+	}
+}
+
+func TestSmartOCR_ValidResponseSucceeds(t *testing.T) {
+	validImageB64 := base64.StdEncoding.EncodeToString([]byte("sample-photo-bytes"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"reference_id": "ocr_ref_valid",
+			"status":       "SUCCESS",
+			"ocr_data": map[string]any{
+				"name":   "Aadhaar Holder",
+				"uid":    "1234 5678 9012",
+				"dob":    "1990-01-01",
+				"gender": "M",
+				"image":  validImageB64,
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newKYCTestClient(srv)
+	dummyFile := strings.NewReader("fake image bytes")
+	res, err := client.UploadAadhaarDocument(context.Background(), dummyFile, "aadhaar.jpg")
+	if err != nil {
+		t.Fatalf("unexpected error on valid OCR response: %v", err)
+	}
+	if res.Name != "Aadhaar Holder" {
+		t.Errorf("expected name 'Aadhaar Holder', got %q", res.Name)
+	}
+	if res.MaskedUID != "9012" {
+		t.Errorf("expected masked UID '9012', got %q", res.MaskedUID)
+	}
+	if string(res.PhotoBytes) != "sample-photo-bytes" {
+		t.Errorf("expected photo bytes 'sample-photo-bytes', got %q", string(res.PhotoBytes))
+	}
+}

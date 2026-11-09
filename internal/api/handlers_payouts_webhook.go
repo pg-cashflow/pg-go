@@ -462,12 +462,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	case "TRANSFER_SUCCESS", "TRANSFER_ACKNOWLEDGED":
 		// Transfers V2 may first report TRANSFER_SUCCESS with SENT_TO_BENEFICIARY.
 		// That is not beneficiary receipt. TRANSFER_ACKNOWLEDGED is the terminal
-		// bank-credit confirmation; both settlement paths still require SUCCESS,
-		// and completed/acknowledged status codes, and an exact match to the server-approved amount.
+		// bank-credit confirmation; settlement requires V2 TRANSFER_ACKNOWLEDGED
+		// with a terminal status code, or explicit legacy acknowledged=1.
+		hasExplicitLegacyAck := data.Acknowledged != nil && *data.Acknowledged == 1
+		isV2AckEvent := evtType == "TRANSFER_ACKNOWLEDGED"
+
 		isCompletedCode := strings.EqualFold(data.StatusCode, "COMPLETED") ||
-			(evtType == "TRANSFER_ACKNOWLEDGED" && (strings.EqualFold(data.StatusCode, "ACKNOWLEDGED") || strings.EqualFold(data.StatusCode, "TRANSFER_ACKNOWLEDGED")))
-		if (data.Acknowledged != nil && *data.Acknowledged == 0) || !strings.EqualFold(data.Status, "SUCCESS") || !isCompletedCode {
-			slog.Warn("payout webhook success not confirmed: status or status_code not completed",
+			(isV2AckEvent && (strings.EqualFold(data.StatusCode, "ACKNOWLEDGED") || strings.EqualFold(data.StatusCode, "TRANSFER_ACKNOWLEDGED")))
+
+		if (!isV2AckEvent && !hasExplicitLegacyAck) || !strings.EqualFold(data.Status, "SUCCESS") || !isCompletedCode {
+			slog.Warn("payout webhook success not confirmed: requires TRANSFER_ACKNOWLEDGED or acknowledged=1",
 				"item_id", item.ID,
 				"event", evtType,
 				"status", data.Status,

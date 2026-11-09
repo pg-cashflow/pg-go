@@ -128,7 +128,14 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	const maxKYCResponseBytes = 1 << 20 // 1 MiB
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxKYCResponseBytes+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("cashfree ocr: read response body: %w", readErr)
+	}
+	if len(b) > maxKYCResponseBytes {
+		return nil, &CorruptDocumentError{Reason: "kyc response exceeds maximum size of 1 MiB"}
+	}
 	if resp.StatusCode >= 300 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
@@ -167,7 +174,11 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 
 	var photoBytes []byte
 	if raw.OCRData.Image != "" {
-		photoBytes, _ = base64.StdEncoding.DecodeString(raw.OCRData.Image)
+		var decodeErr error
+		photoBytes, decodeErr = base64.StdEncoding.DecodeString(raw.OCRData.Image)
+		if decodeErr != nil {
+			return nil, &CorruptDocumentError{Reason: fmt.Sprintf("invalid base64 in ocr photo: %v", decodeErr)}
+		}
 	}
 
 	var qrStatus *string
@@ -233,7 +244,14 @@ func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	const maxKYCResponseBytes = 1 << 20 // 1 MiB
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxKYCResponseBytes+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("cashfree ocr: read response body: %w", readErr)
+	}
+	if len(b) > maxKYCResponseBytes {
+		return nil, &CorruptDocumentError{Reason: "kyc response exceeds maximum size of 1 MiB"}
+	}
 	if resp.StatusCode >= 300 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
@@ -307,7 +325,14 @@ func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*Aadh
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	const maxKYCResponseBytes = 1 << 20 // 1 MiB
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, maxKYCResponseBytes+1))
+	if readErr != nil {
+		return nil, fmt.Errorf("cashfree ocr: read response body: %w", readErr)
+	}
+	if len(b) > maxKYCResponseBytes {
+		return nil, &CorruptDocumentError{Reason: "kyc response exceeds maximum size of 1 MiB"}
+	}
 	if resp.StatusCode >= 300 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
