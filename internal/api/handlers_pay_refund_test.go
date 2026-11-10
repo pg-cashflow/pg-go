@@ -29,12 +29,13 @@ import (
 )
 
 type mockCFClient struct {
-	mu           sync.Mutex
-	refundCalls  int
-	failRefund   bool
-	refundResult *cashfree.RefundDetails
-	refundErr    error
-	lastReason   string
+	mu                  sync.Mutex
+	refundCalls         int
+	failRefund          bool
+	refundResult        *cashfree.RefundDetails
+	refundErr           error
+	lastReason          string
+	fetchRefundStatusFn func(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 }
 
 func (m *mockCFClient) CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error) {
@@ -62,6 +63,9 @@ func (m *mockCFClient) CreateRefund(ctx context.Context, orderID, refundID strin
 }
 
 func (m *mockCFClient) FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
+	if m.fetchRefundStatusFn != nil {
+		return m.fetchRefundStatusFn(ctx, orderID, refundID)
+	}
 	return nil, nil
 }
 
@@ -2966,6 +2970,83 @@ func TestOwnerResolveReviewRefund_UnitScenarios(t *testing.T) {
 		updated, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
 		if updated.Status != domain.RefundStatusSucceeded {
 			t.Fatalf("expected status succeeded, got %s", updated.Status)
+		}
+	})
+
+	t.Run("Cashfree client verifies provider status matching", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rfRef := "rf_needs_rev_1"
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			AmountPaise:     200000,
+			Status:          domain.RefundStatusNeedsReview,
+			IdempotencyKey:  &rfRef,
+			RefundReference: &rfRef,
+			RawPayload:      []byte(`{"order_id":"order_test_rev"}`),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		mockCF := &mockCFClient{
+			fetchRefundStatusFn: func(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
+				return &cashfree.RefundDetails{
+					CFRefundID:   "cf_rf_123",
+					RefundID:     refundID,
+					OrderID:      orderID,
+					RefundStatus: "PENDING",
+					AmountPaise:  200000,
+				}, nil
+			},
+		}
+		h.CashfreeClient = mockCF
+
+		// 1. Trying to confirm_succeeded when Cashfree is PENDING -> must fail 409 Conflict
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "confirm_succeeded",
+			"reason": "Operator claims it succeeded",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict on pending provider status, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// 2. When Cashfree status is SUCCESS, confirm_succeeded succeeds
+		mockCF.fetchRefundStatusFn = func(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
+			return &cashfree.RefundDetails{
+				CFRefundID:   "cf_rf_123",
+				RefundID:     refundID,
+				OrderID:      orderID,
+				RefundStatus: "SUCCESS",
+				AmountPaise:  200000,
+			}, nil
+		}
+		w2 := httptest.NewRecorder()
+		c2, _ := gin.CreateTestContext(w2)
+		c2.Params = c.Params
+		c2.Set(auth.ContextClaimsKey, &auth.Claims{UserID: ownerID, PropertyID: &propID, Role: domain.RoleOwner})
+		c2.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c2.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c2)
+		if w2.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK when provider confirms SUCCESS, got %d: %s", w2.Code, w2.Body.String())
 		}
 	})
 }

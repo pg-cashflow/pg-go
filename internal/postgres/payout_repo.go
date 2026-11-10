@@ -967,8 +967,9 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 		        -- Terminal immutable states: once succeeded, only allow reversal
 		        WHEN status = 'succeeded' AND $2 != 'reversed' THEN status
 		        WHEN status = 'reversed' THEN status
-		        -- Do not allow acknowledged/processing to downgrade terminal failure/rejection
+		        -- Do not allow acknowledged/processing or late success to downgrade/overwrite terminal failure/rejection
 		        WHEN status IN ('failed', 'rejected', 'retriable_failed') AND $2 = 'processing' THEN status
+		        WHEN status IN ('failed', 'rejected', 'retriable_failed') AND $2 = 'succeeded' THEN status
 		        ELSE $2
 		    END,
 		    cf_transfer_id = COALESCE($3, cf_transfer_id),
@@ -1110,6 +1111,12 @@ func (r *PayoutRepo) UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx
 	var runner DBTX = r.db
 	if tx != nil {
 		runner = tx
+	}
+
+	// Serialize concurrent roll-ups for the same batch to prevent race conditions.
+	var lockedBatchID uuid.UUID
+	if err := runner.QueryRow(ctx, `SELECT id FROM payout_batches WHERE id = $1 FOR UPDATE`, batchID).Scan(&lockedBatchID); err != nil {
+		return nil, fmt.Errorf("lock payout batch %s: %w", batchID, err)
 	}
 
 	rows, err := runner.Query(ctx, `SELECT status FROM payout_items WHERE batch_id = $1`, batchID)

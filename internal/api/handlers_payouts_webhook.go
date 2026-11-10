@@ -588,6 +588,18 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			return
 		}
 
+		if item.Status == domain.PayoutFailed || item.Status == domain.PayoutRejected || item.Status == domain.PayoutRetriableFailed {
+			// Do not post reversal on an item that was already marked failed or rejected.
+			// Contradictory event history requires operator reconciliation.
+			slog.Error("payout webhook reversal conflicts with terminal local status; reconciliation required",
+				"item_id", item.ID, "event", evtType, "local_status", item.Status)
+			if evtRecord.ID != uuid.Nil {
+				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "terminal_status_conflict", nil)
+			}
+			c.Status(http.StatusOK)
+			return
+		}
+
 		// Double-entry ledger mirror: Debit bank, Credit refund_payable
 		// Ledger write must succeed or be durable in outbox before status is updated to Reversed.
 		if h.Finance != nil {
@@ -741,6 +753,16 @@ func (h *Handlers) commitPayoutItem(
 		}
 		if !first {
 			return errPayoutEventDuplicate
+		}
+		if tx != nil {
+			var currentStatus domain.PayoutItemStatus
+			if lockErr := tx.QueryRow(ctx, `SELECT status FROM payout_items WHERE id = $1 FOR UPDATE`, itemID).Scan(&currentStatus); lockErr != nil {
+				return fmt.Errorf("lock payout item %s: %w", itemID, lockErr)
+			}
+			if (currentStatus == domain.PayoutFailed || currentStatus == domain.PayoutRejected || currentStatus == domain.PayoutRetriableFailed) && status == domain.PayoutSucceeded {
+				slog.Error("payout item already terminal failed; refusing late success commit", "item_id", itemID, "current_status", currentStatus)
+				return nil
+			}
 		}
 		if err := repo.UpdatePayoutItemStatusTx(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason); err != nil {
 			return err

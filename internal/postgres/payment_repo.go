@@ -702,7 +702,7 @@ func (r *PaymentRepo) GetPaymentRefundAggregates(ctx context.Context, paymentID 
 	err = r.db.QueryRow(ctx, `
 		SELECT 
 			COALESCE(SUM(CASE WHEN status = 'succeeded' THEN amount_paise ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status IN ('initiated', 'pending', 'on_hold') THEN amount_paise ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status IN ('initiated', 'pending', 'on_hold', 'needs_review') THEN amount_paise ELSE 0 END), 0)
 		FROM gateway_refunds
 		WHERE payment_id = $1`, paymentID).Scan(&refundedPaise, &reservedPaise)
 	return refundedPaise, reservedPaise, err

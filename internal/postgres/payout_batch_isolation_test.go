@@ -225,10 +225,16 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 							*dest[11].(**string) = nil
 							*dest[12].(*int) = 1
 							*dest[13].(*bool) = true
-							*dest[14].(**uuid.UUID) = nil
-							*dest[15].(**time.Time) = nil
-							*dest[16].(*time.Time) = now
-							*dest[17].(*time.Time) = now
+							*dest[14].(*domain.PayeeVerificationStatus) = domain.PayeeVerificationOwnerAttested
+							*dest[15].(*string) = "manual"
+							*dest[16].(**string) = nil
+							*dest[17].(**string) = nil
+							*dest[18].(**float64) = nil
+							*dest[19].(**string) = nil
+							*dest[20].(**uuid.UUID) = nil
+							*dest[21].(**time.Time) = nil
+							*dest[22].(*time.Time) = now
+							*dest[23].(*time.Time) = now
 							return nil
 						},
 					}

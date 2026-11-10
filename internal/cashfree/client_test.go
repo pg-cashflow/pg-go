@@ -386,3 +386,65 @@ func TestGetOrder(t *testing.T) {
 		t.Fatalf("expected 404 APIError, got: %v", notFoundErr)
 	}
 }
+
+func TestFetchSuccessfulPayment_AmbiguousCaptures(t *testing.T) {
+	t.Run("single_success", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"cf_payment_id": 1001, "payment_status": "FAILED", "payment_amount": 500.00},
+				{"cf_payment_id": 1002, "payment_status": "SUCCESS", "payment_amount": 500.00, "bank_reference": "UTR1"}
+			]`))
+		}))
+		defer ts.Close()
+
+		c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1"}).WithBaseURL(ts.URL)
+		cfID, bankRef, amount, ok, err := c.FetchSuccessfulPayment(context.Background(), "ord_single")
+		if err != nil || !ok {
+			t.Fatalf("expected ok=true, err=nil; got ok=%v, err=%v", ok, err)
+		}
+		if cfID != "1002" || bankRef != "UTR1" || amount != 50000 {
+			t.Fatalf("unexpected result: cfID=%s, bankRef=%s, amount=%d", cfID, bankRef, amount)
+		}
+	})
+
+	t.Run("duplicate_same_cf_payment_id_deduped", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"cf_payment_id": 2001, "payment_status": "SUCCESS", "payment_amount": 300.00, "bank_reference": "UTR_DEDUP"},
+				{"cf_payment_id": 2001, "payment_status": "SUCCESS", "payment_amount": 300.00, "bank_reference": "UTR_DEDUP"}
+			]`))
+		}))
+		defer ts.Close()
+
+		c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1"}).WithBaseURL(ts.URL)
+		cfID, _, amount, ok, err := c.FetchSuccessfulPayment(context.Background(), "ord_dup")
+		if err != nil || !ok {
+			t.Fatalf("expected dedup to succeed: ok=%v, err=%v", ok, err)
+		}
+		if cfID != "2001" || amount != 30000 {
+			t.Fatalf("unexpected cfID=%s, amount=%d", cfID, amount)
+		}
+	})
+
+	t.Run("multiple_distinct_successes_fails_closed", func(t *testing.T) {
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[
+				{"cf_payment_id": 3001, "payment_status": "SUCCESS", "payment_amount": 500.00, "bank_reference": "UTR_A"},
+				{"cf_payment_id": 3002, "payment_status": "SUCCESS", "payment_amount": 500.00, "bank_reference": "UTR_B"}
+			]`))
+		}))
+		defer ts.Close()
+
+		c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1"}).WithBaseURL(ts.URL)
+		_, _, _, ok, err := c.FetchSuccessfulPayment(context.Background(), "ord_ambiguous")
+		if err == nil {
+			t.Fatalf("expected error for ambiguous multiple captures, got nil (ok=%v)", ok)
+		}
+		if ok {
+			t.Fatalf("expected ok=false on ambiguous captures")
+		}
+	})
+}

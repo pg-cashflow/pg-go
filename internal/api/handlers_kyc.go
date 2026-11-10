@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -121,16 +120,8 @@ func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 func kycClientErr(err error) error {
 	var apiErr *cashfree.APIError
 	if errors.As(err, &apiErr) {
-		msg := apiErr.Error()
-		if apiErr.Body != "" {
-			var bodyMap map[string]any
-			if json.Unmarshal([]byte(apiErr.Body), &bodyMap) == nil {
-				if m, ok := bodyMap["message"].(string); ok && m != "" {
-					msg = m
-				}
-			}
-		}
-		return clientErrWithCode(http.StatusBadGateway, msg, apierr.Code("kyc.upstream_error"))
+		slog.Error("kyc upstream provider error", "status", apiErr.StatusCode, "body", apiErr.Body, "err", apiErr)
+		return clientErrWithCode(http.StatusBadGateway, "identity verification service encountered an upstream error; please try again later", apierr.Code("kyc.upstream_error"))
 	}
 	switch {
 	case errors.Is(err, kycsvc.ErrNoActiveConsent):
@@ -196,6 +187,7 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16*1024)
 
 	var body kycConsentBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -305,6 +297,7 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 6*1024*1024)
 
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
@@ -363,6 +356,7 @@ func (h *Handlers) TenantKYCSecureQRVerify(c *gin.Context) {
 	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
 
 	var body secureQRVerifyBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -397,6 +391,7 @@ func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
 	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
 
 	var body aadhaarOTPRequestBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -454,6 +449,7 @@ func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
 	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
 
 	var body aadhaarOTPVerifyBody
 	if err := c.ShouldBindJSON(&body); err != nil {

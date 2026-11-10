@@ -1494,6 +1494,120 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			t.Fatalf("expected 200 for valid signed dashboard test event, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("transfer_reversed_on_terminal_failed_item_is_rejected_as_conflict", func(t *testing.T) {
+		itemID := uuid.New()
+		updateCalled := false
+		stubAudit := &stubGatewayRepo{}
+
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					Status:      domain.PayoutFailed,
+					AmountPaise: 50000,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          stubAudit,
+				PayoutWebhookRepo:           mock,
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_REVERSED",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID: "cf_tr_rev_conflict",
+			Status:       "REVERSED",
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when reversal arrives on terminal failed item")
+		}
+		if stubAudit.lastStatus != "terminal_status_conflict" {
+			t.Fatalf("expected audit status 'terminal_status_conflict', got %q", stubAudit.lastStatus)
+		}
+	})
+
+	t.Run("transfer_success_on_terminal_failed_item_is_rejected_as_conflict", func(t *testing.T) {
+		itemID := uuid.New()
+		updateCalled := false
+		stubAudit := &stubGatewayRepo{}
+
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					Status:      domain.PayoutFailed,
+					AmountPaise: 50000,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+
+		h := &Handlers{
+			Deps: Deps{
+				CashfreePayoutWebhookSecret: secret,
+				GatewayPaymentRepo:          stubAudit,
+				PayoutWebhookRepo:           mock,
+				WebhookToleranceSec:         300,
+			},
+		}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+
+		env := PayoutWebhookEnvelope{
+			Event:     "TRANSFER_ACKNOWLEDGED",
+			EventTime: time.Now().UTC().Format(time.RFC3339),
+		}
+		data := PayoutWebhookData{
+			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			CFTransferID:   "cf_tr_ack_conflict",
+			Status:         "SUCCESS",
+			StatusCode:     "COMPLETED",
+			TransferAmount: json.Number("500.00"),
+		}
+		env.Data, _ = json.Marshal(data)
+
+		req := createTestSignedWebhookReq(secret, env)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("expected status update NOT to be called when success arrives on terminal failed item")
+		}
+		if stubAudit.lastStatus != "terminal_status_conflict" {
+			t.Fatalf("expected audit status 'terminal_status_conflict', got %q", stubAudit.lastStatus)
+		}
+	})
 }
 
 type seqPayoutAudit struct {

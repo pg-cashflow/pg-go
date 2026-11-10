@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -82,6 +83,10 @@ func TestUpdateBatchStatusFromItemsTx_ReversedAndCancelled(t *testing.T) {
 				queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
 					return &mockPayoutRow{
 						scanFn: func(dest ...any) error {
+							if len(dest) == 1 {
+								*dest[0].(*uuid.UUID) = batchID
+								return nil
+							}
 							// Return a dummy batch with the updated status
 							*dest[0].(*uuid.UUID) = batchID
 							*dest[4].(*domain.PayoutBatchStatus) = tc.expectedStatus
@@ -119,5 +124,81 @@ func TestInitiateBatchTransferTx_NilOutbox_FailsClosed(t *testing.T) {
 	_, _, err := repo.InitiateBatchTransferTx(ctx, batchID)
 	if err == nil {
 		t.Fatalf("expected error when initiating batch transfer without pool/outbox, got nil")
+	}
+}
+
+func TestUpdateBatchStatusFromItemsTx_AcquiresBatchLock(t *testing.T) {
+	ctx := context.Background()
+	batchID := uuid.New()
+
+	var queries []string
+	mockDB := &mockPayoutDB{
+		queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+			queries = append(queries, sql)
+			return &mockPayoutRow{
+				scanFn: func(dest ...any) error {
+					if len(dest) == 1 {
+						*dest[0].(*uuid.UUID) = batchID
+						return nil
+					}
+					*dest[0].(*uuid.UUID) = batchID
+					*dest[4].(*domain.PayoutBatchStatus) = domain.BatchCompleted
+					return nil
+				},
+			}
+		},
+		queryFn: func(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+			queries = append(queries, sql)
+			idx := 0
+			statuses := []domain.PayoutItemStatus{domain.PayoutSucceeded}
+			return &mockPayoutRows{
+				nextFn: func() bool {
+					return idx < len(statuses)
+				},
+				scanFn: func(dest ...any) error {
+					*dest[0].(*domain.PayoutItemStatus) = statuses[idx]
+					idx++
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	repo := &PayoutRepo{db: mockDB}
+	batch, err := repo.UpdateBatchStatusFromItemsTx(ctx, nil, batchID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if batch.Status != domain.BatchCompleted {
+		t.Fatalf("expected %s, got %s", domain.BatchCompleted, batch.Status)
+	}
+
+	// Verify that the first query executed was the row lock on payout_batches
+	if len(queries) < 1 || queries[0] != "SELECT id FROM payout_batches WHERE id = $1 FOR UPDATE" {
+		t.Fatalf("expected batch row lock query first, got %v", queries)
+	}
+}
+
+func TestUpdatePayoutItemStatusTx_SQLGuards(t *testing.T) {
+	ctx := context.Background()
+	itemID := uuid.New()
+
+	var executedSQL string
+	mockDB := &mockPayoutDB{
+		execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+			executedSQL = sql
+			return pgconn.NewCommandTag("UPDATE 1"), nil
+		},
+	}
+
+	repo := &PayoutRepo{db: mockDB}
+	err := repo.UpdatePayoutItemStatusTx(ctx, nil, itemID, domain.PayoutSucceeded, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedGuard := "WHEN status IN ('failed', 'rejected', 'retriable_failed') AND $2 = 'succeeded' THEN status"
+	if !strings.Contains(executedSQL, expectedGuard) {
+		t.Fatalf("expected SQL to contain terminal guard %q, got:\n%s", expectedGuard, executedSQL)
 	}
 }

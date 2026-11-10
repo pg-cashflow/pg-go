@@ -227,16 +227,38 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 		}
 		out.Payments = arr
 	}
+	type successItem struct {
+		cfPaymentID string
+		bankRef     string
+		amountPaise int64
+	}
+	var successes []successItem
+	seen := make(map[string]struct{})
 	for _, p := range out.Payments {
 		if strings.EqualFold(p.PaymentStatus, "SUCCESS") {
 			parsedPaise, pErr := ParseRupeesToPaise(p.PaymentAmount.String())
 			if pErr != nil {
 				return "", "", 0, false, fmt.Errorf("cashfree fetch parse amount: %w", pErr)
 			}
-			return p.CFPaymentID.String(), p.BankReference, parsedPaise, true, nil
+			id := strings.TrimSpace(p.CFPaymentID.String())
+			if _, dup := seen[id]; !dup {
+				seen[id] = struct{}{}
+				successes = append(successes, successItem{
+					cfPaymentID: id,
+					bankRef:     p.BankReference,
+					amountPaise: parsedPaise,
+				})
+			}
 		}
 	}
-	return "", "", 0, false, nil
+	if len(successes) == 0 {
+		return "", "", 0, false, nil
+	}
+	if len(successes) > 1 {
+		return "", "", 0, false, fmt.Errorf("cashfree fetch: order %q has %d distinct successful payments; ambiguous captures rejected for manual review", orderID, len(successes))
+	}
+	s := successes[0]
+	return s.cfPaymentID, s.bankRef, s.amountPaise, true, nil
 }
 
 type OrderDetails struct {
@@ -336,10 +358,10 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 		}
 	}
 	var raw struct {
-		CFRefundID   json.Number `json:"cf_refund_id"`
+		CFRefundID   ProviderID  `json:"cf_refund_id"`
 		RefundID     string      `json:"refund_id"`
 		OrderID      string      `json:"order_id"`
-		CFPaymentID  json.Number `json:"cf_payment_id"`
+		CFPaymentID  ProviderID  `json:"cf_payment_id"`
 		RefundStatus string      `json:"refund_status"`
 		RefundAmount json.Number `json:"refund_amount"`
 		RefundType   string      `json:"refund_type"`
@@ -402,10 +424,10 @@ func (c *Client) CancelRefund(ctx context.Context, orderID, refundID, remarks st
 		}
 	}
 	var raw struct {
-		CFRefundID   json.Number `json:"cf_refund_id"`
+		CFRefundID   ProviderID  `json:"cf_refund_id"`
 		RefundID     string      `json:"refund_id"`
 		OrderID      string      `json:"order_id"`
-		CFPaymentID  json.Number `json:"cf_payment_id"`
+		CFPaymentID  ProviderID  `json:"cf_payment_id"`
 		RefundStatus string      `json:"refund_status"`
 		RefundAmount json.Number `json:"refund_amount"`
 		RefundType   string      `json:"refund_type"`
@@ -478,10 +500,10 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 		}
 	}
 	type refundRaw struct {
-		CFRefundID   json.Number `json:"cf_refund_id"`
+		CFRefundID   ProviderID  `json:"cf_refund_id"`
 		RefundID     string      `json:"refund_id"`
 		OrderID      string      `json:"order_id"`
-		CFPaymentID  json.Number `json:"cf_payment_id"`
+		CFPaymentID  ProviderID  `json:"cf_payment_id"`
 		RefundStatus string      `json:"refund_status"`
 		RefundAmount json.Number `json:"refund_amount"`
 		RefundType   string      `json:"refund_type"`

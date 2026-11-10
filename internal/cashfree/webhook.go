@@ -198,10 +198,10 @@ func ParseWebhook(raw []byte) (any, string, error) {
 	case "REFUND_STATUS_WEBHOOK":
 		var p struct {
 			Refund struct {
-				CFRefundID   json.Number `json:"cf_refund_id"`
+				CFRefundID   ProviderID  `json:"cf_refund_id"`
 				RefundID     string      `json:"refund_id"`
 				OrderID      string      `json:"order_id"`
-				CFPaymentID  json.Number `json:"cf_payment_id"`
+				CFPaymentID  ProviderID  `json:"cf_payment_id"`
 				RefundStatus string      `json:"refund_status"`
 				RefundAmount json.Number `json:"refund_amount"`
 				RefundType   string      `json:"refund_type"`
@@ -231,10 +231,10 @@ func ParseWebhook(raw []byte) (any, string, error) {
 	case "AUTO_REFUND_STATUS_WEBHOOK":
 		var p struct {
 			AutoRefund struct {
-				CFRefundID   json.Number `json:"cf_refund_id"`
+				CFRefundID   ProviderID  `json:"cf_refund_id"`
 				RefundID     string      `json:"refund_id"`
 				OrderID      string      `json:"order_id"`
-				CFPaymentID  json.Number `json:"cf_payment_id"`
+				CFPaymentID  ProviderID  `json:"cf_payment_id"`
 				RefundStatus string      `json:"refund_status"`
 				RefundAmount json.Number `json:"refund_amount"`
 				RefundType   string      `json:"refund_type"`

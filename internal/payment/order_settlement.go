@@ -178,7 +178,14 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				return err
 			}
 			if lockedIntent.Status == domain.IntentPaid {
-				return nil // already paid
+				// If this exact payment was already recorded, return idempotently.
+				var existingCount int
+				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
+					return nil
+				}
+				// Otherwise, this is a distinct additional successful capture for an already-paid order/intent.
+				// Route it to the unapplied branch instead of silently dropping it or double-allocating dues.
+				allClosed = true
 			}
 
 			at := time.Now().UTC()
@@ -191,7 +198,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				}
 
 				failureReason := "due_already_settled"
-				if lockedIntent.Status == "superseded" {
+				if lockedIntent.Status == domain.IntentPaid {
+					failureReason = "order_already_paid"
+				} else if lockedIntent.Status == "superseded" {
 					failureReason = "session_superseded"
 				}
 				if err := txPayRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, failureReason, rawPayload); err != nil {
@@ -199,6 +208,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				}
 
 				note := "unapplied duplicate: dues already closed, pending owner refund or manual allocation"
+				if lockedIntent.Status == domain.IntentPaid {
+					note = "unapplied duplicate capture: order was already paid, held for owner review/refund"
+				}
 				p := &domain.Payment{
 					DueID:             snapshot[0].DueID,
 					TenantID:          tenantID,

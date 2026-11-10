@@ -929,6 +929,75 @@ func (h *Handlers) executeResolveReviewRefund(c *gin.Context, pid, uid, paymentI
 		return
 	}
 
+	// Provider Verification: A refund in needs_review must not be resolved from an
+	// operator assertion alone. Verify the provider state matches the requested resolution.
+	if h.CashfreeClient != nil {
+		var orderID string
+		var orderPayload struct {
+			OrderID string `json:"order_id"`
+		}
+		if len(rf.RawPayload) > 0 {
+			_ = json.Unmarshal(rf.RawPayload, &orderPayload)
+			orderID = orderPayload.OrderID
+		}
+		if orderID == "" && h.GatewayPaymentRepo != nil && h.IntentStore != nil {
+			if p, pErr := h.GatewayPaymentRepo.GetByID(ctx, paymentID); pErr == nil && p != nil {
+				if p.CFPaymentID != nil && *p.CFPaymentID != "" {
+					if intent, err := h.IntentStore.GetByCFPaymentID(ctx, *p.CFPaymentID); err == nil && intent != nil {
+						orderID = intent.ProviderOrderID
+					}
+				}
+				if orderID == "" && p.ProviderPaymentID != nil && *p.ProviderPaymentID != "" {
+					if intent, err := h.IntentStore.GetByCFPaymentID(ctx, *p.ProviderPaymentID); err == nil && intent != nil {
+						orderID = intent.ProviderOrderID
+					}
+				}
+			}
+		}
+		var targetRef string
+		if rf.RefundReference != nil && *rf.RefundReference != "" {
+			targetRef = *rf.RefundReference
+		} else if rf.IdempotencyKey != nil {
+			targetRef = *rf.IdempotencyKey
+		}
+
+		if orderID == "" || targetRef == "" {
+			slog.Error("refund review resolution missing gateway order_id or reference", "refund_id", rf.ID)
+			c.JSON(http.StatusConflict, gin.H{"error": "gateway details missing; cannot verify provider refund status"})
+			return
+		}
+
+		cfResp, fetchErr := h.CashfreeClient.FetchRefundStatus(ctx, orderID, targetRef)
+		if fetchErr != nil {
+			slog.Error("gateway fetch refund status error during review resolution", "error", fetchErr, "refund_id", rf.ID)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed fetching gateway refund status; reservation remains held"})
+			return
+		}
+
+		if err := cashfree.ValidateRefundResponse(orderID, targetRef, rf.AmountPaise, cfResp); err != nil {
+			slog.Error("gateway refund response validation failed during review resolution", "error", err, "refund_id", rf.ID)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund validation failed: " + err.Error()})
+			return
+		}
+
+		cfStatus := strings.ToUpper(strings.TrimSpace(cfResp.RefundStatus))
+		if cleanAction == "confirm_succeeded" {
+			if cfStatus != "SUCCESS" {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": fmt.Sprintf("gateway refund status is %q; cannot confirm success without provider confirmation", cfResp.RefundStatus),
+				})
+				return
+			}
+		} else if cleanAction == "cancel" {
+			if cfStatus != "CANCELLED" && cfStatus != "CANCELED" && cfStatus != "FAILED" && cfStatus != "REJECTED" {
+				c.JSON(http.StatusConflict, gin.H{
+					"error": fmt.Sprintf("gateway refund status is %q; cannot cancel or release reservation while refund is non-terminal at provider", cfResp.RefundStatus),
+				})
+				return
+			}
+		}
+	}
+
 	runner := h.getRefundTxRunner()
 	if runner == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database pool unavailable"})
