@@ -355,8 +355,9 @@ func TestPayoutSignature_RSAOAEP_SHA1(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(BatchTransferStatusResponse{
-			BatchTransferID: "batch_1",
-			Status:          "SUCCESS",
+			BatchTransferID:   "batch_1",
+			CFBatchTransferID: "cf_batch_1",
+			Status:            "SUCCESS",
 		})
 	}))
 	defer srv.Close()
@@ -443,4 +444,85 @@ func TestPayoutSignature_FailClosedWhenSigningFails(t *testing.T) {
 	if serverReached {
 		t.Fatal("expected request NOT to be dispatched when signature generation fails")
 	}
+}
+
+func TestPayout_Malformed2xxFailClosed(t *testing.T) {
+	cfg := PayoutConfig{
+		ClientID:     "CF_CLIENT_123",
+		ClientSecret: "mock_secret",
+		FundsourceID: "fund_01",
+		AuthMode:     "bearer",
+	}
+
+	t.Run("GetBatchTransferStatus_MissingCFBatchTransferID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"batch_transfer_id": "batch_abc",
+				"status":            "SUCCESS",
+			})
+		}))
+		defer srv.Close()
+
+		client := NewPayoutClient(cfg)
+		client.SetBaseOverride(srv.URL)
+
+		_, err := client.GetBatchTransferStatus(context.Background(), "batch_abc")
+		if err == nil {
+			t.Fatal("expected error for malformed 2xx status response, got nil")
+		}
+		if !errors.Is(err, ErrDispatchUnknown) {
+			t.Fatalf("expected ErrDispatchUnknown, got: %v", err)
+		}
+	})
+
+	t.Run("GetBatchTransferStatus_MismatchedBatchTransferID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"batch_transfer_id":    "batch_different",
+				"cf_batch_transfer_id": "cf_123",
+				"status":               "SUCCESS",
+			})
+		}))
+		defer srv.Close()
+
+		client := NewPayoutClient(cfg)
+		client.SetBaseOverride(srv.URL)
+
+		_, err := client.GetBatchTransferStatus(context.Background(), "batch_expected")
+		if err == nil {
+			t.Fatal("expected error for mismatched batch transfer id, got nil")
+		}
+		if !errors.Is(err, ErrDispatchUnknown) {
+			t.Fatalf("expected ErrDispatchUnknown, got: %v", err)
+		}
+	})
+
+	t.Run("RequestBatchTransfer_MissingCFBatchTransferID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"batch_transfer_id": "batch_xyz",
+				"status":            "RECEIVED",
+			})
+		}))
+		defer srv.Close()
+
+		client := NewPayoutClient(cfg)
+		client.SetBaseOverride(srv.URL)
+
+		_, err := client.RequestBatchTransfer(context.Background(), BatchTransferRequest{
+			BatchTransferID: "batch_xyz",
+			Transfers: []BatchTransferEntry{
+				{TransferID: "tr_1", TransferAmount: "100.00", TransferMode: "banktransfer"},
+			},
+		})
+		if err == nil {
+			t.Fatal("expected error for malformed 2xx request batch transfer response, got nil")
+		}
+		if !errors.Is(err, ErrDispatchUnknown) {
+			t.Fatalf("expected ErrDispatchUnknown, got: %v", err)
+		}
+	})
 }

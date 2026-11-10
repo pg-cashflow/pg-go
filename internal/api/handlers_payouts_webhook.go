@@ -598,20 +598,32 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			}
 			// Invariant: If item was not already marked Succeeded, ensure the settlement journal
 			// (Dr refund_payable / Cr bank) exists before posting the reversal (Dr bank / Cr refund_payable).
+			settlementEnqueued := false
 			if item.Status != domain.PayoutSucceeded {
 				if sErr := h.Finance.MirrorPayoutSettled(ctx, propID, item.ID, item.AmountPaise, occurredAt); sErr != nil {
 					slog.Warn("failed inline settlement mirror prior to reversal, enqueuing settlement outbox event", "item_id", item.ID, "err", sErr)
-					sPayload, _ := json.Marshal(domain.PayoutSettlementMirrorPayload{
+					sPayload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
 						PropertyID:   propID,
 						PayoutItemID: item.ID,
 						AmountPaise:  item.AmountPaise,
 						OccurredAt:   occurredAt,
 					})
-					_ = h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutSettlement, item.ID, sPayload, fmt.Sprintf("payout_settled:%s", item.ID))
+					if mErr != nil {
+						slog.Error("failed marshaling outbox payload for settled payout", "item_id", item.ID, "err", mErr)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal settlement outbox payload failed"})
+						return
+					}
+					if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutSettlement, item.ID, sPayload, fmt.Sprintf("payout_settled:%s", item.ID)); oErr != nil {
+						slog.Error("outbox fallback failed for settled payout prerequisite", "item_id", item.ID, "err", oErr)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement ledger outbox persistence failed"})
+						return
+					}
+					settlementEnqueued = true
 				}
 			}
-			if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, occurredAt); err != nil {
-				slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
+
+			if settlementEnqueued {
+				// Settlement is deferred to outbox worker; reversal MUST also be deferred to preserve causal ordering.
 				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
 					PropertyID:   propID,
 					PayoutItemID: item.ID,
@@ -627,6 +639,26 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 					slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", oErr)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
 					return
+				}
+			} else {
+				if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, occurredAt); err != nil {
+					slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
+					payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+						PropertyID:   propID,
+						PayoutItemID: item.ID,
+						AmountPaise:  item.AmountPaise,
+						OccurredAt:   occurredAt,
+					})
+					if mErr != nil {
+						slog.Error("failed marshaling outbox payload for reversed payout", "item_id", item.ID, "err", mErr)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal outbox payload failed"})
+						return
+					}
+					if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutReversal, item.ID, payload, fmt.Sprintf("payout_reversed:%s", item.ID)); oErr != nil {
+						slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", oErr)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
+						return
+					}
 				}
 			}
 		}

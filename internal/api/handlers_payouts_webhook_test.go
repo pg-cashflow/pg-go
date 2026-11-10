@@ -395,9 +395,22 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
 
-		// Verify outbox fallback recorded the reversal event
-		var outboxCount int
+		// Verify outbox recorded both the settlement prerequisite and the reversal event
+		var settlementCount int
 		err := pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM ledger_outbox_events 
+			WHERE event_type = $1 AND source_id = $2`,
+			domain.LedgerOutboxPayoutSettlement, itemC.ID,
+		).Scan(&settlementCount)
+		if err != nil {
+			t.Fatalf("query outbox settlement: %v", err)
+		}
+		if settlementCount != 1 {
+			t.Fatalf("expected 1 outbox event for settled payout prerequisite, got %d", settlementCount)
+		}
+
+		var outboxCount int
+		err = pool.QueryRow(ctx, `
 			SELECT COUNT(*) FROM ledger_outbox_events 
 			WHERE event_type = $1 AND source_id = $2`,
 			domain.LedgerOutboxPayoutReversal, itemC.ID,

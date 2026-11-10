@@ -338,6 +338,20 @@ func (w *LedgerOutboxWorker) dispatch(ctx context.Context, evt *domain.LedgerOut
 		if w.mirrorer == nil {
 			return fmt.Errorf("mirrorer not configured")
 		}
+		if w.pool != nil {
+			var exists bool
+			err := w.pool.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM financial_journal_entries 
+					WHERE source_type = 'payout_settlement' AND source_id = $1
+				)`, p.PayoutItemID).Scan(&exists)
+			if err != nil {
+				return fmt.Errorf("check payout settlement prerequisite: %w", err)
+			}
+			if !exists {
+				return fmt.Errorf("settlement journal prerequisite not found for payout item %s", p.PayoutItemID)
+			}
+		}
 		return w.mirrorer.MirrorPayoutReversed(ctx, p.PropertyID, p.PayoutItemID, p.AmountPaise, p.OccurredAt)
 	case domain.LedgerOutboxPayoutSettlement:
 		var p domain.PayoutSettlementMirrorPayload

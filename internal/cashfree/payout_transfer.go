@@ -135,7 +135,13 @@ func (c *PayoutClient) RequestBatchTransfer(ctx context.Context, req BatchTransf
 
 	var out BatchTransferResponse
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
-		return nil, fmt.Errorf("cashfree payout: unmarshal batch transfer response: %w", err)
+		return nil, fmt.Errorf("%w: unmarshal batch transfer response: %v", ErrDispatchUnknown, err)
+	}
+	if strings.TrimSpace(out.CFBatchTransferID) == "" || strings.TrimSpace(out.BatchTransferID) == "" {
+		return nil, fmt.Errorf("%w: malformed batch transfer response: missing required identifiers (cf_batch_transfer_id or batch_transfer_id)", ErrDispatchUnknown)
+	}
+	if out.BatchTransferID != req.BatchTransferID {
+		return nil, fmt.Errorf("%w: batch transfer response id mismatch: expected %s, got %s", ErrDispatchUnknown, req.BatchTransferID, out.BatchTransferID)
 	}
 	return &out, nil
 }
@@ -189,7 +195,13 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 
 	var out BatchTransferStatusResponse
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
-		return nil, fmt.Errorf("cashfree payout: unmarshal batch status response: %w", err)
+		return nil, fmt.Errorf("%w: unmarshal batch status response: %v", ErrDispatchUnknown, err)
+	}
+	if strings.TrimSpace(out.CFBatchTransferID) == "" || strings.TrimSpace(out.BatchTransferID) == "" {
+		return nil, fmt.Errorf("%w: malformed batch status response: missing required identifiers (cf_batch_transfer_id or batch_transfer_id)", ErrDispatchUnknown)
+	}
+	if out.BatchTransferID != batchTransferID {
+		return nil, fmt.Errorf("%w: batch status response id mismatch: expected %s, got %s", ErrDispatchUnknown, batchTransferID, out.BatchTransferID)
 	}
 	return &out, nil
 }

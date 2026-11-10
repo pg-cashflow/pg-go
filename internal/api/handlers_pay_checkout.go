@@ -123,19 +123,23 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if due.Status == domain.DueStatusPaid || due.Status == domain.DueStatusWaived {
-		c.JSON(http.StatusOK, gin.H{"paid": true})
+	if due.Status == domain.DueStatusPaid {
+		c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID"})
+		return
+	}
+	if due.Status == domain.DueStatusWaived {
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "WAIVED"})
 		return
 	}
 
 	if h.IntentStore == nil || h.CashfreeClient == nil || h.Payments == nil {
-		c.JSON(http.StatusOK, gin.H{"paid": false})
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 
 	intent, err := h.IntentStore.LatestOpenForDue(c.Request.Context(), id)
 	if err != nil || intent == nil || intent.ProviderOrderID == "" {
-		c.JSON(http.StatusOK, gin.H{"paid": false})
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 
@@ -143,7 +147,7 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	cached, hasCached := verifyCache[intent.ProviderOrderID]
 	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid {
 		verifyCacheMu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"paid": false})
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 	verifyCacheMu.Unlock()
@@ -168,7 +172,7 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	verifyCacheMu.Unlock()
 
 	if err != nil || !ok || amount <= 0 {
-		c.JSON(http.StatusOK, gin.H{"paid": false})
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 
@@ -178,11 +182,11 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	}
 
 	if err := h.SettleGatewayOrder(c.Request.Context(), intent.ProviderOrderID, cfID, txn, amount, intent, nil); err != nil {
-		c.JSON(http.StatusOK, gin.H{"paid": false})
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"paid": true})
+	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID"})
 }
 
 type PayBatchRequest struct {

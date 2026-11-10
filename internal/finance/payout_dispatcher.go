@@ -176,7 +176,10 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	// Step 2: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
 	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
 		statusResp, err := d.client.GetBatchTransferStatus(ctx, batchTransferID)
-		if err == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+		if err == nil {
+			if statusResp == nil || strings.TrimSpace(statusResp.CFBatchTransferID) == "" || strings.TrimSpace(statusResp.BatchTransferID) == "" {
+				return fmt.Errorf("payout dispatcher: malformed batch status response for %s: missing required identifiers", batch.ID)
+			}
 			slog.Info("cashfree batch transfer recovered via status poll",
 				"batch_id", batch.ID,
 				"cf_batch_id", statusResp.CFBatchTransferID,
@@ -188,7 +191,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 		// If the batch had an ambiguous prior dispatch (dispatch_unknown), we can only proceed
 		// if the provider definitively confirms the batch does not exist (ErrBatchNotFound).
-		// Any other error (network timeout, 5xx) leaves prior execution unresolved.
+		// Any other error (network timeout, 5xx, malformed response) leaves prior execution unresolved.
 		if batch.Status == domain.BatchDispatchUnknown {
 			if !errors.Is(err, cashfree.ErrBatchNotFound) {
 				return fmt.Errorf("payout dispatcher: batch %s has unresolved prior dispatch; reconciliation required: %w", batch.ID, err)
@@ -198,7 +201,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		// For batches currently in processing (e.g. freshly initiated in local DB), a 404/ErrBatchNotFound
 		// is expected since the batch has not yet been dispatched to Cashfree. If the status lookup failed
 		// with a non-404 error (e.g. client auth/network transport failure), fail closed before attempting dispatch.
-		if batch.Status == domain.BatchProcessing && err != nil && !errors.Is(err, cashfree.ErrBatchNotFound) {
+		if batch.Status == domain.BatchProcessing && !errors.Is(err, cashfree.ErrBatchNotFound) {
 			return fmt.Errorf("payout dispatcher: cannot verify batch status before dispatch: %w", err)
 		}
 	}
@@ -285,7 +288,10 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 				"batch_id", batch.ID,
 				"err", err,
 			)
-			_ = d.repo.SetBatchDispatchUnknown(ctx, batch.ID, err.Error())
+			if setErr := d.repo.SetBatchDispatchUnknown(ctx, batch.ID, err.Error()); setErr != nil {
+				slog.Error("failed to persist batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
+				return fmt.Errorf("payout dispatcher: persist dispatch_unknown failed: %w (dispatch error: %v)", setErr, err)
+			}
 			return err
 		}
 
@@ -307,7 +313,10 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 			retryResp, retryErr := d.client.RequestBatchTransfer(ctx, req)
 			if retryErr != nil {
 				if errors.Is(retryErr, cashfree.ErrDispatchUnknown) {
-					_ = d.repo.SetBatchDispatchUnknown(ctx, batch.ID, retryErr.Error())
+					if setErr := d.repo.SetBatchDispatchUnknown(ctx, batch.ID, retryErr.Error()); setErr != nil {
+						slog.Error("failed to persist retry batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
+						return fmt.Errorf("payout dispatcher: persist dispatch_unknown on retry failed: %w (retry error: %v)", setErr, retryErr)
+					}
 				}
 				return fmt.Errorf("payout dispatcher: retry batch transfer after bene register: %w", retryErr)
 			}

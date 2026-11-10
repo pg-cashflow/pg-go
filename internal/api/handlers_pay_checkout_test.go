@@ -220,12 +220,15 @@ func TestTenantDuePayVerify_MultiDueBatchSettlement(t *testing.T) {
 		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var resp map[string]bool
+	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if !resp["paid"] {
-		t.Fatalf("expected paid=true, got false")
+	if paid, ok := resp["paid"].(bool); !ok || !paid {
+		t.Fatalf("expected paid=true, got %v", resp["paid"])
+	}
+	if status, ok := resp["status"].(string); !ok || status != "PAID" {
+		t.Fatalf("expected status=PAID, got %v", resp["status"])
 	}
 
 	// Verify both dues were settled
@@ -250,5 +253,59 @@ func TestTenantDuePayVerify_MultiDueBatchSettlement(t *testing.T) {
 	// Verify intent was marked paid
 	if intentStore.paidCFID != "cf_pay_999" {
 		t.Errorf("expected intent marked paid with cf_pay_999, got %q", intentStore.paidCFID)
+	}
+}
+
+func TestTenantDuePayVerify_WaivedDue(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	dueStore := &mockVerifyDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				TenantID:   tenantID,
+				PropertyID: propID,
+				Amount:     0,
+				Status:     domain.DueStatusWaived,
+			},
+		},
+	}
+
+	h := &Handlers{
+		Deps: Deps{
+			DueStore: dueStore,
+		},
+	}
+
+	r := gin.New()
+	r.POST("/tenant/dues/:id/pay/verify", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, &domain.Tenant{
+			ID:         tenantID,
+			PropertyID: propID,
+			Status:     domain.TenantStatusActive,
+		})
+		h.TenantDuePayVerify(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/tenant/dues/%s/pay/verify", dueID), nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if paid, ok := resp["paid"].(bool); !ok || paid {
+		t.Fatalf("expected paid=false for waived due, got %v", resp["paid"])
+	}
+	if status, ok := resp["status"].(string); !ok || status != "WAIVED" {
+		t.Fatalf("expected status=WAIVED for waived due, got %v", resp["status"])
 	}
 }

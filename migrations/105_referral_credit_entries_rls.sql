@@ -1,6 +1,6 @@
 SET lock_timeout = '5s';
 
--- Migration 097: Enable and force Row Level Security on referral_credit_entries.
+-- Migration 105: Enable and force Row Level Security on referral_credit_entries.
 -- Standard: ASD-STE100
 -- Reference: Migration 074/094 pattern, ADR-018, ADR-029
 
