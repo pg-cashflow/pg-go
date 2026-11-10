@@ -15,6 +15,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
@@ -63,12 +64,18 @@ func TestLivePayoutDispatcher(t *testing.T) {
 
 	payoutRepo := postgres.NewPayoutRepo(pool)
 
+	encKey := []byte("01234567890123456789012345678901")
+	encAccount, err := crypto.Encrypt(encKey, []byte("111222333444"))
+	if err != nil {
+		t.Fatalf("encrypt account: %v", err)
+	}
+
 	// Create Payee 1 (Bank) and Payee 2 (UPI)
 	payee1 := &domain.PayoutPayee{
 		PropertyID:             propID,
 		PayeeType:              domain.PayeeTypeVendor,
 		Name:                   "Vendor One",
-		AccountNumberEncrypted: []byte("111222333444"),
+		AccountNumberEncrypted: encAccount,
 		AccountNumberHash:      "hash111111111111111111111111111111111111111111111111111111111111",
 		IFSC:                   ptr("HDFC0001234"),
 		IsVerified:             true,
@@ -168,7 +175,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		})
 		client.SetBaseOverride(srv.URL)
 
-		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		if err := dispatcher.DispatchBatch(ctx, batch.ID); err != nil {
 			t.Fatalf("dispatch batch: %v", err)
@@ -215,7 +222,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		})
 		client.SetBaseOverride(srv.URL)
 
-		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil {
@@ -245,7 +252,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			ClientSecret: "csec",
 			FundsourceID: "fund_01",
 		})
-		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil || !strings.Contains(err.Error(), "not verified") {
@@ -259,7 +266,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			ClientSecret: "csec",
 			FundsourceID: "fund_01",
 		})
-		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		// deliberately omit SetApprovalSigningKeys
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil || !strings.Contains(err.Error(), "approval signing keys not configured") {
@@ -337,8 +344,10 @@ func TestLivePayoutDispatcher(t *testing.T) {
 					http.NotFound(w, r)
 					return
 				}
+				var req cashfree.BatchTransferRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
 				_ = json.NewEncoder(w).Encode(cashfree.BatchTransferResponse{
-					BatchTransferID:   "pgo_test",
+					BatchTransferID:   req.BatchTransferID,
 					CFBatchTransferID: "cf_mock_batch_snap",
 					Status:            "RECEIVED",
 				})
@@ -359,7 +368,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE payout_approval_snapshots SET signature = 'tampered_signature_hex' WHERE batch_id = $1`, batch2.ID); err != nil {
 			t.Fatalf("tamper signature: %v", err)
 		}
-		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01")
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err = dispatcher.DispatchBatch(ctx, batch2.ID)
 		if err == nil || !strings.Contains(err.Error(), "signature verification failed") {

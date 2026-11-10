@@ -344,7 +344,15 @@ func (h *Handlers) OwnerDisburseDepartureCash(c *gin.Context) {
 		Notes:       body.Notes,
 	})
 	if err != nil {
-		respondErr(c, err)
+		if errors.Is(err, domain.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		if errors.Is(err, domain.ErrForbidden) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			return
+		}
+		respondErr(c, clientErr(http.StatusBadRequest, err.Error()))
 		return
 	}
 

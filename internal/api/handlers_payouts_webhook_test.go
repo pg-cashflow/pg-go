@@ -197,7 +197,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 
 	t.Run("Transfer_Success_And_Idempotent_Replay", func(t *testing.T) {
 		payload := PayoutWebhookEnvelope{
-			Event:     "TRANSFER_SUCCESS",
+			Event:     "TRANSFER_ACKNOWLEDGED",
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
@@ -243,7 +243,10 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 
 		var eventCount, processedCount int
-		if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM webhook_events WHERE raw_payload = $1`, rawBody).Scan(&eventCount); err != nil {
+		if err := pool.QueryRow(ctx, `
+			SELECT COUNT(*) FROM webhook_events
+			WHERE provider = 'cashfree' AND signature = $1
+		`, sig).Scan(&eventCount); err != nil {
 			t.Fatalf("count webhook_events: %v", err)
 		}
 		if eventCount != 2 {
@@ -251,7 +254,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		}
 		if err := pool.QueryRow(ctx, `
 			SELECT COUNT(*) FROM processed_webhook_events
-			WHERE provider = 'cashfree' AND event_type = 'TRANSFER_SUCCESS' AND provider_reference_id = $1
+			WHERE provider = 'cashfree' AND event_type = 'TRANSFER_ACKNOWLEDGED' AND provider_reference_id = $1
 		`, cfTr1).Scan(&processedCount); err != nil {
 			t.Fatalf("count processed_webhook_events: %v", err)
 		}
@@ -507,7 +510,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		failingRouter.POST("/webhooks/cashfree/payouts", failingH.CashfreePayoutWebhook)
 
 		payload := PayoutWebhookEnvelope{
-			Event:     "TRANSFER_SUCCESS",
+			Event:     "TRANSFER_ACKNOWLEDGED",
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{

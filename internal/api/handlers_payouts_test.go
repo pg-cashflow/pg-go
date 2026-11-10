@@ -143,7 +143,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	_, err = pool.Exec(ctx, `
 		INSERT INTO dues (id, due_code, tenant_id, property_id, kind, amount, original_amount, period_start, period_end, due_date, status)
 		VALUES ($1, $2, $3, $4, 'deposit', 1200000, 1200000, $5, $6, $7, 'paid')`,
-		uuid.New(), "DEP-"+uuid.New().String()[:8], tenantID, propID, pStart, pEnd, dueDate,
+		uuid.New(), "DEP-"+uuid.New().String()[:4], tenantID, propID, pStart, pEnd, dueDate,
 	)
 	if err != nil {
 		t.Fatalf("insert deposit due: %v", err)
@@ -832,8 +832,17 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 
 	// 12. Cash Disbursal Rejection on Payout-Mode Departure:
 	t.Run("POST /owner/departures/:id/disburse-cash rejects payout-mode departure", func(t *testing.T) {
+		_, _ = pool.Exec(ctx, "DELETE FROM otp_requests WHERE phone = $1", ownerPhone)
+		if err := authSvc.RequestStepUpOTP(ctx, ownerPhone, "payout_approval", nil); err != nil {
+			t.Fatalf("request step up otp 12: %v", err)
+		}
+		smsMsg := mockSMS.sent[len(mockSMS.sent)-1]
+		smsParts := strings.Split(smsMsg, " ")
+		stepUpCode := strings.TrimSuffix(smsParts[5], ".")
+
 		body := map[string]interface{}{
 			"receipt_ref": "INVALID-CASH-REC",
+			"otp":         stepUpCode,
 		}
 		jsonBytes, _ := json.Marshal(body)
 		w := httptest.NewRecorder()
@@ -849,20 +858,28 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	// 13. Two-Step Offline Cash Departure Settlement and Disbursal:
 	t.Run("Two-step offline cash departure settlement and disbursal lifecycle", func(t *testing.T) {
 		tenantID2 := uuid.New()
+		tenantStore.tenants[tenantID2] = &domain.Tenant{
+			ID:         tenantID2,
+			PropertyID: propID,
+			Name:       "Cash Moveout Tenant",
+			RentAmount: 1000000,
+		}
+		tPhone2 := fmt.Sprintf("+91%010d", (time.Now().UnixNano()+13)%10000000000)
 		_, err := pool.Exec(ctx, `
-			INSERT INTO tenants (id, property_id, full_name, phone, room_no, rent_amount, deposit_amount, status, lease_start_date)
-			VALUES ($1, $2, 'Cash Moveout Tenant', '+919888811111', '102B', 1000000, 1000000, 'active', '2026-01-01')`,
-			tenantID2, propID,
+			INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+			VALUES ($1, $2, 'Cash Moveout Tenant', $3, 1000000, 1, 'active')`,
+			tenantID2, propID, tPhone2,
 		)
 		if err != nil {
 			t.Fatalf("insert tenant 2: %v", err)
 		}
 
 		depDueID2 := uuid.New()
+		dCode2 := "D-" + uuid.New().String()[:6]
 		_, err = pool.Exec(ctx, `
 			INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
-			VALUES ($1, $2, $3, 'DEP-CASH-001', 'deposit', 'paid', 1000000, 1000000, '2026-01-01', '2026-02-01', '2026-01-05')`,
-			depDueID2, propID, tenantID2,
+			VALUES ($1, $2, $3, $4, 'deposit', 'paid', 1000000, 1000000, '2026-01-01', '2026-02-01', '2026-01-05')`,
+			depDueID2, propID, tenantID2, dCode2,
 		)
 		if err != nil {
 			t.Fatalf("insert deposit due for tenant 2: %v", err)
@@ -941,9 +958,18 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 
 		// Step E: Disburse cash with valid receipt_ref -> 200 OK
+		_, _ = pool.Exec(ctx, "DELETE FROM otp_requests WHERE phone = $1", ownerPhone)
+		if err := authSvc.RequestStepUpOTP(ctx, ownerPhone, "payout_approval", nil); err != nil {
+			t.Fatalf("request step up otp E: %v", err)
+		}
+		smsMsgE := mockSMS.sent[len(mockSMS.sent)-1]
+		smsPartsE := strings.Split(smsMsgE, " ")
+		stepUpCodeE := strings.TrimSuffix(smsPartsE[5], ".")
+
 		disburseBody := map[string]interface{}{
 			"receipt_ref": "CASH-REC-OCT-2026-001",
 			"notes":       "Physical currency handed over to tenant",
+			"otp":         stepUpCodeE,
 		}
 		dBytes, _ := json.Marshal(disburseBody)
 		w = httptest.NewRecorder()
@@ -969,8 +995,19 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		}
 
 		// Step F: Duplicate cash disbursal -> 400 Bad Request
+		_, _ = pool.Exec(ctx, "DELETE FROM otp_requests WHERE phone = $1", ownerPhone)
+		if err := authSvc.RequestStepUpOTP(ctx, ownerPhone, "payout_approval", nil); err != nil {
+			t.Fatalf("request step up otp F: %v", err)
+		}
+		smsMsgF := mockSMS.sent[len(mockSMS.sent)-1]
+		smsPartsF := strings.Split(smsMsgF, " ")
+		stepUpCodeF := strings.TrimSuffix(smsPartsF[5], ".")
+
+		disburseBody["otp"] = stepUpCodeF
+		dBytesDup, _ := json.Marshal(disburseBody)
+
 		w = httptest.NewRecorder()
-		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID2), bytes.NewReader(dBytes))
+		req, _ = http.NewRequest(http.MethodPost, fmt.Sprintf("/owner/departures/%s/disburse-cash", depID2), bytes.NewReader(dBytesDup))
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
