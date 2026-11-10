@@ -255,10 +255,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			kycDocKey = decoded
 			logger.Info("kyc: document-bytes encryption enabled")
 		} else {
-			if cfg.AppEnv == "production" {
-				return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory in production (DPDP Section 8(5) requirement)")
-			}
-			logger.Warn("kyc: KYC_DOC_CRYPTO_KEY not set - Aadhaar document bytes will be stored unencrypted (DPDP Section 8(5) gap)")
+			return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory whenever KYC is enabled (DPDP Section 8(5) requirement)")
 		}
 		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
 		validityDays := cfg.KYCVerificationValidityDays
@@ -270,6 +267,13 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			kycKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey)
 			if err != nil {
 				return nil, fmt.Errorf("kyc: failed to initialize key ring: %w", err)
+			}
+			for v, k := range cfg.KYCDocCryptoKeys {
+				if v != crypto.CurrentKeyVersion {
+					if addErr := kycKeyRing.AddKey(v, k); addErr != nil {
+						logger.Warn("kyc: failed adding historical doc key to keyring", "version", v, "err", addErr)
+					}
+				}
 			}
 			kycRepo.SetKeyRing(kycKeyRing)
 		}
@@ -299,9 +303,21 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		} else {
 			logger.Warn("kyc service enabled in document-only mode (Cashfree credentials not configured; Aadhaar OTP unavailable)")
 		}
+		activeIdentitySecret := cfg.KYCIdentitySecret
+		activeHashVersion := int16(1)
+		if len(cfg.KYCIdentitySecrets) > 0 {
+			var maxVer int16
+			for v, s := range cfg.KYCIdentitySecrets {
+				if v > maxVer {
+					maxVer = v
+					activeIdentitySecret = s
+					activeHashVersion = v
+				}
+			}
+		}
 		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
-			IdentitySecret:           cfg.KYCIdentitySecret,
-			HashKeyVersion:           1,
+			IdentitySecret:           activeIdentitySecret,
+			HashKeyVersion:           activeHashVersion,
 			VerificationValidityDays: validityDays,
 		})
 	} else {

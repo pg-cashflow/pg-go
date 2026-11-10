@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/url"
@@ -59,8 +60,11 @@ type Config struct {
 	// KYCDocCryptoKey is the hex-encoded 32-byte AES-256 key used to encrypt
 	// Aadhaar document bytes (document_bytes, attested_photo_bytes) at rest.
 	// Set via KYC_DOC_CRYPTO_KEY. Empty = encryption disabled (dev/CI safe).
-	KYCDocCryptoKey                   string
-	KYCVerificationValidityDays       int
+	KYCDocCryptoKey string
+	// KYCDocCryptoKeys holds versioned keys for document decryption during rotation (version -> 32-byte key).
+	// Format: "1:hexkey1,2:hexkey2".
+	KYCDocCryptoKeys            map[byte][]byte
+	KYCVerificationValidityDays int
 	RefundWindowDays                  int
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
@@ -176,6 +180,9 @@ func Load() (*Config, error) {
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
 		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)
+	}
+	if keysStr := os.Getenv("KYC_DOC_CRYPTO_KEYS"); keysStr != "" {
+		cfg.KYCDocCryptoKeys = parseVersionedHexKeys(keysStr)
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
@@ -300,6 +307,26 @@ func parseVersionedSecrets16(s string) map[int16]string {
 			continue
 		}
 		out[int16(ver)] = parts[1]
+	}
+	return out
+}
+
+func parseVersionedHexKeys(s string) map[byte][]byte {
+	out := make(map[byte][]byte)
+	for _, p := range strings.Split(s, ",") {
+		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		ver, err := strconv.Atoi(parts[0])
+		if err != nil || ver < 1 || ver > 255 {
+			continue
+		}
+		decoded, decErr := hex.DecodeString(strings.TrimSpace(parts[1]))
+		if decErr != nil || len(decoded) != 32 {
+			continue
+		}
+		out[byte(ver)] = decoded
 	}
 	return out
 }

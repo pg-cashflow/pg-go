@@ -1353,3 +1353,43 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		t.Errorf("expected DB batch status 'processing', got '%s'", dbBatch2.Status)
 	}
 }
+
+func TestOwnerCreatePayoutBatch_MalformedJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &Handlers{}
+
+	propID := uuid.New()
+	userID := uuid.New()
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("claims", &auth.Claims{
+			UserID:     userID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		c.Set("active_modules", []string{"payouts"})
+		c.Next()
+	})
+	router.POST("/owner/payouts/batches", h.OwnerCreatePayoutBatch)
+
+	t.Run("malformed json syntax returns 400", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes": 123`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for malformed JSON, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("type mismatch in json returns 400", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(http.MethodPost, "/owner/payouts/batches", strings.NewReader(`{"notes": 12345}`))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for type mismatch, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}

@@ -51,6 +51,7 @@ The table below lists all variables supported by `internal/config/validate.go` a
 | `CASHFREE_ENV`                    | Conditional                  | `sandbox`            | Set to `production` for live payment settlement.                                |
 | `CASHFREE_PG_WEBHOOK_SECRET`      | No                           | None                 | Webhook override. Falls back to `CASHFREE_PG_SECRET_KEY` (ADR-031).             |
 | `KYC_IDENTITY_SECRET`             | Conditional                  | None                 | Aadhaar identity hashing secret. Minimum 32 characters.                         |
+| `KYC_DOC_CRYPTO_KEY`              | Conditional                  | None                 | Document encryption key (AES-256). Must be 64 hex characters (32 bytes).       |
 | `KYC_DIGILOCKER_REDIRECT_URL`     | Conditional                  | None                 | OAuth callback URL for DigiLocker flow.                                         |
 | `METRICS_SECRET`                  | **Yes** in production        | None                 | `X-Metrics-Token` for `/metrics`. Minimum 16 chars. `METRICS_TOKEN` is ignored. |
 | `HTTP_ADDR`                       | No                           | `:8080`              | Port and interface binding for the HTTP server.                                 |

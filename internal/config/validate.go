@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -68,6 +69,22 @@ func (c *Config) ValidateForRealDeployment() error {
 	}
 	if c.OTPHMACSecret != "" && c.MagicLinkHMACSecret != "" && c.OTPHMACSecret == c.MagicLinkHMACSecret {
 		errs = append(errs, "OTP_HMAC_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct secrets")
+	}
+
+	// Invariant: KYC_DOC_CRYPTO_KEY is mandatory whenever KYC is enabled (DPDP Section 8(5))
+	kycEnabled := strings.TrimSpace(c.KYCIdentitySecret) != "" || len(c.KYCIdentitySecrets) > 0
+	if kycEnabled {
+		rawDocKey := strings.TrimSpace(c.KYCDocCryptoKey)
+		if rawDocKey == "" {
+			errs = append(errs, "KYC_DOC_CRYPTO_KEY is required whenever KYC is enabled (must be 64 hex chars / 32 bytes)")
+		} else if strings.HasPrefix(rawDocKey, "change-me") {
+			errs = append(errs, "KYC_DOC_CRYPTO_KEY must not be a placeholder value (starts with 'change-me')")
+		} else {
+			decoded, err := hex.DecodeString(rawDocKey)
+			if err != nil || len(decoded) != 32 {
+				errs = append(errs, fmt.Sprintf("KYC_DOC_CRYPTO_KEY must be a valid 64-character hex string (32 bytes), got %d chars", len(rawDocKey)))
+			}
+		}
 	}
 
 	// Invariant: no two versioned KYC identity secrets may share the same value.

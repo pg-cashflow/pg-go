@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -636,7 +637,10 @@ func (h *Handlers) OwnerCreatePayoutBatch(c *gin.Context) {
 	}
 
 	var body createBatchBody
-	_ = c.ShouldBindJSON(&body)
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
+		respondErr(c, clientErr(http.StatusBadRequest, "invalid request body: malformed json"))
+		return
+	}
 
 	repo := h.getPayoutRepo()
 	if repo == nil {

@@ -22,6 +22,7 @@ func validConfig() *Config {
 		OTPHMACSecret:         "this-is-a-valid-otp-hmac-secret-over-32-chars",
 		MagicLinkHMACSecret:   "this-is-a-valid-magic-link-hmac-secret-over-32",
 		KYCIdentitySecret:     "this-is-a-valid-kyc-identity-secret-over-32-ch",
+		KYCDocCryptoKey:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		CashfreeAppID:         "",
 		CashfreeSecretKey:     "",
 		CashfreeWebhookSecret: "",
@@ -41,6 +42,7 @@ func TestValidateForRealDeployment_Valid(t *testing.T) {
 func TestValidateForRealDeployment_ValidWithoutKYC(t *testing.T) {
 	cfg := validConfig()
 	cfg.KYCIdentitySecret = "" // dormant KYC mode
+	cfg.KYCDocCryptoKey = ""
 	if err := cfg.ValidateForRealDeployment(); err != nil {
 		t.Fatalf("expected nil error when KYC is dormant, got: %v", err)
 	}
@@ -79,6 +81,13 @@ func TestValidateForRealDeployment_PlaceholderSecrets(t *testing.T) {
 				c.KYCIdentitySecret = "change-me-to-a-long-random-string-at-least-32-chars"
 			},
 			wantSub: "KYC_IDENTITY_SECRET must not be a placeholder",
+		},
+		{
+			name: "KYC doc crypto key placeholder",
+			mutate: func(c *Config) {
+				c.KYCDocCryptoKey = "change-me-to-a-64-character-hex-encoded-crypto-key-at-least-64-ch"
+			},
+			wantSub: "KYC_DOC_CRYPTO_KEY must not be a placeholder",
 		},
 	}
 
@@ -708,6 +717,45 @@ func TestValidateForRealDeployment_ProductionCORSOriginRestrictions(t *testing.T
 		cfg.CORSAllowedOrigins = []string{"https://app.pgcashflow.com"}
 		if err := cfg.ValidateForRealDeployment(); err != nil {
 			t.Fatalf("expected matching CORS origin to pass, got: %v", err)
+		}
+	})
+}
+
+func TestValidateForRealDeployment_KYCDocCryptoKey(t *testing.T) {
+	t.Run("missing KYC_DOC_CRYPTO_KEY when KYC enabled fails", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.KYCDocCryptoKey = ""
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "KYC_DOC_CRYPTO_KEY is required whenever KYC is enabled") {
+			t.Fatalf("expected error for missing KYC_DOC_CRYPTO_KEY, got: %v", err)
+		}
+	})
+
+	t.Run("short KYC_DOC_CRYPTO_KEY fails", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.KYCDocCryptoKey = "0123456789abcdef" // 16 chars instead of 64
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "must be a valid 64-character hex string") {
+			t.Fatalf("expected error for short KYC_DOC_CRYPTO_KEY, got: %v", err)
+		}
+	})
+
+	t.Run("invalid hex in KYC_DOC_CRYPTO_KEY fails", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.KYCDocCryptoKey = strings.Repeat("z", 64)
+		err := cfg.ValidateForRealDeployment()
+		if err == nil || !strings.Contains(err.Error(), "must be a valid 64-character hex string") {
+			t.Fatalf("expected error for non-hex KYC_DOC_CRYPTO_KEY, got: %v", err)
+		}
+	})
+
+	t.Run("dormant KYC mode without KYC_DOC_CRYPTO_KEY passes", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.KYCIdentitySecret = ""
+		cfg.KYCIdentitySecrets = nil
+		cfg.KYCDocCryptoKey = ""
+		if err := cfg.ValidateForRealDeployment(); err != nil {
+			t.Fatalf("expected dormant KYC to pass without KYC_DOC_CRYPTO_KEY, got: %v", err)
 		}
 	})
 }

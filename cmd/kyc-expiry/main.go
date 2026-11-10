@@ -11,6 +11,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
@@ -62,6 +63,16 @@ func main() {
 		kycDocKey = decoded
 	}
 	repo := postgres.NewKYCRepo(pool, kycDocKey)
+	if len(kycDocKey) == 32 {
+		if kr, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey); err == nil {
+			for v, k := range cfg.KYCDocCryptoKeys {
+				if v != crypto.CurrentKeyVersion {
+					_ = kr.AddKey(v, k)
+				}
+			}
+			repo.SetKeyRing(kr)
+		}
+	}
 	job := jobs.NewKYCExpiryJob(repo)
 
 	now := time.Now().UTC()
