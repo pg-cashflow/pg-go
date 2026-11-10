@@ -38,19 +38,19 @@ func (h *Handlers) getOnboardingSettings(c *gin.Context) {
 }
 
 type patchOnboardingSettingsBody struct {
-	DefaultRentPaise          *int64 `json:"default_rent_paise"`
-	DefaultDepositPaise       *int64 `json:"default_deposit_paise"`
-	DefaultDueDay             *int16 `json:"default_due_day"`
-	AutoActivate              *bool  `json:"auto_activate"`
-	ReserveBedsForOpenInvites *bool  `json:"reserve_beds_for_open_invites"`
-	MaxExtraBedsPerRoom       *int   `json:"max_extra_beds_per_room"`
-	SlotInviteDefaultTTLDays  *int   `json:"slot_invite_default_ttl_days"`
-	WaitlistEnabled           *bool  `json:"waitlist_enabled"`
-	WaitlistOfferTTLHours     *int   `json:"waitlist_offer_ttl_hours"`
-	RequireKYCBeforePay       *bool  `json:"require_kyc_before_pay"`
-	JoinPendingTTLDays        *int   `json:"join_pending_ttl_days"`
-	ReferralEnabled           *bool  `json:"referral_enabled"`
-	JoinerDiscountBps         *int   `json:"joiner_discount_bps"`
+	DefaultRentPaise          *int64                      `json:"default_rent_paise"`
+	DefaultDepositPaise       *int64                      `json:"default_deposit_paise"`
+	DefaultDueDay             *int16                      `json:"default_due_day"`
+	AutoActivate              *bool                       `json:"auto_activate"`
+	ReserveBedsForOpenInvites *bool                       `json:"reserve_beds_for_open_invites"`
+	MaxExtraBedsPerRoom       *int                        `json:"max_extra_beds_per_room"`
+	SlotInviteDefaultTTLDays  *int                        `json:"slot_invite_default_ttl_days"`
+	WaitlistEnabled           *bool                       `json:"waitlist_enabled"`
+	WaitlistOfferTTLHours     *int                        `json:"waitlist_offer_ttl_hours"`
+	RequireKYCBeforePay       *bool                       `json:"require_kyc_before_pay"`
+	JoinPendingTTLDays        *int                        `json:"join_pending_ttl_days"`
+	ReferralEnabled           *bool                       `json:"referral_enabled"`
+	JoinerDiscountBps         *int                        `json:"joiner_discount_bps"`
 	ReferrerRewardBps         *int                        `json:"referrer_reward_bps"`
 	AllowManagerRefunds       *bool                       `json:"allow_manager_refunds"`
 	ManagerRefundLimitPaise   postgres.NullableInt64Patch `json:"manager_refund_limit_paise"`

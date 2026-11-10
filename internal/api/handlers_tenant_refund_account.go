@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	ifscPattern        = regexp.MustCompile(`^[A-Z]{4}0[A-Z0-9]{6}$`)
-	accountNumPattern  = regexp.MustCompile(`^[A-Za-z0-9]{6,34}$`)
+	ifscPattern       = regexp.MustCompile(`^[A-Z]{4}0[A-Z0-9]{6}$`)
+	accountNumPattern = regexp.MustCompile(`^[A-Za-z0-9]{6,34}$`)
 )
 
 type registerRefundAccountBody struct {

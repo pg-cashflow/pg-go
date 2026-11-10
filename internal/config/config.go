@@ -63,8 +63,8 @@ type Config struct {
 	KYCDocCryptoKey string
 	// KYCDocCryptoKeys holds versioned keys for document decryption during rotation (version -> 32-byte key).
 	// Format: "1:hexkey1,2:hexkey2".
-	KYCDocCryptoKeys            map[byte][]byte
-	KYCVerificationValidityDays int
+	KYCDocCryptoKeys                  map[byte][]byte
+	KYCVerificationValidityDays       int
 	RefundWindowDays                  int
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
