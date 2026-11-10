@@ -86,6 +86,11 @@ type RefundResubmitter interface {
 	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
 }
 
+// RefundOperationLocker abstracts mutual exclusion for refund operations.
+type RefundOperationLocker interface {
+	TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (acquired bool, unlock func(), err error)
+}
+
 // CashfreePollJob settles created intents whose webhook was missed, and reconciles stuck refunds.
 type CashfreePollJob struct {
 	Intents          IntentStaleLister
@@ -95,6 +100,7 @@ type CashfreePollJob struct {
 	OrderSettler     OrderGatewaySettler
 	Refunds          RefundStaleRepo
 	RefundClient     RefundStatusFetcher
+	RefundLocker     RefundOperationLocker
 	Referrals        ReferralClawback
 	StaleAfter       time.Duration
 	RefundStaleAfter time.Duration
@@ -275,12 +281,20 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 				// the record is still within 24 hours, attempt automated idempotent resubmission.
 				refundAge := now.Sub(ref.CreatedAt)
 				if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && refundAge >= 0 && refundAge < 24*time.Hour {
+					// R4: Acquire mutual exclusion lock before attempting resubmission
+					if j.RefundLocker != nil {
+						acquired, unlock, lockErr := j.RefundLocker.TryLockRefundOperation(ctx, ref.ID)
+						if lockErr != nil || !acquired {
+							log.Warn("cashfree poll: refund locked by concurrent operation, skipping resubmission", "refund_id", ref.ID)
+							continue
+						}
+						defer unlock()
+					}
+
 					log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 						"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-					// Cashfree caches the first result per idempotency key (including 5xx) and replays it.
-					// The refund is confirmed absent (GET 404), so retry under a fresh key. Duplicate
-					// protection comes from the constant refund_id, which the gateway rejects if reused.
-					retryIdempotencyKey := uuid.NewString()
+					// R6: Use deterministic idempotency key for resubmission
+					retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
 					refundNote := fmt.Sprintf("Refund %s", refundID)
 					if len(ref.RawPayload) > 0 {
 						var rawMap map[string]any
@@ -309,6 +323,10 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 					}
 					createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, refundNote, retryIdempotencyKey)
 					if createErr == nil && createdDetails != nil {
+						if valErr := cashfree.ValidateRefundResponse(orderID, refundID, ref.AmountPaise, createdDetails); valErr != nil {
+							log.Error("cashfree poll: resubmitted refund response validation failed", "refund_id", refundID, "err", valErr)
+							continue
+						}
 						details = createdDetails
 						err = nil
 					} else if createErr != nil {

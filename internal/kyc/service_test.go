@@ -891,8 +891,6 @@ func TestInitiateAadhaarOTP_CashfreeValidation(t *testing.T) {
 	})
 }
 
-
-
 func TestCompleteAadhaarOTP_AutoVerified(t *testing.T) {
 	tenantID := uuid.New()
 	verifID := uuid.New()
@@ -1140,7 +1138,6 @@ func TestCompleteAadhaarOTP_FailureClassificationAndRetryBudget(t *testing.T) {
 		}
 	})
 }
-
 
 func TestRejectManualReview_Success(t *testing.T) {
 	tenantID := uuid.New()

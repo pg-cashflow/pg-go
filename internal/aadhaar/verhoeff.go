@@ -98,4 +98,3 @@ func ValidateAadhaarNumber(aadhaar string) error {
 	}
 	return nil
 }
-

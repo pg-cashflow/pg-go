@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 // RefundDispatcher defines the worker interface for dispatching refunds to Cashfree.
@@ -33,13 +34,19 @@ type RefundPaymentRepo interface {
 type RefundGatewayDispatcher struct {
 	repo   RefundPaymentRepo
 	client CashfreeRefundClient
+	locker postgres.RefundOperationLocker
 }
 
 // NewRefundGatewayDispatcher creates a new RefundGatewayDispatcher.
-func NewRefundGatewayDispatcher(repo RefundPaymentRepo, client CashfreeRefundClient) *RefundGatewayDispatcher {
+func NewRefundGatewayDispatcher(repo RefundPaymentRepo, client CashfreeRefundClient, locker ...postgres.RefundOperationLocker) *RefundGatewayDispatcher {
+	var l postgres.RefundOperationLocker
+	if len(locker) > 0 {
+		l = locker[0]
+	}
 	return &RefundGatewayDispatcher{
 		repo:   repo,
 		client: client,
+		locker: l,
 	}
 }
 
@@ -52,6 +59,18 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 		return fmt.Errorf("refund dispatcher: payment repo not configured")
 	}
 
+	// R4: Mutual exclusion - acquire PostgreSQL session advisory lock for refundID
+	if d.locker != nil {
+		acquired, unlock, err := d.locker.TryLockRefundOperation(ctx, refundID)
+		if err != nil {
+			return fmt.Errorf("refund dispatcher: acquire lock for refund %s: %w", refundID, err)
+		}
+		if !acquired {
+			return fmt.Errorf("refund dispatcher: refund %s is busy with another operation", refundID)
+		}
+		defer unlock()
+	}
+
 	ref, err := d.repo.GetRefundByID(ctx, refundID)
 	if err != nil {
 		return fmt.Errorf("refund dispatcher: get refund %s: %w", refundID, err)
@@ -62,7 +81,13 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 
 	// Idempotency: If refund reached terminal status, safe no-op.
 	status := domain.NormalizeRefundStatus(ref.Status)
-	if status == domain.RefundStatusSucceeded || status == domain.RefundStatusFailed || status == domain.RefundStatusCancelled {
+	if domain.IsTerminalRefundStatus(status) {
+		return nil
+	}
+
+	// R3: Only 'initiated' refunds may execute CreateRefund.
+	// 'pending', 'on_hold', and 'needs_review' are reconciliation-only.
+	if status != domain.RefundStatusInitiated {
 		return nil
 	}
 
@@ -113,16 +138,19 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 			return nil // definitive failure handled, do not retry outbox event
 		}
 
-		// Cashfree stores the first result per idempotency key, including 5xx, and replays it.
-		// Retrying the same key after a server/transport error can therefore replay the error
-		// forever. Resolve by refund_id instead: adopt the gateway record if it exists, else
-		// create once more under a fresh key (refund_id stays the same, so the gateway rejects
-		// a true duplicate).
+		// R6: Resolve ambiguous create by querying gateway first.
 		resolved, recoverErr := d.recoverAmbiguousCreate(ctx, orderID, refundRef, ref, cfNote, cfErr)
 		if recoverErr != nil {
 			return recoverErr // outbox worker retries with backoff
 		}
 		cfResp = resolved
+	}
+
+	// R1: Validate provider response strictly before trusting status or mutating local state
+	if err := cashfree.ValidateRefundResponse(orderID, refundRef, ref.AmountPaise, cfResp); err != nil {
+		slog.Error("refund dispatcher: gateway response validation failed",
+			"error", err, "refund_id", ref.ID)
+		return fmt.Errorf("refund dispatcher: validate gateway response: %w", err)
 	}
 
 	respStatus := domain.NormalizeRefundStatus(cfResp.RefundStatus)
@@ -162,10 +190,10 @@ func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, or
 
 	details, fetchErr := fetcher.FetchRefundStatus(ctx, orderID, refundRef)
 	if fetchErr == nil && details != nil {
-		if details.AmountPaise > 0 && details.AmountPaise != ref.AmountPaise {
-			slog.Error("CRITICAL: refund amount mismatch at gateway; manual review required",
-				"refund_id", ref.ID, "local_paise", ref.AmountPaise, "gateway_paise", details.AmountPaise)
-			return nil, fmt.Errorf("refund dispatcher: refund %s gateway amount mismatch", ref.ID)
+		if err := cashfree.ValidateRefundResponse(orderID, refundRef, ref.AmountPaise, details); err != nil {
+			slog.Error("CRITICAL: refund validation failed on recovered gateway status; manual review required",
+				"refund_id", ref.ID, "error", err)
+			return nil, fmt.Errorf("refund dispatcher: recovered refund %s validation error: %w", ref.ID, err)
 		}
 		return details, nil
 	}
@@ -175,10 +203,10 @@ func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, or
 		return nil, ambiguous
 	}
 
-	// Not created at the gateway: safe to retry under a fresh idempotency key.
-	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, uuid.NewString())
+	// R6: Confirmed not created at the gateway (404): safe to retry using the SAME deterministic key.
+	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, domain.CashfreeRefundIdempotencyKey(ref.ID))
 	if createErr != nil {
-		slog.Error("refund dispatcher: re-create with fresh key failed", "error", createErr, "refund_id", ref.ID)
+		slog.Error("refund dispatcher: re-create failed", "error", createErr, "refund_id", ref.ID)
 		return nil, fmt.Errorf("cashfree refund ambiguous error: %w", createErr)
 	}
 	return fresh, nil

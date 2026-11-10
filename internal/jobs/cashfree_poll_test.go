@@ -604,11 +604,10 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 	if resubmitClient.createCalls != 1 {
 		t.Fatalf("expected exactly 1 CreateRefund resubmission call, got %d", resubmitClient.createCalls)
 	}
-	// The refund is absent at the gateway (GET 404), so the earlier attempt may have left a
-	// cached error under the deterministic key. Recovery must use a fresh key, same refund_id.
-	staleKey := domain.CashfreeRefundIdempotencyKey(refID)
-	if resubmitClient.lastIdempKey == staleKey {
-		t.Fatalf("recovery retry must rotate the idempotency key; got the original %s", staleKey)
+	// R6: Recovery retry must use the stable deterministic idempotency key for the refund command.
+	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
+	if resubmitClient.lastIdempKey != expectedKey {
+		t.Fatalf("recovery retry must use deterministic idempotency key %s; got %s", expectedKey, resubmitClient.lastIdempKey)
 	}
 	if _, err := uuid.Parse(resubmitClient.lastIdempKey); err != nil {
 		t.Fatalf("idempotency key is not a valid UUID: %v", err)
@@ -760,6 +759,53 @@ func TestCashfreePollStopsOn429RateLimit(t *testing.T) {
 
 	if countingClient.calls != 1 {
 		t.Fatalf("expected exactly 1 call before rate limit abort, got: %d", countingClient.calls)
+	}
+}
+
+type stubJobRefundLocker struct {
+	acquired bool
+}
+
+func (s *stubJobRefundLocker) TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (bool, func(), error) {
+	if !s.acquired {
+		return false, func() {}, nil
+	}
+	return true, func() {}, nil
+}
+
+func TestCashfreePollResubmitSkipsOnLockContention(t *testing.T) {
+	refRef := "rf_lock_contend_1"
+	refID := uuid.New()
+	staleCreatedAt := time.Now().UTC().Add(-5 * time.Minute)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_lock_1"}`),
+		Status:          "initiated",
+		AmountPaise:     150000,
+		Reason:          "Deposit refund lock contention test",
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{staleRef}},
+	}
+	resubmitClient := &stubRefundResubmitClient{
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "not found"},
+	}
+
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: resubmitClient,
+		RefundLocker: &stubJobRefundLocker{acquired: false},
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if resubmitClient.createCalls != 0 {
+		t.Fatalf("expected 0 create calls when refund is locked, got %d", resubmitClient.createCalls)
 	}
 }
 

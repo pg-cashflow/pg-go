@@ -57,7 +57,7 @@ type PropertyOnboardingSettings struct {
 	ReferrerRewardBps         int       `json:"referrer_reward_bps"`
 	AllowManagerRefunds       bool      `json:"allow_manager_refunds"`
 	// ManagerRefundLimitPaise is the largest single refund a manager may issue. nil means no limit.
-	ManagerRefundLimitPaise   *int64    `json:"manager_refund_limit_paise"`
+	ManagerRefundLimitPaise *int64 `json:"manager_refund_limit_paise"`
 }
 
 type InviteResolution struct {

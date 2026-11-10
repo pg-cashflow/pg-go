@@ -27,7 +27,7 @@ type OnboardingSettingsPatch struct {
 	AllowManagerRefunds       *bool
 	// ManagerRefundLimitPaise distinguishes "field absent" (Set=false), "clear the limit"
 	// (Set=true, Value=nil) and "set a limit" (Set=true, Value!=nil).
-	ManagerRefundLimitPaise   NullableInt64Patch
+	ManagerRefundLimitPaise NullableInt64Patch
 }
 
 // NullableInt64Patch is a tri-state PATCH value. JSON null clears, a number sets, absence leaves as is.

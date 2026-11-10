@@ -855,7 +855,7 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 	rows, err := r.db.Query(ctx, `
 		SELECT `+refundCols+`
 		FROM gateway_refunds
-		WHERE status IN ('initiated', 'pending', 'on_hold') AND created_at < $1
+		WHERE status IN ('initiated', 'pending', 'on_hold', 'needs_review') AND created_at < $1
 		ORDER BY created_at ASC`, olderThan)
 	if err != nil {
 		return nil, err

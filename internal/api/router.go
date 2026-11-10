@@ -127,6 +127,8 @@ type Deps struct {
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
 
+	RefundLocker postgres.RefundOperationLocker
+
 	// MetricsSecret is the static token accepted in the X-Metrics-Token header.
 	// REQ-SEC-003: owner JWTs do not authorize /metrics.
 	// REQ-SEC-003: /metrics requires either this token or a valid owner/manager JWT.

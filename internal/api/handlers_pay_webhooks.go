@@ -205,8 +205,10 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 
 func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.SuccessWebhook, evtRecord *domain.WebhookEvent) {
 	ctx := c.Request.Context()
+	// R7: Fail closed with HTTP 503 when the intent store is unavailable, so the provider retries.
 	if h.IntentStore == nil {
-		c.Status(http.StatusOK)
+		slog.Error("ALERT: payment success webhook received but IntentStore is unconfigured/unavailable", "order_id", succ.OrderID)
+		c.AbortWithStatus(http.StatusServiceUnavailable)
 		return
 	}
 

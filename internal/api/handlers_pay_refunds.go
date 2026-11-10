@@ -389,6 +389,19 @@ func (h *Handlers) getRefundTxRunner() RefundTxRunner {
 	return nil
 }
 
+func (h *Handlers) getRefundLocker() postgres.RefundOperationLocker {
+	if h.RefundLocker != nil {
+		return h.RefundLocker
+	}
+	if h.AppPool != nil {
+		return postgres.NewRefundOperationLock(h.AppPool)
+	}
+	if h.Pool != nil {
+		return postgres.NewRefundOperationLock(h.Pool)
+	}
+	return nil
+}
+
 func isTerminalRefund(status string) bool {
 	s := domain.NormalizeRefundStatus(status)
 	return s == domain.RefundStatusSucceeded || s == domain.RefundStatusFailed || s == domain.RefundStatusCancelled
@@ -663,11 +676,21 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 		return
 	}
 
-	// Guard against race condition with in-flight creation:
-	// If refund is in 'initiated' status and less than 2 minutes old, reject cancel to prevent race with Cashfree call.
-	if rf.Status == domain.RefundStatusInitiated && time.Since(rf.CreatedAt) < 2*time.Minute {
-		apierr.RespondClientErr(c, http.StatusConflict, "refund is currently in flight; please wait 2 minutes before cancelling", apierr.CodePaymentRefundInFlight)
-		return
+	// R4: Mutual exclusion - acquire PostgreSQL session advisory lock for refundID.
+	// This prevents concurrent execution against Cashfree with outbox dispatch or poller resubmission.
+	locker := h.getRefundLocker()
+	if locker != nil {
+		acquired, unlock, err := locker.TryLockRefundOperation(ctx, rf.ID)
+		if err != nil {
+			slog.Error("refund cancel acquire lock error", "error", err, "refund_id", rf.ID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed acquiring refund operation lock"})
+			return
+		}
+		if !acquired {
+			apierr.RespondClientErr(c, http.StatusConflict, "refund is currently in flight; please wait before cancelling", apierr.CodePaymentRefundInFlight)
+			return
+		}
+		defer unlock()
 	}
 
 	// Require cryptographic step-up verification before cancelling reserved money.
@@ -721,12 +744,14 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway rejected refund cancellation; reservation remains held"})
 		return
 	}
-	if cfResp == nil || domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
-		status := "empty"
-		if cfResp != nil {
-			status = cfResp.RefundStatus
-		}
-		slog.Warn("gateway returned non-cancelled status on cancel", "status", status, "refund_id", rf.ID)
+	// R5: Validate provider cancellation response against original order, refund reference and amount.
+	if err := cashfree.ValidateRefundResponse(orderPayload.OrderID, targetRef, rf.AmountPaise, cfResp); err != nil {
+		slog.Warn("gateway returned unverifiable cancellation response", "error", err, "refund_id", rf.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund cancellation unverifiable; reservation remains held"})
+		return
+	}
+	if domain.NormalizeRefundStatus(cfResp.RefundStatus) != domain.RefundStatusCancelled {
+		slog.Warn("gateway returned non-cancelled status on cancel", "status", cfResp.RefundStatus, "refund_id", rf.ID)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "gateway refund status is not cancelled; reservation remains held"})
 		return
 	}

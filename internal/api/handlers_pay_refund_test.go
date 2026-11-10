@@ -78,11 +78,16 @@ func (m *mockCFClient) CancelRefund(ctx context.Context, orderID, refundID, rema
 		}
 		return nil, errors.New("gateway rejected cancel refund")
 	}
+	amt := int64(50000)
+	if m.refundResult != nil && m.refundResult.AmountPaise > 0 {
+		amt = m.refundResult.AmountPaise
+	}
 	return &cashfree.RefundDetails{
 		CFRefundID:   "cf_ref_mock_cancel",
 		RefundID:     refundID,
 		OrderID:      orderID,
 		RefundStatus: "CANCELLED",
+		AmountPaise:  amt,
 		RefundReason: remarks,
 	}, nil
 }
@@ -2254,7 +2259,7 @@ func TestCancelRefund_Scenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("reject cancel for fresh in-flight initiated refund (409 Conflict)", func(t *testing.T) {
+	t.Run("initiated refund can be cancelled immediately when lock is free without 2-minute delay", func(t *testing.T) {
 		cfClient := &mockCFClient{}
 		h, gwRepo := setupCancelHandler(cfClient)
 
@@ -2296,8 +2301,8 @@ func TestCancelRefund_Scenarios(t *testing.T) {
 
 		h.OwnerCancelRefund(c)
 
-		if w.Code != http.StatusConflict {
-			t.Fatalf("expected 409 Conflict for in-flight refund, got %d (body: %s)", w.Code, w.Body.String())
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for immediate cancel when lock is free, got %d (body: %s)", w.Code, w.Body.String())
 		}
 	})
 
@@ -2600,5 +2605,123 @@ func TestCancelRefund_Scenarios(t *testing.T) {
 			t.Fatalf("expected 503 Service Unavailable when client is nil, got %d (body: %s)", w.Code, w.Body.String())
 		}
 	})
+
+	t.Run("R4: lock contention returns 409 conflict", func(t *testing.T) {
+		cfClient := &mockCFClient{}
+		h, gwRepo := setupCancelHandler(cfClient)
+		h.RefundLocker = &mockApiRefundLocker{acquired: false}
+
+		rfRef := "rf_test_cancel_lock"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusInitiated,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancel busy refund",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict on lock contention, got %d (body: %s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("R5: gateway cancellation response amount mismatch returns 502 with reservation held", func(t *testing.T) {
+		cfClient := &mockCFClient{
+			refundResult: &cashfree.RefundDetails{
+				CFRefundID:   "cf_ref_mock_cancel",
+				RefundID:     "rf_test_cancel_mismatch",
+				OrderID:      cfOrderID,
+				RefundStatus: "CANCELLED",
+				AmountPaise:  25000, // Mismatched amount
+			},
+		}
+		h, gwRepo := setupCancelHandler(cfClient)
+
+		rfRef := "rf_test_cancel_mismatch"
+		orderPayload, _ := json.Marshal(map[string]any{"order_id": cfOrderID})
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			Provider:        "cashfree",
+			RefundReference: &rfRef,
+			AmountPaise:     50000,
+			Status:          domain.RefundStatusOnHold,
+			Source:          "owner",
+			RawPayload:      orderPayload,
+			CreatedAt:       time.Now().Add(-10 * time.Minute),
+			UpdatedAt:       time.Now().Add(-10 * time.Minute),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"reason": "Cancel with mismatch",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/cancel", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerCancelRefund(c)
+
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("expected 502 Bad Gateway on amount mismatch, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		reloaded, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if reloaded.Status != domain.RefundStatusOnHold {
+			t.Fatalf("reservation must remain held, got status %s", reloaded.Status)
+		}
+	})
 	_ = tenantID
+}
+
+type mockApiRefundLocker struct {
+	acquired bool
+}
+
+func (m *mockApiRefundLocker) TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (bool, func(), error) {
+	if !m.acquired {
+		return false, func() {}, nil
+	}
+	return true, func() {}, nil
 }

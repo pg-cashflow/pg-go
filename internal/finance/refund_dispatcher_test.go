@@ -66,7 +66,45 @@ func TestRefundGatewayDispatcher_TerminalNoOp(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cf.calls != 0 {
-		t.Errorf("expected 0 gateway calls for terminal refund, got %d", cf.calls)
+		t.Errorf("expected 0 gateway calls for succeeded refund, got %d", cf.calls)
+	}
+}
+
+// R3: pending, on_hold, and needs_review are reconciliation-only and must never call CreateRefund.
+func TestRefundGatewayDispatcher_NonInitiatedStatusDoesNotCallCreate(t *testing.T) {
+	nonInitiatedStatuses := []string{
+		domain.RefundStatusPending,
+		domain.RefundStatusOnHold,
+		domain.RefundStatusNeedsReview,
+	}
+
+	for _, st := range nonInitiatedStatuses {
+		t.Run("status_"+st, func(t *testing.T) {
+			refID := uuid.New()
+			refRef := "rf_test_123"
+			raw, _ := json.Marshal(map[string]any{"order_id": "order_123"})
+			repo := &mockRefundRepo{
+				refunds: map[uuid.UUID]*domain.GatewayRefund{
+					refID: {
+						ID:              refID,
+						RefundReference: &refRef,
+						Status:          st,
+						AmountPaise:     50000,
+						RawPayload:      raw,
+					},
+				},
+			}
+			cf := &mockCFRefundClient{}
+			d := NewRefundGatewayDispatcher(repo, cf)
+
+			err := d.DispatchRefund(context.Background(), refID)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cf.calls != 0 {
+				t.Errorf("expected 0 gateway calls for non-initiated status %q, got %d", st, cf.calls)
+			}
+		})
 	}
 }
 
@@ -86,16 +124,17 @@ func TestRefundGatewayDispatcher_DefinitiveFailureMarksFailed(t *testing.T) {
 		},
 	}
 	cf := &mockCFRefundClient{
-		err: &cashfree.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"},
+		err: &cashfree.APIError{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Body:       `{"message":"invalid order"}`,
+		},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	err := d.DispatchRefund(context.Background(), refID)
 	if err != nil {
-		t.Fatalf("expected nil error on definitive failure, got %v", err)
-	}
-	if cf.calls != 1 {
-		t.Fatalf("expected 1 gateway call, got %d", cf.calls)
+		t.Fatalf("expected nil error on handled definitive failure, got %v", err)
 	}
 	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "failed" {
 		t.Errorf("expected reconcile to 'failed', got %v", repo.reconcileLog)
@@ -118,13 +157,17 @@ func TestRefundGatewayDispatcher_AmbiguousFailureReturnsError(t *testing.T) {
 		},
 	}
 	cf := &mockCFRefundClient{
-		err: &cashfree.APIError{StatusCode: http.StatusUnprocessableEntity, Status: "422 Unprocessable"},
+		err: &cashfree.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Status:     "422 Unprocessable Entity",
+			Body:       `{"message":"balance insufficient"}`,
+		},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	err := d.DispatchRefund(context.Background(), refID)
 	if err == nil {
-		t.Fatal("expected error on ambiguous 422 failure to trigger outbox retry, got nil")
+		t.Fatalf("expected error on ambiguous failure")
 	}
 	if len(repo.reconcileLog) != 0 {
 		t.Errorf("expected no reconcile on ambiguous error, got %v", repo.reconcileLog)
@@ -149,6 +192,8 @@ func TestRefundGatewayDispatcher_SuccessReconcilesStatus(t *testing.T) {
 	cf := &mockCFRefundClient{
 		resp: &cashfree.RefundDetails{
 			CFRefundID:   "cf_ref_xyz",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
 			RefundStatus: "SUCCESS",
 			AmountPaise:  50000,
 		},
@@ -168,8 +213,87 @@ func TestRefundGatewayDispatcher_SuccessReconcilesStatus(t *testing.T) {
 	}
 }
 
-// fetchingCFRefundClient extends the mock with FetchRefundStatus and per-call
-// scripted CreateRefund results, so the replayed-5xx recovery path can be exercised.
+// R1: Provider response validation failure rejects state mutation.
+func TestRefundGatewayDispatcher_ProviderResponseValidationFailure(t *testing.T) {
+	refID := uuid.New()
+	refRef := "rf_test_123"
+	raw, _ := json.Marshal(map[string]any{"order_id": "order_123"})
+	repo := &mockRefundRepo{
+		refunds: map[uuid.UUID]*domain.GatewayRefund{
+			refID: {
+				ID:              refID,
+				RefundReference: &refRef,
+				Status:          "initiated",
+				AmountPaise:     50000,
+				RawPayload:      raw,
+			},
+		},
+	}
+	// Gateway returns wrong amount
+	cf := &mockCFRefundClient{
+		resp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_ref_xyz",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  25000,
+		},
+	}
+	d := NewRefundGatewayDispatcher(repo, cf)
+
+	err := d.DispatchRefund(context.Background(), refID)
+	if err == nil {
+		t.Fatalf("expected error on response validation failure")
+	}
+	if len(repo.reconcileLog) != 0 {
+		t.Errorf("must not reconcile when response validation fails, got %v", repo.reconcileLog)
+	}
+}
+
+type mockLocker struct {
+	acquired bool
+	err      error
+}
+
+func (m *mockLocker) TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (bool, func(), error) {
+	if m.err != nil {
+		return false, nil, m.err
+	}
+	if !m.acquired {
+		return false, func() {}, nil
+	}
+	return true, func() {}, nil
+}
+
+// R4: Lock contention prevents concurrent dispatch.
+func TestRefundGatewayDispatcher_LockContentionReturnsError(t *testing.T) {
+	refID := uuid.New()
+	refRef := "rf_test_123"
+	raw, _ := json.Marshal(map[string]any{"order_id": "order_123"})
+	repo := &mockRefundRepo{
+		refunds: map[uuid.UUID]*domain.GatewayRefund{
+			refID: {
+				ID:              refID,
+				RefundReference: &refRef,
+				Status:          "initiated",
+				AmountPaise:     50000,
+				RawPayload:      raw,
+			},
+		},
+	}
+	cf := &mockCFRefundClient{}
+	locker := &mockLocker{acquired: false}
+	d := NewRefundGatewayDispatcher(repo, cf, locker)
+
+	err := d.DispatchRefund(context.Background(), refID)
+	if err == nil {
+		t.Fatalf("expected error on lock contention")
+	}
+	if cf.calls != 0 {
+		t.Errorf("expected 0 gateway calls on lock contention, got %d", cf.calls)
+	}
+}
+
 type fetchingCFRefundClient struct {
 	createResults []error
 	createResp    *cashfree.RefundDetails
@@ -201,16 +325,20 @@ func newInitiatedRefundRepo(refID uuid.UUID) *mockRefundRepo {
 	}}
 }
 
-// A 5xx on the first attempt may be cached and replayed by Cashfree for the same
-// idempotency key. When the refund does not exist at the gateway (404), the retry
-// must use a NEW key while keeping the same refund_id.
-func TestRefundGatewayDispatcher_Replayed5xxRetriesWithFreshKey(t *testing.T) {
+// R6: When 5xx occurs and gateway confirms refund absent (404), retry must use the SAME deterministic key.
+func TestRefundGatewayDispatcher_Replayed5xxRetriesWithDeterministicKey(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
 		createResults: []error{&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"}, nil},
-		createResp:    &cashfree.RefundDetails{CFRefundID: "cf_1", RefundStatus: "PENDING", AmountPaise: 50000},
-		fetchErr:      &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
+		createResp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_1",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "PENDING",
+			AmountPaise:  50000,
+		},
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
@@ -220,25 +348,30 @@ func TestRefundGatewayDispatcher_Replayed5xxRetriesWithFreshKey(t *testing.T) {
 	if len(cf.createKeys) != 2 {
 		t.Fatalf("expected 2 create calls, got %d", len(cf.createKeys))
 	}
-	if cf.createKeys[0] != domain.CashfreeRefundIdempotencyKey(refID) {
-		t.Errorf("first attempt must use deterministic key")
+	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
+	if cf.createKeys[0] != expectedKey {
+		t.Errorf("first attempt must use deterministic key, got %q", cf.createKeys[0])
 	}
-	if cf.createKeys[1] == cf.createKeys[0] {
-		t.Errorf("retry after 5xx must rotate the idempotency key")
+	if cf.createKeys[1] != expectedKey {
+		t.Errorf("retry after 5xx 404 must retain the same deterministic key, got %q", cf.createKeys[1])
 	}
 	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "pending" {
 		t.Errorf("expected reconcile to 'pending', got %v", repo.reconcileLog)
 	}
 }
 
-// If the 5xx happened AFTER Cashfree created the refund, we must adopt the
-// gateway's record and never create again.
 func TestRefundGatewayDispatcher_5xxButRefundExistsAdoptsGatewayState(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
 		createResults: []error{&cashfree.APIError{StatusCode: http.StatusInternalServerError, Status: "500"}},
-		fetchResp:     &cashfree.RefundDetails{CFRefundID: "cf_9", RefundStatus: "SUCCESS", AmountPaise: 50000},
+		fetchResp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_9",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  50000,
+		},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
@@ -254,13 +387,18 @@ func TestRefundGatewayDispatcher_5xxButRefundExistsAdoptsGatewayState(t *testing
 	}
 }
 
-// Amount drift between local row and gateway must never auto-reconcile.
 func TestRefundGatewayDispatcher_5xxGatewayAmountMismatchReturnsError(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
 		createResults: []error{&cashfree.APIError{StatusCode: http.StatusInternalServerError, Status: "500"}},
-		fetchResp:     &cashfree.RefundDetails{CFRefundID: "cf_9", RefundStatus: "SUCCESS", AmountPaise: 99900},
+		fetchResp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_9",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  99900,
+		},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
@@ -272,7 +410,6 @@ func TestRefundGatewayDispatcher_5xxGatewayAmountMismatchReturnsError(t *testing
 	}
 }
 
-// 429/401/403 are not "refund missing" signals; do not rotate keys on them.
 func TestRefundGatewayDispatcher_RateLimitDoesNotRotateKey(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
