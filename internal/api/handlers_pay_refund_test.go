@@ -483,6 +483,11 @@ func (f *fakeRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p 
 	return f.gwRepo.CreateOrUpdateRefund(ctx, rfRow)
 }
 
+func (f *fakeRefundTxRunner) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	ref.Status = newStatus
+	return f.gwRepo.CreateOrUpdateRefund(ctx, ref)
+}
+
 type shortfallRefundTxRunner struct {
 	err error
 }
@@ -499,6 +504,11 @@ func (s *shortfallRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow
 }
 
 func (s *shortfallRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	return nil
+}
+
+func (s *shortfallRefundTxRunner) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	ref.Status = newStatus
 	return nil
 }
 
@@ -1461,6 +1471,11 @@ func (a *adoptingRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 }
 
 func (a *adoptingRefundTxRunner) SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error {
+	return nil
+}
+
+func (a *adoptingRefundTxRunner) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	ref.Status = newStatus
 	return nil
 }
 
@@ -2724,4 +2739,233 @@ func (m *mockApiRefundLocker) TryLockRefundOperation(ctx context.Context, refund
 		return false, func() {}, nil
 	}
 	return true, func() {}, nil
+}
+
+func TestOwnerResolveReviewRefund_UnitScenarios(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	ownerID := uuid.New()
+	paymentID := uuid.New()
+
+	setupH := func(acquired bool) (*Handlers, *mockRefundPaymentRepo) {
+		gwRepo := newMockRefundPaymentRepo()
+		gwRepo.payments[paymentID] = &domain.Payment{
+			ID:         paymentID,
+			PropertyID: &propID,
+			Amount:     500000,
+			Provider:   "cashfree",
+		}
+		owner := &domain.User{ID: ownerID, PropertyID: &propID, Role: domain.RoleOwner, Phone: "+919000000001"}
+		userStore := &refundStepUpUserStore{owners: []domain.User{*owner}, user: owner}
+		authSvc := &refundStepUpAuthService{validOTP: "123456"}
+		runner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		h := &Handlers{
+			Deps: Deps{
+				GatewayPaymentRepo: gwRepo,
+				RefundTxRunner:     runner,
+				UserStore:          userStore,
+				Auth:               authSvc,
+				RefundLocker:       &mockApiRefundLocker{acquired: acquired},
+			},
+		}
+		return h, gwRepo
+	}
+
+	t.Run("Rejects non-needs_review refund", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rf := &domain.GatewayRefund{
+			ID:          uuid.New(),
+			PaymentID:   paymentID,
+			PropertyID:  propID,
+			AmountPaise: 200000,
+			Status:      domain.RefundStatusInitiated,
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "cancel",
+			"reason": "Unconfirmed orphan refund verified manually",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request, got %d (body: %s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("Rejects invalid action", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rf := &domain.GatewayRefund{
+			ID:          uuid.New(),
+			PaymentID:   paymentID,
+			PropertyID:  propID,
+			AmountPaise: 200000,
+			Status:      domain.RefundStatusNeedsReview,
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "unknown_action",
+			"reason": "Manual operator override",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request on invalid action, got %d", w.Code)
+		}
+	})
+
+	t.Run("Lock contention returns 409 Conflict", func(t *testing.T) {
+		h, gwRepo := setupH(false)
+		rf := &domain.GatewayRefund{
+			ID:          uuid.New(),
+			PaymentID:   paymentID,
+			PropertyID:  propID,
+			AmountPaise: 200000,
+			Status:      domain.RefundStatusNeedsReview,
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "cancel",
+			"reason": "Release reservation after confirmation",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict on lock contention, got %d", w.Code)
+		}
+	})
+
+	t.Run("Action cancel transitions status to cancelled", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rf := &domain.GatewayRefund{
+			ID:          uuid.New(),
+			PaymentID:   paymentID,
+			PropertyID:  propID,
+			AmountPaise: 200000,
+			Status:      domain.RefundStatusNeedsReview,
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "cancel",
+			"reason": "Cashfree confirmed refund was never executed",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		updated, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if updated.Status != domain.RefundStatusCancelled {
+			t.Fatalf("expected status cancelled, got %s", updated.Status)
+		}
+	})
+
+	t.Run("Action confirm_succeeded transitions status to succeeded", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rf := &domain.GatewayRefund{
+			ID:          uuid.New(),
+			PaymentID:   paymentID,
+			PropertyID:  propID,
+			AmountPaise: 200000,
+			Status:      domain.RefundStatusNeedsReview,
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{
+			{Key: "id", Value: paymentID.String()},
+			{Key: "refund_id", Value: rf.ID.String()},
+		}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     ownerID,
+			PropertyID: &propID,
+			Role:       domain.RoleOwner,
+		})
+		body := map[string]any{
+			"action": "confirm_succeeded",
+			"reason": "Gateway portal confirms transfer succeeded with bank reference",
+			"otp":    "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.OwnerResolveReviewRefund(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d (body: %s)", w.Code, w.Body.String())
+		}
+		updated, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
+		if updated.Status != domain.RefundStatusSucceeded {
+			t.Fatalf("expected status succeeded, got %s", updated.Status)
+		}
+	})
 }

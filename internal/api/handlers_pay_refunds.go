@@ -36,10 +36,19 @@ type RefundTxRunner interface {
 	PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error)
 	CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error
 	SettleRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund, allocationsToCreate []refundAllocItem) error
+	ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error
 }
 
 type postgresRefundTxRunner struct {
 	pool *pgxpool.Pool
+}
+
+func (r *postgresRefundTxRunner) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	if r.pool == nil {
+		return errors.New("database pool unavailable")
+	}
+	repo := postgres.NewPaymentRepo(r.pool)
+	return repo.ReconcileRefundTransition(ctx, ref, newStatus)
 }
 
 func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) ([]refundAllocItem, error) {
@@ -273,6 +282,23 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		)
 		if err != nil {
 			return fmt.Errorf("enqueue refund dispatch command: %w", err)
+		}
+
+		// Enqueue tenant notification for pending refund into transactional outbox
+		if p.TenantID != uuid.Nil {
+			notifPayload, mErr := json.Marshal(map[string]any{
+				"refund_id":    rfRow.ID.String(),
+				"payment_id":   p.ID.String(),
+				"amount_paise": rfRow.AmountPaise,
+				"reason":       rfRow.Reason,
+			})
+			if mErr == nil {
+				_, _ = tx.Exec(ctx, `
+					INSERT INTO outbox_events (event_type, property_id, tenant_id, actor_role, payload, created_at)
+					VALUES ($1, $2, $3, $4, $5, NOW())`,
+					string(domain.EvtPaymentRefundPending), pid, p.TenantID, string(rfRow.Source), notifPayload,
+				)
+			}
 		}
 
 		return nil
@@ -790,6 +816,164 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 	c.JSON(http.StatusOK, rf)
 }
 
+// OwnerResolveReviewRefundRequest represents an operator resolution for an unconfirmed refund in needs_review status.
+type OwnerResolveReviewRefundRequest struct {
+	Action string `json:"action" binding:"required"` // "cancel" (release reservation) or "confirm_succeeded" (settle refund)
+	Reason string `json:"reason" binding:"required"`
+	StepUpAuthInput
+}
+
+// OwnerResolveReviewRefund handles POST /owner/payments/:id/refunds/:refund_id/resolve-review.
+func (h *Handlers) OwnerResolveReviewRefund(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	refundID, ok := ParseUUIDParam(c, "refund_id")
+	if !ok {
+		return
+	}
+	var req OwnerResolveReviewRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	h.executeResolveReviewRefund(c, pid, uid, paymentID, refundID, req)
+}
+
+// ManagerResolveReviewRefund handles POST /manager/payments/:id/refunds/:refund_id/resolve-review.
+func (h *Handlers) ManagerResolveReviewRefund(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	paymentID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	refundID, ok := ParseUUIDParam(c, "refund_id")
+	if !ok {
+		return
+	}
+	var req OwnerResolveReviewRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	h.executeResolveReviewRefund(c, pid, uid, paymentID, refundID, req)
+}
+
+func (h *Handlers) executeResolveReviewRefund(c *gin.Context, pid, uid, paymentID, refundID uuid.UUID, req OwnerResolveReviewRefundRequest) {
+	if h.GatewayPaymentRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payment repository unavailable"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	rf, err := h.GatewayPaymentRepo.GetRefundByID(ctx, refundID)
+	if err != nil || rf == nil || rf.PaymentID != paymentID || rf.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "refund not found"})
+		return
+	}
+
+	// Resolution applies strictly to refunds in 'needs_review'
+	if domain.NormalizeRefundStatus(rf.Status) != domain.RefundStatusNeedsReview {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "refund is not in needs_review status"})
+		return
+	}
+
+	cleanAction := strings.ToLower(strings.TrimSpace(req.Action))
+	if cleanAction != "cancel" && cleanAction != "confirm_succeeded" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be either 'cancel' or 'confirm_succeeded'"})
+		return
+	}
+
+	cleanReason := strings.TrimSpace(req.Reason)
+	if len(cleanReason) < 3 || len(cleanReason) > 255 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reason must be between 3 and 255 characters"})
+		return
+	}
+
+	// R4: Mutual exclusion - acquire PostgreSQL session advisory lock for refundID.
+	locker := h.getRefundLocker()
+	if locker != nil {
+		acquired, unlock, err := locker.TryLockRefundOperation(ctx, rf.ID)
+		if err != nil {
+			slog.Error("refund resolve review acquire lock error", "error", err, "refund_id", rf.ID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed acquiring refund operation lock"})
+			return
+		}
+		if !acquired {
+			apierr.RespondClientErr(c, http.StatusConflict, "refund is currently in flight; please wait before resolving", apierr.CodePaymentRefundInFlight)
+			return
+		}
+		defer unlock()
+	}
+
+	// Require cryptographic step-up verification before resolving uncertain money state.
+	req.StepUpAuthInput.Purpose = paymentRefundPurpose(paymentID)
+	req.StepUpAuthInput.BatchID = nil
+	if _, ok := h.verifyDualControlOrStepUp(c, pid, uid, nil, req.StepUpAuthInput); !ok {
+		return
+	}
+
+	runner := h.getRefundTxRunner()
+	if runner == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database pool unavailable"})
+		return
+	}
+
+	targetStatus := domain.RefundStatusCancelled
+	if cleanAction == "confirm_succeeded" {
+		targetStatus = domain.RefundStatusSucceeded
+	}
+
+	if err := runner.ReconcileRefundTransition(ctx, rf, targetStatus); err != nil {
+		slog.Error("failed reconciling needs_review refund", "refund_id", rf.ID, "action", cleanAction, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed resolving refund: " + err.Error()})
+		return
+	}
+
+	// Audit trail: publish resolution event
+	if h.Events != nil {
+		evtType := domain.EvtPaymentRefundCancelled
+		if cleanAction == "confirm_succeeded" {
+			evtType = "PaymentRefundResolved"
+		}
+		eventData, _ := json.Marshal(map[string]any{
+			"payment_id": paymentID,
+			"refund_id":  rf.ID,
+			"amount":     rf.AmountPaise,
+			"action":     cleanAction,
+			"reason":     cleanReason,
+			"actor_id":   uid,
+		})
+		_ = h.Events.Publish(ctx, domain.Event{
+			PropertyID: pid,
+			EventType:  evtType,
+			OccurredAt: time.Now().UTC(),
+			Payload:    eventData,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "refund resolved successfully",
+		"refund":  rf,
+	})
+}
+
 // ManagerRefundPayment handles POST /manager/payments/:id/refund.
 // It verifies that the property owner has enabled allow_manager_refunds in property settings.
 func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
@@ -1103,6 +1287,24 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	}
 
 	// Refund is persisted in status "initiated" and enqueued to outbox.
+	// Publish domain event for telemetry/consumers.
+	if h.Events != nil && p.TenantID != uuid.Nil {
+		eventData, _ := json.Marshal(map[string]any{
+			"payment_id":   paymentID,
+			"refund_id":    rfRow.ID,
+			"amount_paise": rfRow.AmountPaise,
+			"reason":       rfRow.Reason,
+			"actor_id":     uid,
+		})
+		_ = h.Events.Publish(ctx, domain.Event{
+			PropertyID: pid,
+			TenantID:   &p.TenantID,
+			EventType:  domain.EvtPaymentRefundPending,
+			OccurredAt: rfRow.CreatedAt,
+			Payload:    eventData,
+		})
+	}
+
 	// The ledger outbox worker dispatches to Cashfree asynchronously.
 	c.JSON(http.StatusAccepted, gin.H{
 		"message": "refund initiated; processing via gateway outbox",

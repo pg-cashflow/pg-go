@@ -116,6 +116,10 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtPaymentRefundCancelled):
 		return r.toOwner(ctx, evt, "refund_cancelled", "Payment refund cancelled", "/owner/payments")
 
+	// Tenant-directed: refund initiated and in progress
+	case string(domain.EvtPaymentRefundPending):
+		return r.toTenant(ctx, evt, "refund_pending", "A refund has been initiated for your payment.", "/tenant/payments")
+
 	default:
 		// Unknown event type → skip silently. Returning no recipients with no
 		// error is the correct "skip" signal to the dispatcher.

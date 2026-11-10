@@ -33,6 +33,7 @@ type Config struct {
 	KYCPublicKey               *rsa.PublicKey
 	KYCClientID                string
 	KYCSecretKey               string
+	DefaultRefundSpeed         string // "STANDARD" (default) | "INSTANT"
 	Now                        func() time.Time
 }
 
@@ -440,11 +441,15 @@ func (c *Client) CreateRefund(ctx context.Context, orderID, refundID string, amo
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
+	speed := strings.ToUpper(strings.TrimSpace(c.cfg.DefaultRefundSpeed))
+	if speed == "" {
+		speed = "STANDARD"
+	}
 	body := CreateRefundRequest{
 		RefundAmount: json.Number(FormatPaiseToRupees(amountPaise)),
 		RefundID:     refundID,
 		RefundNote:   reason,
-		RefundSpeed:  "STANDARD",
+		RefundSpeed:  speed,
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {

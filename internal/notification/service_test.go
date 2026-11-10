@@ -150,7 +150,25 @@ func TestResolver_EventMappings(t *testing.T) {
 		t.Fatalf("expected deep link with ID, got %q", hazardNotifs[0].DeepLink)
 	}
 
-	// 3. Unknown event skips silently
+	// 3. Tenant-directed: refund pending
+	tid := tenantID
+	refundEvt := &domain.OutboxEvent{
+		EventType:  string(domain.EvtPaymentRefundPending),
+		PropertyID: propID,
+		TenantID:   &tid,
+	}
+	refundNotifs, err := resolver.Resolve(ctx, refundEvt)
+	if err != nil {
+		t.Fatalf("resolve refund pending: %v", err)
+	}
+	if len(refundNotifs) != 1 || refundNotifs[0].RecipientID != tenantUserID {
+		t.Fatalf("expected tenant recipient for refund pending, got %+v", refundNotifs)
+	}
+	if refundNotifs[0].Type != "refund_pending" || refundNotifs[0].DeepLink != "/tenant/payments" {
+		t.Fatalf("unexpected refund notification format: %+v", refundNotifs[0])
+	}
+
+	// 4. Unknown event skips silently
 	unknownNotifs, err := resolver.Resolve(ctx, &domain.OutboxEvent{
 		EventType: "some.random.event",
 	})

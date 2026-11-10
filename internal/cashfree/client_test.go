@@ -218,11 +218,26 @@ func TestCreateRefund(t *testing.T) {
 	if err := json.Unmarshal(gotBody, &reqBody); err != nil {
 		t.Fatalf("unmarshal request body: %v", err)
 	}
-	if reqBody.RefundAmount.String() != "5500.00" || reqBody.RefundID != "rf_test_123" || reqBody.RefundNote != "Tenant moved out" {
+	if reqBody.RefundAmount.String() != "5500.00" || reqBody.RefundID != "rf_test_123" || reqBody.RefundNote != "Tenant moved out" || reqBody.RefundSpeed != "STANDARD" {
 		t.Fatalf("unexpected request body: %+v", reqBody)
 	}
 	if ref.CFRefundID != "999888" || ref.AmountPaise != 550000 || ref.RefundStatus != "SUCCESS" {
 		t.Fatalf("unexpected refund details: %+v", ref)
+	}
+
+	// Test configurable refund speed (INSTANT)
+	cInstant := NewClient(Config{AppID: "app_1", SecretKey: "sec_1", Env: "sandbox", DefaultRefundSpeed: "INSTANT"})
+	cInstant.baseOverride = srv.URL
+	_, err = cInstant.CreateRefund(context.Background(), "order_123", "rf_test_456", 550000, "Instant refund", "idemp_instant")
+	if err != nil {
+		t.Fatalf("CreateRefund with INSTANT failed: %v", err)
+	}
+	var instantBody CreateRefundRequest
+	if err := json.Unmarshal(gotBody, &instantBody); err != nil {
+		t.Fatalf("unmarshal instant body: %v", err)
+	}
+	if instantBody.RefundSpeed != "INSTANT" {
+		t.Fatalf("expected refund_speed 'INSTANT', got: %s", instantBody.RefundSpeed)
 	}
 }
 
