@@ -1645,8 +1645,18 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	rec1 := httptest.NewRecorder()
 	r.ServeHTTP(rec1, req1)
 
-	if rec1.Code != http.StatusOK {
+	if rec1.Code != http.StatusOK && rec1.Code != http.StatusAccepted {
 		t.Fatalf("Round 1 refund failed with %d: %s", rec1.Code, rec1.Body.String())
+	}
+
+	var resp1 struct {
+		Refund domain.GatewayRefund `json:"refund"`
+	}
+	_ = json.Unmarshal(rec1.Body.Bytes(), &resp1)
+	if resp1.Refund.ID != uuid.Nil {
+		if err := payRepo.ReconcileRefundTransition(ctx, &resp1.Refund, "succeeded"); err != nil {
+			t.Fatalf("reconcile round 1 refund: %v", err)
+		}
 	}
 
 	// Check Due 2 status in Postgres
@@ -1686,8 +1696,18 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
 
-	if rec2.Code != http.StatusOK {
+	if rec2.Code != http.StatusOK && rec2.Code != http.StatusAccepted {
 		t.Fatalf("Round 2 refund failed with %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var resp2 struct {
+		Refund domain.GatewayRefund `json:"refund"`
+	}
+	_ = json.Unmarshal(rec2.Body.Bytes(), &resp2)
+	if resp2.Refund.ID != uuid.Nil {
+		if err := payRepo.ReconcileRefundTransition(ctx, &resp2.Refund, "succeeded"); err != nil {
+			t.Fatalf("reconcile round 2 refund: %v", err)
+		}
 	}
 
 	err = pool.QueryRow(ctx, `SELECT status, amount FROM dues WHERE id = $1`, dueID2).Scan(&due2Status, &due2Amount)
