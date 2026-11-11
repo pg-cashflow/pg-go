@@ -124,8 +124,8 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		if err != nil {
 			return fmt.Errorf("payout dispatcher: get payee %s for item %s: %w", it.PayeeID, it.ID, err)
 		}
-		if !payee.IsVerified || (payee.VerificationStatus != "" && payee.VerificationStatus != domain.PayeeVerificationOwnerAttested && payee.VerificationStatus != domain.PayeeVerificationProviderVerified) {
-			return fmt.Errorf("payout dispatcher: payee %s for item %s is not verified (status: %s)", it.PayeeID, it.ID, payee.VerificationStatus)
+		if !payee.IsVerified || payee.VerificationStatus != domain.PayeeVerificationProviderVerified {
+			return fmt.Errorf("payout dispatcher: payee %s for item %s requires provider verification (status: %s)", it.PayeeID, it.ID, payee.VerificationStatus)
 		}
 		uniquePayees[it.PayeeID] = payee
 	}

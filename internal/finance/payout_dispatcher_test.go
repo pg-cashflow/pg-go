@@ -79,18 +79,20 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		AccountNumberHash:      "hash111111111111111111111111111111111111111111111111111111111111",
 		IFSC:                   ptr("HDFC0001234"),
 		IsVerified:             true,
+		VerificationStatus:     domain.PayeeVerificationProviderVerified,
 	}
 	if err := payoutRepo.CreatePayee(ctx, payee1); err != nil {
 		t.Fatalf("create payee 1: %v", err)
 	}
 
 	payee2 := &domain.PayoutPayee{
-		PropertyID:        propID,
-		PayeeType:         domain.PayeeTypeStaff,
-		Name:              "Staff Two",
-		AccountNumberHash: "hash222222222222222222222222222222222222222222222222222222222222",
-		UPIVPA:            ptr("staff@upi"),
-		IsVerified:        true,
+		PropertyID:         propID,
+		PayeeType:          domain.PayeeTypeStaff,
+		Name:               "Staff Two",
+		AccountNumberHash:  "hash222222222222222222222222222222222222222222222222222222222222",
+		UPIVPA:             ptr("staff@upi"),
+		IsVerified:         true,
+		VerificationStatus: domain.PayeeVerificationProviderVerified,
 	}
 	if err := payoutRepo.CreatePayee(ctx, payee2); err != nil {
 		t.Fatalf("create payee 2: %v", err)
@@ -244,7 +246,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			t.Fatalf("unverify payee: %v", err)
 		}
 		defer func() {
-			_, _ = pool.Exec(ctx, `UPDATE payout_payees SET is_verified = true WHERE id = $1`, payee1.ID)
+			_, _ = pool.Exec(ctx, `UPDATE payout_payees SET is_verified = true, verification_status = 'provider_verified' WHERE id = $1`, payee1.ID)
 		}()
 
 		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
@@ -255,8 +257,30 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalSigningKeys(approvalKeys)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
-		if err == nil || !strings.Contains(err.Error(), "not verified") {
-			t.Fatalf("expected error containing 'not verified', got: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "requires provider verification") {
+			t.Fatalf("expected error containing 'requires provider verification', got: %v", err)
+		}
+	})
+
+	t.Run("DispatchBatch blocks owner_attested payee from automatic dispatch", func(t *testing.T) {
+		// Mark payee1 as owner_attested
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET is_verified = true, verification_status = 'owner_attested' WHERE id = $1`, payee1.ID); err != nil {
+			t.Fatalf("set payee owner_attested: %v", err)
+		}
+		defer func() {
+			_, _ = pool.Exec(ctx, `UPDATE payout_payees SET is_verified = true, verification_status = 'provider_verified' WHERE id = $1`, payee1.ID)
+		}()
+
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID:     "cid",
+			ClientSecret: "csec",
+			FundsourceID: "fund_01",
+		})
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
+		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		err := dispatcher.DispatchBatch(ctx, batch.ID)
+		if err == nil || !strings.Contains(err.Error(), "requires provider verification") {
+			t.Fatalf("expected error containing 'requires provider verification', got: %v", err)
 		}
 	})
 

@@ -34,6 +34,8 @@ type LedgerOutboxEvent struct {
 	MaxAttempts    int             `json:"max_attempts"`
 	LastError      *string         `json:"last_error,omitempty"`
 	NextRetryAt    *time.Time      `json:"next_retry_at,omitempty"`
+	LeaseToken     *uuid.UUID      `json:"lease_token,omitempty"`
+	LeaseExpiresAt *time.Time      `json:"lease_expires_at,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 	ProcessedAt    *time.Time      `json:"processed_at,omitempty"`
 	FailedAt       *time.Time      `json:"failed_at,omitempty"`

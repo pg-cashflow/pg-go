@@ -145,37 +145,34 @@ func (w *LedgerOutboxWorker) ProcessBatch(ctx context.Context, limit int) (int, 
 	return processedCount, nil
 }
 
-// ProcessSingleEvent processes a single event under a row lock (FOR UPDATE SKIP LOCKED).
+// ProcessSingleEvent processes a single event under a claim lease without holding an open database transaction during external dispatch.
 func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) error {
-	tx, err := w.pool.Begin(ctx)
+	// Step 1: Claim event with a 60-second lease (atomic update, zero held transaction)
+	evt, leaseToken, err := w.repo.ClaimEvent(ctx, id, 60*time.Second)
 	if err != nil {
-		return fmt.Errorf("begin worker tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	evt, err := w.repo.LockAndFetchEventTx(ctx, tx, id)
-	if err != nil {
-		return fmt.Errorf("lock and fetch event: %w", err)
+		return fmt.Errorf("claim outbox event: %w", err)
 	}
 	if evt == nil {
-		return nil // Already processed or locked by another worker
+		return nil // Already processed or actively leased by another worker
 	}
 
 	if evt.EventType == "payout_batch_transfer" && w.payoutDispatcher == nil {
 		// Worker is not configured with a payout dispatcher (e.g. dev/staging or worker separation).
-		// Safely rollback without burning retry attempts or triggering dead-letter alert emails.
+		// Safely release the lease without burning retry attempts or triggering dead-letter alert emails.
+		_ = w.repo.ReleaseLease(ctx, evt.ID, leaseToken)
 		return nil
 	}
 
+	// Step 2: Dispatch external HTTP / ledger mirror without holding any database transaction or row lock
 	dispatchErr := w.dispatch(ctx, evt)
 	if dispatchErr == nil {
-		if err := w.repo.MarkProcessedTx(ctx, tx, evt.ID); err != nil {
-			return fmt.Errorf("mark processed tx: %w", err)
+		if err := w.repo.FinalizeSuccess(ctx, evt.ID, leaseToken); err != nil {
+			return fmt.Errorf("finalize outbox success: %w", err)
 		}
-		return tx.Commit(ctx)
+		return nil
 	}
 
-	// Calculate exponential backoff
+	// Step 3: Failure handling with exponential backoff and lease release
 	newAttempts := evt.AttemptCount + 1
 	isDeadLetter := newAttempts >= evt.MaxAttempts
 	var nextRetry *time.Time
@@ -188,11 +185,8 @@ func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) e
 		nextRetry = &t
 	}
 
-	if err := w.repo.RecordEventFailureTx(ctx, tx, evt, newAttempts, dispatchErr.Error(), nextRetry, isDeadLetter); err != nil {
-		return fmt.Errorf("record event failure tx: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit failure tx: %w", err)
+	if err := w.repo.FinalizeFailure(ctx, evt.ID, leaseToken, newAttempts, dispatchErr.Error(), nextRetry, isDeadLetter); err != nil {
+		return fmt.Errorf("finalize outbox failure: %w", err)
 	}
 
 	if isDeadLetter {

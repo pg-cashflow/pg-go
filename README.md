@@ -32,7 +32,7 @@ Or use `make migrate` / `make server` (see [Makefile](Makefile)).
 | `cmd/financial-summary` | `--cadence=monthly\|yearly` collections and finance digest email |
 | `cmd/gamification-cycle` | Gamification periodic job |
 | `cmd/kpi-snapshot` | Daily KPI and ROI snapshot |
-| `cmd/kyc-expiry` | Hourly KYC expiry sweep |
+| `cmd/kyc-expiry` | Daily KYC expiry sweep (03:00 IST) |
 | `cmd/sandbox-smoke` | Cashfree sandbox smoke harness |
 
 ## Locked Phase 1 decisions

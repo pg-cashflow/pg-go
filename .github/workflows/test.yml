@@ -60,6 +60,12 @@ jobs:
           npm run test
           npm run build
 
+      - name: Copy frontend build into pg-go
+        if: env.HAS_PAT == 'true'
+        run: |
+          rm -rf pg-go/internal/web/dist/*
+          cp -r pg-react/dist/* pg-go/internal/web/dist/
+
       - name: Download Go modules
         working-directory: pg-go
         run: go mod download

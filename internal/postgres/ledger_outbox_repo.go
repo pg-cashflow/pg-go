@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -116,7 +117,8 @@ func (r *LedgerOutboxRepo) FetchPendingCandidateIDs(ctx context.Context, limit i
 		SELECT id FROM ledger_outbox_events
 		WHERE processed_at IS NULL
 		  AND failed_at IS NULL
-		  AND (next_retry_at IS NULL OR next_retry_at <= now())`
+		  AND (next_retry_at IS NULL OR next_retry_at <= now())
+		  AND (lease_expires_at IS NULL OR lease_expires_at <= now())`
 	if !includePayout {
 		query += ` AND event_type != 'payout_batch_transfer'`
 	}
@@ -138,6 +140,141 @@ func (r *LedgerOutboxRepo) FetchPendingCandidateIDs(ctx context.Context, limit i
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// ClaimEvent atomically leases a pending or expired-lease outbox event for external dispatch without holding a transaction.
+func (r *LedgerOutboxRepo) ClaimEvent(ctx context.Context, id int64, leaseDuration time.Duration) (*domain.LedgerOutboxEvent, uuid.UUID, error) {
+	leaseToken := uuid.New()
+	now := time.Now().UTC()
+	leaseExpiry := now.Add(leaseDuration)
+
+	var evt domain.LedgerOutboxEvent
+	var lastError *string
+	var nextRetryAt *time.Time
+	var processedAt *time.Time
+	var failedAt *time.Time
+
+	err := r.db.QueryRow(ctx, `
+		UPDATE ledger_outbox_events
+		SET lease_token = $2,
+		    lease_expires_at = $3
+		WHERE id = $1
+		  AND processed_at IS NULL
+		  AND failed_at IS NULL
+		  AND (lease_expires_at IS NULL OR lease_expires_at <= $4)
+		RETURNING id, event_type, property_id, source_id, payload, idempotency_key,
+		          attempt_count, max_attempts, last_error, next_retry_at, created_at, processed_at, failed_at`,
+		id, leaseToken, leaseExpiry, now,
+	).Scan(
+		&evt.ID, &evt.EventType, &evt.PropertyID, &evt.SourceID, &evt.Payload, &evt.IdempotencyKey,
+		&evt.AttemptCount, &evt.MaxAttempts, &lastError, &nextRetryAt, &evt.CreatedAt, &processedAt, &failedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, uuid.Nil, nil
+		}
+		return nil, uuid.Nil, err
+	}
+	evt.LastError = lastError
+	evt.NextRetryAt = nextRetryAt
+	evt.ProcessedAt = processedAt
+	evt.FailedAt = failedAt
+	evt.LeaseToken = &leaseToken
+	evt.LeaseExpiresAt = &leaseExpiry
+	return &evt, leaseToken, nil
+}
+
+// FinalizeSuccess marks the event as processed and clears the lease under the lease token guard.
+func (r *LedgerOutboxRepo) FinalizeSuccess(ctx context.Context, id int64, leaseToken uuid.UUID) error {
+	var query string
+	var args []any
+	if leaseToken != uuid.Nil {
+		query = `
+			UPDATE ledger_outbox_events
+			SET processed_at = now(),
+			    lease_token = NULL,
+			    lease_expires_at = NULL
+			WHERE id = $1 AND lease_token = $2 AND processed_at IS NULL`
+		args = []any{id, leaseToken}
+	} else {
+		query = `
+			UPDATE ledger_outbox_events
+			SET processed_at = now(),
+			    lease_token = NULL,
+			    lease_expires_at = NULL
+			WHERE id = $1 AND processed_at IS NULL`
+		args = []any{id}
+	}
+	res, err := r.db.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if leaseToken != uuid.Nil && res.RowsAffected() == 0 {
+		return fmt.Errorf("outbox event %d lease expired or superseded", id)
+	}
+	return nil
+}
+
+// FinalizeFailure records dispatch failure, schedules backoff or dead-letter, and releases the lease token.
+func (r *LedgerOutboxRepo) FinalizeFailure(
+	ctx context.Context,
+	id int64,
+	leaseToken uuid.UUID,
+	newAttempts int,
+	errorMsg string,
+	nextRetryAt *time.Time,
+	isDeadLetter bool,
+) error {
+	if isDeadLetter {
+		query := `
+			UPDATE ledger_outbox_events
+			SET attempt_count = $2,
+			    last_error    = $3,
+			    failed_at     = now(),
+			    next_retry_at = NULL,
+			    lease_token   = NULL,
+			    lease_expires_at = NULL
+			WHERE id = $1`
+		args := []any{id, newAttempts, errorMsg}
+		if leaseToken != uuid.Nil {
+			query += ` AND lease_token = $4`
+			args = append(args, leaseToken)
+		}
+		_, err := r.db.Exec(ctx, query, args...)
+		return err
+	}
+
+	query := `
+		UPDATE ledger_outbox_events
+		SET attempt_count = $2,
+		    last_error    = $3,
+		    next_retry_at = $4,
+		    lease_token   = NULL,
+		    lease_expires_at = NULL
+		WHERE id = $1`
+	args := []any{id, newAttempts, errorMsg, nextRetryAt}
+	if leaseToken != uuid.Nil {
+		query += ` AND lease_token = $5`
+		args = append(args, leaseToken)
+	}
+	_, err := r.db.Exec(ctx, query, args...)
+	return err
+}
+
+// ReleaseLease safely releases a lease without modifying attempt count or failure status.
+func (r *LedgerOutboxRepo) ReleaseLease(ctx context.Context, id int64, leaseToken uuid.UUID) error {
+	query := `
+		UPDATE ledger_outbox_events
+		SET lease_token = NULL,
+		    lease_expires_at = NULL
+		WHERE id = $1`
+	args := []any{id}
+	if leaseToken != uuid.Nil {
+		query += ` AND lease_token = $2`
+		args = append(args, leaseToken)
+	}
+	_, err := r.db.Exec(ctx, query, args...)
+	return err
 }
 
 // LockAndFetchEventTx locks the event row with FOR UPDATE SKIP LOCKED inside the worker's transaction.
