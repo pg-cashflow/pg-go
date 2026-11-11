@@ -585,6 +585,24 @@ func (r *PayoutRepo) ListBatchesByProperty(ctx context.Context, propertyID uuid.
 	return out, rows.Err()
 }
 
+// CountPendingCashfreeApprovalsByProperty counts payout items in a property currently pending Cashfree dashboard approval.
+func (r *PayoutRepo) CountPendingCashfreeApprovalsByProperty(ctx context.Context, propertyID uuid.UUID) (int, error) {
+	if pid, ok := requestscope.PropertyIDFromContext(ctx); ok && pid != uuid.Nil {
+		_, _ = r.db.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", pid.String())
+	}
+	var count int
+	err := r.db.QueryRow(ctx, `
+		SELECT COUNT(pi.id)
+		FROM payout_items pi
+		JOIN payout_batches pb ON pi.batch_id = pb.id
+		WHERE pb.property_id = $1 AND pi.status = 'cashfree_approval_pending'
+	`, propertyID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // CreateBatchFromUnbatchedItems bundles unbatched pending payout items into an approved PayoutBatch with HMAC checksum.
 func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 	ctx context.Context,

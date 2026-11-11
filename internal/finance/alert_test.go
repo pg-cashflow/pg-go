@@ -143,3 +143,35 @@ func TestEmailDeadLetterNotifier_WithSMSBackstop(t *testing.T) {
 		t.Errorf("expected sms error to bubble up, got: %v", err)
 	}
 }
+
+func TestNotifyPayoutProtectAlert(t *testing.T) {
+	ctx := context.Background()
+	mm := &mockMailer{}
+	ms := &mockSMSGateway{}
+
+	notifier := NewEmailDeadLetterNotifier(mm, "ops-admin@pgcashflow.com").
+		WithSMSBackstop(ms, "+919876543210")
+
+	itemID := uuid.New()
+	propID := uuid.New()
+	err := notifier.NotifyPayoutProtectAlert(ctx, itemID, propID, 2500000, "CF_TR_999")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if mm.to != "ops-admin@pgcashflow.com" {
+		t.Errorf("expected email to 'ops-admin@pgcashflow.com', got %q", mm.to)
+	}
+	if !strings.Contains(mm.subject, "CF_TR_999") || !strings.Contains(mm.subject, "ACTION REQUIRED") {
+		t.Errorf("expected subject to contain transfer ID and warning, got %q", mm.subject)
+	}
+	if !strings.Contains(mm.body, "APPROVAL_PENDING") || !strings.Contains(mm.body, "25000.00") {
+		t.Errorf("expected body to contain status and amount, got %q", mm.body)
+	}
+	if ms.phone != "+919876543210" {
+		t.Errorf("expected sms to '+919876543210', got %q", ms.phone)
+	}
+	if !strings.Contains(ms.message, "CF_TR_999") || !strings.Contains(ms.message, "25000.00") {
+		t.Errorf("expected sms to contain transfer ID and amount, got %q", ms.message)
+	}
+}

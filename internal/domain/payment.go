@@ -84,6 +84,16 @@ func CashfreeRefundIdempotencyKey(refundID uuid.UUID) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:"+refundID.String())).String()
 }
 
+// CashfreeRefundRecoveryIdempotencyKey derives a fresh provider idempotency key for re-creating a
+// refund that Cashfree confirmed it never stored (fetch returned 404). A repeated key replays the
+// cached first result, including a 5xx, so reusing the first key can never succeed.
+// Double-refund safety does NOT depend on this key: the merchant refund_id stays fixed, and Cashfree
+// rejects a repeated refund_id. If a recovery create succeeds but is not recorded, the next
+// recovery fetch finds the refund and does not create again.
+func CashfreeRefundRecoveryIdempotencyKey(refundID uuid.UUID, at time.Time) string {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:refund:recover:"+refundID.String()+":"+at.UTC().Format(time.RFC3339Nano))).String()
+}
+
 type RefundAllocation struct {
 	ID          uuid.UUID  `json:"id"`
 	RefundID    uuid.UUID  `json:"refund_id"`

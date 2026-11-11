@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
 )
@@ -15,6 +16,11 @@ import (
 // DeadLetterNotifier alerts operators when a ledger outbox event permanently fails.
 type DeadLetterNotifier interface {
 	NotifyDeadLetter(ctx context.Context, evt *domain.LedgerOutboxEvent, failureErr string) error
+}
+
+// PayoutProtectAlerter alerts operators when Cashfree flags a payout transfer for dashboard approval.
+type PayoutProtectAlerter interface {
+	NotifyPayoutProtectAlert(ctx context.Context, itemID, propertyID uuid.UUID, amountPaise int64, cfTransferID string) error
 }
 
 // SMSGateway defines the interface required to dispatch SMS alerts.
@@ -140,6 +146,37 @@ func (n *EmailDeadLetterNotifier) NotifyPaymentCommandDeadLetter(ctx context.Con
 	_ = n.mailer.Send(ctx, n.adminEmail, subject, body)
 	if n.smsGateway != nil && n.adminPhone != "" {
 		smsMsg := fmt.Sprintf("🚨 CRITICAL: Payment command #%d dead-lettered (%s). Immediate manual investigation required.", cmd.ID, cmd.CommandType)
+		_ = n.smsGateway.Send(ctx, n.adminPhone, smsMsg)
+	}
+	return nil
+}
+
+// NotifyPayoutProtectAlert dispatches an alert when a payout transfer requires manual approval in Cashfree Dashboard.
+func (n *EmailDeadLetterNotifier) NotifyPayoutProtectAlert(ctx context.Context, itemID, propertyID uuid.UUID, amountPaise int64, cfTransferID string) error {
+	if n == nil || n.mailer == nil || n.adminEmail == "" {
+		return nil
+	}
+
+	subject := fmt.Sprintf("⚠️ ACTION REQUIRED: Payout Transfer %s Pending Cashfree Approval", cfTransferID)
+	body := fmt.Sprintf(
+		"<h2>⚠️ Cashfree Payout Protect: Manual Approval Required</h2>"+
+			"<p>A payout transfer has been placed in <b>APPROVAL_PENDING</b> status by Cashfree Payout Protect.</p>"+
+			"<table>"+
+			"<tr><td><b>Payout Item ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Property ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Amount:</b></td><td>₹%.2f</td></tr>"+
+			"<tr><td><b>Cashfree Transfer ID:</b></td><td>%s</td></tr>"+
+			"</table>"+
+			"<br/>"+
+			"<p><b>Action Required:</b> Log in to the <a href=\"https://merchant.cashfree.com/merchants/payouts\">Cashfree Merchant Dashboard</a> to approve or reject the transfer.</p>",
+		itemID,
+		propertyID,
+		float64(amountPaise)/100.0,
+		cfTransferID,
+	)
+	_ = n.mailer.Send(ctx, n.adminEmail, subject, body)
+	if n.smsGateway != nil && n.adminPhone != "" {
+		smsMsg := fmt.Sprintf("⚠️ ACTION REQUIRED: Payout transfer for ₹%.2f requires manual approval in Cashfree dashboard (transfer: %s).", float64(amountPaise)/100.0, cfTransferID)
 		_ = n.smsGateway.Send(ctx, n.adminPhone, smsMsg)
 	}
 	return nil

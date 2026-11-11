@@ -325,8 +325,9 @@ func newInitiatedRefundRepo(refID uuid.UUID) *mockRefundRepo {
 	}}
 }
 
-// R6: When 5xx occurs and gateway confirms refund absent (404), retry must use the SAME deterministic key.
-func TestRefundGatewayDispatcher_Replayed5xxRetriesWithDeterministicKey(t *testing.T) {
+// R6: When 5xx occurs and gateway confirms refund absent (404), retry must use a NEW idempotency key
+// (Cashfree replays the cached result, including 5xx, for a repeated key). refund_id stays fixed.
+func TestRefundGatewayDispatcher_Replayed5xxRetriesWithRotatedKey(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
@@ -352,8 +353,11 @@ func TestRefundGatewayDispatcher_Replayed5xxRetriesWithDeterministicKey(t *testi
 	if cf.createKeys[0] != expectedKey {
 		t.Errorf("first attempt must use deterministic key, got %q", cf.createKeys[0])
 	}
-	if cf.createKeys[1] != expectedKey {
-		t.Errorf("retry after 5xx 404 must retain the same deterministic key, got %q", cf.createKeys[1])
+	if cf.createKeys[1] == expectedKey || cf.createKeys[1] == "" {
+		t.Errorf("retry after 5xx 404 must rotate the idempotency key, got %q", cf.createKeys[1])
+	}
+	if _, err := uuid.Parse(cf.createKeys[1]); err != nil {
+		t.Errorf("rotated idempotency key is not a valid UUID: %v", err)
 	}
 	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "pending" {
 		t.Errorf("expected reconcile to 'pending', got %v", repo.reconcileLog)

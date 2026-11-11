@@ -666,6 +666,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	ledgerWorker := finance.NewLedgerOutboxWorker(bg.maintPool, bg.ledgerOutbox, bg.financeSvc, deadLetterAlerter)
 	if bg.payoutDispatch != nil {
 		ledgerWorker.SetPayoutDispatcher(bg.payoutDispatch)
+		bg.payoutDispatch.SetAlerter(deadLetterAlerter)
 	}
 	if bg.cfClient != nil && bg.paymentRepo != nil {
 		refundLocker := postgres.NewRefundOperationLock(bg.maintPool)

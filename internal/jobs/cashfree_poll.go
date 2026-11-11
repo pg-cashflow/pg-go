@@ -305,8 +305,9 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 
 				log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
 					"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-				// R6: Use deterministic idempotency key for resubmission
-				retryIdempotencyKey := domain.CashfreeRefundIdempotencyKey(ref.ID)
+				// R6: Gateway confirmed the refund is absent. Rotate the idempotency key (a repeated key
+				// replays the cached first result); refund_id stays fixed and prevents duplicates.
+				retryIdempotencyKey := domain.CashfreeRefundRecoveryIdempotencyKey(ref.ID, time.Now())
 				refundNote := fmt.Sprintf("Refund %s", refundID)
 				if len(ref.RawPayload) > 0 {
 					var rawMap map[string]any

@@ -107,6 +107,9 @@ type OwnerDashboardSummaryResponse struct {
 	// owner dashboard can show a standing "add your email" banner and the
 	// gap doesn't silently regress as new owners sign up post-launch.
 	PayoutEmailMissing bool `json:"payout_email_missing"`
+	// PayoutCashfreeApprovalsPendingCount is the count of transfers waiting for manual approval
+	// in Cashfree Merchant Dashboard under Payout Protect.
+	PayoutCashfreeApprovalsPendingCount int `json:"payout_cashfree_approvals_pending_count"`
 }
 
 func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (OccupancyMetrics, error) {
@@ -508,6 +511,13 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		}
 	}
 
+	payoutApprovalsPending := 0
+	if h.PayoutRepo != nil {
+		if cnt, err := h.PayoutRepo.CountPendingCashfreeApprovalsByProperty(ctx, pid); err == nil {
+			payoutApprovalsPending = cnt
+		}
+	}
+
 	c.JSON(http.StatusOK, OwnerDashboardSummaryResponse{
 		PropertyID: pid,
 		Period:     period,
@@ -522,15 +532,16 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 			OccupancyRateBps: occ.OccupancyRateBps,
 			OccupancyRatePct: occ.OccupancyRatePct,
 		},
-		FloorOccupancy:      occ.Floors,
-		TotalCollectedPaise: rentCollected,
-		TotalPendingPaise:   pendingRent,
-		TotalExpensePaise:   totalExpense,
-		NetCashFlowPaise:    netCashFlow,
-		CollectionPct:       collectionPct,
-		MonthlyCashFlow:     monthlyCashFlow,
-		AsOf:                time.Now().UTC(),
-		PayoutEmailMissing:  payoutEmailMissing,
+		FloorOccupancy:                      occ.Floors,
+		TotalCollectedPaise:                 rentCollected,
+		TotalPendingPaise:                   pendingRent,
+		TotalExpensePaise:                   totalExpense,
+		NetCashFlowPaise:                    netCashFlow,
+		CollectionPct:                       collectionPct,
+		MonthlyCashFlow:                     monthlyCashFlow,
+		AsOf:                                time.Now().UTC(),
+		PayoutEmailMissing:                  payoutEmailMissing,
+		PayoutCashfreeApprovalsPendingCount: payoutApprovalsPending,
 	})
 }
 

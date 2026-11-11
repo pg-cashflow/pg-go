@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -203,8 +204,9 @@ func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, or
 		return nil, ambiguous
 	}
 
-	// R6: Confirmed not created at the gateway (404): safe to retry using the SAME deterministic key.
-	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, domain.CashfreeRefundIdempotencyKey(ref.ID))
+	// R6: Confirmed not created at the gateway (404): retry with a NEW idempotency key and the SAME
+	// refund_id. Cashfree replays the cached result for a repeated key (including 5xx).
+	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, domain.CashfreeRefundRecoveryIdempotencyKey(ref.ID, time.Now()))
 	if createErr != nil {
 		slog.Error("refund dispatcher: re-create failed", "error", createErr, "refund_id", ref.ID)
 		return nil, fmt.Errorf("cashfree refund ambiguous error: %w", createErr)

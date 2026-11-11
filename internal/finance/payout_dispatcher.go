@@ -30,6 +30,7 @@ type PayoutDispatcher struct {
 	encryptionKey       []byte
 	keyRing             *crypto.KeyRing
 	approvalSigningKeys map[string][]byte
+	alerter             PayoutProtectAlerter
 }
 
 // NewPayoutDispatcher creates a new PayoutDispatcher.
@@ -54,6 +55,11 @@ func (d *PayoutDispatcher) SetKeyRing(kr *crypto.KeyRing) {
 // SetApprovalSigningKeys sets the dedicated HMAC signing keys for verifying approved batch snapshots.
 func (d *PayoutDispatcher) SetApprovalSigningKeys(keys map[string][]byte) {
 	d.approvalSigningKeys = keys
+}
+
+// SetAlerter configures the notification alerter for stuck or pending Cashfree approvals.
+func (d *PayoutDispatcher) SetAlerter(a PayoutProtectAlerter) {
+	d.alerter = a
 }
 
 // DispatchBatch processes an outbox-triggered batch transfer against Cashfree Transfers V2.
@@ -507,6 +513,9 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		case "APPROVAL_PENDING":
 			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
 				return fmt.Errorf("update payout item approval pending status: %w", err)
+			}
+			if d.alerter != nil {
+				_ = d.alerter.NotifyPayoutProtectAlert(ctx, it.ID, batch.PropertyID, it.AmountPaise, cfID)
 			}
 		case "PENDING", "RECEIVED", "PROCESSING":
 			// Cashfree Transfers V2: In-flight states. No local state mutation; await final settlement or reversal.

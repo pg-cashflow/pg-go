@@ -566,9 +566,12 @@ func (s *Service) InitiateAadhaarOTP(
 	}
 
 	// Validate Cashfree response: require status SUCCESS and a non-empty ref_id.
+	// Cashfree documents a 200 response whose message says the Aadhaar is not linked to a mobile
+	// number. No OTP is sent in that case, so never open an OTP-entry session for it.
 	isSuccess := res != nil &&
 		strings.EqualFold(res.Status, "SUCCESS") &&
-		strings.TrimSpace(res.RefID) != ""
+		strings.TrimSpace(res.RefID) != "" &&
+		!strings.Contains(strings.ToLower(res.Message), "not linked")
 
 	if !isSuccess {
 		statusStr := "UNKNOWN"
