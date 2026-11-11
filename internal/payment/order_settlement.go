@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,6 +101,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 	intent *domain.PaymentIntent,
 	rawPayload []byte,
 ) error {
+	if strings.TrimSpace(cfPaymentID) == "" {
+		return errors.New("settle payment failed: cf_payment_id cannot be blank")
+	}
 	if intent == nil && s.intentStore != nil {
 		var err error
 		intent, err = s.intentStore.GetByOrderID(ctx, orderID)

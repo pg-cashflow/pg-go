@@ -309,3 +309,96 @@ func TestTenantDuePayVerify_WaivedDue(t *testing.T) {
 		t.Fatalf("expected status=WAIVED for waived due, got %v", resp["status"])
 	}
 }
+
+func TestTenantOrderPayVerify_SuccessAndOwnership(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tenantID := uuid.New()
+	otherTenantID := uuid.New()
+	propID := uuid.New()
+	dueID := uuid.New()
+	orderID := "order_test_tenant_verify_123"
+
+	dueStore := &mockVerifyDueStore{
+		dues: map[uuid.UUID]*domain.Due{
+			dueID: {
+				ID:         dueID,
+				TenantID:   tenantID,
+				PropertyID: propID,
+				Amount:     500000,
+				Status:     domain.DueStatusPending,
+			},
+		},
+	}
+
+	intentStore := &mockVerifyIntentStore{
+		intent: &domain.PaymentIntent{
+			ID:              uuid.New(),
+			DueID:           dueID,
+			ProviderOrderID: orderID,
+			AmountPaise:     500000,
+			Status:          domain.IntentCreated,
+		},
+	}
+
+	cfClient := &mockVerifyCFClient{
+		cfID:    "cf_pay_111",
+		bankRef: "bank_ref_222",
+		amount:  500000,
+		ok:      true,
+	}
+
+	paySvc := &mockVerifyPayService{}
+
+	h := &Handlers{
+		Deps: Deps{
+			DueStore:       dueStore,
+			IntentStore:    intentStore,
+			CashfreeClient: cfClient,
+			Payments:       paySvc,
+		},
+	}
+
+	r := gin.New()
+	r.POST("/tenant/payments/orders/:order_id/verify", func(c *gin.Context) {
+		// Mock authenticated tenant
+		tClaim := &domain.Tenant{
+			ID:         tenantID,
+			PropertyID: propID,
+			Status:     domain.TenantStatusActive,
+		}
+		if c.GetHeader("X-Test-Other-Tenant") == "true" {
+			tClaim.ID = otherTenantID
+		}
+		c.Set(auth.ContextTenantKey, tClaim)
+		h.TenantOrderPayVerify(c)
+	})
+
+	// 1. Success verification for correct tenant
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/tenant/payments/orders/%s/verify", orderID), nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if paid, ok := resp["paid"].(bool); !ok || !paid {
+		t.Fatalf("expected paid=true, got %v", resp["paid"])
+	}
+	if status, ok := resp["status"].(string); !ok || status != "PAID" {
+		t.Fatalf("expected status=PAID, got %v", resp["status"])
+	}
+
+	// 2. Cross-tenant order verification must fail closed (404)
+	reqOther := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/tenant/payments/orders/%s/verify", orderID), nil)
+	reqOther.Header.Set("X-Test-Other-Tenant", "true")
+	recOther := httptest.NewRecorder()
+	r.ServeHTTP(recOther, reqOther)
+
+	if recOther.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound for cross-tenant order verification, got %d", recOther.Code)
+	}
+}

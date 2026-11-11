@@ -3,6 +3,7 @@ package api
 import (
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +188,114 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID"})
+}
+
+// TenantOrderPayVerify handles POST /tenant/payments/orders/:order_id/verify.
+// It verifies a checkout order return from Cashfree using the order_id, ensuring
+// that the order belongs to the authenticated tenant before settlement.
+func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	orderID := strings.TrimSpace(c.Param("order_id"))
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
+		return
+	}
+
+	if h.IntentStore == nil || h.CashfreeClient == nil || h.Payments == nil {
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": []string{}})
+		return
+	}
+
+	intent, err := h.IntentStore.GetByOrderID(c.Request.Context(), orderID)
+	if err != nil || intent == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+
+	// Tenant ownership verification: Verify intent's dues belong strictly to this authenticated tenant
+	var targetDueIDs []uuid.UUID
+	if intent.DueID != uuid.Nil {
+		targetDueIDs = append(targetDueIDs, intent.DueID)
+	}
+	if snapshot, sErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID); sErr == nil && len(snapshot) > 0 {
+		for _, sn := range snapshot {
+			if sn.DueID != uuid.Nil {
+				targetDueIDs = append(targetDueIDs, sn.DueID)
+			}
+		}
+	}
+
+	if len(targetDueIDs) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order has no linked dues"})
+		return
+	}
+
+	// Verify tenant ownership of linked dues
+	for _, dueID := range targetDueIDs {
+		due, dErr := h.DueStore.GetByID(c.Request.Context(), dueID)
+		if dErr != nil || due.TenantID != t.ID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "order does not belong to tenant"})
+			return
+		}
+	}
+
+	dueIDStrs := make([]string, 0, len(targetDueIDs))
+	for _, id := range targetDueIDs {
+		dueIDStrs = append(dueIDStrs, id.String())
+	}
+
+	if intent.Status == domain.IntentPaid {
+		c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID", "due_ids": dueIDStrs})
+		return
+	}
+
+	verifyCacheMu.Lock()
+	cached, hasCached := verifyCache[orderID]
+	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid {
+		verifyCacheMu.Unlock()
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
+		return
+	}
+	verifyCacheMu.Unlock()
+
+	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), orderID)
+	now := time.Now()
+	verifyCacheMu.Lock()
+	if len(verifyCache) > 1000 {
+		for k, v := range verifyCache {
+			if now.Sub(v.checkedAt) > 2*time.Minute {
+				delete(verifyCache, k)
+			}
+		}
+	}
+	verifyCache[orderID] = verifyCacheEntry{
+		checkedAt: now,
+		paid:      ok && amount > 0,
+		cfID:      cfID,
+		bankRef:   bankRef,
+		amount:    amount,
+	}
+	verifyCacheMu.Unlock()
+
+	if err != nil || !ok || amount <= 0 {
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
+		return
+	}
+
+	txn := bankRef
+	if txn == "" {
+		txn = cfID
+	}
+
+	if err := h.SettleGatewayOrder(c.Request.Context(), orderID, cfID, txn, amount, intent, nil); err != nil {
+		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID", "due_ids": dueIDStrs})
 }
 
 type PayBatchRequest struct {

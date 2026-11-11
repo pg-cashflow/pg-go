@@ -170,6 +170,32 @@ func (r *PayoutRepo) VerifyPayee(ctx context.Context, id, propertyID, verifiedBy
 	))
 }
 
+func (r *PayoutRepo) MarkPayeeProviderVerified(
+	ctx context.Context,
+	id, propertyID uuid.UUID,
+	verificationRef, nameAtBank, nameMatchResult string,
+	nameMatchScore *float64,
+	verifiedBy uuid.UUID,
+) (*domain.PayoutPayee, error) {
+	now := time.Now().UTC()
+	return scanPayee(r.db.QueryRow(ctx, `
+		UPDATE payout_payees
+		SET is_verified = TRUE,
+		    verification_status = 'provider_verified',
+		    verification_method = 'cashfree_bank_sync',
+		    verification_ref = $3,
+		    name_at_bank = $4,
+		    name_match_result = $5,
+		    name_match_score = $6,
+		    verified_by = $7,
+		    verified_at = $8,
+		    updated_at = $8
+		WHERE id = $1 AND property_id = $2
+		RETURNING `+payeeCols,
+		id, propertyID, verificationRef, nameAtBank, nameMatchResult, nameMatchScore, verifiedBy, now,
+	))
+}
+
 func (r *PayoutRepo) SaveVerifiedTenantPayee(ctx context.Context, p *domain.PayoutPayee) (*domain.PayoutPayee, error) {
 	now := time.Now().UTC()
 	p.CreatedAt = now

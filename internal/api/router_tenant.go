@@ -42,6 +42,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	payGated.GET("/dues/:id/pay", h.TenantDuePay)
 	payGated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
+	payGated.POST("/payments/orders/:order_id/verify", h.TenantOrderPayVerify)
 	payGated.POST("/dues/:id/reports", h.TenantSubmitReport)
 
 	// --- gated: requires the KYC onboarding gate (default-deny) ---

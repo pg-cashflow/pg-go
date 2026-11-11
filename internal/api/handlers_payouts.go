@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -538,6 +540,139 @@ func (h *Handlers) OwnerVerifyPayee(c *gin.Context) {
 		"payee":               payee,
 		"verification_status": "owner_attested",
 		"verification_method": "owner_attestation",
+	})
+}
+
+// OwnerVerifyPayeeProvider handles POST /owner/payouts/payees/:id/verify-provider.
+// Performs synchronous Cashfree Secure ID bank account penny-drop verification for staff and vendor payees,
+// promoting payee to 'provider_verified' required for Cashfree batch dispatch.
+func (h *Handlers) OwnerVerifyPayeeProvider(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	uid, ok := userIDFromClaims(c)
+	if !ok {
+		return
+	}
+	payeeID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+
+	repo := h.getPayoutRepo()
+	if repo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
+		return
+	}
+
+	payee, err := repo.GetPayeeByID(c.Request.Context(), payeeID)
+	if err != nil || payee == nil || payee.PropertyID != pid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "payee not found"})
+		return
+	}
+
+	if payee.IsVerified && payee.VerificationStatus == domain.PayeeVerificationProviderVerified {
+		c.JSON(http.StatusOK, gin.H{
+			"payee":               payee,
+			"verification_status": payee.VerificationStatus,
+			"is_verified":         true,
+		})
+		return
+	}
+
+	var verifier BankAccountVerifier
+	if h.BankVerifier != nil {
+		verifier = h.BankVerifier
+	} else if cf, ok := h.CashfreeClient.(BankAccountVerifier); ok {
+		verifier = cf
+	}
+
+	if verifier == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bank account verification service unavailable"})
+		return
+	}
+
+	var decryptedAcct string
+	if len(payee.AccountNumberEncrypted) > 0 {
+		keyRing := h.getPayoutKeyRing()
+		if keyRing != nil {
+			dec, _, dErr := crypto.DecryptWithKeyRing(keyRing, payee.AccountNumberEncrypted)
+			if dErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt account number"})
+				return
+			}
+			decryptedAcct = string(dec)
+		} else if len(h.PayoutEncryptionKey) == 32 {
+			dec, _, dErr := crypto.Decrypt(h.PayoutEncryptionKey, payee.AccountNumberEncrypted)
+			if dErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to decrypt account number"})
+				return
+			}
+			decryptedAcct = string(dec)
+		}
+	}
+
+	if decryptedAcct == "" || payee.IFSC == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "payee bank account or IFSC not configured"})
+		return
+	}
+
+	cleanPhone := ""
+	if payee.Phone != nil {
+		cleanPhone = *payee.Phone
+	}
+
+	cleanName := SanitizeBankVerificationName(payee.Name)
+
+	verifyResult, err := verifier.VerifyBankAccountSync(c.Request.Context(), cashfree.BankAccountVerificationRequest{
+		BankAccount: decryptedAcct,
+		IFSC:        *payee.IFSC,
+		Name:        cleanName,
+		Phone:       cleanPhone,
+	})
+	if err != nil {
+		slog.Error("bank verification provider error for owner payee", "err", err, "payee_id", payee.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "verification provider call failed"})
+		return
+	}
+
+	if !verifyResult.IsValid() {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":       "bank account is invalid or inactive at destination bank",
+			"code":        verifyResult.AccountStatusCode,
+			"sub_code":    verifyResult.SubCode,
+			"description": verifyResult.Message,
+		})
+		return
+	}
+
+	var scorePtr *float64
+	if verifyResult.NameMatchScore != "" {
+		if s, parseErr := strconv.ParseFloat(verifyResult.NameMatchScore, 64); parseErr == nil {
+			scorePtr = &s
+		}
+	}
+
+	updatedPayee, err := repo.MarkPayeeProviderVerified(
+		c.Request.Context(),
+		payee.ID,
+		pid,
+		verifyResult.ReferenceID,
+		verifyResult.NameAtBank,
+		verifyResult.NameMatchResult,
+		scorePtr,
+		uid,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist provider verification"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"payee":               updatedPayee,
+		"verification_status": updatedPayee.VerificationStatus,
+		"is_verified":         true,
 	})
 }
 

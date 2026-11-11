@@ -155,6 +155,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 
 	owner.POST("/payouts/payees", h.OwnerCreatePayee)
 	owner.POST("/payouts/payees/:id/verify", h.OwnerVerifyPayee)
+	owner.POST("/payouts/payees/:id/verify-provider", h.OwnerVerifyPayeeProvider)
 	owner.GET("/payouts/payees", h.OwnerListPayees)
 	owner.GET("/payouts/items/unbatched", h.OwnerListUnbatchedPayoutItems)
 	owner.GET("/payouts/batches", h.OwnerListPayoutBatches)

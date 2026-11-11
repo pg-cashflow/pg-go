@@ -585,6 +585,7 @@ func TestCashfreePollResubmitsInitiatedRefundOn404(t *testing.T) {
 		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "refund not found"},
 		createdResp: &cashfree.RefundDetails{
 			CFRefundID:   cfRefID,
+			OrderID:      "order_resubmit_1",
 			RefundID:     refRef,
 			RefundStatus: "SUCCESS",
 			AmountPaise:  150000,

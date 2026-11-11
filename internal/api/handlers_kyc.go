@@ -120,7 +120,8 @@ func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 func kycClientErr(err error) error {
 	var apiErr *cashfree.APIError
 	if errors.As(err, &apiErr) {
-		slog.Error("kyc upstream provider error", "status", apiErr.StatusCode, "body", apiErr.Body, "err", apiErr)
+		// Data minimization: log HTTP status code only, strictly redacting raw provider body containing PII or document tokens
+		slog.Error("kyc upstream provider error", "status", apiErr.StatusCode, "status_text", apiErr.Status)
 		return clientErrWithCode(http.StatusBadGateway, "identity verification service encountered an upstream error; please try again later", apierr.Code("kyc.upstream_error"))
 	}
 	switch {

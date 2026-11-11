@@ -154,8 +154,8 @@ func (r *PayoutRepo) ApproveBatchSigned(
 		if err != nil {
 			return nil, nil, fmt.Errorf("scan payee: %w", err)
 		}
-		if !p.IsVerified || (p.VerificationStatus != "" && p.VerificationStatus != domain.PayeeVerificationOwnerAttested && p.VerificationStatus != domain.PayeeVerificationProviderVerified) {
-			return nil, nil, fmt.Errorf("payee %s (%s) is not verified (status: %s); disbursement blocked", p.ID, p.Name, p.VerificationStatus)
+		if !p.IsVerified || p.VerificationStatus != domain.PayeeVerificationProviderVerified {
+			return nil, nil, fmt.Errorf("payee %s (%s) is not provider verified (status: %s); disbursement blocked (requires provider_verified)", p.ID, p.Name, p.VerificationStatus)
 		}
 		if strings.TrimSpace(p.AccountNumberHash) == "" {
 			return nil, nil, fmt.Errorf("payee %s (%s) has no account number hash fingerprint", p.ID, p.Name)

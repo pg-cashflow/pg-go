@@ -33,17 +33,32 @@ func ValidateRefundResponse(expectedOrderID, expectedRefundRef string, expectedA
 	}
 
 	trimmedOrderID := strings.TrimSpace(resp.OrderID)
-	if expectedOrderID != "" && trimmedOrderID != "" && trimmedOrderID != strings.TrimSpace(expectedOrderID) {
-		return fmt.Errorf("cashfree refund validation: order_id mismatch: expected %q, got %q", expectedOrderID, resp.OrderID)
+	if expectedOrderID != "" {
+		if trimmedOrderID == "" {
+			return fmt.Errorf("cashfree refund validation: missing order_id in provider response")
+		}
+		if trimmedOrderID != strings.TrimSpace(expectedOrderID) {
+			return fmt.Errorf("cashfree refund validation: order_id mismatch: expected %q, got %q", expectedOrderID, resp.OrderID)
+		}
 	}
 
 	trimmedRefundID := strings.TrimSpace(resp.RefundID)
-	if expectedRefundRef != "" && trimmedRefundID != "" && trimmedRefundID != strings.TrimSpace(expectedRefundRef) {
-		return fmt.Errorf("cashfree refund validation: refund_id mismatch: expected %q, got %q", expectedRefundRef, resp.RefundID)
+	if expectedRefundRef != "" {
+		if trimmedRefundID == "" {
+			return fmt.Errorf("cashfree refund validation: missing refund_id in provider response")
+		}
+		if trimmedRefundID != strings.TrimSpace(expectedRefundRef) {
+			return fmt.Errorf("cashfree refund validation: refund_id mismatch: expected %q, got %q", expectedRefundRef, resp.RefundID)
+		}
 	}
 
-	if expectedAmountPaise > 0 && resp.AmountPaise != expectedAmountPaise {
-		return fmt.Errorf("cashfree refund validation: amount mismatch: expected %d paise, got %d paise", expectedAmountPaise, resp.AmountPaise)
+	if expectedAmountPaise > 0 {
+		if resp.AmountPaise <= 0 {
+			return fmt.Errorf("cashfree refund validation: missing or non-positive amount in provider response")
+		}
+		if resp.AmountPaise != expectedAmountPaise {
+			return fmt.Errorf("cashfree refund validation: amount mismatch: expected %d paise, got %d paise", expectedAmountPaise, resp.AmountPaise)
+		}
 	}
 
 	status := strings.ToUpper(strings.TrimSpace(resp.RefundStatus))

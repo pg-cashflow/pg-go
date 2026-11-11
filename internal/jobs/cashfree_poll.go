@@ -402,8 +402,8 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 	if details == nil {
 		return nil
 	}
-	if details.AmountPaise > 0 && details.AmountPaise != ref.AmountPaise {
-		log.Error("cashfree poll refund amount mismatch; leaving initiated for manual investigation",
+	if details.AmountPaise <= 0 || details.AmountPaise != ref.AmountPaise {
+		log.Error("cashfree poll refund amount mismatch or missing/non-positive; leaving initiated for manual investigation",
 			"order_id", orderID, "refund_id", refundID, "gateway_amount", details.AmountPaise, "local_amount", ref.AmountPaise)
 		return nil
 	}

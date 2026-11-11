@@ -241,6 +241,9 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 				return "", "", 0, false, fmt.Errorf("cashfree fetch parse amount: %w", pErr)
 			}
 			id := strings.TrimSpace(p.CFPaymentID.String())
+			if id == "" {
+				return "", "", 0, false, fmt.Errorf("cashfree fetch: order %q has SUCCESS payment with missing or blank cf_payment_id", orderID)
+			}
 			if _, dup := seen[id]; !dup {
 				seen[id] = struct{}{}
 				successes = append(successes, successItem{
