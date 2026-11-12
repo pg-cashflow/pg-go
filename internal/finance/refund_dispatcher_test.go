@@ -166,11 +166,11 @@ func TestRefundGatewayDispatcher_AmbiguousFailureReturnsError(t *testing.T) {
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	err := d.DispatchRefund(context.Background(), refID)
-	if err == nil {
-		t.Fatalf("expected error on ambiguous failure")
+	if err != nil {
+		t.Fatalf("expected nil error after transition to needs_review, got: %v", err)
 	}
-	if len(repo.reconcileLog) != 0 {
-		t.Errorf("expected no reconcile on ambiguous error, got %v", repo.reconcileLog)
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
+		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)
 	}
 }
 
@@ -325,42 +325,28 @@ func newInitiatedRefundRepo(refID uuid.UUID) *mockRefundRepo {
 	}}
 }
 
-// R6: When 5xx occurs and gateway confirms refund absent (404), retry must use a NEW idempotency key
-// (Cashfree replays the cached result, including 5xx, for a repeated key). refund_id stays fixed.
+// R6: Inconclusive gateway status transitions to needs_review and stops automated retries without rotating keys.
 func TestRefundGatewayDispatcher_Replayed5xxRetriesWithRotatedKey(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
-		createResults: []error{&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"}, nil},
-		createResp: &cashfree.RefundDetails{
-			CFRefundID:   "cf_1",
-			RefundID:     "rf_test_123",
-			OrderID:      "order_123",
-			RefundStatus: "PENDING",
-			AmountPaise:  50000,
-		},
-		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
+		createResults: []error{&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"}},
+		fetchErr:      &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	if err := d.DispatchRefund(context.Background(), refID); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("unexpected error on needs_review transition: %v", err)
 	}
-	if len(cf.createKeys) != 2 {
-		t.Fatalf("expected 2 create calls, got %d", len(cf.createKeys))
+	if len(cf.createKeys) != 1 {
+		t.Fatalf("ADR-001 forbids rotating key or blind retry; create calls=%d", len(cf.createKeys))
 	}
 	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
 	if cf.createKeys[0] != expectedKey {
-		t.Errorf("first attempt must use deterministic key, got %q", cf.createKeys[0])
+		t.Errorf("must use deterministic idempotency key, got %q", cf.createKeys[0])
 	}
-	if cf.createKeys[1] == expectedKey || cf.createKeys[1] == "" {
-		t.Errorf("retry after 5xx 404 must rotate the idempotency key, got %q", cf.createKeys[1])
-	}
-	if _, err := uuid.Parse(cf.createKeys[1]); err != nil {
-		t.Errorf("rotated idempotency key is not a valid UUID: %v", err)
-	}
-	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "pending" {
-		t.Errorf("expected reconcile to 'pending', got %v", repo.reconcileLog)
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
+		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)
 	}
 }
 
@@ -406,11 +392,11 @@ func TestRefundGatewayDispatcher_5xxGatewayAmountMismatchReturnsError(t *testing
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
-	if err := d.DispatchRefund(context.Background(), refID); err == nil {
-		t.Fatal("expected error on gateway amount mismatch")
+	if err := d.DispatchRefund(context.Background(), refID); err != nil {
+		t.Fatalf("unexpected error on needs_review transition: %v", err)
 	}
-	if len(repo.reconcileLog) != 0 {
-		t.Errorf("must not reconcile on mismatch, got %v", repo.reconcileLog)
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
+		t.Errorf("expected reconcile to 'needs_review' on amount mismatch, got %v", repo.reconcileLog)
 	}
 }
 
@@ -423,10 +409,13 @@ func TestRefundGatewayDispatcher_RateLimitDoesNotRotateKey(t *testing.T) {
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
-	if err := d.DispatchRefund(context.Background(), refID); err == nil {
-		t.Fatal("expected error so outbox retries with backoff")
+	if err := d.DispatchRefund(context.Background(), refID); err != nil {
+		t.Fatalf("unexpected error on needs_review transition: %v", err)
 	}
 	if len(cf.createKeys) != 1 {
 		t.Errorf("429 must not trigger an inline re-create; calls=%d", len(cf.createKeys))
+	}
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
+		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)
 	}
 }

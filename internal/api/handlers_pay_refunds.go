@@ -502,7 +502,7 @@ func (h *Handlers) OwnerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
+	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req, "owner")
 }
 
 // GetPaymentRefundHistory handles GET /owner/payments/:id/refunds and GET /manager/payments/:id/refunds.
@@ -690,10 +690,10 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 		return
 	}
 
-	// Restrict cancellation to owner-initiated refunds.
+	// Restrict cancellation to owner- or manager-initiated refunds.
 	// Dashboard-created and auto-refund records are managed by the gateway directly.
-	if rf.Source != "owner" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only owner-initiated refunds can be cancelled"})
+	if rf.Source != "owner" && rf.Source != "manager" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "only owner or manager initiated refunds can be cancelled"})
 		return
 	}
 
@@ -1073,7 +1073,7 @@ func (h *Handlers) ManagerRefundPayment(c *gin.Context) {
 		return
 	}
 
-	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req)
+	_, _ = h.executePaymentRefund(c, pid, uid, paymentID, req, "manager")
 }
 
 // requireManagerRefunds checks the owner toggle and returns the owner-set per-refund limit.
@@ -1168,8 +1168,17 @@ func (h *Handlers) RequestPaymentRefundOTP(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"channel": channel, "destination": destination})
 }
 
-func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest) (*domain.GatewayRefund, error) {
+func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid.UUID, req OwnerRefundRequest, source string) (*domain.GatewayRefund, error) {
 	ctx := c.Request.Context()
+
+	if source == "" {
+		claims, ok := auth.ClaimsFromContext(c)
+		if ok && claims.Role == domain.RoleManager {
+			source = "manager"
+		} else {
+			source = "owner"
+		}
+	}
 
 	trimmedReason := norm.NFC.String(strings.TrimSpace(req.Reason))
 	runeCount := utf8.RuneCountInString(trimmedReason)
@@ -1308,7 +1317,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		IdempotencyKey:  &idempotencyKey,
 		AmountPaise:     req.AmountPaise,
 		Status:          "initiated",
-		Source:          "owner",
+		Source:          source,
 		InitiatedBy:     &uid,
 		Reason:          req.Reason,
 		RawPayload:      orderPayload,

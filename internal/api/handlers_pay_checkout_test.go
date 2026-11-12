@@ -402,3 +402,67 @@ func TestTenantOrderPayVerify_SuccessAndOwnership(t *testing.T) {
 		t.Fatalf("expected 404 NotFound for cross-tenant order verification, got %d", recOther.Code)
 	}
 }
+
+func TestTenantDuePay_ReadOnlyGET(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	tenantID := uuid.New()
+	dueID := uuid.New()
+
+	prop := &domain.Property{
+		ID:          propID,
+		PaymentMode: domain.PaymentModeCashfree,
+	}
+	tenant := &domain.Tenant{
+		ID:         tenantID,
+		PropertyID: propID,
+		Status:     domain.TenantStatusActive,
+	}
+	due := &domain.Due{
+		ID:         dueID,
+		PropertyID: propID,
+		TenantID:   tenantID,
+		DueCode:    "DUE-TEST-001",
+		Amount:     1200000,
+		Status:     domain.DueStatusPending,
+	}
+
+	h := &Handlers{
+		Deps: Deps{
+			PropertyStore: &payTestPropertyStore{prop: prop},
+			TenantStore:   &mockRefundTenantStore{t: tenant},
+			DueStore:      &mockVerifyDueStore{dues: map[uuid.UUID]*domain.Due{dueID: due}},
+			IntentStore:   &mockVerifyIntentStore{},
+			Collector:     nil, // Nil collector proves GET is read-only and does not invoke collector/gateway
+		},
+	}
+
+	r := gin.New()
+	r.GET("/tenant/dues/:id/pay", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, tenant)
+		h.TenantDuePay(c)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/tenant/dues/%s/pay", dueID), nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp domain.PayIntent
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if resp.Mode != domain.PaymentModeCashfree {
+		t.Errorf("expected mode cashfree, got %s", resp.Mode)
+	}
+	if !resp.Payable {
+		t.Errorf("expected payable=true, got %v", resp.Payable)
+	}
+	if resp.PaymentSessionID != "" {
+		t.Errorf("expected empty payment_session_id on GET without prior intent, got %s", resp.PaymentSessionID)
+	}
+}

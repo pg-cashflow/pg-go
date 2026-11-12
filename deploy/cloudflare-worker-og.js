@@ -15,7 +15,7 @@
  * - Standard users stream directly to the origin SPA without latency overhead.
  */
 
-const BOT_USER_AGENTS = [
+export const BOT_USER_AGENTS = [
   "whatsapp",
   "facebookexternalhit",
   "facebot",
@@ -30,13 +30,13 @@ const BOT_USER_AGENTS = [
   "googlebot",
 ];
 
-function isBot(userAgent) {
+export function isBot(userAgent) {
   if (!userAgent) return false;
   const ua = userAgent.toLowerCase();
   return BOT_USER_AGENTS.some((bot) => ua.includes(bot));
 }
 
-function extractInviteCode(url) {
+export function extractInviteCode(url) {
   const pathname = url.pathname;
   // Case 1: /invite/PG123 or /invite/ROOM-4B
   const match = pathname.match(/^\/invite\/([a-zA-Z0-9_-]+)/);
@@ -47,6 +47,37 @@ function extractInviteCode(url) {
   if (inviteQuery) return inviteQuery.trim();
 
   return null;
+}
+
+/**
+ * Escapes characters that can break out of HTML attribute contexts.
+ * Defends against XSS and attribute injection.
+ */
+export function escapeHtmlAttr(str) {
+  if (typeof str !== "string") return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+/**
+ * Validates and sanitizes image URLs strictly to HTTPS schemes.
+ * Rejects javascript:, data:, file:, or unparseable URLs.
+ */
+export function sanitizeImageUrl(rawUrl, defaultUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return defaultUrl;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === "https:") {
+      return parsed.href;
+    }
+    return defaultUrl;
+  } catch {
+    return defaultUrl;
+  }
 }
 
 export default {
@@ -60,11 +91,13 @@ export default {
       return fetch(request);
     }
 
+    const defaultImage = `${url.origin}/pwa-512x512.png`;
+
     // Resolve public property preview from backend API
     let propertyMeta = {
       name: "PG Cashflow",
       details: "Automated rent-due tracking and room allocation.",
-      coverImage: `${url.origin}/pwa-512x512.png`,
+      coverImage: defaultImage,
     };
 
     try {
@@ -77,10 +110,10 @@ export default {
       if (apiResp.ok) {
         const data = await apiResp.json();
         if (data && data.property_name) {
-          propertyMeta.name = data.property_name;
+          propertyMeta.name = String(data.property_name);
           propertyMeta.details = `You're invited to join ${data.property_name}. Complete 1-tap Aadhaar KYC and view your room passbook.`;
           if (data.cover_image_url) {
-            propertyMeta.coverImage = data.cover_image_url;
+            propertyMeta.coverImage = sanitizeImageUrl(data.cover_image_url, defaultImage);
           }
         }
       }
@@ -98,40 +131,45 @@ export default {
     const description = propertyMeta.details;
     const image = propertyMeta.coverImage;
 
+    const safeTitle = escapeHtmlAttr(title);
+    const safeDescription = escapeHtmlAttr(description);
+    const safeImage = escapeHtmlAttr(image);
+    const safeUrl = escapeHtmlAttr(url.href);
+
     // Stream and rewrite OpenGraph tags dynamically
     return new HTMLRewriter()
       .on("title", {
         element(el) {
-          el.setInnerContent(title);
+          el.setInnerContent(safeTitle);
         },
       })
       .on("meta[property='og:title']", {
         element(el) {
-          el.setAttribute("content", title);
+          el.setAttribute("content", safeTitle);
         },
       })
       .on("meta[property='og:description']", {
         element(el) {
-          el.setAttribute("content", description);
+          el.setAttribute("content", safeDescription);
         },
       })
       .on("meta[property='og:image']", {
         element(el) {
-          el.setAttribute("content", image);
+          el.setAttribute("content", safeImage);
         },
       })
       .on("meta[name='description']", {
         element(el) {
-          el.setAttribute("content", description);
+          el.setAttribute("content", safeDescription);
         },
       })
       .on("head", {
         element(el) {
-          // Append additional rich preview tags if not already present
-          el.append(`<meta property="og:url" content="${url.href}" />`, { html: true });
-          el.append(`<meta name="twitter:title" content="${title}" />`, { html: true });
-          el.append(`<meta name="twitter:description" content="${description}" />`, { html: true });
-          el.append(`<meta name="twitter:image" content="${image}" />`, { html: true });
+          // Append additional rich preview tags safely escaped
+          el.append(`<meta property="og:url" content="${safeUrl}" />`, { html: true });
+          el.append(`<meta name="twitter:title" content="${safeTitle}" />`, { html: true });
+          el.append(`<meta name="twitter:description" content="${safeDescription}" />`, { html: true });
+          el.append(`<meta name="twitter:image" content="${safeImage}" />`, { html: true });
         },
       })
       .transform(originResponse);

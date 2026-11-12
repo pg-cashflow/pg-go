@@ -166,14 +166,20 @@ func (r *KYCRepo) scanKYCVerification(row pgx.Row) (*domain.KYCVerification, err
 			Encrypted  bool   `json:"encrypted"`
 			Ciphertext string `json:"ciphertext"`
 		}
-		if err := json.Unmarshal([]byte(*v.OCRData), &encWrapper); err == nil && encWrapper.Encrypted && encWrapper.Ciphertext != "" {
-			cipherBytes, err := base64.StdEncoding.DecodeString(encWrapper.Ciphertext)
-			if err == nil {
-				if dec, err := r.decryptBytes(cipherBytes); err == nil {
-					decStr := string(dec)
-					v.OCRData = &decStr
-				}
+		if err := json.Unmarshal([]byte(*v.OCRData), &encWrapper); err == nil && encWrapper.Encrypted {
+			if encWrapper.Ciphertext == "" {
+				return nil, fmt.Errorf("%w: empty ciphertext in encrypted envelope", domain.ErrOCRDecryptionFailed)
 			}
+			cipherBytes, err := base64.StdEncoding.DecodeString(encWrapper.Ciphertext)
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid base64 in encrypted envelope: %v", domain.ErrOCRDecryptionFailed, err)
+			}
+			dec, err := r.decryptBytes(cipherBytes)
+			if err != nil {
+				return nil, fmt.Errorf("%w: cryptographic decryption failed", domain.ErrOCRDecryptionFailed)
+			}
+			decStr := string(dec)
+			v.OCRData = &decStr
 		}
 	}
 	return &v, nil

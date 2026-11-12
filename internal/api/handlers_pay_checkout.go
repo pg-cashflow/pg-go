@@ -54,10 +54,40 @@ func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 			phone = *t.Phone
 		}
 	}
+	// For read-only queries (GET) when property uses Cashfree:
+	// Do NOT initiate an external Cashfree order on GET.
+	// Only return the active/unexpired intent if one already exists;
+	// otherwise return a read-only PayIntent without creating a provider order.
+	if c.Request.Method == http.MethodGet && prop.PaymentMode == domain.PaymentModeCashfree {
+		payable := due.Status == domain.DueStatusPending || due.Status == domain.DueStatusPartial
+		if h.IntentStore != nil {
+			if existing, _ := h.IntentStore.LatestOpenForDue(c.Request.Context(), due.ID); existing != nil && existing.PaymentSessionID != nil && *existing.PaymentSessionID != "" {
+				c.JSON(http.StatusOK, domain.PayIntent{
+					Mode:             domain.PaymentModeCashfree,
+					PaymentSessionID: *existing.PaymentSessionID,
+					DueCode:          due.DueCode,
+					AmountPaise:      due.Amount,
+					Note:             domain.UPINote(due.DueCode),
+					Payable:          payable,
+				})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, domain.PayIntent{
+			Mode:        domain.PaymentModeCashfree,
+			DueCode:     due.DueCode,
+			AmountPaise: due.Amount,
+			Note:        domain.UPINote(due.DueCode),
+			Payable:     payable,
+		})
+		return
+	}
+
 	if h.Collector == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "collector"})
 		return
 	}
+
 	intent, _, err := h.Collector.PayIntent(c.Request.Context(), due, prop, room, collector.PNGURL(role, due.ID), phone)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "pay intent failed"})

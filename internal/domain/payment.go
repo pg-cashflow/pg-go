@@ -69,7 +69,7 @@ type GatewayRefund struct {
 	IdempotencyKey   *string    `json:"idempotency_key,omitempty"`
 	AmountPaise      int64      `json:"amount_paise"`
 	Status           string     `json:"status"` // initiated, pending, succeeded, failed, cancelled, on_hold
-	Source           string     `json:"source"` // owner, system, cashfree_auto, dashboard
+	Source           string     `json:"source"` // owner, manager, system, cashfree_auto, dashboard
 	InitiatedBy      *uuid.UUID `json:"initiated_by,omitempty"`
 	Reason           string     `json:"reason"`
 	RawPayload       []byte     `json:"raw_payload,omitempty"`

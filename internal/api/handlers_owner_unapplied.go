@@ -339,7 +339,7 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 
 	// Set Idempotency-Key on context request header so executePaymentRefund sees it
 	c.Request.Header.Set("Idempotency-Key", idempotencyKey)
-	refRow, err := h.executePaymentRefund(c, pid, uid, paymentID, refundReq)
+	refRow, err := h.executePaymentRefund(c, pid, uid, paymentID, refundReq, "owner")
 	if err != nil {
 		return
 	}

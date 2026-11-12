@@ -473,6 +473,13 @@ func TestRecordConsent(t *testing.T) {
 	if c3.ConsentTextHash == expectedHash {
 		t.Errorf("expected different hash for Telugu text, got %s", c3.ConsentTextHash)
 	}
+
+	// 4. Unwhitelisted purpose is strictly rejected
+	_, err = svc.RecordConsent(context.Background(), tenantID,
+		"unapproved_marketing_purpose", "v1.0", "Some text", "127.0.0.1", "Mozilla/5.0", "tenant:abc")
+	if !errors.Is(err, kycsvc.ErrInvalidConsentPurpose) {
+		t.Errorf("expected ErrInvalidConsentPurpose for unapproved purpose, got %v", err)
+	}
 }
 
 func TestVerifySecureQR_NoConsent(t *testing.T) {

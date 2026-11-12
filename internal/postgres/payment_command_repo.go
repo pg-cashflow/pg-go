@@ -151,7 +151,7 @@ func (r *PaymentCommandRepo) MarkCompletedTx(ctx context.Context, tx pgx.Tx, id 
 	return err
 }
 
-// RecordCommandFailureTx records failure details, schedules next retry, or dead-letters on max attempts.
+// RecordCommandFailureTx records failure details, schedules next retry, or dead-letters on max attempts or max retry age.
 func (r *PaymentCommandRepo) RecordCommandFailureTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -159,15 +159,21 @@ func (r *PaymentCommandRepo) RecordCommandFailureTx(
 	errorMsg string,
 	retryDelay time.Duration,
 ) error {
-	if cmd.AttemptCount >= cmd.MaxAttempts {
-		slog.Error("CRITICAL: payment command exceeded max attempts - moving to dead_letter",
+	if cmd.AttemptCount >= cmd.MaxAttempts || (!cmd.CreatedAt.IsZero() && time.Since(cmd.CreatedAt) > domain.MaxPaymentCommandRetryAge) {
+		reason := "exceeded max attempts"
+		if cmd.AttemptCount < cmd.MaxAttempts {
+			reason = "exceeded max retry age"
+		}
+		slog.Error("CRITICAL: payment command dead-lettered - "+reason,
 			"command_id", cmd.ID,
 			"command_type", cmd.CommandType,
 			"source_id", cmd.SourceID,
 			"idempotency_key", cmd.IdempotencyKey,
 			"attempts", cmd.AttemptCount,
+			"created_at", cmd.CreatedAt,
 			"error", errorMsg,
 		)
+		cmd.Status = domain.PaymentCommandStatusDeadLetter
 		_, err := tx.Exec(ctx, `
 			UPDATE payment_commands
 			SET status = 'dead_letter',
@@ -178,6 +184,7 @@ func (r *PaymentCommandRepo) RecordCommandFailureTx(
 		return err
 	}
 
+	cmd.Status = domain.PaymentCommandStatusPending
 	nextRetry := time.Now().UTC().Add(retryDelay)
 	_, err := tx.Exec(ctx, `
 		UPDATE payment_commands

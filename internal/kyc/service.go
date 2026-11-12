@@ -31,12 +31,22 @@ import (
 
 // Sentinel errors surfaced to HTTP handlers for client-safe 4xx responses.
 var (
-	ErrNoActiveConsent      = errors.New("kyc: no active consent — record consent before initiating verification")
-	ErrQRSignatureInvalid   = errors.New("kyc: QR signature verification failed — UIDAI key not configured or payload corrupted")
-	ErrQRDataIncomplete     = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
-	ErrCashfreeUnavailable  = errors.New("kyc: verification unavailable — cashfree is not configured")
-	ErrInvalidAadhaarNumber = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
+	ErrNoActiveConsent       = errors.New("kyc: no active consent — record consent before initiating verification")
+	ErrQRSignatureInvalid    = errors.New("kyc: QR signature verification failed — UIDAI key not configured or payload corrupted")
+	ErrQRDataIncomplete      = errors.New("kyc: QR data incomplete — required fields (name, uid) missing")
+	ErrCashfreeUnavailable   = errors.New("kyc: verification unavailable — cashfree is not configured")
+	ErrInvalidAadhaarNumber  = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
+	ErrInvalidConsentPurpose = errors.New("kyc: invalid or unsupported consent purpose")
 )
+
+// PermittedConsentPurposes whitelists permitted legal purposes for DPDP identity consent.
+var PermittedConsentPurposes = map[string]bool{
+	"residency_verification_and_kyc": true,
+	"tenant_verification":           true,
+	"rental_onboarding":              true,
+	"aadhaar_kyc":                    true,
+	"onboarding":                     true,
+}
 
 // PermanentError is an interface implemented by errors that represent an
 // unrecoverable upstream condition (such as 4xx HTTP responses or corrupt payload)
@@ -160,6 +170,10 @@ func (s *Service) RecordConsent(
 	purpose, consentVersion, consentText,
 	ip, userAgent, actor string,
 ) (*domain.KYCConsent, error) {
+	if !PermittedConsentPurposes[purpose] {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidConsentPurpose, purpose)
+	}
+
 	if consentText == "" {
 		consentText = "I agree to my identity details being verified and stored for PG occupancy records in compliance with the DPDP Act."
 	}

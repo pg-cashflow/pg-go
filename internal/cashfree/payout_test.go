@@ -326,6 +326,62 @@ func TestGetBatchTransferStatusV2(t *testing.T) {
 	}
 }
 
+func TestBatchTransferStatusResponse_TransferUTRDecoding(t *testing.T) {
+	// Cashfree's production schema uses transfer_utr on batch status transfer responses.
+	realCashfreeBatchPayload := []byte(`{
+		"batch_transfer_id": "pgo_batch_production_01",
+		"cf_batch_transfer_id": "cf_batch_998877",
+		"status": "SUCCESS",
+		"transfers": [
+			{
+				"transfer_id": "pgo_item_prod_1",
+				"cf_transfer_id": "cf_tr_111",
+				"status": "SUCCESS",
+				"status_code": "COMPLETED",
+				"status_description": "Transfer completed successfully",
+				"transfer_utr": "UTR987654321012",
+				"acknowledged_at": "2026-11-12T10:00:00Z"
+			},
+			{
+				"transfer_id": "pgo_item_prod_2",
+				"cf_transfer_id": "cf_tr_222",
+				"status": "SUCCESS",
+				"status_code": "COMPLETED",
+				"status_description": "Transfer completed with legacy field",
+				"utr": "UTR112233445566",
+				"acknowledged_at": "2026-11-12T10:05:00Z"
+			}
+		]
+	}`)
+
+	var resp BatchTransferStatusResponse
+	if err := json.Unmarshal(realCashfreeBatchPayload, &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if len(resp.Transfers) != 2 {
+		t.Fatalf("expected 2 transfers, got %d", len(resp.Transfers))
+	}
+
+	// Verify item 1 decoded transfer_utr into both UTR and TransferUTR
+	item1 := resp.Transfers[0]
+	if item1.UTR == nil || *item1.UTR != "UTR987654321012" {
+		t.Fatalf("expected item 1 UTR to be 'UTR987654321012', got %v", item1.UTR)
+	}
+	if item1.TransferUTR == nil || *item1.TransferUTR != "UTR987654321012" {
+		t.Fatalf("expected item 1 TransferUTR to be 'UTR987654321012', got %v", item1.TransferUTR)
+	}
+
+	// Verify item 2 decoded legacy utr into both UTR and TransferUTR
+	item2 := resp.Transfers[1]
+	if item2.UTR == nil || *item2.UTR != "UTR112233445566" {
+		t.Fatalf("expected item 2 UTR to be 'UTR112233445566', got %v", item2.UTR)
+	}
+	if item2.TransferUTR == nil || *item2.TransferUTR != "UTR112233445566" {
+		t.Fatalf("expected item 2 TransferUTR to be 'UTR112233445566', got %v", item2.TransferUTR)
+	}
+}
+
 func TestPayoutSignature_RSAOAEP_SHA1(t *testing.T) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

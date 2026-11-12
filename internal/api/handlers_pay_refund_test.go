@@ -2019,6 +2019,94 @@ func TestManagerRefundPayment_ToggleAndCapability(t *testing.T) {
 			t.Fatalf("expected 403 Forbidden, got %d", w.Code)
 		}
 	})
+
+	t.Run("manager refund sets source to manager", func(t *testing.T) {
+		tenantID := uuid.New()
+		dueID := uuid.New()
+		cfPayID := "cf_pay_mgr_test"
+		cfOrderID := "order_mgr_test"
+
+		gwRepo := newMockRefundPaymentRepo()
+		cfClient := &mockCFClient{}
+		tenantStore := &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propID}}
+		dueStore := &mockRefundDueStore{dues: map[uuid.UUID]*domain.Due{
+			dueID: {ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 0, OriginalAmount: 550000, Status: domain.DueStatusPaid},
+		}}
+		intentStore := &mockRefundIntentStore{byCF: map[string]*domain.PaymentIntent{
+			cfPayID: {ProviderOrderID: cfOrderID, CFPaymentID: &cfPayID},
+		}}
+		basePayment := &domain.Payment{
+			ID:                paymentID,
+			DueID:             dueID,
+			TenantID:          tenantID,
+			Amount:            550000,
+			MatchedBy:         domain.MatchedByCashfree,
+			Provider:          "cashfree",
+			ProviderPaymentID: &cfPayID,
+			PropertyID:        &propID,
+			CreatedAt:         time.Now().Add(-1 * time.Hour),
+		}
+		_ = gwRepo.Create(context.Background(), basePayment)
+		_ = gwRepo.CreateAllocation(context.Background(), basePayment.ID, dueID, 550000)
+
+		fakeRunner := &fakeRefundTxRunner{gwRepo: gwRepo}
+		managerUser := &domain.User{ID: managerID, PropertyID: &propID, Role: domain.RoleManager, Phone: "+919000000002"}
+		h := &Handlers{
+			Deps: Deps{
+				RefundTxRunner:     fakeRunner,
+				GatewayPaymentRepo: gwRepo,
+				CashfreeClient:     cfClient,
+				TenantStore:        tenantStore,
+				DueStore:           dueStore,
+				IntentStore:        intentStore,
+				UserStore:          &refundStepUpUserStore{owners: []domain.User{*managerUser}, user: managerUser},
+				Auth:               &refundStepUpAuthService{validOTP: "123456"},
+				OnboardingSettings: &fakeOnboardingSettingsRepo{
+					settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
+						propID: {
+							PropertyID:          propID,
+							AllowManagerRefunds: true,
+						},
+					},
+				},
+			},
+		}
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = gin.Params{{Key: "id", Value: paymentID.String()}}
+		c.Set(auth.ContextClaimsKey, &auth.Claims{
+			UserID:     managerID,
+			PropertyID: &propID,
+			Role:       domain.RoleManager,
+		})
+		body := map[string]any{
+			"amount_paise": 100000,
+			"reason":       "Manager approved refund",
+			"otp":          "123456",
+		}
+		buf, _ := json.Marshal(body)
+		c.Request = httptest.NewRequest(http.MethodPost, "/manager/payments/"+paymentID.String()+"/refund", bytes.NewReader(buf))
+		c.Request.Header.Set("Idempotency-Key", "mgr-idemp-1")
+		c.Request.Header.Set("Content-Type", "application/json")
+
+		h.ManagerRefundPayment(c)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("json unmarshal failed: %v", err)
+		}
+		rf, ok := resp["refund"].(map[string]any)
+		if !ok {
+			t.Fatalf("refund field missing in response: %v", resp)
+		}
+		if rf["source"] != "manager" {
+			t.Fatalf("expected refund source to be 'manager', got %v", rf["source"])
+		}
+	})
 }
 
 func TestOwnerRefundPayment_ReasonValidation(t *testing.T) {

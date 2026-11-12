@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/pg-cashflow/pg-go/internal/crypto"
+	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
 func TestKYCRepo_Crypto_SingleKeyAndFallback(t *testing.T) {
@@ -221,4 +223,29 @@ func TestKYCRepo_Crypto_OCRDataFieldEncryptionAndDualRead(t *testing.T) {
 	if vLegacy.OCRData == nil || *vLegacy.OCRData != legacyOCR {
 		t.Fatalf("expected legacy OCR data %q to be preserved unchanged, got %v", legacyOCR, vLegacy.OCRData)
 	}
+
+	// 4. Defect F-09: Fail-closed on decryption failures (do not silently swallow)
+	t.Run("empty ciphertext in encrypted envelope returns typed integrity error", func(t *testing.T) {
+		emptyCipher := `{"encrypted":true,"ciphertext":""}`
+		_, err := repo.scanKYCVerification(&mockKYCRow{ocrData: &emptyCipher})
+		if !errors.Is(err, domain.ErrOCRDecryptionFailed) {
+			t.Fatalf("expected ErrOCRDecryptionFailed, got: %v", err)
+		}
+	})
+
+	t.Run("invalid base64 in encrypted envelope returns typed integrity error", func(t *testing.T) {
+		badBase64 := `{"encrypted":true,"ciphertext":"!not-valid-base64==="}`
+		_, err := repo.scanKYCVerification(&mockKYCRow{ocrData: &badBase64})
+		if !errors.Is(err, domain.ErrOCRDecryptionFailed) {
+			t.Fatalf("expected ErrOCRDecryptionFailed, got: %v", err)
+		}
+	})
+
+	t.Run("wrong decryption key returns typed integrity error", func(t *testing.T) {
+		wrongKeyRepo := NewKYCRepo(nil, bytes.Repeat([]byte{0x00}, 32))
+		_, err := wrongKeyRepo.scanKYCVerification(&mockKYCRow{ocrData: &encStr})
+		if !errors.Is(err, domain.ErrOCRDecryptionFailed) {
+			t.Fatalf("expected ErrOCRDecryptionFailed with wrong key, got: %v", err)
+		}
+	})
 }

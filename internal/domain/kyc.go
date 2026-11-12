@@ -52,6 +52,7 @@ var (
 	ErrVerificationNotPending = errors.New("kyc: verification is not in pending status")
 	ErrVerificationInProgress = errors.New("kyc: verification already in progress")
 	ErrDailyOTPLimitExceeded  = errors.New("kyc: daily aadhaar otp request limit exceeded")
+	ErrOCRDecryptionFailed    = errors.New("kyc: encrypted ocr data cannot be decrypted")
 )
 
 const (
