@@ -442,7 +442,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}
 
 	var payoutDispatcher *finance.PayoutDispatcher
-	if cfg.CashfreePayoutAutoDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
+	if cfg.CashfreePayoutDispatchEnabled && cfg.CashfreePayoutClientID != "" && cfg.CashfreePayoutClientSecret != "" {
 		var pubKey *rsa.PublicKey
 		if strings.EqualFold(cfg.CashfreePayoutAuthMode, "signature") && cfg.CashfreePayoutPublicKeyPEM != "" {
 			var err error
@@ -462,9 +462,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		payoutDispatcher.SetKeyRing(payoutKeyRing)
 		payoutDispatcher.SetApprovalSigningKeys(approvalSigningKeys)
-		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv)
-	} else if cfg.CashfreePayoutAutoDispatchEnabled {
-		logger.Warn("CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
+		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv, "auto_dispatch", cfg.CashfreePayoutAutoDispatchEnabled)
+	} else if cfg.CashfreePayoutDispatchEnabled || cfg.CashfreePayoutAutoDispatchEnabled {
+		logger.Warn("CF_PAYOUT_DISPATCH_ENABLED or CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
 	}
 
 	router := api.NewRouter(api.Deps{

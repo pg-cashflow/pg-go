@@ -74,6 +74,7 @@ type Config struct {
 	CashfreePayoutWebhookSecret       string
 	CashfreePayoutWebhookSecrets      map[string]string
 	CashfreePayoutEnv                 string
+	CashfreePayoutDispatchEnabled     bool
 	CashfreePayoutAutoDispatchEnabled bool
 	CashfreePayoutAuthMode            string // "signature" | "ip"
 	CashfreePayoutPublicKeyPEM        string // PEM-encoded RSA public key or X.509 certificate for 2FA signature
@@ -148,6 +149,7 @@ func Load() (*Config, error) {
 		CashfreePayoutFundsourceID:        os.Getenv("CF_PAYOUT_FUNDSOURCE_ID"),
 		CashfreePayoutWebhookSecret:       os.Getenv("CF_PAYOUT_WEBHOOK_SECRET"),
 		CashfreePayoutEnv:                 envOr("CF_PAYOUT_ENV", "sandbox"),
+		CashfreePayoutDispatchEnabled:     envBoolDefaultFalse("CF_PAYOUT_DISPATCH_ENABLED") || envBoolDefaultFalse("CF_PAYOUT_AUTO_DISPATCH_ENABLED"),
 		CashfreePayoutAutoDispatchEnabled: envBoolDefaultFalse("CF_PAYOUT_AUTO_DISPATCH_ENABLED"),
 		CashfreePayoutAuthMode:            strings.ToLower(strings.TrimSpace(os.Getenv("CF_PAYOUT_AUTH_MODE"))),
 		CashfreePayoutPublicKeyPEM:        loadPayoutPublicKeyPEM(),

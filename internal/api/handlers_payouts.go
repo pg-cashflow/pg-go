@@ -1277,6 +1277,11 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 		return
 	}
 
+	if h.PayoutDispatcher == nil {
+		respondErr(c, clientErr(http.StatusBadRequest, "automated payout dispatch is not enabled or credentials are not configured on this server"))
+		return
+	}
+
 	// Atomically transitions batch and items to 'processing' and enqueues outbox event
 	updatedBatch, items, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID)
 	if err != nil {
