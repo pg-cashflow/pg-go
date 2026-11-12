@@ -173,7 +173,7 @@ func (s *Service) RecordConsent(
 			return nil, fmt.Errorf("kyc service: check active consent: %w", err)
 		}
 	} else if existing != nil {
-		if existing.ConsentVersion == consentVersion && existing.IsActive() {
+		if existing.ConsentVersion == consentVersion && existing.Purpose == purpose && existing.ConsentTextHash == hash && existing.IsActive() {
 			return existing, nil
 		}
 	}

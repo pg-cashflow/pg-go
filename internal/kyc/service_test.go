@@ -447,10 +447,10 @@ func TestRecordConsent(t *testing.T) {
 	// 1. Stable hash: calling again with same text generates exact same hash
 	expectedHash := c.ConsentTextHash
 
-	// 2. Idempotency: when active consent exists for this version, returns existing without error
+	// 2. Idempotency: when active consent matches version, purpose, and hash, returns existing
 	repo.consent = c
 	c2, err := svc.RecordConsent(context.Background(), tenantID,
-		"aadhaar_kyc", "v1.0", "", "127.0.0.1", "Mozilla/5.0", "tenant:abc")
+		"aadhaar_kyc", "v1.0", "I consent to Aadhaar verification", "127.0.0.1", "Mozilla/5.0", "tenant:abc")
 	if err != nil {
 		t.Fatalf("unexpected error on idempotent call: %v", err)
 	}
@@ -459,6 +459,19 @@ func TestRecordConsent(t *testing.T) {
 	}
 	if c2.ConsentTextHash != expectedHash {
 		t.Errorf("expected stable hash %s, got %s", expectedHash, c2.ConsentTextHash)
+	}
+
+	// 3. Different purpose or language (text hash) does NOT reuse previous consent
+	c3, err := svc.RecordConsent(context.Background(), tenantID,
+		"aadhaar_kyc", "v1.0", "నన్ను ధృవీకరించడానికి నేను సమ్మతిస్తున్నాను", "127.0.0.1", "Mozilla/5.0", "tenant:abc")
+	if err != nil {
+		t.Fatalf("unexpected error recording new language consent: %v", err)
+	}
+	if c3.ID == c.ID {
+		t.Errorf("expected different consent record for new language text, got same ID %s", c3.ID)
+	}
+	if c3.ConsentTextHash == expectedHash {
+		t.Errorf("expected different hash for Telugu text, got %s", c3.ConsentTextHash)
 	}
 }
 
