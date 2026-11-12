@@ -302,10 +302,6 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 		respondErr(c, clientErrWithCode(status, msg, code))
 		return
 	}
-	if user != nil && user.Phone != "" && !defaultFirebasePhoneLimiter.allow(user.Phone) {
-		respondErr(c, clientErrWithCode(http.StatusTooManyRequests, "too many requests", apierr.CodeAuthRateLimited))
-		return
-	}
 	if user != nil && user.Role == domain.RoleTenant && user.TenantID == nil && user.PropertyID != nil && h.Joins != nil {
 		var slotInviteID *uuid.UUID
 		if h.InviteResolver != nil && body.InviteCode != "" {

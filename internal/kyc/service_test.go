@@ -508,6 +508,65 @@ func TestVerifySecureQR_InvalidQR(t *testing.T) {
 	}
 }
 
+// TestVerifySecureQR_BypassRejection covers all KYC-01 bypass vectors.
+// Every non-Secure-QR payload must be rejected before writing any DB record.
+func TestVerifySecureQR_BypassRejection(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{ID: uuid.New(), TenantID: tenantID},
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "xml_like_with_valid_fields",
+			payload: `<PrintLetterBarcodeData uid="123412341234" name="Ravi Kumar" gender="M" dob="1990-01-01" />`,
+		},
+		{
+			name:    "attribute_style_payload",
+			payload: `name="Ravi Kumar" uid="123412341234" gender="M" dob="1990-01-01"`,
+		},
+		{
+			name:    "plain_text_with_real_looking_data",
+			payload: "Ravi Kumar DOB:1990-01-01 Gender:M UID:xxxx1234",
+		},
+		{
+			name:    "empty_payload",
+			payload: "",
+		},
+		{
+			// All-digits but short — does not pass looksLikeSecureQR (len < 50),
+			// so rejected immediately as ErrQRSignatureInvalid.
+			name:    "all_digits_short_no_key",
+			payload: "12345678901234567890",
+		},
+		{
+			// All-digits, long enough to look like Secure QR, but no key configured → Verified=false.
+			name:    "all_digits_long_no_key_configured",
+			payload: "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.VerifySecureQR(context.Background(), tenantID, tc.payload, "tenant:abc")
+			if err == nil {
+				t.Fatalf("expected error for bypass payload %q, got nil", tc.name)
+			}
+			if !errors.Is(err, kycsvc.ErrQRSignatureInvalid) && !errors.Is(err, kycsvc.ErrQRDataIncomplete) {
+				t.Errorf("expected ErrQRSignatureInvalid or ErrQRDataIncomplete, got %v", err)
+			}
+			// Critically: verify no DB write happened (no pending verification created).
+			if repo.verification != nil {
+				t.Errorf("bypass payload %q must not create any KYC verification record", tc.name)
+			}
+		})
+	}
+}
+
 func TestClearDuplicateFlag_RequiresReason(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newTestService(repo, &fakeCashfree{})

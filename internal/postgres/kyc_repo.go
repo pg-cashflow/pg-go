@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -1344,6 +1345,8 @@ func (r *KYCRepo) RejectManualReviewTx(
 				document_url = NULL,
 				ocr_data = NULL,
 				attested_photo_bytes = NULL,
+				document_bytes = NULL,
+				document_content_type = NULL,
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`
@@ -1518,7 +1521,12 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 			return fmt.Errorf("kyc: lock tenant for guardian consent: %w", err)
 		}
 
-		// 2. Update tenant guardian fields
+		// 2. Update tenant guardian fields: set verified_at only for OTP verified flows
+		var verifiedAt *time.Time
+		if strings.HasPrefix(refID, "guard_otp_") {
+			verifiedAt = &now
+		}
+
 		row := tx.QueryRow(ctx, `
 			UPDATE tenants
 			SET guardian_name = $2,
@@ -1526,10 +1534,10 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 			    guardian_relation = $4,
 			    guardian_kyc_reference_id = $5,
 			    guardian_consent_verified_at = $6,
-			    updated_at = $6
+			    updated_at = $7
 			WHERE id = $1
 			RETURNING `+tenantCols,
-			tenantID, guardianName, guardianPhone, relation, refID, now,
+			tenantID, guardianName, guardianPhone, relation, refID, verifiedAt, now,
 		)
 		t, err := scanTenant(row)
 		if err != nil {

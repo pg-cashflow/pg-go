@@ -200,6 +200,10 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 	if locale == "" {
 		locale = c.GetHeader("Accept-Language")
 	}
+	if err := kycsvc.ValidateConsentPurpose(body.Purpose); err != nil {
+		apierr.RespondBindErr(c, "unsupported consent purpose", apierr.CodeRequestInvalidBody)
+		return
+	}
 	// Canonical server-owned consent text guarantees cryptographic proof of what was displayed.
 	// Client-authored strings are ignored to prevent tampering with DPDP consent evidence.
 	consentText, err := kycsvc.ResolveConsentText(body.ConsentVersion, locale)
@@ -684,11 +688,7 @@ func (h *Handlers) OwnerRecordGuardianConsent(c *gin.Context) {
 	}
 	actor := fmt.Sprintf("owner:%s", claims.UserID)
 
-	refID := fmt.Sprintf("guard_manual_%s", uuid.New().String())
-	if body.ReferenceID != nil && *body.ReferenceID != "" {
-		refID = *body.ReferenceID
-	}
-
+	var refID string
 	if body.OTP != nil && strings.TrimSpace(*body.OTP) != "" {
 		if h.Auth == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "auth service unavailable"})
@@ -700,6 +700,13 @@ func (h *Handlers) OwnerRecordGuardianConsent(c *gin.Context) {
 			return
 		}
 		refID = fmt.Sprintf("guard_otp_%s", uuid.New().String())
+	} else {
+		// KYC-07: Manual guardian consent requires mandatory evidence reference and cannot use synthetic placeholder
+		if body.ReferenceID == nil || strings.TrimSpace(*body.ReferenceID) == "" {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "manual guardian consent requires a mandatory evidence reference_id", apierr.CodeRequestInvalidBody)
+			return
+		}
+		refID = *body.ReferenceID
 	}
 
 	updatedTenant, err := svc.RecordGuardianConsent(

@@ -11,8 +11,19 @@ func (h *Handlers) tenantPayable(ctx context.Context, t *domain.Tenant) bool {
 	if t == nil {
 		return false
 	}
-	if t.IsMinor(time.Now().UTC()) && t.GuardianConsentVerifiedAt == nil {
+	age := t.AgeStatus(time.Now().UTC())
+	switch age {
+	case domain.AgeStateMinor:
+		// Minor requires verified guardian consent
+		if t.GuardianConsentVerifiedAt == nil || t.GuardianConsentMethod == nil || *t.GuardianConsentMethod != "otp_verified" {
+			return false
+		}
+	case domain.AgeStateUnknown:
+		// KYC-05: Unknown age must not be treated as adult.
+		// If DOB / MajorityDate is missing, payment is blocked pending age verification.
 		return false
+	case domain.AgeStateAdult:
+		// Adult is eligible to proceed to property KYC check
 	}
 	requireKYC := true
 	if h.OnboardingSettings != nil {

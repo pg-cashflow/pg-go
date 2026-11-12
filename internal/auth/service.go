@@ -445,11 +445,15 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 					return "", nil, ErrAccountReLinkDenied
 				}
 				// Revoke prior access and refresh tokens for security
-				_ = s.users.IncrementTokenVersion(ctx, user.ID)
+				if err := s.users.IncrementTokenVersion(ctx, user.ID); err != nil {
+					return "", nil, fmt.Errorf("auth: relink token version increment: %w", err)
+				}
 				InvalidateTokenVersionCache(user.ID)
 				user.TokenVersion++
 				if s.refreshRepo != nil {
-					_ = s.refreshRepo.RevokeUserTokens(ctx, user.ID)
+					if err := s.refreshRepo.RevokeUserTokens(ctx, user.ID); err != nil {
+						return "", nil, fmt.Errorf("auth: relink session revocation: %w", err)
+					}
 				}
 			}
 			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
@@ -473,11 +477,15 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		if err == nil {
 			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
 				// Invalidate all prior sessions when linking to a new Firebase UID
-				_ = s.users.IncrementTokenVersion(ctx, user.ID)
+				if err := s.users.IncrementTokenVersion(ctx, user.ID); err != nil {
+					return "", nil, fmt.Errorf("auth: relink token version increment: %w", err)
+				}
 				InvalidateTokenVersionCache(user.ID)
 				user.TokenVersion++
 				if s.refreshRepo != nil {
-					_ = s.refreshRepo.RevokeUserTokens(ctx, user.ID)
+					if err := s.refreshRepo.RevokeUserTokens(ctx, user.ID); err != nil {
+						return "", nil, fmt.Errorf("auth: relink session revocation: %w", err)
+					}
 				}
 			}
 			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
@@ -902,7 +910,10 @@ func (s *Service) RevokeSession(ctx context.Context, plaintextToken string) erro
 	hash := HashRefreshToken(trimmed)
 	rt, err := s.refreshRepo.GetRefreshTokenByHash(ctx, hash)
 	if err != nil {
-		return nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // token genuinely unknown — already revoked or never issued
+		}
+		return fmt.Errorf("auth: revoke session lookup: %w", err) // infrastructure failure — propagate
 	}
 	InvalidateFamily(rt.FamilyID)
 	return s.refreshRepo.RevokeFamily(ctx, rt.FamilyID)

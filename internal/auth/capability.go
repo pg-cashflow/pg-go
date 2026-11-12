@@ -31,7 +31,7 @@ const (
 // that must bypass replica-local in-memory caching to ensure immediate revocation propagation.
 func IsSensitiveCapability(cap string) bool {
 	switch cap {
-	case "refunds.issue", "expenses.post", "expenses.void":
+	case "refunds.issue", "expenses.post", "expenses.void", "kyc.documents.review":
 		return true
 	default:
 		return false

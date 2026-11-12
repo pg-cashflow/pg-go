@@ -42,6 +42,7 @@ type Tenant struct {
 	GuardianRelation          *string         `json:"guardian_relation,omitempty"`
 	GuardianKYCReferenceID    *string         `json:"guardian_kyc_reference_id,omitempty"`
 	GuardianConsentVerifiedAt *time.Time      `json:"guardian_consent_verified_at,omitempty"`
+	GuardianConsentMethod     *string         `json:"guardian_consent_method,omitempty"`
 	IsGamificationDisabled    bool            `json:"is_gamification_disabled"`
 	OccupationType            OccupationType  `json:"occupation_type,omitempty"`
 	DateOfBirth               *time.Time      `json:"date_of_birth,omitempty"`
@@ -51,11 +52,30 @@ type Tenant struct {
 	UpdatedAt                 time.Time       `json:"updated_at"`
 }
 
-func (t Tenant) IsMinor(now time.Time) bool {
-	if t.MajorityDate != nil && t.MajorityDate.After(now) {
-		return true
+// AgeState represents the age classification of a tenant.
+type AgeState string
+
+const (
+	AgeStateUnknown AgeState = "unknown"
+	AgeStateMinor   AgeState = "minor"
+	AgeStateAdult   AgeState = "adult"
+)
+
+// AgeStatus determines whether the tenant is positively confirmed as an adult,
+// positively confirmed as a minor, or has an unknown age.
+// Unknown is NEVER treated as adult.
+func (t Tenant) AgeStatus(now time.Time) AgeState {
+	if t.MajorityDate == nil {
+		return AgeStateUnknown
 	}
-	return false
+	if t.MajorityDate.After(now) {
+		return AgeStateMinor
+	}
+	return AgeStateAdult
+}
+
+func (t Tenant) IsMinor(now time.Time) bool {
+	return t.AgeStatus(now) == AgeStateMinor
 }
 
 func (t Tenant) GamificationActive(now time.Time) bool {

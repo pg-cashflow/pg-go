@@ -141,6 +141,7 @@ func (r *PayoutRepo) ApproveBatchSigned(
 		SELECT `+payeeCols+`
 		FROM payout_payees
 		WHERE id = ANY($1) AND property_id = $2
+		ORDER BY id ASC
 		FOR UPDATE`, payeeIDs, batch.PropertyID,
 	)
 	if err != nil {

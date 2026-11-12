@@ -173,6 +173,9 @@ func (s *Service) RecordConsent(
 	if !PermittedConsentPurposes[purpose] {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidConsentPurpose, purpose)
 	}
+	if err := ValidateConsentPurpose(purpose); err != nil {
+		return nil, fmt.Errorf("kyc service: invalid consent purpose: %w", err)
+	}
 
 	if consentText == "" {
 		consentText = "I agree to my identity details being verified and stored for PG occupancy records in compliance with the DPDP Act."
@@ -241,24 +244,40 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, ErrNoActiveConsent
 	}
 
-	// 2. In-process RSA-SHA256 verification (no network call).
+	// 2. Reject non-numeric payloads immediately — they cannot be signed Secure QR.
+	if !aadhaar.LooksLikeSecureQR(rawQR) {
+		return nil, ErrQRSignatureInvalid
+	}
+
+	// 3. In-process RSA-SHA256 verification (no network call).
 	data, partial, err := aadhaar.DecodeAadhaarQR(rawQR)
 	if err != nil {
 		// err is non-nil only for signature failures on Secure QR.
 		return nil, ErrQRSignatureInvalid
 	}
+	// AUTH: reject any payload that did not pass UIDAI RSA-SHA256 verification.
+	// decodeXMLLike and decodeOpaque both return Verified=false; only decodeSecureQR sets Verified=true.
+	if !data.Verified {
+		return nil, ErrQRSignatureInvalid
+	}
 	if partial || data.Name == "" || data.UIDLast4 == "" {
 		return nil, ErrQRDataIncomplete
 	}
+	if data.DOB == "" && data.YOB == "" {
+		return nil, ErrQRDataIncomplete
+	}
+	if data.Gender == "" {
+		return nil, ErrQRDataIncomplete
+	}
 
-	// 3. Fetch tenant's submitted name and evaluate name match
+	// 4. Fetch tenant's submitted name and evaluate name match
 	tenantName, err := s.repo.GetTenantName(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: fetch tenant name for qr: %w", err)
 	}
 	nameMismatch := !domain.IsNameMatch(tenantName, data.Name)
 
-	// 4. Normalise and compute identity hash.
+	// 5. Normalise and compute identity hash.
 	dobStr := data.DOB
 	if dobStr == "" {
 		dobStr = data.YOB // year-only fallback
@@ -267,7 +286,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	name := domain.NormalizeName(data.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
 
-	// 5. Initiate pending (supersedes any stale record).
+	// 6. Initiate pending (supersedes any stale record).
 	vendorRefID := uuid.New().String()
 	pending, err := s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
@@ -278,14 +297,19 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, fmt.Errorf("kyc service: initiate qr verification: %w", err)
 	}
 
-	// 6. Immediately complete (synchronous — no async webhook).
+	// 7. Immediately complete (synchronous — no async webhook).
 	now := time.Now().UTC()
 	var expiresAt time.Time
 	if s.cfg.VerificationValidityDays > 0 {
 		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
 	}
 	qrStatus := domain.QRStatusSecure
-	majorityDate, _ := domain.MajorityDateFromDOB(canonicalDOB)
+	// KYC-06: Year-only DOB (isDedupable=false) must not establish adulthood on January 1.
+	// Only full-precision DOBs yield a deterministic MajorityDate.
+	var majorityDate *time.Time
+	if isDedupable {
+		majorityDate, _ = domain.MajorityDateFromDOB(canonicalDOB)
+	}
 	verified, err := s.repo.CompleteVerificationTx(ctx,
 		pending.ID, data.UIDLast4, identityHash, isDedupable,
 		s.cfg.HashKeyVersion, &qrStatus, nameMismatch, nil,
@@ -770,13 +794,18 @@ func (s *Service) CompleteAadhaarOTP(
 	}
 
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
-	majorityDate, mdErr := domain.MajorityDateFromDOB(canonicalDOB)
-	if mdErr != nil {
-		slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "err", mdErr)
-		return nil, &AadhaarVerifyFailure{
-			ReasonCode: "INVALID_DOB_FORMAT",
-			Retryable:  false,
-			Underlying: mdErr,
+	// KYC-06: Year-only DOB (isDedupable=false) must not establish adulthood on January 1.
+	var majorityDate *time.Time
+	if isDedupable {
+		var mdErr error
+		majorityDate, mdErr = domain.MajorityDateFromDOB(canonicalDOB)
+		if mdErr != nil {
+			slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "err", mdErr)
+			return nil, &AadhaarVerifyFailure{
+				ReasonCode: "INVALID_DOB_FORMAT",
+				Retryable:  false,
+				Underlying: mdErr,
+			}
 		}
 	}
 	name := domain.NormalizeName(res.Name)

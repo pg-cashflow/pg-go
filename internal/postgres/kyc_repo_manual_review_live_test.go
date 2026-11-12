@@ -132,6 +132,16 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 		t.Fatalf("expected document_url to be wiped on rejection, got %v", *rejected.DocumentURL)
 	}
 
+	// KYC-03: verify document bytes are wiped on rejection
+	var docBytes []byte
+	err = repo.pool.QueryRow(ctx, "SELECT document_bytes FROM kyc_verification WHERE id = $1", verif.ID).Scan(&docBytes)
+	if err != nil {
+		t.Fatalf("could not query document_bytes: %v", err)
+	}
+	if docBytes != nil {
+		t.Errorf("KYC-03: document_bytes should be NULL after rejection, got %d bytes", len(docBytes))
+	}
+
 	// 6. Submit second verification and approve it
 	initVerif2, err := repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodOCR, "cashfree_doc", "cf_doc_456", "tenant:"+tenantID.String())
 	if err != nil {

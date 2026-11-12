@@ -913,7 +913,7 @@ func TestOwnerRecordGuardianConsent_Success(t *testing.T) {
 	}}
 	r.POST("/api/owner/tenants/:id/kyc/guardian-consent", h.OwnerRecordGuardianConsent)
 
-	payload := `{"guardian_name":"Parent One","guardian_phone":"+919876543210","relationship":"parent"}`
+	payload := `{"guardian_name":"Parent One","guardian_phone":"+919876543210","relationship":"parent","reference_id":"doc_ref_123"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/owner/tenants/"+tenantID.String()+"/kyc/guardian-consent", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -1126,14 +1126,28 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		t.Fatalf("expected minor without guardian consent to be blocked")
 	}
 
-	// Minor with guardian consent: ALLOWED
+	// Minor with guardian consent (OTP verified): ALLOWED
+	otpMethod := "otp_verified"
 	minorWithConsent := &domain.Tenant{
 		Status:                    domain.TenantStatusActive,
 		MajorityDate:              &futureMajority,
 		GuardianConsentVerifiedAt: &now,
+		GuardianConsentMethod:     &otpMethod,
 	}
 	if !h.tenantPayable(context.Background(), minorWithConsent) {
 		t.Fatalf("expected minor with guardian consent to be payable")
+	}
+
+	// Minor with manual attested consent: NOT sufficient for payment by default
+	manualMethod := "manual_attested"
+	minorWithManualConsent := &domain.Tenant{
+		Status:                    domain.TenantStatusActive,
+		MajorityDate:              &futureMajority,
+		GuardianConsentVerifiedAt: &now,
+		GuardianConsentMethod:     &manualMethod,
+	}
+	if h.tenantPayable(context.Background(), minorWithManualConsent) {
+		t.Fatalf("expected minor with manual attested consent to not be payable without OTP")
 	}
 
 	// Adult: ALLOWED without guardian consent
@@ -1145,11 +1159,11 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		t.Fatalf("expected adult to be payable")
 	}
 
-	// Pre-existing tenant with nil majority date: ALLOWED
+	// Tenant with nil majority date: BLOCKED (KYC-05: unknown age cannot be treated as adult)
 	nilMajorityTenant := &domain.Tenant{
 		Status: domain.TenantStatusActive,
 	}
-	if !h.tenantPayable(context.Background(), nilMajorityTenant) {
-		t.Fatalf("expected tenant with nil majority date to be payable")
+	if h.tenantPayable(context.Background(), nilMajorityTenant) {
+		t.Fatalf("expected tenant with nil majority date (unknown age) to be blocked from payment")
 	}
 }

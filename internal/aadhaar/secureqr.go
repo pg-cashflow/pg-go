@@ -85,6 +85,12 @@ func looksLikeSecureQR(raw string) bool {
 	return true
 }
 
+// LooksLikeSecureQR reports whether the input looks like a UIDAI Secure QR numeric payload.
+// Only all-digit strings of at least 50 characters qualify; XML, attribute, and opaque payloads return false.
+func LooksLikeSecureQR(raw string) bool {
+	return looksLikeSecureQR(raw)
+}
+
 func decodeSecureQR(raw string) (AadhaarData, error) {
 	raw = strings.TrimSpace(raw)
 	n := new(big.Int)
