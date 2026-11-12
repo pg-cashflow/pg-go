@@ -27,7 +27,7 @@ func (r *PaymentCommandRepo) InsertPaymentCommandTx(ctx context.Context, tx pgx.
 		cmd.Payload = json.RawMessage("{}")
 	}
 	if cmd.MaxAttempts <= 0 {
-		cmd.MaxAttempts = 5
+		cmd.MaxAttempts = domain.DefaultPaymentCommandMaxAttempts
 	}
 	if cmd.Status == "" {
 		cmd.Status = domain.PaymentCommandStatusPending

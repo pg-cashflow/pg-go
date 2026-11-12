@@ -2,57 +2,74 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var ErrUnconfiguredPool = errors.New("refund operation lock: database pool is not configured")
+
 // RefundOperationLocker controls mutual exclusion for refund operations
-// (dispatch, cancellation, and poller resubmission) using PostgreSQL session advisory locks.
+// (dispatch, cancellation, and poller resubmission) using distributed resource leases.
 type RefundOperationLocker interface {
 	TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (acquired bool, unlock func(), err error)
 }
 
-// RefundOperationLock provides PostgreSQL session advisory locking keyed by refund UUID.
+// RefundOperationLock provides distributed lease locking keyed by refund UUID.
 type RefundOperationLock struct {
-	pool *pgxpool.Pool
+	manager *ResourceLeaseManager
+	owner   string
 }
 
 // NewRefundOperationLock creates a new RefundOperationLock.
 func NewRefundOperationLock(pool *pgxpool.Pool) *RefundOperationLock {
-	return &RefundOperationLock{pool: pool}
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "worker"
+	}
+	owner := fmt.Sprintf("%s:%d", hostname, os.Getpid())
+	return &RefundOperationLock{
+		manager: NewResourceLeaseManager(pool),
+		owner:   owner,
+	}
 }
 
-// TryLockRefundOperation attempts to acquire a session-level advisory lock for the refund UUID.
-// It acquires a dedicated connection from the pool and releases it upon unlock.
+// TryLockRefundOperation attempts to acquire a distributed resource lease for the refund UUID.
 func (l *RefundOperationLock) TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (bool, func(), error) {
-	if l == nil || l.pool == nil {
-		// In tests without database pool, allow execution with no-op unlock.
-		return true, func() {}, nil
+	if l == nil || l.manager == nil || l.manager.pool == nil {
+		return false, nil, ErrUnconfiguredPool
 	}
 
-	conn, err := l.pool.Acquire(ctx)
+	lease, acquired, err := l.manager.TryAcquireLease(ctx, "refund", refundID.String(), l.owner, 30*time.Second)
 	if err != nil {
-		return false, nil, fmt.Errorf("acquire conn for refund operation lock: %w", err)
+		return false, nil, fmt.Errorf("try refund lease lock: %w", err)
 	}
-
-	var acquired bool
-	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('refund_op:' || $1::text))`, refundID).Scan(&acquired)
-	if err != nil {
-		conn.Release()
-		return false, nil, fmt.Errorf("try refund operation advisory lock: %w", err)
-	}
-
 	if !acquired {
-		conn.Release()
 		return false, func() {}, nil
 	}
 
 	unlock := func() {
-		defer conn.Release()
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('refund_op:' || $1::text))`, refundID)
+		relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = l.manager.ReleaseLease(relCtx, lease)
 	}
 
 	return true, unlock, nil
+}
+
+// NoopRefundOperationLock provides a safe no-op locker for isolated unit tests.
+type NoopRefundOperationLock struct{}
+
+// NewNoopRefundOperationLock creates a no-op locker for testing.
+func NewNoopRefundOperationLock() *NoopRefundOperationLock {
+	return &NoopRefundOperationLock{}
+}
+
+// TryLockRefundOperation always succeeds with a no-op unlock for testing.
+func (n *NoopRefundOperationLock) TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (bool, func(), error) {
+	return true, func() {}, nil
 }

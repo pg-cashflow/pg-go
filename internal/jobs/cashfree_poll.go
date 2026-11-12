@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,8 +78,8 @@ type RefundStatusFetcher interface {
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 }
 
-// RefundResubmitter extends RefundStatusFetcher to support automated resubmission
-// for refunds that crashed before initial gateway dispatch.
+// Deprecated: RefundResubmitter is deprecated. The poller only queries status and never resubmits refunds.
+// The payment command worker manages all refund creations idempotently.
 type RefundResubmitter interface {
 	RefundStatusFetcher
 	CreateRefund(ctx context.Context, orderID, refundID string, amountPaise int64, reason, idempotencyKey string) (*cashfree.RefundDetails, error)
@@ -287,113 +286,23 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 		}
 		isNotFound := errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 		if isNotFound && ref.Status == "initiated" && hasVerifiedOrderID {
-			// The refund was not found at Cashfree (404). This can occur if the application
-			// crashed after committing the initiated refund row locally, but before the HTTP
-			// call to Cashfree completed. If the client implements RefundResubmitter and
-			// the record is still within 24 hours, attempt automated idempotent resubmission.
+			// A 404 lookup does not prove the refund never dispatched.
+			// Do not attempt gateway re-creation here. The poller only reconciles status.
+			// If older than 15 minutes without visibility, transition to needs_review.
 			refundAge := now.Sub(ref.CreatedAt)
-			if resubmitter, ok := j.RefundClient.(RefundResubmitter); ok && refundAge >= 0 && refundAge < 24*time.Hour {
-				// R4: Acquire mutual exclusion lock before attempting resubmission
-				if j.RefundLocker != nil {
-					acquired, unlock, lockErr := j.RefundLocker.TryLockRefundOperation(ctx, ref.ID)
-					if lockErr != nil || !acquired {
-						log.Warn("cashfree poll: refund locked by concurrent operation, skipping resubmission", "refund_id", ref.ID)
-						return nil
-					}
-					defer unlock()
-				}
-
-				log.Info("cashfree poll: resubmitting initiated refund not found at gateway",
-					"order_id", orderID, "refund_id", refundID, "amount_paise", ref.AmountPaise)
-				// R6: Gateway confirmed the refund is absent. Rotate the idempotency key (a repeated key
-				// replays the cached first result); refund_id stays fixed and prevents duplicates.
-				retryIdempotencyKey := domain.CashfreeRefundRecoveryIdempotencyKey(ref.ID, time.Now())
-				refundNote := fmt.Sprintf("Refund %s", refundID)
-				if len(ref.RawPayload) > 0 {
-					var rawMap map[string]any
-					if err := json.Unmarshal(ref.RawPayload, &rawMap); err == nil {
-						if n, ok := rawMap["refund_note"].(string); ok && strings.TrimSpace(n) != "" {
-							refundNote = strings.TrimSpace(n)
-						}
-					}
-				}
-				if refundNote == fmt.Sprintf("Refund %s", refundID) {
-					if detector, ok := j.RefundClient.(interface{ IsSandbox() bool }); ok && detector.IsSandbox() {
-						upperReason := strings.ToUpper(ref.Reason)
-						var sandboxOutcome string
-						switch {
-						case strings.Contains(upperReason, "FAILED"):
-							sandboxOutcome = "FAILED"
-						case strings.Contains(upperReason, "PENDING"):
-							sandboxOutcome = "PENDING"
-						case strings.Contains(upperReason, "SUCCESS"):
-							sandboxOutcome = "SUCCESS"
-						}
-						if sandboxOutcome != "" {
-							refundNote = fmt.Sprintf("Refund %s %s", refundID, sandboxOutcome)
-						}
-					}
-				}
-				createdDetails, createErr := resubmitter.CreateRefund(ctx, orderID, refundID, ref.AmountPaise, refundNote, retryIdempotencyKey)
-				if createErr == nil && createdDetails != nil {
-					if valErr := cashfree.ValidateRefundResponse(orderID, refundID, ref.AmountPaise, createdDetails); valErr != nil {
-						log.Error("cashfree poll: resubmitted refund response validation failed", "refund_id", refundID, "err", valErr)
-						return nil
-					}
-					details = createdDetails
-					err = nil
-				} else if createErr != nil {
-					var createApiErr *cashfree.APIError
-					if errors.As(createErr, &createApiErr) {
-						// If Cashfree reports the refund already exists (e.g. 409 or 400 refund_already_exists),
-						// do not mark failed. Re-query status from gateway.
-						isDuplicate := cashfree.IsRefundDuplicateError(createErr)
-
-						if isDuplicate {
-							log.Info("cashfree poll: resubmitted refund already exists at gateway; re-fetching status",
-								"order_id", orderID, "refund_id", refundID)
-							if fetched, fetchErr := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID); fetchErr == nil && fetched != nil {
-								details = fetched
-								err = nil
-								createErr = nil
-							} else {
-								return nil
-							}
-						} else if createApiErr.StatusCode == http.StatusUnauthorized || createApiErr.StatusCode == http.StatusForbidden {
-							// Authentication/permission failure is a gateway config error, not a refund rejection.
-							log.Error("cashfree poll: resubmit refund authentication rejected (check credentials/IP)",
-								"order_id", orderID, "refund_id", refundID, "status", createApiErr.StatusCode)
-							return nil
-						} else if createApiErr.StatusCode >= 400 && createApiErr.StatusCode < 500 && createApiErr.StatusCode != http.StatusTooManyRequests {
-							log.Warn("cashfree poll: resubmitted refund rejected definitively; marking failed",
-								"order_id", orderID, "refund_id", refundID, "err", createErr)
-							if reconciler, ok := j.Refunds.(RefundReconciler); ok {
-								if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, "failed"); recErr != nil {
-									log.Error("cashfree poll reconcile failed refund error", "refund_id", refundID, "err", recErr)
-								}
-							}
-							return nil
-						}
-					}
-					if createErr != nil {
-						log.Error("cashfree poll: resubmit refund temporary error", "order_id", orderID, "refund_id", refundID, "err", createErr)
-						return nil
-					}
-				}
-			} else if refundAge > 30*time.Minute {
+			if refundAge > 15*time.Minute {
 				log.Warn("cashfree poll refund not found at gateway after grace period; marking needs_review for manual review",
-					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt)
+					"order_id", orderID, "refund_id", refundID, "created_at", ref.CreatedAt, "age_min", int(refundAge.Minutes()))
 				if reconciler, ok := j.Refunds.(RefundReconciler); ok {
 					if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, domain.RefundStatusNeedsReview); recErr != nil {
 						log.Error("cashfree poll reconcile needs_review refund error", "refund_id", refundID, "err", recErr)
 					}
 				}
 				return nil
-			} else {
-				log.Info("cashfree poll: refund not yet visible at gateway; waiting for grace window",
-					"order_id", orderID, "refund_id", refundID)
-				return nil
 			}
+			log.Info("cashfree poll: refund not yet visible at gateway; waiting for grace window",
+				"order_id", orderID, "refund_id", refundID, "age_min", int(refundAge.Minutes()))
+			return nil
 		} else {
 			log.Error("cashfree poll refund fetch", "order_id", orderID, "refund_id", refundID, "has_verified_order_id", hasVerifiedOrderID, "err", err)
 			return nil

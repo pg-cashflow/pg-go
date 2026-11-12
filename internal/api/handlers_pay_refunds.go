@@ -276,9 +276,9 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		dispatchKey := fmt.Sprintf("refund_dispatch:%s", rfRow.ID)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO payment_commands (command_type, property_id, source_id, payload, idempotency_key, status, max_attempts, created_at)
-			VALUES ($1, $2, $3, $4, $5, 'pending', 5, NOW())
+			VALUES ($1, $2, $3, $4, $5, 'pending', $6, NOW())
 			ON CONFLICT (idempotency_key) DO NOTHING`,
-			domain.PaymentCommandRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey,
+			domain.PaymentCommandRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey, domain.DefaultPaymentCommandMaxAttempts,
 		)
 		if err != nil {
 			return fmt.Errorf("enqueue refund dispatch command: %w", err)

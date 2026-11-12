@@ -268,6 +268,9 @@ func (m *recoveringIntentMgr) TransitionFailed(ctx context.Context, intentID uui
 	m.failed = true
 	return nil
 }
+func (m *recoveringIntentMgr) TransitionDispatchUnknown(ctx context.Context, intentID uuid.UUID) error {
+	return nil
+}
 func (m *recoveringIntentMgr) GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
 	return m.claimed, nil
 }

@@ -73,12 +73,13 @@ type PaymentReport struct {
 type PaymentIntentStatus string
 
 const (
-	IntentInitiating PaymentIntentStatus = "initiating"
-	IntentCreated    PaymentIntentStatus = "created"
-	IntentPaid       PaymentIntentStatus = "paid"
-	IntentExpired    PaymentIntentStatus = "expired"
-	IntentFailed     PaymentIntentStatus = "failed"
-	IntentSuperseded PaymentIntentStatus = "superseded"
+	IntentInitiating      PaymentIntentStatus = "initiating"
+	IntentCreated         PaymentIntentStatus = "created"
+	IntentPaid            PaymentIntentStatus = "paid"
+	IntentExpired         PaymentIntentStatus = "expired"
+	IntentFailed          PaymentIntentStatus = "failed"
+	IntentSuperseded      PaymentIntentStatus = "superseded"
+	IntentDispatchUnknown PaymentIntentStatus = "dispatch_unknown"
 )
 
 type PaymentIntentDue struct {

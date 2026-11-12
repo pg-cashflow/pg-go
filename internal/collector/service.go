@@ -102,6 +102,7 @@ type PaymentIntentManager interface {
 	ClaimInitiatingIntent(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, amounts []int64, totalAmountPaise int64, orderID string, minRemaining time.Duration) (claimed *domain.PaymentIntent, isReused bool, isInFlight bool, err error)
 	TransitionCreated(ctx context.Context, intentID uuid.UUID, sessionID string, expiresAt *time.Time) error
 	TransitionFailed(ctx context.Context, intentID uuid.UUID) error
+	TransitionDispatchUnknown(ctx context.Context, intentID uuid.UUID) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error)
 }
 
@@ -159,6 +160,8 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 			var apiErr *cashfree.APIError
 			if errors.As(gErr, &apiErr) && apiErr.StatusCode == 404 {
 				_ = mgr.TransitionFailed(ctx, claimed.ID)
+			} else {
+				_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			}
 			return "", err
 		}
@@ -367,6 +370,8 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 			var apiErr *cashfree.APIError
 			if errors.As(gErr, &apiErr) && apiErr.StatusCode == 404 {
 				_ = mgr.TransitionFailed(ctx, claimed.ID)
+			} else {
+				_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			}
 			return "", err
 		}

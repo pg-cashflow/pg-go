@@ -38,17 +38,16 @@ func main() {
 		log.Fatalf("slot-invite-expiry: worker role validation: %v", err)
 	}
 
-	const lockKey = 0x534C4F54494558 // "SLOTIEX"
-	var acquired bool
-	if err := pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&acquired); err != nil {
-		log.Fatalf("slot-invite-expiry: acquire advisory lock: %v", err)
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "slot_invite_expiry")
+	if err != nil {
+		log.Fatalf("slot-invite-expiry: acquire job lock: %v", err)
 	}
 	if !acquired {
 		slog.Info("slot-invite-expiry: another instance is already running; skipping")
 		return
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		_ = release(context.Background())
 	}()
 
 	repo := postgres.NewSlotInviteRepo(pool)

@@ -39,19 +39,17 @@ func main() {
 		log.Fatalf("kyc-expiry: worker role validation: %v", err)
 	}
 
-	// Overlap guard: acquire session-level advisory lock to prevent concurrent executions
-	const kycExpiryLockKey = 0x4B5943455850 // "KYCEXP" in hex
-	var acquired bool
-	err = pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, kycExpiryLockKey).Scan(&acquired)
+	// Overlap guard: acquire distributed resource lease to prevent concurrent executions
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "kyc_expiry")
 	if err != nil {
-		log.Fatalf("kyc-expiry: acquire advisory lock: %v", err)
+		log.Fatalf("kyc-expiry: acquire job lock: %v", err)
 	}
 	if !acquired {
 		slog.Info("kyc-expiry: another instance is already running; skipping sweep")
 		return
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, kycExpiryLockKey)
+		_ = release(context.Background())
 	}()
 
 	var kycDocKey []byte

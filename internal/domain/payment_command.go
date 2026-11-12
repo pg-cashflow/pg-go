@@ -11,6 +11,11 @@ const (
 	PaymentCommandRefundDispatch = "cashfree_refund_dispatch"
 )
 
+const (
+	DefaultPaymentCommandMaxAttempts = 12
+	MaxPaymentCommandRetryAge        = 48 * time.Hour
+)
+
 // PaymentCommandStatus defines the processing lifecycle for payment commands.
 type PaymentCommandStatus string
 

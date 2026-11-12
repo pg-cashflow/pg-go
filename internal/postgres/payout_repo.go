@@ -768,7 +768,8 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 	return batch, items, nil
 }
 
-// ApproveBatch transitions a draft batch to approved with the specified approver.
+// Deprecated: ApproveBatch is an unsafe legacy method that bypasses payee verification and snapshot creation.
+// All production callers must use ApproveBatchSigned.
 func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.UUID) (*domain.PayoutBatch, error) {
 	now := time.Now().UTC()
 	row := r.db.QueryRow(ctx, `
@@ -788,29 +789,24 @@ func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.
 	return b, nil
 }
 
-// TryLockBatchDispatch attempts to acquire an advisory lock for a payout batch dispatch.
+// TryLockBatchDispatch attempts to acquire a distributed resource lease for a payout batch dispatch.
 // Returns false if another worker or goroutine is currently dispatching the batch.
 func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID) (bool, func(), error) {
 	if r.pool == nil {
-		return true, func() {}, nil
+		return false, nil, errors.New("payout repo: pool is not configured")
 	}
-	conn, err := r.pool.Acquire(ctx)
+	manager := NewResourceLeaseManager(r.pool)
+	lease, acquired, err := manager.TryAcquireLease(ctx, "payout_batch", batchID.String(), "payout-dispatcher", 30*time.Second)
 	if err != nil {
-		return false, nil, fmt.Errorf("acquire conn for batch lock: %w", err)
-	}
-	var acquired bool
-	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('payout_batch:' || $1::text))`, batchID).Scan(&acquired)
-	if err != nil {
-		conn.Release()
-		return false, nil, fmt.Errorf("try advisory lock: %w", err)
+		return false, nil, fmt.Errorf("try payout batch lease lock: %w", err)
 	}
 	if !acquired {
-		conn.Release()
 		return false, func() {}, nil
 	}
 	unlock := func() {
-		defer conn.Release()
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('payout_batch:' || $1::text))`, batchID)
+		relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = manager.ReleaseLease(relCtx, lease)
 	}
 	return true, unlock, nil
 }

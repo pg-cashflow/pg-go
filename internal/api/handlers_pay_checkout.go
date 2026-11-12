@@ -190,12 +190,14 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID"})
 }
 
-// TenantOrderPayVerify handles POST /tenant/payments/orders/:order_id/verify.
-// It verifies a checkout order return from Cashfree using the order_id, ensuring
-// that the order belongs to the authenticated tenant before settlement.
+// TenantOrderPayVerify handles POST /tenant/payments/orders/:order_id/verify
+// and owner order verification. It verifies a checkout order return from Cashfree using
+// the order_id, ensuring that the order belongs to the authenticated tenant or owner property.
 func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 	t := tenantFromContext(c)
-	if t == nil {
+	pid, isOwner := propertyIDFromClaims(c)
+	if t == nil && (!isOwner || pid == uuid.Nil) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
 	orderID := strings.TrimSpace(c.Param("order_id"))
@@ -215,7 +217,7 @@ func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 		return
 	}
 
-	// Tenant ownership verification: Verify intent's dues belong strictly to this authenticated tenant
+	// Ownership verification: Verify intent's dues belong strictly to this authenticated tenant or owner property
 	var targetDueIDs []uuid.UUID
 	if intent.DueID != uuid.Nil {
 		targetDueIDs = append(targetDueIDs, intent.DueID)
@@ -233,11 +235,19 @@ func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 		return
 	}
 
-	// Verify tenant ownership of linked dues
+	// Verify ownership of linked dues
 	for _, dueID := range targetDueIDs {
 		due, dErr := h.DueStore.GetByID(c.Request.Context(), dueID)
-		if dErr != nil || due.TenantID != t.ID {
+		if dErr != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "linked due not found"})
+			return
+		}
+		if t != nil && due.TenantID != t.ID {
 			c.JSON(http.StatusNotFound, gin.H{"error": "order does not belong to tenant"})
+			return
+		}
+		if isOwner && due.PropertyID != pid {
+			c.JSON(http.StatusNotFound, gin.H{"error": "order does not belong to owner property"})
 			return
 		}
 	}

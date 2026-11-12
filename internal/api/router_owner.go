@@ -37,6 +37,8 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/dues/bulk-mark-paid/confirm", h.BulkMarkCashPaidConfirm)
 	owner.GET("/dues/:id/qr", h.DueQR)
 	owner.GET("/dues/:id/pay", h.OwnerDuePay)
+	owner.POST("/dues/:id/pay", h.OwnerDuePay)
+	owner.POST("/payments/orders/:order_id/verify", h.TenantOrderPayVerify)
 	owner.POST("/dues/:id/token", h.DueToken)
 	owner.GET("/occupancy", h.OwnerOccupancy)
 	owner.GET("/dashboard/summary", h.OwnerDashboardSummary)

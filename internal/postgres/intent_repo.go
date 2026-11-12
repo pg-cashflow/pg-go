@@ -368,6 +368,16 @@ func (r *PaymentIntentRepo) TransitionFailed(ctx context.Context, intentID uuid.
 	return err
 }
 
+func (r *PaymentIntentRepo) TransitionDispatchUnknown(ctx context.Context, intentID uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE payment_intents
+		SET status='dispatch_unknown', updated_at=NOW()
+		WHERE id=$1 AND status IN ('initiating', 'created')`,
+		intentID,
+	)
+	return err
+}
+
 func (r *PaymentIntentRepo) GetReusableIntentUnderLock(ctx context.Context, tenantID, dueID uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error) {
 	query := func(repo *PaymentIntentRepo) (*domain.PaymentIntent, error) {
 		// Top-down lock order: tenants -> dues -> payment_intents

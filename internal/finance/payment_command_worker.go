@@ -2,6 +2,7 @@ package finance
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -109,7 +110,7 @@ func (w *PaymentCommandWorker) ProcessSingleCommand(ctx context.Context, id int6
 	}
 
 	retryDelay := w.computeBackoff(cmd.AttemptCount)
-	isDeadLetter := cmd.AttemptCount >= cmd.MaxAttempts
+	isDeadLetter := cmd.AttemptCount >= cmd.MaxAttempts || time.Since(cmd.CreatedAt) > domain.MaxPaymentCommandRetryAge
 	if err := w.repo.RecordCommandFailureTx(ctx, updateTx, cmd, execErr.Error(), retryDelay); err != nil {
 		return fmt.Errorf("record payment command failure %d: %w", cmd.ID, err)
 	}
@@ -151,8 +152,18 @@ func (w *PaymentCommandWorker) computeBackoff(attempt int) time.Duration {
 	base := 5.0
 	multiplier := 2.0
 	seconds := base * math.Pow(multiplier, float64(attempt-1))
-	if seconds > 300.0 {
-		seconds = 300.0
+
+	// Add 0% to 25% pseudo-random jitter
+	jitterFrac := 0.0
+	var n [1]byte
+	if _, err := rand.Read(n[:]); err == nil {
+		jitterFrac = float64(n[0]) / 255.0 * 0.25
+	}
+	seconds = seconds * (1.0 + jitterFrac)
+
+	// Cap delay at 900 seconds (15 minutes) AFTER applying jitter
+	if seconds > 900.0 {
+		seconds = 900.0
 	}
 	return time.Duration(seconds) * time.Second
 }

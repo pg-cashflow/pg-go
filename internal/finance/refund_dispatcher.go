@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -142,7 +140,15 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 		// R6: Resolve ambiguous create by querying gateway first.
 		resolved, recoverErr := d.recoverAmbiguousCreate(ctx, orderID, refundRef, ref, cfNote, cfErr)
 		if recoverErr != nil {
-			return recoverErr // outbox worker retries with backoff
+			// Inconclusive status from gateway: transition to needs_review and stop automated creation retries
+			ref.Status = "needs_review"
+			if reconErr := d.repo.ReconcileRefundTransition(ctx, ref, "needs_review"); reconErr != nil {
+				slog.Error("refund dispatcher: transition to needs_review failed", "error", reconErr, "refund_id", ref.ID)
+				return fmt.Errorf("transition needs_review: %w", reconErr)
+			}
+			slog.Warn("refund dispatcher: ambiguous create transitioned to needs_review; automated retries stopped",
+				"refund_id", ref.ID, "order_id", orderID, "error", recoverErr)
+			return nil // Definitive outcome recorded; stop outbox worker retries
 		}
 		cfResp = resolved
 	}
@@ -199,17 +205,7 @@ func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, or
 		return details, nil
 	}
 
-	var apiErr *cashfree.APIError
-	if !errors.As(fetchErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
-		return nil, ambiguous
-	}
-
-	// R6: Confirmed not created at the gateway (404): retry with a NEW idempotency key and the SAME
-	// refund_id. Cashfree replays the cached result for a repeated key (including 5xx).
-	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, domain.CashfreeRefundRecoveryIdempotencyKey(ref.ID, time.Now()))
-	if createErr != nil {
-		slog.Error("refund dispatcher: re-create failed", "error", createErr, "refund_id", ref.ID)
-		return nil, fmt.Errorf("cashfree refund ambiguous error: %w", createErr)
-	}
-	return fresh, nil
+	// If status lookup returned 404 or an error, do NOT rotate the idempotency key or re-create.
+	// The gateway outcome is inconclusive; return error to trigger needs_review transition.
+	return nil, fmt.Errorf("cashfree refund status unconfirmed for refund %s: %w", ref.ID, cause)
 }

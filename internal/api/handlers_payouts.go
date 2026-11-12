@@ -965,26 +965,23 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 	}
 
 	signingKey, keyID := h.getPayoutApprovalSigningKey()
-	var approvedBatch *domain.PayoutBatch
-	if len(signingKey) >= domain.MinApprovalSigningKeyLength {
-		var snapshot *domain.PayoutApprovalSnapshot
-		approvedBatch, snapshot, err = repo.ApproveBatchSigned(c.Request.Context(), pid, batchID, uid, signingKey, keyID)
-		if err != nil {
-			respondErr(c, err)
-			return
-		}
-		_ = snapshot
-	} else {
+	if len(signingKey) < domain.MinApprovalSigningKeyLength {
 		if h.AppEnv == "production" {
 			respondErr(c, fmt.Errorf("payout approval signing key not configured"))
 			return
 		}
-		approvedBatch, err = repo.ApproveBatch(c.Request.Context(), batchID, uid)
-		if err != nil {
-			respondErr(c, err)
-			return
-		}
+		// In development or test environments without a configured key, use a deterministic 32-byte key
+		// to enforce full signature and payee integrity checks unconditionally.
+		signingKey = []byte("pg_payout_approval_dev_key_32b!")
+		keyID = "dev-v1"
 	}
+
+	approvedBatch, snapshot, err := repo.ApproveBatchSigned(c.Request.Context(), pid, batchID, uid, signingKey, keyID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	_ = snapshot
 
 	slog.Info("payout batch approved",
 		"batch_id", approvedBatch.ID,

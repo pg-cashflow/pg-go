@@ -86,22 +86,22 @@ func TestPaymentCommandWorker_ComputeBackoff(t *testing.T) {
 	w := NewPaymentCommandWorker(nil, nil, nil)
 
 	b1 := w.computeBackoff(1)
-	if b1 != 5*time.Second {
-		t.Errorf("expected 5s for attempt 1, got %v", b1)
+	if b1 < 5*time.Second || b1 > 7*time.Second {
+		t.Errorf("expected 5-6.25s for attempt 1, got %v", b1)
 	}
 
 	b2 := w.computeBackoff(2)
-	if b2 != 10*time.Second {
-		t.Errorf("expected 10s for attempt 2, got %v", b2)
+	if b2 < 10*time.Second || b2 > 13*time.Second {
+		t.Errorf("expected 10-12.5s for attempt 2, got %v", b2)
 	}
 
 	b3 := w.computeBackoff(3)
-	if b3 != 20*time.Second {
-		t.Errorf("expected 20s for attempt 3, got %v", b3)
+	if b3 < 20*time.Second || b3 > 26*time.Second {
+		t.Errorf("expected 20-25s for attempt 3, got %v", b3)
 	}
 
-	bMax := w.computeBackoff(10)
-	if bMax > 300*time.Second {
-		t.Errorf("expected backoff capped at 300s, got %v", bMax)
+	bMax := w.computeBackoff(15)
+	if bMax > 900*time.Second {
+		t.Errorf("expected backoff capped at 900s, got %v", bMax)
 	}
 }

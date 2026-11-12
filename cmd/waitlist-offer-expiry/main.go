@@ -38,17 +38,16 @@ func main() {
 		log.Fatalf("waitlist-offer-expiry: worker role validation: %v", err)
 	}
 
-	const lockKey = 0x574149544C5354 // "WAITLST"
-	var acquired bool
-	if err := pool.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&acquired); err != nil {
-		log.Fatalf("waitlist-offer-expiry: acquire advisory lock: %v", err)
+	release, acquired, err := jobs.AcquireJobLock(ctx, pool, "waitlist_offer_expiry")
+	if err != nil {
+		log.Fatalf("waitlist-offer-expiry: acquire job lock: %v", err)
 	}
 	if !acquired {
 		slog.Info("waitlist-offer-expiry: another instance is already running; skipping")
 		return
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		_ = release(context.Background())
 	}()
 
 	waitlistRepo := postgres.NewWaitlistRepo(pool)

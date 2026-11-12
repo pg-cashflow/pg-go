@@ -209,7 +209,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		DefaultRefundSpeed: cfg.CashfreeRefundSpeed,
 	}
 	if strings.TrimSpace(cfg.FrontendURL) != "" {
-		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/tenant/pay-return?order_id={order_id}"
+		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/payment/return?order_id={order_id}"
 	} else {
 		baseURL := "http://localhost:8080"
 		if addr := strings.TrimSpace(cfg.HTTPAddr); addr != "" {
@@ -221,7 +221,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 				baseURL = "http://" + addr
 			}
 		}
-		cfCfg.ReturnURL = baseURL + "/tenant/pay-return?order_id={order_id}"
+		cfCfg.ReturnURL = baseURL + "/payment/return?order_id={order_id}"
 	}
 	if cfCfg.Enabled() {
 		cfClient = cashfree.NewClient(cfCfg)

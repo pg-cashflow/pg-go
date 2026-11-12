@@ -2,43 +2,40 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"hash/fnv"
+	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
-// AcquireJobLock acquires a session-level PostgreSQL advisory lock for a named background job.
+// AcquireJobLock acquires a distributed resource lease for a named background job.
 // Returns a release function, a boolean indicating whether the lock was acquired, and an error.
-// If another instance currently holds the lock, acquired is false and the caller should exit cleanly.
+// If another instance currently holds the lease, acquired is false and the caller should exit cleanly.
 func AcquireJobLock(ctx context.Context, pool *pgxpool.Pool, jobName string) (func(context.Context) error, bool, error) {
 	if pool == nil {
-		return func(context.Context) error { return nil }, true, nil
-	}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte("job_lock:" + jobName))
-	lockID := int64(h.Sum64())
-
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("acquire conn for job lock %s: %w", jobName, err)
+		return nil, false, errors.New("job lock: database pool is not configured")
 	}
 
-	var acquired bool
-	err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", lockID).Scan(&acquired)
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "worker"
+	}
+	owner := fmt.Sprintf("%s:%d", hostname, os.Getpid())
+
+	manager := postgres.NewResourceLeaseManager(pool)
+	lease, acquired, err := manager.TryAcquireLease(ctx, "job", jobName, owner, 10*time.Minute)
 	if err != nil {
-		conn.Release()
-		return nil, false, fmt.Errorf("query advisory lock %s: %w", jobName, err)
+		return nil, false, fmt.Errorf("acquire job lease %s: %w", jobName, err)
 	}
 	if !acquired {
-		conn.Release()
 		return nil, false, nil
 	}
 
 	release := func(relCtx context.Context) error {
-		defer conn.Release()
-		var unlocked bool
-		return conn.QueryRow(relCtx, "SELECT pg_advisory_unlock($1)", lockID).Scan(&unlocked)
+		return manager.ReleaseLease(relCtx, lease)
 	}
 	return release, true, nil
 }
