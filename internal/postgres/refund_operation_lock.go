@@ -44,7 +44,7 @@ func (l *RefundOperationLock) TryLockRefundOperation(ctx context.Context, refund
 		return false, nil, ErrUnconfiguredPool
 	}
 
-	lease, acquired, err := l.manager.TryAcquireLease(ctx, "refund", refundID.String(), l.owner, 30*time.Second)
+	lease, acquired, err := l.manager.TryAcquireLease(ctx, "refund", refundID.String(), l.owner, 120*time.Second)
 	if err != nil {
 		return false, nil, fmt.Errorf("try refund lease lock: %w", err)
 	}

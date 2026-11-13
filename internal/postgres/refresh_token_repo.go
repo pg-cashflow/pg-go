@@ -153,7 +153,7 @@ func (r *RefreshTokenRepo) ListActiveSessions(ctx context.Context, userID uuid.U
 }
 
 // RotateTokenTx atomically validates, revokes, and rotates a refresh token inside a single transaction.
-// Row-level locking (FOR UPDATE) eliminates race conditions, and a 30s grace window protects against network retransmits.
+// Row-level locking (FOR UPDATE) eliminates race conditions, and a short grace window (domain.RefreshGraceWindow, 5s) protects against network retransmits.
 func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, newRT *domain.RefreshToken) (*domain.RefreshToken, error) {
 	var tx pgx.Tx
 	var err error

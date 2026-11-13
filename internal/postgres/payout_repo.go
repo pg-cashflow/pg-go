@@ -791,19 +791,46 @@ func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.
 
 // TryLockBatchDispatch attempts to acquire a distributed resource lease for a payout batch dispatch.
 // Returns false if another worker or goroutine is currently dispatching the batch.
+// Maintains a heartbeat renewal every 40s while active to prevent lease expiry during long batch runs.
 func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID) (bool, func(), error) {
 	if r.pool == nil {
 		return false, nil, errors.New("payout repo: pool is not configured")
 	}
 	manager := NewResourceLeaseManager(r.pool)
-	lease, acquired, err := manager.TryAcquireLease(ctx, "payout_batch", batchID.String(), "payout-dispatcher", 30*time.Second)
+	lease, acquired, err := manager.TryAcquireLease(ctx, "payout_batch", batchID.String(), "payout-dispatcher", 120*time.Second)
 	if err != nil {
 		return false, nil, fmt.Errorf("try payout batch lease lock: %w", err)
 	}
 	if !acquired {
 		return false, func() {}, nil
 	}
+
+	stopHeartbeat := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(40 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				renewed, err := manager.RenewLease(renewCtx, lease, 120*time.Second)
+				renewCancel()
+				if err != nil || !renewed {
+					slog.Warn("payout batch lease heartbeat failed; lost lease", "batch_id", batchID, "error", err)
+					return
+				}
+			}
+		}
+	}()
+
 	unlock := func() {
+		close(stopHeartbeat)
+		<-heartbeatDone
 		relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = manager.ReleaseLease(relCtx, lease)

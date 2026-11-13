@@ -835,7 +835,10 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			}
 			if graceUser.TenantID != nil && s.tenants != nil {
 				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
-				if terr == nil && t != nil && !t.CanSignIn() {
+				if terr != nil {
+					return "", "", nil, fmt.Errorf("grace window: load tenant: %w", terr)
+				}
+				if t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
 						InvalidateFamily(rotatedRT.FamilyID)
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
@@ -871,7 +874,10 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	// Verify tenant status if tenant
 	if user.TenantID != nil && s.tenants != nil {
 		t, err := s.tenants.GetByID(ctx, *user.TenantID)
-		if err == nil && t != nil && !t.CanSignIn() {
+		if err != nil {
+			return "", "", nil, fmt.Errorf("load tenant: %w", err)
+		}
+		if t != nil && !t.CanSignIn() {
 			if s.refreshRepo != nil {
 				InvalidateFamily(rotatedRT.FamilyID)
 				_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)

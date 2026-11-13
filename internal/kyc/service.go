@@ -39,15 +39,6 @@ var (
 	ErrInvalidConsentPurpose = errors.New("kyc: invalid or unsupported consent purpose")
 )
 
-// PermittedConsentPurposes whitelists permitted legal purposes for DPDP identity consent.
-var PermittedConsentPurposes = map[string]bool{
-	"residency_verification_and_kyc": true,
-	"tenant_verification":           true,
-	"rental_onboarding":              true,
-	"aadhaar_kyc":                    true,
-	"onboarding":                     true,
-}
-
 // PermanentError is an interface implemented by errors that represent an
 // unrecoverable upstream condition (such as 4xx HTTP responses or corrupt payload)
 // where retrying delivery would be futile.
@@ -170,11 +161,10 @@ func (s *Service) RecordConsent(
 	purpose, consentVersion, consentText,
 	ip, userAgent, actor string,
 ) (*domain.KYCConsent, error) {
-	if !PermittedConsentPurposes[purpose] {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidConsentPurpose, purpose)
-	}
+	// Single source of truth: AllowedConsentPurposes (consent.go), mirrored by the
+	// kyc_consent_purpose_check constraint in migration 110.
 	if err := ValidateConsentPurpose(purpose); err != nil {
-		return nil, fmt.Errorf("kyc service: invalid consent purpose: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConsentPurpose, err)
 	}
 
 	if consentText == "" {

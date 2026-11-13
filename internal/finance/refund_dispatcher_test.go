@@ -419,3 +419,38 @@ func TestRefundGatewayDispatcher_RateLimitDoesNotRotateKey(t *testing.T) {
 		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)
 	}
 }
+
+// A duplicate-refund response after a lost first result must be resolved by a read-only
+// status lookup, not escalated to manual review.
+func TestRefundGatewayDispatcher_DuplicateCreateResolvesViaStatusLookup(t *testing.T) {
+	refID := uuid.New()
+	repo := newInitiatedRefundRepo(refID)
+	cf := &fetchingCFRefundClient{
+		createResults: []error{&cashfree.APIError{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400",
+			Body:       `{"message":"refund_id already exists"}`,
+		}},
+		fetchResp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_9",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  50000,
+		},
+	}
+	d := NewRefundGatewayDispatcher(repo, cf)
+
+	if err := d.DispatchRefund(context.Background(), refID); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cf.fetchCalls != 1 {
+		t.Fatalf("expected one status lookup, got %d", cf.fetchCalls)
+	}
+	if len(cf.createKeys) != 1 {
+		t.Fatalf("must not retry create or rotate key; create calls=%d", len(cf.createKeys))
+	}
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] == "needs_review" || repo.reconcileLog[0] == "failed" {
+		t.Errorf("expected reconcile to the gateway status, got %v", repo.reconcileLog)
+	}
+}

@@ -58,7 +58,7 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 		return fmt.Errorf("refund dispatcher: payment repo not configured")
 	}
 
-	// R4: Mutual exclusion - acquire PostgreSQL session advisory lock for refundID
+	// R4: Mutual exclusion - acquire a 30s database lease (resource_leases) for refundID
 	if d.locker != nil {
 		acquired, unlock, err := d.locker.TryLockRefundOperation(ctx, refundID)
 		if err != nil {
@@ -191,7 +191,10 @@ func isServerOrTransportError(err error) bool {
 func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, orderID, refundRef string, ref *domain.GatewayRefund, note string, cause error) (*cashfree.RefundDetails, error) {
 	ambiguous := fmt.Errorf("cashfree refund ambiguous error: %w", cause)
 	fetcher, ok := d.client.(RefundStatusFetcher)
-	if !ok || !isServerOrTransportError(cause) {
+	// A duplicate/conflict response means the first create probably succeeded (for example the
+	// process crashed before it saved the result). A status lookup is read-only and safe, so it
+	// runs here too. It never creates a refund and never rotates the key.
+	if !ok || !(isServerOrTransportError(cause) || cashfree.IsRefundDuplicateError(cause)) {
 		return nil, ambiguous
 	}
 

@@ -227,6 +227,10 @@ func ResetTokenVersionCache() {
 var (
 	revokedFamilyMu    sync.RWMutex
 	revokedFamilyCache = make(map[uuid.UUID]time.Time)
+
+	activeFamilyMu       sync.RWMutex
+	activeFamilyCache    = make(map[uuid.UUID]time.Time)
+	activeFamilyCacheTTL = 10 * time.Second
 )
 
 // InvalidateFamily records a revoked token family so that any outstanding
@@ -236,9 +240,41 @@ func InvalidateFamily(familyID uuid.UUID) {
 	if familyID == uuid.Nil {
 		return
 	}
+	InvalidateActiveFamilyCache(familyID)
 	revokedFamilyMu.Lock()
 	revokedFamilyCache[familyID] = time.Now().Add(AccessTokenTTL)
 	revokedFamilyMu.Unlock()
+}
+
+// InvalidateActiveFamilyCache removes a family from the positive activity cache.
+func InvalidateActiveFamilyCache(familyID uuid.UUID) {
+	if familyID == uuid.Nil {
+		return
+	}
+	activeFamilyMu.Lock()
+	delete(activeFamilyCache, familyID)
+	activeFamilyMu.Unlock()
+}
+
+// IsFamilyCachedActive checks whether the family was verified active in the database within activeFamilyCacheTTL.
+func IsFamilyCachedActive(familyID uuid.UUID) bool {
+	if familyID == uuid.Nil {
+		return false
+	}
+	activeFamilyMu.RLock()
+	expiresAt, ok := activeFamilyCache[familyID]
+	activeFamilyMu.RUnlock()
+	return ok && time.Now().Before(expiresAt)
+}
+
+// SetFamilyCachedActive marks a family active in memory for activeFamilyCacheTTL.
+func SetFamilyCachedActive(familyID uuid.UUID) {
+	if familyID == uuid.Nil {
+		return
+	}
+	activeFamilyMu.Lock()
+	activeFamilyCache[familyID] = time.Now().Add(activeFamilyCacheTTL)
+	activeFamilyMu.Unlock()
 }
 
 // IsFamilyRevoked checks whether the given family_id has been explicitly revoked.
@@ -266,6 +302,9 @@ func ResetRevokedFamilyCache() {
 	revokedFamilyMu.Lock()
 	revokedFamilyCache = make(map[uuid.UUID]time.Time)
 	revokedFamilyMu.Unlock()
+	activeFamilyMu.Lock()
+	activeFamilyCache = make(map[uuid.UUID]time.Time)
+	activeFamilyMu.Unlock()
 }
 
 func getCachedTokenVersion(userID uuid.UUID) (int, bool) {
@@ -389,25 +428,29 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 			return false
 		}
 
-		// Durable database session-family lookup if configured
-		if users != nil {
-			checker, ok := users.(SessionFamilyChecker)
-			if !ok || checker == nil {
-				// Fail closed if durable session-family lookup is not configured on UserLookup
-				apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
-				return false
-			}
+		// Positive in-memory cache check (10s TTL to eliminate remote DB latency on every request)
+		if !IsFamilyCachedActive(*claims.FamilyID) {
+			// Durable database session-family lookup if configured
+			if users != nil {
+				checker, ok := users.(SessionFamilyChecker)
+				if !ok || checker == nil {
+					// Fail closed if durable session-family lookup is not configured on UserLookup
+					apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+					return false
+				}
 
-			active, err := checker.IsFamilyActive(c.Request.Context(), *claims.FamilyID)
-			if err != nil {
-				c.Header("Retry-After", "3")
-				apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
-				return false
-			}
-			if !active {
-				InvalidateFamily(*claims.FamilyID)
-				apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
-				return false
+				active, err := checker.IsFamilyActive(c.Request.Context(), *claims.FamilyID)
+				if err != nil {
+					c.Header("Retry-After", "3")
+					apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
+					return false
+				}
+				if !active {
+					InvalidateFamily(*claims.FamilyID)
+					apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+					return false
+				}
+				SetFamilyCachedActive(*claims.FamilyID)
 			}
 		}
 	}

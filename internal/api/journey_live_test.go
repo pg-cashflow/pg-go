@@ -334,7 +334,7 @@ func TestJourney_OwnerTenantDueCheckoutWebhookLedgerVacate(t *testing.T) {
 
 	// Seed verified KYC verification so tenant passes the KYC onboarding gate
 	consentID := uuid.New()
-	if _, err := h.pool.Exec(ctx, `INSERT INTO kyc_consent (id, tenant_id, purpose, consent_version, consent_text, consent_text_hash, consent_given_at) VALUES ($1, $2, 'tenant onboarding', 'v1', 'consent text', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', NOW())`, consentID, tenant.ID); err != nil {
+	if _, err := h.pool.Exec(ctx, `INSERT INTO kyc_consent (id, tenant_id, purpose, consent_version, consent_text, consent_text_hash, consent_given_at) VALUES ($1, $2, 'residency_verification_and_kyc', 'v1', 'consent text', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef', NOW())`, consentID, tenant.ID); err != nil {
 		t.Fatalf("seed kyc consent: %v", err)
 	}
 	if _, err := h.pool.Exec(ctx, `INSERT INTO kyc_verification (id, tenant_id, consent_id, vendor_name, vendor_reference_id, masked_uid, identity_hash, method, status, verified_at, expires_at) VALUES ($1, $2, $3, 'cashfree', $4, '1234', 'hash123', 'ocr', 'verified', NOW(), NOW() + INTERVAL '365 days')`, uuid.New(), tenant.ID, consentID, "cf_ref_"+uuid.New().String()[:8]); err != nil {

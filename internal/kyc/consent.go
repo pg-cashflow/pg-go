@@ -8,14 +8,14 @@ import (
 var (
 	// ErrUnsupportedConsentVersion indicates an unregistered consent version string.
 	ErrUnsupportedConsentVersion = errors.New("kyc: unsupported consent version")
-// ErrUnsupportedConsentPurpose indicates an unregistered consent purpose string.
+	// ErrUnsupportedConsentPurpose indicates an unregistered consent purpose string.
 	ErrUnsupportedConsentPurpose = errors.New("kyc: unsupported consent purpose")
 )
 
 // AllowedConsentPurposes is the server-owned allowlist of valid KYC consent purpose values.
 var AllowedConsentPurposes = map[string]bool{
 	"residency_verification_and_kyc": true,
-	"tenant_verification":           true,
+	"tenant_verification":            true,
 	"rental_onboarding":              true,
 	"aadhaar_kyc":                    true,
 	"onboarding":                     true,
