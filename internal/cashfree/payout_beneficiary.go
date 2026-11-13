@@ -99,22 +99,26 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 
 	if resp.StatusCode == http.StatusConflict {
 		// A 409 is NOT proof that the existing record belongs to this payee.
+		// Cashfree V2 returns beneficiary_already_exists or beneficiary_id_already_exists.
 		// Unknown conflict shapes fail closed until the provider contract is confirmed.
 		var providerErr struct {
 			Code string `json:"code"`
 			Type string `json:"type"`
 		}
 		if json.Unmarshal(bodyBytes, &providerErr) != nil ||
-			!strings.EqualFold(providerErr.Code, "BENEFICIARY_ALREADY_EXISTS") {
+			(!strings.EqualFold(providerErr.Code, "BENEFICIARY_ALREADY_EXISTS") &&
+				!strings.EqualFold(providerErr.Code, "beneficiary_already_exists") &&
+				!strings.EqualFold(providerErr.Code, "beneficiary_id_already_exists")) {
 			return nil, fmt.Errorf("cashfree payout: unrecognized beneficiary conflict (HTTP 409)")
 		}
 		existing, err := c.GetBeneficiary(ctx, req.BeneficiaryID)
 		if err != nil {
 			return nil, fmt.Errorf("cashfree payout: cannot verify existing beneficiary: %w", err)
 		}
-		if existing.BeneficiaryID != req.BeneficiaryID || !strings.EqualFold(existing.Status, "ACTIVE") ||
+		statusOK := strings.EqualFold(existing.Status, "VERIFIED") || strings.EqualFold(existing.Status, "ACTIVE")
+		if existing.BeneficiaryID != req.BeneficiaryID || !statusOK ||
 			!sameBeneficiaryInstrument(existing.Instrument, req.BeneficiaryInstrument) {
-			return nil, fmt.Errorf("cashfree payout: existing beneficiary differs from requested instrument or is not ACTIVE")
+			return nil, fmt.Errorf("cashfree payout: existing beneficiary differs from requested instrument or is not VERIFIED/ACTIVE")
 		}
 		return existing, nil
 	}
@@ -140,6 +144,7 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 }
 
 // GetBeneficiary retrieves the current provider state; never invent status or bank details.
+// Cashfree Payouts V2 uses GET /beneficiary?beneficiary_id={beneficiary_id}.
 func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string) (*BeneficiaryResponse, error) {
 	if !c.cfg.Enabled() {
 		return nil, ErrPayoutNotConfigured
@@ -147,7 +152,8 @@ func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string)
 	if strings.TrimSpace(beneficiaryID) == "" {
 		return nil, fmt.Errorf("cashfree payout: beneficiary_id required")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/beneficiary/"+url.PathEscape(beneficiaryID), nil)
+	reqURL := fmt.Sprintf("%s/beneficiary?beneficiary_id=%s", c.endpoint(), url.QueryEscape(beneficiaryID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: get beneficiary request: %w", err)
 	}

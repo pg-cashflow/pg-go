@@ -126,6 +126,8 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 		wantGET     bool
 	}{
 		{name: "matching_active", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
+		{name: "matching_verified_lower_code", code: "beneficiary_already_exists", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
+		{name: "matching_verified_id_exists_code", code: "beneficiary_id_already_exists", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
 		{name: "different_bank", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "0000000000", BankIFSC: "HDFC0001234"}}, wantGET: true},
 		{name: "different_ifsc", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "ICIC0001234"}}, wantGET: true},
 		{name: "inactive", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "PENDING", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantGET: true},
@@ -142,7 +144,7 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 				case r.Method == http.MethodPost && r.URL.Path == "/beneficiary":
 					w.WriteHeader(http.StatusConflict)
 					_ = json.NewEncoder(w).Encode(map[string]string{"code": tc.code, "message": "conflict"})
-				case r.Method == http.MethodGet && r.URL.Path == "/beneficiary/bene_existing":
+				case r.Method == http.MethodGet && r.URL.Path == "/beneficiary" && r.URL.Query().Get("beneficiary_id") == "bene_existing":
 					getCount++
 					if tc.fetchStatus != 0 {
 						w.WriteHeader(tc.fetchStatus)
@@ -160,7 +162,7 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 				BeneficiaryID: "bene_existing", BeneficiaryName: "Jane Doe",
 				BeneficiaryInstrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"},
 			})
-			if tc.wantOK && (err != nil || response == nil || response.Status != "ACTIVE") {
+			if tc.wantOK && (err != nil || response == nil || (!strings.EqualFold(response.Status, "ACTIVE") && !strings.EqualFold(response.Status, "VERIFIED"))) {
 				t.Fatalf("expected verified beneficiary, response=%+v error=%v", response, err)
 			}
 			if !tc.wantOK && err == nil {
