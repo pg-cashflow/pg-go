@@ -1115,7 +1115,18 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 	futureMajority := now.Add(365 * 24 * time.Hour)
 	pastMajority := now.Add(-365 * 24 * time.Hour)
 
-	h := &Handlers{}
+	h := &Handlers{
+		Deps: Deps{
+			KYCSvc: &fakeKYCSvc{
+				statusFn: func(ctx context.Context, tid uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+					return &domain.KYCVerification{
+						ID:     uuid.New(),
+						Status: domain.KYCStatusVerified,
+					}, nil, nil
+				},
+			},
+		},
+	}
 
 	// Minor without guardian consent: BLOCKED
 	minorNoConsent := &domain.Tenant{
@@ -1165,5 +1176,28 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 	}
 	if h.tenantPayable(context.Background(), nilMajorityTenant) {
 		t.Fatalf("expected tenant with nil majority date (unknown age) to be blocked from payment")
+	}
+
+	// KYC unverified: BLOCKED even if adult
+	hUnverified := &Handlers{
+		Deps: Deps{
+			KYCSvc: &fakeKYCSvc{
+				statusFn: func(ctx context.Context, tid uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+					return &domain.KYCVerification{
+						ID:     uuid.New(),
+						Status: domain.KYCStatusPending,
+					}, nil, nil
+				},
+			},
+		},
+	}
+	if hUnverified.tenantPayable(context.Background(), adult) {
+		t.Fatalf("expected adult with unverified KYC to be blocked from payment")
+	}
+
+	// KYC service unconfigured: BLOCKED (fail-closed)
+	hNilKYC := &Handlers{}
+	if hNilKYC.tenantPayable(context.Background(), adult) {
+		t.Fatalf("expected adult to be blocked when KYC service is nil")
 	}
 }

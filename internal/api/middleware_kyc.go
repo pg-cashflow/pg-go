@@ -61,39 +61,10 @@ func (h *Handlers) RequireKYCVerified() gin.HandlerFunc {
 	}
 }
 
-// RequireKYCIfPolicyEnforced enforces KYC verification only if the tenant's property
-// has RequireKYCBeforePay (or onboarding KYC enforcement) enabled in its settings.
+// RequireKYCIfPolicyEnforced enforces KYC verification unconditionally because KYC before payment
+// is mandatory platform-wide. It delegates to RequireKYCVerified (fail-closed).
 func (h *Handlers) RequireKYCIfPolicyEnforced() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		t := tenantFromContext(c)
-		if t == nil {
-			return
-		}
-		requireKYC := false
-		if h.OnboardingSettings != nil {
-			s, err := h.OnboardingSettings.Get(c.Request.Context(), t.PropertyID)
-			if err != nil {
-				c.AbortWithStatusJSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{Error: "onboarding settings unavailable"})
-				return
-			}
-			if s != nil {
-				requireKYC = s.RequireKYCBeforePay
-			}
-		}
-		if !requireKYC {
-			c.Next()
-			return
-		}
-		if h.KYCSvc == nil {
-			c.AbortWithStatusJSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{Error: "kyc service not configured"})
-			return
-		}
-		if !h.IsKYCVerified(c.Request.Context(), t.ID) {
-			apierr.Abort(c, http.StatusForbidden, "kyc verification required", apierr.CodeAuthForbidden)
-			return
-		}
-		c.Next()
-	}
+	return h.RequireKYCVerified()
 }
 
 // RequireKYCOnboardingPassed blocks tenant data routes until the tenant has completed their

@@ -21,8 +21,6 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	// It rejects browser-initiated cross-origin POSTs without preventing
 	// legitimate non-browser clients (native app, curl) that send no Origin.
 	sameOrigin := RequireSameOrigin(d.CORSAllowedOrigins)
-	api.POST("/auth/otp/request", sameOrigin, ipRateLimit(3.0/60, 5), h.OTPRequest)
-	api.POST("/auth/otp/verify", sameOrigin, ipRateLimit(10.0/60, 20), h.OTPVerify)
 	api.POST("/auth/firebase", sameOrigin, ipRateLimit(60.0/60, 100), h.FirebaseAuth)
 	api.POST("/auth/refresh", sameOrigin, cookieOrIPRateLimit(RefreshCookieName, 30.0/60, 60), h.AuthRefresh)
 	api.POST("/auth/logout", sameOrigin, h.AuthLogout)

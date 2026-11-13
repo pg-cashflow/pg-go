@@ -213,20 +213,21 @@ func TestRefundGatewayDispatcher_SuccessReconcilesStatus(t *testing.T) {
 	}
 }
 
-// R1: Provider response validation failure rejects state mutation.
+// R1: Provider response validation failure transitions to needs_review and halts automated retries.
 func TestRefundGatewayDispatcher_ProviderResponseValidationFailure(t *testing.T) {
 	refID := uuid.New()
 	refRef := "rf_test_123"
 	raw, _ := json.Marshal(map[string]any{"order_id": "order_123"})
+	refRecord := &domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		Status:          "initiated",
+		AmountPaise:     50000,
+		RawPayload:      raw,
+	}
 	repo := &mockRefundRepo{
 		refunds: map[uuid.UUID]*domain.GatewayRefund{
-			refID: {
-				ID:              refID,
-				RefundReference: &refRef,
-				Status:          "initiated",
-				AmountPaise:     50000,
-				RawPayload:      raw,
-			},
+			refID: refRecord,
 		},
 	}
 	// Gateway returns wrong amount
@@ -242,11 +243,17 @@ func TestRefundGatewayDispatcher_ProviderResponseValidationFailure(t *testing.T)
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	err := d.DispatchRefund(context.Background(), refID)
-	if err == nil {
-		t.Fatalf("expected error on response validation failure")
+	if err != nil {
+		t.Fatalf("expected nil error on transition to needs_review, got %v", err)
 	}
-	if len(repo.reconcileLog) != 0 {
-		t.Errorf("must not reconcile when response validation fails, got %v", repo.reconcileLog)
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != domain.RefundStatusNeedsReview {
+		t.Fatalf("expected reconcile log [needs_review], got %v", repo.reconcileLog)
+	}
+	if refRecord.Status != domain.RefundStatusNeedsReview {
+		t.Fatalf("expected status %s, got %s", domain.RefundStatusNeedsReview, refRecord.Status)
+	}
+	if refRecord.CFRefundID == nil || *refRecord.CFRefundID != "cf_ref_xyz" {
+		t.Fatalf("expected CFRefundID cf_ref_xyz, got %v", refRecord.CFRefundID)
 	}
 }
 

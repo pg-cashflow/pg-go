@@ -984,15 +984,17 @@ func TestTenantDuePayBatch(t *testing.T) {
 		DueStore:      dueStore,
 		PropertyStore: propStore,
 		Collector:     col,
+		KYCSvc:        verifiedKYCSvc(),
 	}}
 
+	pastAdult := time.Now().Add(-20 * 365 * 24 * time.Hour)
 	r := gin.New()
 	r.GET("/api/tenant/dues/options", func(c *gin.Context) {
-		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive})
+		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive, MajorityDate: &pastAdult})
 		h.TenantDuesOptions(c)
 	})
 	r.POST("/api/tenant/dues/pay-batch", func(c *gin.Context) {
-		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive})
+		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive, MajorityDate: &pastAdult})
 		h.TenantDuePayBatch(c)
 	})
 

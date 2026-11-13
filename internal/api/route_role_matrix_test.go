@@ -69,8 +69,6 @@ var exactPublicPaths = map[string]bool{
 	"/api/push/vapid-public-key":     true,
 	"/api/join/invite/:code":         true,
 	"/api/owner/calendar.ics":        true,
-	"/api/auth/otp/request":          true,
-	"/api/auth/otp/verify":           true,
 	"/api/auth/firebase":             true,
 	"/api/auth/refresh":              true,
 	"/api/auth/logout":               true,

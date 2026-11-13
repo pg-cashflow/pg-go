@@ -25,18 +25,11 @@ func (h *Handlers) tenantPayable(ctx context.Context, t *domain.Tenant) bool {
 	case domain.AgeStateAdult:
 		// Adult is eligible to proceed to property KYC check
 	}
-	requireKYC := true
-	if h.OnboardingSettings != nil {
-		s, err := h.OnboardingSettings.Get(ctx, t.PropertyID)
-		if err == nil && s != nil {
-			requireKYC = s.RequireKYCBeforePay
-		}
-	} else if h.KYCSvc == nil {
-		requireKYC = false
+	// KYC is mandatory platform-wide before payment.
+	// Fail-closed: if the KYC service is unconfigured or unavailable, payment is blocked.
+	if h.KYCSvc == nil {
+		return false
 	}
-	kycVerified := true
-	if requireKYC {
-		kycVerified = h.IsKYCVerified(ctx, t.ID)
-	}
-	return t.Payable(requireKYC, kycVerified)
+	kycVerified := h.IsKYCVerified(ctx, t.ID)
+	return t.Payable(true, kycVerified)
 }

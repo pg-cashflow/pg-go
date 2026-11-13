@@ -155,9 +155,20 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 
 	// R1: Validate provider response strictly before trusting status or mutating local state
 	if err := cashfree.ValidateRefundResponse(orderID, refundRef, ref.AmountPaise, cfResp); err != nil {
-		slog.Error("refund dispatcher: gateway response validation failed",
+		slog.Error("refund dispatcher: gateway response validation failed; transitioning to needs_review",
 			"error", err, "refund_id", ref.ID)
-		return fmt.Errorf("refund dispatcher: validate gateway response: %w", err)
+		if cfResp != nil && cfResp.CFRefundID != "" {
+			ref.CFRefundID = &cfResp.CFRefundID
+			ref.ProviderRefundID = &cfResp.CFRefundID
+		}
+		ref.Status = domain.RefundStatusNeedsReview
+		if reconErr := d.repo.ReconcileRefundTransition(ctx, ref, domain.RefundStatusNeedsReview); reconErr != nil {
+			slog.Error("refund dispatcher: transition to needs_review failed after validation failure", "error", reconErr, "refund_id", ref.ID)
+			return fmt.Errorf("transition needs_review: %w", reconErr)
+		}
+		slog.Warn("refund dispatcher: validation failed transitioned to needs_review; automated retries stopped",
+			"refund_id", ref.ID, "order_id", orderID, "error", err)
+		return nil // Definitive outcome recorded; stop outbox worker retries
 	}
 
 	respStatus := domain.NormalizeRefundStatus(cfResp.RefundStatus)

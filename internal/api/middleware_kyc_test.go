@@ -151,20 +151,46 @@ func TestRequireKYCIfPolicyEnforced(t *testing.T) {
 	tenantID := uuid.New()
 	propID := uuid.New()
 
-	t.Run("Policy disabled allows unverified tenant", func(t *testing.T) {
+	t.Run("Blocks unverified tenant unconditionally", func(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
-				OnboardingSettings: &fakeOnboardingSettingsRepo{
-					settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
-						propID: {
-							PropertyID:          propID,
-							RequireKYCBeforePay: false,
-						},
-					},
-				},
 				KYCSvc: &fakeKYCSvc{
 					statusFn: func(ctx context.Context, tid uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
 						return nil, nil, nil
+					},
+				},
+			},
+		}
+
+		w := httptest.NewRecorder()
+		r := gin.New()
+		r.GET("/test", func(c *gin.Context) {
+			c.Set(auth.ContextTenantKey, &domain.Tenant{
+				ID:         tenantID,
+				PropertyID: propID,
+				Status:     domain.TenantStatusActive,
+			})
+			h.RequireKYCIfPolicyEnforced()(c)
+			if !c.IsAborted() {
+				c.Status(http.StatusOK)
+			}
+		})
+
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("Allows verified tenant", func(t *testing.T) {
+		h := &Handlers{
+			Deps: Deps{
+				KYCSvc: &fakeKYCSvc{
+					statusFn: func(ctx context.Context, tid uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+						return &domain.KYCVerification{
+							ID:     uuid.New(),
+							Status: domain.KYCStatusVerified,
+						}, nil, nil
 					},
 				},
 			},
@@ -190,25 +216,10 @@ func TestRequireKYCIfPolicyEnforced(t *testing.T) {
 		}
 	})
 
-	t.Run("Policy enabled blocks unverified tenant", func(t *testing.T) {
+	t.Run("Fails closed when KYC service unconfigured", func(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{
-				OnboardingSettings: &fakeOnboardingSettingsRepo{
-					settings: map[uuid.UUID]*domain.PropertyOnboardingSettings{
-						propID: {
-							PropertyID:          propID,
-							RequireKYCBeforePay: true,
-						},
-					},
-				},
-				KYCSvc: &fakeKYCSvc{
-					statusFn: func(ctx context.Context, tid uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
-						return &domain.KYCVerification{
-							ID:     uuid.New(),
-							Status: domain.KYCStatusPending,
-						}, nil, nil
-					},
-				},
+				KYCSvc: nil,
 			},
 		}
 
@@ -227,8 +238,8 @@ func TestRequireKYCIfPolicyEnforced(t *testing.T) {
 		})
 
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/test", nil))
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("expected 403, got %d", w.Code)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", w.Code)
 		}
 	})
 }

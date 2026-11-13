@@ -195,17 +195,20 @@ func TestSamePropertyTenantIsolation(t *testing.T) {
 		TokenVersion: 1,
 	}
 
+	pastAdult := time.Now().Add(-20 * 365 * 24 * time.Hour)
 	tenantA := &domain.Tenant{
-		ID:         tenantID_A,
-		PropertyID: propID,
-		Name:       "Tenant Alpha",
-		Status:     domain.TenantStatusActive,
+		ID:           tenantID_A,
+		PropertyID:   propID,
+		Name:         "Tenant Alpha",
+		Status:       domain.TenantStatusActive,
+		MajorityDate: &pastAdult,
 	}
 	tenantB := &domain.Tenant{
-		ID:         tenantID_B,
-		PropertyID: propID,
-		Name:       "Tenant Beta",
-		Status:     domain.TenantStatusActive,
+		ID:           tenantID_B,
+		PropertyID:   propID,
+		Name:         "Tenant Beta",
+		Status:       domain.TenantStatusActive,
+		MajorityDate: &pastAdult,
 	}
 
 	tokenA, err := auth.IssueToken(jwtSecret, userA)

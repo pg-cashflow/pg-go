@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,99 +64,68 @@ func (r *OnboardingSettingsRepo) Update(ctx context.Context, propertyID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
+
+	setClauses := make([]string, 0, 16)
+	args := []any{propertyID}
+
+	add := func(col string, val any) {
+		args = append(args, val)
+		setClauses = append(setClauses, fmt.Sprintf("%s=$%d", col, len(args)))
+	}
+
 	if patch.DefaultRentPaise != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET default_rent_paise=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.DefaultRentPaise)
-		if err != nil {
-			return nil, err
-		}
+		add("default_rent_paise", *patch.DefaultRentPaise)
 	}
 	if patch.DefaultDepositPaise != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET default_deposit_paise=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.DefaultDepositPaise)
-		if err != nil {
-			return nil, err
-		}
+		add("default_deposit_paise", *patch.DefaultDepositPaise)
 	}
 	if patch.DefaultDueDay != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET default_due_day=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.DefaultDueDay)
-		if err != nil {
-			return nil, err
-		}
+		add("default_due_day", *patch.DefaultDueDay)
 	}
 	if patch.AutoActivate != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET auto_activate=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.AutoActivate)
-		if err != nil {
-			return nil, err
-		}
+		add("auto_activate", *patch.AutoActivate)
 	}
 	if patch.ReserveBedsForOpenInvites != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET reserve_beds_for_open_invites=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.ReserveBedsForOpenInvites)
-		if err != nil {
-			return nil, err
-		}
+		add("reserve_beds_for_open_invites", *patch.ReserveBedsForOpenInvites)
 	}
 	if patch.MaxExtraBedsPerRoom != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET max_extra_beds_per_room=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.MaxExtraBedsPerRoom)
-		if err != nil {
-			return nil, err
-		}
+		add("max_extra_beds_per_room", *patch.MaxExtraBedsPerRoom)
 	}
 	if patch.SlotInviteDefaultTTLDays != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET slot_invite_default_ttl_days=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.SlotInviteDefaultTTLDays)
-		if err != nil {
-			return nil, err
-		}
+		add("slot_invite_default_ttl_days", *patch.SlotInviteDefaultTTLDays)
 	}
 	if patch.WaitlistEnabled != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET waitlist_enabled=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.WaitlistEnabled)
-		if err != nil {
-			return nil, err
-		}
+		add("waitlist_enabled", *patch.WaitlistEnabled)
 	}
 	if patch.WaitlistOfferTTLHours != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET waitlist_offer_ttl_hours=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.WaitlistOfferTTLHours)
-		if err != nil {
-			return nil, err
-		}
+		add("waitlist_offer_ttl_hours", *patch.WaitlistOfferTTLHours)
 	}
 	if patch.RequireKYCBeforePay != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET require_kyc_before_pay=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.RequireKYCBeforePay)
-		if err != nil {
-			return nil, err
-		}
+		add("require_kyc_before_pay", *patch.RequireKYCBeforePay)
 	}
 	if patch.JoinPendingTTLDays != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET join_pending_ttl_days=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.JoinPendingTTLDays)
-		if err != nil {
-			return nil, err
-		}
+		add("join_pending_ttl_days", *patch.JoinPendingTTLDays)
 	}
 	if patch.ReferralEnabled != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET referral_enabled=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.ReferralEnabled)
-		if err != nil {
-			return nil, err
-		}
+		add("referral_enabled", *patch.ReferralEnabled)
 	}
 	if patch.JoinerDiscountBps != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET joiner_discount_bps=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.JoinerDiscountBps)
-		if err != nil {
-			return nil, err
-		}
+		add("joiner_discount_bps", *patch.JoinerDiscountBps)
 	}
 	if patch.ReferrerRewardBps != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET referrer_reward_bps=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.ReferrerRewardBps)
-		if err != nil {
-			return nil, err
-		}
+		add("referrer_reward_bps", *patch.ReferrerRewardBps)
 	}
 	if patch.AllowManagerRefunds != nil {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET allow_manager_refunds=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, *patch.AllowManagerRefunds)
-		if err != nil {
-			return nil, err
-		}
+		add("allow_manager_refunds", *patch.AllowManagerRefunds)
 	}
 	if patch.ManagerRefundLimitPaise.Set {
-		_, err = r.db.Exec(ctx, `UPDATE property_onboarding_settings SET manager_refund_limit_paise=$2, updated_at=NOW() WHERE property_id=$1`, propertyID, patch.ManagerRefundLimitPaise.Value)
-		if err != nil {
+		add("manager_refund_limit_paise", patch.ManagerRefundLimitPaise.Value)
+	}
+
+	if len(setClauses) > 0 {
+		setClauses = append(setClauses, "updated_at=NOW()")
+		query := fmt.Sprintf("UPDATE property_onboarding_settings SET %s WHERE property_id=$1", strings.Join(setClauses, ", "))
+		if _, err := r.db.Exec(ctx, query, args...); err != nil {
 			return nil, err
 		}
 	}

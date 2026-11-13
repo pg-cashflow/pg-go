@@ -57,6 +57,9 @@ func (p OnboardingSettingsPatch) Validate() error {
 			return fmt.Errorf("%w: due_day", ErrOnboardingSettingsInvalid)
 		}
 	}
+	if p.RequireKYCBeforePay != nil && !*p.RequireKYCBeforePay {
+		return fmt.Errorf("%w: require_kyc_before_pay cannot be disabled; KYC is mandatory platform-wide", ErrOnboardingSettingsInvalid)
+	}
 	if p.JoinerDiscountBps != nil && (*p.JoinerDiscountBps < 0 || *p.JoinerDiscountBps > 10000) {
 		return fmt.Errorf("%w: joiner_discount_bps", ErrOnboardingSettingsInvalid)
 	}

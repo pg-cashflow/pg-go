@@ -56,15 +56,13 @@ func (s *Service) BuildOnboardingState(ctx context.Context, user *domain.User, k
 		t, err := s.tenantSvc.GetByID(ctx, *user.TenantID)
 		if err == nil && t != nil {
 			out.TenantStatus = string(t.Status)
-			requireKYC := false
 			if s.onboardingDB != nil {
 				settings, _ := s.onboardingDB.Get(ctx, t.PropertyID)
 				if settings != nil {
 					out.ProfileSchemaVersion = settings.ProfileSchemaVersion
-					requireKYC = settings.RequireKYCBeforePay
 				}
 			}
-			out.RequireKYCBeforePay = requireKYC
+			out.RequireKYCBeforePay = true
 			out.KYCGatePassed = kycGatePassed
 			switch {
 			case kycVerified:
@@ -74,7 +72,7 @@ func (s *Service) BuildOnboardingState(ctx context.Context, user *domain.User, k
 			default:
 				out.KYCStatus = "unverified"
 			}
-			out.Payable = t.Payable(requireKYC, kycVerified)
+			out.Payable = t.Payable(true, kycVerified)
 
 			// Hard onboarding gate: dashboard access requires the tenant to have
 			// done their part of identity verification, independent of the
