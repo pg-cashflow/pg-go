@@ -292,17 +292,16 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			cfKYCClient := cashfree.NewClient(cashfree.Config{
 				AppID:        cfg.CashfreeKYCAppID,
 				SecretKey:    cfg.CashfreeKYCSecretKey,
+				KYCClientID:  cfg.CashfreeKYCAppID,
+				KYCSecretKey: cfg.CashfreeKYCSecretKey,
 				Env:          cfg.CashfreeEnv,
 				KYCAuthMode:  cfg.CashfreeKYCAuthMode,
 				KYCPublicKey: kycPubKey,
 			})
 			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfKYCClient)
 			logger.Info("kyc service enabled with dedicated Cashfree KYC credentials")
-		} else if cfClient != nil {
-			cfKYCAdapter = kycsvc.NewCashfreeAdapter(cfClient)
-			logger.Info("kyc service enabled with default Cashfree credentials")
 		} else {
-			logger.Warn("kyc service enabled in document-only mode (Cashfree credentials not configured; Aadhaar OTP unavailable)")
+			logger.Warn("kyc service enabled in document-only mode (dedicated Cashfree Secure ID credentials not configured; manual review fallback active)")
 		}
 		activeIdentitySecret := cfg.KYCIdentitySecret
 		activeHashVersion := int16(1)

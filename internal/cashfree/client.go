@@ -574,6 +574,9 @@ func (c *Client) signKYC(req *http.Request) error {
 	if secretKey == "" {
 		secretKey = c.cfg.SecretKey
 	}
+	if clientID == "" || secretKey == "" {
+		return errors.New("cashfree kyc: secure id credentials not configured")
+	}
 	req.Header.Set("x-client-id", clientID)
 	req.Header.Set("x-client-secret", secretKey)
 
