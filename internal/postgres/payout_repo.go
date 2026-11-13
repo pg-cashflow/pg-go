@@ -89,7 +89,7 @@ func (r *PayoutRepo) SetMirrorer(m DepartureMirrorer) {
 
 const payeeCols = `id, property_id, tenant_id, payee_type, name, phone, account_number_encrypted,
 	account_number_last4, account_number_hash, ifsc, bank_name, upi_vpa,
-	key_version, is_verified, verification_status, verification_method,
+	key_version, is_verified, verification_status, COALESCE(verification_method, ''),
 	verification_ref, name_at_bank, name_match_score, name_match_result,
 	verified_by, verified_at, created_at, updated_at`
 

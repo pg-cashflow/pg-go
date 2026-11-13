@@ -637,6 +637,11 @@ func (h *Handlers) OwnerVerifyPayeeProvider(c *gin.Context) {
 		return
 	}
 
+	if verifyResult == nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "empty response from verification provider"})
+		return
+	}
+
 	if !verifyResult.IsValid() {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{
 			"error":       "bank account is invalid or inactive at destination bank",
@@ -644,6 +649,11 @@ func (h *Handlers) OwnerVerifyPayeeProvider(c *gin.Context) {
 			"sub_code":    verifyResult.SubCode,
 			"description": verifyResult.Message,
 		})
+		return
+	}
+
+	if !isAcceptableNameMatch(verifyResult.NameMatchResult, verifyResult.NameMatchScore) {
+		apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "bank account holder name does not match payee registered legal name", apierr.CodeBankNameMismatch)
 		return
 	}
 
@@ -1047,9 +1057,9 @@ func (h *Handlers) OwnerExportPayoutBatch(c *gin.Context) {
 		return
 	}
 
-	// Gated on approval: draft or processing batches cannot be exported
-	if batch.Status != domain.BatchApproved {
-		respondErr(c, clientErr(http.StatusConflict, fmt.Sprintf("payout batch is in status '%s'; only approved batches can be exported", batch.Status)))
+	// Gated on approval: draft or in-flight processing batches cannot be exported
+	if batch.Status != domain.BatchApproved && batch.Status != domain.BatchCompleted {
+		respondErr(c, clientErr(http.StatusConflict, fmt.Sprintf("payout batch is in status '%s'; only approved or completed batches can be exported", batch.Status)))
 		return
 	}
 
