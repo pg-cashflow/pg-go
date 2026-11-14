@@ -576,7 +576,7 @@ func TestGate05_ZeroDeadlocksUnderConcurrentExecution(t *testing.T) {
 
 			dueIdx := workerIdx % numDues
 			ordID := orderIDs[dueIdx]
-			cfPID := int(time.Now().UnixNano()%899999999 + 100000000)
+			cfPID := int(time.Now().UnixNano()%899999999 + 100000000) + (workerIdx+1)*10000
 
 			payloadMap := map[string]any{
 				"type": "PAYMENT_SUCCESS_WEBHOOK",
@@ -604,6 +604,7 @@ func TestGate05_ZeroDeadlocksUnderConcurrentExecution(t *testing.T) {
 			router.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
+				t.Errorf("worker %d: status %d body %s", workerIdx, rec.Code, rec.Body.String())
 				atomic.AddInt32(&failureCount, 1)
 			}
 		}(i)

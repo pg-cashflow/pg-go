@@ -203,7 +203,7 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 
 				failureReason := "due_already_settled"
 				if lockedIntent.Status == domain.IntentPaid {
-					failureReason = "order_already_paid"
+					failureReason = "duplicate_payment"
 				} else if lockedIntent.Status == "superseded" {
 					failureReason = "session_superseded"
 				}
