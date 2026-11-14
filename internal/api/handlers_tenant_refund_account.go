@@ -101,6 +101,17 @@ func (h *Handlers) TenantRegisterRefundAccount(c *gin.Context) {
 		return
 	}
 
+	// Gate: the bank-name match below compares against the profile name, which the
+	// owner can edit after KYC. A KYC record that already flagged a profile/Aadhaar
+	// name mismatch cannot vouch for that name, so route the tenant to manual review.
+	if h.KYCSvc != nil {
+		ver, _, kycErr := h.KYCSvc.GetStatus(c.Request.Context(), t.ID)
+		if kycErr != nil || ver == nil || ver.NameMismatch {
+			apierr.RespondClientErr(c, http.StatusForbidden, "identity name mismatch: refund account needs owner review", apierr.CodeAuthForbidden)
+			return
+		}
+	}
+
 	var verifier BankAccountVerifier
 	if h.BankVerifier != nil {
 		verifier = h.BankVerifier

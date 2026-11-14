@@ -581,6 +581,26 @@ func (h *Handlers) OwnerVerifyPayeeProvider(c *gin.Context) {
 		return
 	}
 
+	// Deposit payees must be named after the KYC-verified tenant. Matching the bank
+	// holder against an owner-typed payee name would let a third party's account pass.
+	if payee.PayeeType == domain.PayeeTypeTenantDeposit && payee.TenantID != nil {
+		if h.TenantStore == nil || h.KYCSvc == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenant identity verification unavailable"})
+			return
+		}
+		tenant, tErr := h.TenantStore.GetByID(c.Request.Context(), *payee.TenantID)
+		if tErr != nil || tenant == nil || tenant.PropertyID != pid {
+			c.JSON(http.StatusNotFound, gin.H{"error": "payee not found"})
+			return
+		}
+		ver, _, kycErr := h.KYCSvc.GetStatus(c.Request.Context(), tenant.ID)
+		if kycErr != nil || ver == nil || ver.Status != domain.KYCStatusVerified || ver.NameMismatch ||
+			!domain.IsNameMatch(tenant.Name, payee.Name) {
+			apierr.RespondClientErr(c, http.StatusUnprocessableEntity, "payee name does not match the KYC-verified tenant identity", apierr.CodeBankNameMismatch)
+			return
+		}
+	}
+
 	var verifier BankAccountVerifier
 	if h.BankVerifier != nil {
 		verifier = h.BankVerifier
