@@ -1231,6 +1231,8 @@ func (r *KYCRepo) ApproveManualReviewTx(
 				document_url = NULL,
 				ocr_data = NULL,
 				attested_photo_bytes = NULL,
+				document_bytes = NULL,
+				document_content_type = NULL,
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`

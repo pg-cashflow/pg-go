@@ -167,4 +167,18 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	if approved.DocumentURL != nil && *approved.DocumentURL != "" {
 		t.Fatalf("expected document_url to be wiped on approval, got %v", *approved.DocumentURL)
 	}
+
+	// KYC-04: verify document bytes and content type are wiped on approval
+	var docBytes2 []byte
+	var docContentType2 *string
+	err = repo.pool.QueryRow(ctx, "SELECT document_bytes, document_content_type FROM kyc_verification WHERE id = $1", verif2.ID).Scan(&docBytes2, &docContentType2)
+	if err != nil {
+		t.Fatalf("could not query document_bytes after approval: %v", err)
+	}
+	if docBytes2 != nil {
+		t.Errorf("KYC-04: document_bytes should be NULL after approval, got %d bytes", len(docBytes2))
+	}
+	if docContentType2 != nil {
+		t.Errorf("KYC-04: document_content_type should be NULL after approval, got %v", *docContentType2)
+	}
 }
