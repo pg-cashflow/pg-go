@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -383,105 +382,17 @@ type aadhaarOTPRequestBody struct {
 }
 
 // TenantKYCAadhaarOTPRequest handles POST /api/tenant/kyc/aadhaar/otp/request.
-// Triggers direct UIDAI OTP generation via Cashfree.
+// Discontinued upstream: Aadhaar OTP verification is no longer supported by Cashfree.
+// Responds with 410 Gone; tenants must use Smart OCR document upload or Secure QR.
 func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
-	svc := h.kycSvcOrErr(c)
-	if svc == nil {
-		return
-	}
-	t := tenantFromContext(c)
-	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
-		return
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
-
-	var body aadhaarOTPRequestBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "aadhaar_number is required", apierr.CodeRequestInvalidBody)
-		return
-	}
-
-	cleanedNum := strings.ReplaceAll(body.AadhaarNumber, " ", "")
-	cleanedNum = strings.ReplaceAll(cleanedNum, "-", "")
-	if err := aadhaar.ValidateAadhaarNumber(cleanedNum); err != nil {
-		apierr.RespondBindErr(c, "invalid aadhaar number: "+err.Error(), apierr.Code("kyc.invalid_aadhaar"))
-		return
-	}
-	body.AadhaarNumber = cleanedNum
-
-	actor := fmt.Sprintf("tenant:%s", t.ID)
-
-	refID, err := svc.InitiateAadhaarOTP(c.Request.Context(), t.ID, body.AadhaarNumber, actor)
-	if err != nil {
-		var fail *kycsvc.AadhaarVerifyFailure
-		if errors.As(err, &fail) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":              fail.Error(),
-				"code":               "kyc.aadhaar_verify_failed",
-				"status":             "failed",
-				"reason_code":        fail.ReasonCode,
-				"retryable":          fail.Retryable,
-				"cooldown_seconds":   fail.CooldownSeconds,
-				"attempts_remaining": fail.AttemptsRemaining,
-			})
-			return
-		}
-		respondErr(c, kycClientErr(err))
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"ref_id": refID})
-}
-
-type aadhaarOTPVerifyBody struct {
-	RefID string `json:"ref_id" binding:"required"`
-	OTP   string `json:"otp"    binding:"required"`
+	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP verification is discontinued; please upload your ID document.", apierr.Code("kyc.method_discontinued"))
 }
 
 // TenantKYCAadhaarOTPVerify handles POST /api/tenant/kyc/aadhaar/otp/verify.
-// Completes verification with UIDAI and auto-verifies immediately (no manual review).
+// Discontinued upstream: Aadhaar OTP verification is no longer supported by Cashfree.
+// Responds with 410 Gone; tenants must use Smart OCR document upload or Secure QR.
 func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
-	svc := h.kycSvcOrErr(c)
-	if svc == nil {
-		return
-	}
-	t := tenantFromContext(c)
-	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
-		return
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
-
-	var body aadhaarOTPVerifyBody
-	if err := c.ShouldBindJSON(&body); err != nil {
-		apierr.RespondBindErr(c, "ref_id and otp are required", apierr.CodeRequestInvalidBody)
-		return
-	}
-	actor := fmt.Sprintf("tenant:%s", t.ID)
-
-	v, err := svc.CompleteAadhaarOTP(c.Request.Context(), t.ID, body.RefID, body.OTP, actor)
-	if err != nil {
-		var fail *kycsvc.AadhaarVerifyFailure
-		if errors.As(err, &fail) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":              fail.Error(),
-				"code":               "kyc.aadhaar_verify_failed",
-				"status":             "failed",
-				"reason_code":        fail.ReasonCode,
-				"retryable":          fail.Retryable,
-				"cooldown_seconds":   fail.CooldownSeconds,
-				"attempts_remaining": fail.AttemptsRemaining,
-			})
-			return
-		}
-		respondErr(c, kycClientErr(err))
-		return
-	}
-	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
+	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP verification is discontinued; please upload your ID document.", apierr.Code("kyc.method_discontinued"))
 }
 
 // ---------------------------------------------------------------------------

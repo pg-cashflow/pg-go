@@ -54,19 +54,19 @@ func TestKYC_ProviderErrorSanitization(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.POST("/api/tenant/kyc/aadhaar/otp/request", func(c *gin.Context) {
+	r.POST("/api/tenant/kyc/qr/verify", func(c *gin.Context) {
 		c.Set(auth.ContextClaimsKey, &auth.Claims{
 			UserID:     tenantID,
 			PropertyID: &propID,
 			Role:       domain.RoleTenant,
 		})
 		c.Set("tenant", &domain.Tenant{ID: tenantID, PropertyID: propID})
-		h.TenantKYCAadhaarOTPRequest(c)
+		h.TenantKYCSecureQRVerify(c)
 	})
 
-	body := map[string]any{"aadhaar_number": "999999990019"} // Verhoeff valid
+	body := map[string]any{"qr_payload": "999999990019"}
 	buf, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", bytes.NewReader(buf))
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", bytes.NewReader(buf))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -103,20 +103,20 @@ func TestKYC_RouteBodyLimits(t *testing.T) {
 	}
 
 	r := gin.New()
-	r.POST("/api/tenant/kyc/aadhaar/otp/request", func(c *gin.Context) {
+	r.POST("/api/tenant/kyc/qr/verify", func(c *gin.Context) {
 		c.Set(auth.ContextClaimsKey, &auth.Claims{
 			UserID:     tenantID,
 			PropertyID: &propID,
 			Role:       domain.RoleTenant,
 		})
 		c.Set("tenant", &domain.Tenant{ID: tenantID, PropertyID: propID})
-		h.TenantKYCAadhaarOTPRequest(c)
+		h.TenantKYCSecureQRVerify(c)
 	})
 
-	// Send an oversized payload (>4KB limit on OTP request)
-	hugeString := strings.Repeat("A", 10*1024)
-	payload := `{"aadhaar_number":"` + hugeString + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(payload))
+	// Send an oversized payload (>64KB limit on QR payload)
+	hugeString := strings.Repeat("A", 70*1024)
+	payload := `{"qr_payload":"` + hugeString + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/qr/verify", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

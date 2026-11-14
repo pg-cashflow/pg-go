@@ -287,13 +287,35 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, fmt.Errorf("kyc service: initiate qr verification: %w", err)
 	}
 
-	// 7. Immediately complete (synchronous — no async webhook).
+	// 7. Route based on name match:
+	// A standalone QR verification must never auto-verify if the name does not match the registered tenant.
+	// Any name mismatch must go to manual review with highlighted mismatch flag.
+	qrStatus := domain.QRStatusSecure
+	if nameMismatch {
+		qrDataJSON, _ := json.Marshal(map[string]any{
+			"name":          data.Name,
+			"dob":           dobStr,
+			"gender":        data.Gender,
+			"masked_uid":    data.UIDLast4,
+			"qr_status":     qrStatus,
+			"name_mismatch": true,
+		})
+		underReview, err := s.repo.SubmitManualReviewTx(ctx,
+			pending.ID, data.UIDLast4, identityHash,
+			string(qrDataJSON), "", nil, "", actor,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("kyc service: submit mismatched qr for review: %w", err)
+		}
+		return underReview, nil
+	}
+
+	// 8. If clean match, complete verification.
 	now := time.Now().UTC()
 	var expiresAt time.Time
 	if s.cfg.VerificationValidityDays > 0 {
 		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
 	}
-	qrStatus := domain.QRStatusSecure
 	// KYC-06: Year-only DOB (isDedupable=false) must not establish adulthood on January 1.
 	// Only full-precision DOBs yield a deterministic MajorityDate.
 	var majorityDate *time.Time
@@ -302,7 +324,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	}
 	verified, err := s.repo.CompleteVerificationTx(ctx,
 		pending.ID, data.UIDLast4, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, &qrStatus, nameMismatch, nil,
+		s.cfg.HashKeyVersion, &qrStatus, false, nil,
 		now, expiresAt, majorityDate, actor,
 	)
 	if err != nil {

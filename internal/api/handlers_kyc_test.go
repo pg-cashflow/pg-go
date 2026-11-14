@@ -16,9 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/aadhaar"
 	"github.com/pg-cashflow/pg-go/internal/auth"
-	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 )
@@ -547,72 +545,29 @@ func kycTestOwnerRouter(svc KYCService, propertyID, ownerUserID uuid.UUID) *gin.
 	return r
 }
 
-func TestTenantKYCAadhaarOTPRequest_OK(t *testing.T) {
+func TestTenantKYCAadhaarOTPRequest_Discontinued(t *testing.T) {
 	svc := &fakeKYCSvc{}
 	r := kycTestTenantRouter(svc, "")
 
-	checkDigit, err := aadhaar.GenerateVerhoeffCheckDigit("54855000800")
-	if err != nil {
-		t.Fatalf("generate check digit: %v", err)
-	}
-	validAadhaar := fmt.Sprintf("54855000800%d", checkDigit)
-
-	body := fmt.Sprintf(`{"aadhaar_number":%q}`, validAadhaar)
+	body := `{"aadhaar_number":"548550008000"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json response: %v", err)
 	}
-	if resp["ref_id"] != "test_aadhaar_ref_123" {
-		t.Errorf("expected ref_id 'test_aadhaar_ref_123', got %v", resp["ref_id"])
+	if resp["code"] != "kyc.method_discontinued" {
+		t.Errorf("expected code kyc.method_discontinued, got %v", resp["code"])
 	}
 }
 
-func TestTenantKYCAadhaarOTPRequest_InvalidAadhaar(t *testing.T) {
-	svc := &fakeKYCSvc{}
-	r := kycTestTenantRouter(svc, "")
-
-	invalidCases := []struct {
-		name string
-		num  string
-	}{
-		{"wrong checksum", "548550008000"},
-		{"too short", "548550008"},
-		{"leading zero", "048550008000"},
-		{"leading one", "148550008000"},
-		{"non digits", "54855000800A"},
-	}
-
-	for _, tc := range invalidCases {
-		t.Run(tc.name, func(t *testing.T) {
-			body := fmt.Sprintf(`{"aadhaar_number":%q}`, tc.num)
-			req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/request", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			r.ServeHTTP(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400 Bad Request, got %d: %s", w.Code, w.Body.String())
-			}
-			var resp map[string]interface{}
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("invalid json response: %v", err)
-			}
-			if resp["code"] != "kyc.invalid_aadhaar" {
-				t.Errorf("expected code kyc.invalid_aadhaar, got %v", resp["code"])
-			}
-		})
-	}
-}
-
-func TestTenantKYCAadhaarOTPVerify_AutoVerified(t *testing.T) {
+func TestTenantKYCAadhaarOTPVerify_Discontinued(t *testing.T) {
 	svc := &fakeKYCSvc{}
 	r := kycTestTenantRouter(svc, "")
 
@@ -622,110 +577,16 @@ func TestTenantKYCAadhaarOTPVerify_AutoVerified(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410 Gone, got %d: %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid json response: %v", err)
 	}
-	// Aadhaar OTP is government-authenticated and auto-verified (instant verified status)
-	if resp["status"] != string(domain.KYCStatusVerified) {
-		t.Errorf("expected status 'verified', got %v", resp["status"])
+	if resp["code"] != "kyc.method_discontinued" {
+		t.Errorf("expected code kyc.method_discontinued, got %v", resp["code"])
 	}
-	if resp["method"] != string(domain.KYCMethodAadhaarOTP) {
-		t.Errorf("expected method 'aadhaar_otp', got %v", resp["method"])
-	}
-}
-
-func TestTenantKYCAadhaarOTPVerify_FailureClassification(t *testing.T) {
-	t.Run("Terminal Failure (Mobile Not Linked)", func(t *testing.T) {
-		svc := &fakeKYCSvc{
-			completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
-				return nil, &kycsvc.AadhaarVerifyFailure{
-					ReasonCode:        "MOBILE_NOT_LINKED",
-					Class:             cashfree.FailureTerminal,
-					Retryable:         false,
-					CooldownSeconds:   0,
-					AttemptsRemaining: 0,
-				}
-			},
-		}
-		r := kycTestTenantRouter(svc, "")
-
-		body := `{"ref_id":"test_aadhaar_ref_123","otp":"123456"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-		}
-		var resp map[string]interface{}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("invalid json response: %v", err)
-		}
-		if resp["status"] != "failed" {
-			t.Errorf("expected status 'failed', got %v", resp["status"])
-		}
-		if resp["reason_code"] != "MOBILE_NOT_LINKED" {
-			t.Errorf("expected reason_code 'MOBILE_NOT_LINKED', got %v", resp["reason_code"])
-		}
-		if resp["retryable"] != false {
-			t.Errorf("expected retryable false, got %v", resp["retryable"])
-		}
-		if resp["cooldown_seconds"] != float64(0) {
-			t.Errorf("expected cooldown_seconds 0, got %v", resp["cooldown_seconds"])
-		}
-		if resp["attempts_remaining"] != float64(0) {
-			t.Errorf("expected attempts_remaining 0, got %v", resp["attempts_remaining"])
-		}
-	})
-
-	t.Run("Recoverable Failure (Wrong OTP with remaining attempts)", func(t *testing.T) {
-		svc := &fakeKYCSvc{
-			completeAadhaarOTPFn: func(_ context.Context, _ uuid.UUID, _, _, _ string) (*domain.KYCVerification, error) {
-				return nil, &kycsvc.AadhaarVerifyFailure{
-					ReasonCode:        "WRONG_OTP",
-					Class:             cashfree.FailureRecoverable,
-					Retryable:         true,
-					CooldownSeconds:   50,
-					AttemptsRemaining: 2,
-				}
-			},
-		}
-		r := kycTestTenantRouter(svc, "")
-
-		body := `{"ref_id":"test_aadhaar_ref_123","otp":"999999"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/aadhaar/otp/verify", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-		}
-		var resp map[string]interface{}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("invalid json response: %v", err)
-		}
-		if resp["status"] != "failed" {
-			t.Errorf("expected status 'failed', got %v", resp["status"])
-		}
-		if resp["reason_code"] != "WRONG_OTP" {
-			t.Errorf("expected reason_code 'WRONG_OTP', got %v", resp["reason_code"])
-		}
-		if resp["retryable"] != true {
-			t.Errorf("expected retryable true, got %v", resp["retryable"])
-		}
-		if resp["cooldown_seconds"] != float64(50) {
-			t.Errorf("expected cooldown_seconds 50, got %v", resp["cooldown_seconds"])
-		}
-		if resp["attempts_remaining"] != float64(2) {
-			t.Errorf("expected attempts_remaining 2, got %v", resp["attempts_remaining"])
-		}
-	})
 }
 
 func TestOwnerKYCReviewQueue_OK(t *testing.T) {
