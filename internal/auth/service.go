@@ -363,46 +363,6 @@ func (s *Service) hasAccount(ctx context.Context, phone string) bool {
 	return false
 }
 
-// VerifyOTPAndIssueToken validates the OTP and returns a JWT.
-// On first successful verify, creates a users row if a tenant or property owner exists for the phone.
-func (s *Service) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error) {
-	req, err := s.otp.LatestUnusedByPurpose(ctx, phone, "login", nil)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", nil, ErrInvalidOTP
-		}
-		return "", nil, fmt.Errorf("load otp: %w", err)
-	}
-
-	if time.Now().UTC().After(req.ExpiresAt) {
-		return "", nil, ErrOTPExpired
-	}
-	if req.Attempts >= OTPMaxAttempts {
-		return "", nil, ErrOTPLocked
-	}
-
-	// Atomically consume attempt quota before comparing guess to prevent parallel bypass
-	if err := s.otp.IncrementAttempts(ctx, req.ID); err != nil {
-		if errors.Is(err, postgres.ErrOTPLocked) {
-			return "", nil, ErrOTPLocked
-		}
-		return "", nil, fmt.Errorf("increment otp attempts: %w", err)
-	}
-
-	if !VerifyOTP(s.otpSecret, otp, req.OTPHash) {
-		return "", nil, ErrInvalidOTP
-	}
-
-	if err := s.otp.MarkUsed(ctx, req.ID); err != nil {
-		if errors.Is(err, domain.ErrOTPAlreadyUsed) {
-			return "", nil, ErrInvalidOTP
-		}
-		return "", nil, fmt.Errorf("mark otp used: %w", err)
-	}
-
-	return s.IssueTokenForVerifiedPhone(ctx, phone)
-}
-
 // VerifyFirebaseAndIssueToken validates a Firebase ID token and returns an app JWT.
 // inviteCode, when set, lets an unknown phone or email create a pending tenant user for that property.
 func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (string, *domain.User, error) {

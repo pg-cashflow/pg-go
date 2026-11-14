@@ -31,7 +31,6 @@ func tokenVersionOf(user *domain.User) int {
 }
 
 const (
-	TokenTTL        = 30 * 24 * time.Hour
 	AccessTokenTTL  = 15 * time.Minute
 	RefreshTokenTTL = 30 * 24 * time.Hour
 )
@@ -74,22 +73,28 @@ func IssueAccessTokenWithFamily(secret string, user *domain.User, familyID *uuid
 	return issueTokenWithTTL(secret, user, AccessTokenTTL, familyID)
 }
 
-// IssueToken creates a signed JWT with a 30-day TTL.
+// IssueToken issues a 15-minute access token.
 // Deprecated: Use IssueAccessToken or IssueAccessTokenWithFamily.
-// 30-day access tokens bypass the refresh-token family revocation model.
-// Preserved for backward-compatibility with external load testing scripts.
+// Retained as an alias to enforce 15-minute TTL globally across legacy test callers.
 func IssueToken(secret string, user *domain.User) (string, error) {
-	return issueTokenWithTTL(secret, user, TokenTTL)
+	return IssueAccessToken(secret, user)
 }
 
 // VerifyToken parses and validates a JWT, returning its claims.
+// Hardened with strict HS256 method allowlisting and mandatory expiration check.
 func VerifyToken(secret, tokenString string) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(t *jwt.Token) (any, error) {
-		if t.Method != jwt.SigningMethodHS256 {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		&Claims{},
+		func(t *jwt.Token) (any, error) {
+			if t.Method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+			}
+			return []byte(secret), nil
+		},
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithExpirationRequired(),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("parse token: %w", err)
 	}

@@ -204,7 +204,7 @@ func TestVerifyOTPVacatedExistingUser(t *testing.T) {
 		tenantID: {ID: tenantID, PropertyID: propID, Status: domain.TenantStatusVacated},
 	}}
 	svc := NewService(otp, users, tenants, stubProps{}, sms.NoopGateway{}, secret, "jwt-secret-long-enough")
-	_, _, err := svc.VerifyOTPAndIssueToken(context.Background(), "9999999999", code)
+	_, _, err := svc.IssueTokenForVerifiedPhone(context.Background(), "9999999999")
 	if !errors.Is(err, ErrTenantVacated) {
 		t.Fatalf("want ErrTenantVacated, got %v", err)
 	}

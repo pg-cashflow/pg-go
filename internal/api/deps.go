@@ -48,7 +48,6 @@ type AuthService interface {
 	RequestOTPWithPurpose(ctx context.Context, phone, purpose string) error
 	RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error
 	RequestStepUpOTPWithChannel(ctx context.Context, phone, purpose string, batchID *uuid.UUID) (channel string, destination string, err error)
-	VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (token string, user *domain.User, err error)
 	VerifyStepUpOTP(ctx context.Context, phone, otp string) error
 	VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error
 	VerifyFirebaseAndIssueToken(ctx context.Context, idToken, inviteCode string) (token string, user *domain.User, err error)

@@ -44,9 +44,6 @@ func (s *stubPayoutAuthService) RequestStepUpOTPWithChannel(_ context.Context, p
 	s.calledPhone = phone
 	return s.channel, s.destination, s.err
 }
-func (s *stubPayoutAuthService) VerifyOTPAndIssueToken(context.Context, string, string) (string, *domain.User, error) {
-	return "", nil, nil
-}
 func (s *stubPayoutAuthService) VerifyStepUpOTP(context.Context, string, string) error { return nil }
 func (s *stubPayoutAuthService) VerifyStepUpOTPSpecific(context.Context, string, string, string, *uuid.UUID) error {
 	return nil

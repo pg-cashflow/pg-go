@@ -249,10 +249,6 @@ func (s *stubAuthService) RequestOTPWithPurpose(ctx context.Context, phone, purp
 	return s.reqOTPErr
 }
 
-func (s *stubAuthService) VerifyOTPAndIssueToken(ctx context.Context, phone, otp string) (string, *domain.User, error) {
-	return s.verifyOTPTkn, s.verifyOTPUsr, s.verifyOTPErr
-}
-
 func (s *stubAuthService) RequestStepUpOTP(ctx context.Context, phone, purpose string, batchID *uuid.UUID) error {
 	return s.reqOTPErr
 }

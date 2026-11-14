@@ -166,9 +166,6 @@ func (s *stubPIIAuthService) RequestStepUpOTPWithChannel(_ context.Context, phon
 	s.requestedPhone = phone
 	return "email", "admin@example.com", nil
 }
-func (s *stubPIIAuthService) VerifyOTPAndIssueToken(_ context.Context, phone, _ string) (string, *domain.User, error) {
-	return "test-token", &domain.User{ID: uuid.New(), Phone: phone, Role: domain.RoleTenant}, nil
-}
 func (s *stubPIIAuthService) VerifyStepUpOTP(_ context.Context, _, _ string) error {
 	return nil
 }
