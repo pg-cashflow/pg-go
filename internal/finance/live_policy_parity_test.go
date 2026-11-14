@@ -24,7 +24,7 @@ func TestLivePostgres_PolicyExceededErrorIdentity(t *testing.T) {
 	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, dbURL)

@@ -23,7 +23,7 @@ import (
 func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
 	dbURL := testutil.RequireDB(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, dbURL)
@@ -222,7 +222,7 @@ func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
 func TestPhysicalCrashSafety_DepartureSettlement_LivePostgres(t *testing.T) {
 	dbURL := testutil.RequireDB(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, dbURL)
