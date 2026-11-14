@@ -330,6 +330,17 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 		if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
 			return fmt.Errorf("delete refund allocations: %w", err)
 		}
+		_, _ = tx.Exec(ctx, `
+			UPDATE unmatched_gateway_receipts
+			SET status = 'held',
+			    resolution_refund_id = NULL,
+			    updated_at = NOW()
+			WHERE resolution_refund_id = $1 AND status = 'resolving'`, rfRow.ID)
+		_, _ = tx.Exec(ctx, `
+			UPDATE payment_commands
+			SET status = 'completed',
+			    processed_at = NOW()
+			WHERE source_id = $1 AND status = 'pending'`, rfRow.ID)
 		return nil
 	})
 }
