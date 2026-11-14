@@ -332,25 +332,66 @@ func newInitiatedRefundRepo(refID uuid.UUID) *mockRefundRepo {
 	}}
 }
 
-// R6: Inconclusive gateway status transitions to needs_review and stops automated retries without rotating keys.
+// R6: When 5xx occurs and gateway confirms refund absent (404), bounded retry must use a NEW idempotency key
+// (Cashfree replays the cached result, including 5xx, for a repeated key). refund_id stays fixed.
 func TestRefundGatewayDispatcher_Replayed5xxRetriesWithRotatedKey(t *testing.T) {
 	refID := uuid.New()
 	repo := newInitiatedRefundRepo(refID)
 	cf := &fetchingCFRefundClient{
-		createResults: []error{&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"}},
-		fetchErr:      &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
+		createResults: []error{
+			&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"},
+			nil, // bounded recovery retry succeeds
+		},
+		createResp: &cashfree.RefundDetails{
+			CFRefundID:   "cf_retry_1",
+			RefundID:     "rf_test_123",
+			OrderID:      "order_123",
+			RefundStatus: "PENDING",
+			AmountPaise:  50000,
+		},
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
+	}
+	d := NewRefundGatewayDispatcher(repo, cf)
+
+	if err := d.DispatchRefund(context.Background(), refID); err != nil {
+		t.Fatalf("unexpected error on recovery retry: %v", err)
+	}
+	if len(cf.createKeys) != 2 {
+		t.Fatalf("expected 2 create calls (initial + recovery retry), got %d", len(cf.createKeys))
+	}
+	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
+	if cf.createKeys[0] != expectedKey {
+		t.Errorf("first attempt must use deterministic key, got %q", cf.createKeys[0])
+	}
+	if cf.createKeys[1] == expectedKey || cf.createKeys[1] == "" {
+		t.Errorf("recovery retry must rotate the idempotency key, got %q", cf.createKeys[1])
+	}
+	if _, err := uuid.Parse(cf.createKeys[1]); err != nil {
+		t.Errorf("rotated idempotency key is not a valid UUID: %v", err)
+	}
+	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "pending" {
+		t.Errorf("expected reconcile to 'pending', got %v", repo.reconcileLog)
+	}
+}
+
+// When bounded retry also fails after 404 confirmation, transition to needs_review.
+func TestRefundGatewayDispatcher_Replayed5xxRecoveryRetryFailsTransitionsNeedsReview(t *testing.T) {
+	refID := uuid.New()
+	repo := newInitiatedRefundRepo(refID)
+	cf := &fetchingCFRefundClient{
+		createResults: []error{
+			&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"},
+			&cashfree.APIError{StatusCode: http.StatusBadGateway, Status: "502"},
+		},
+		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404"},
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
 	if err := d.DispatchRefund(context.Background(), refID); err != nil {
 		t.Fatalf("unexpected error on needs_review transition: %v", err)
 	}
-	if len(cf.createKeys) != 1 {
-		t.Fatalf("ADR-001 forbids rotating key or blind retry; create calls=%d", len(cf.createKeys))
-	}
-	expectedKey := domain.CashfreeRefundIdempotencyKey(refID)
-	if cf.createKeys[0] != expectedKey {
-		t.Errorf("must use deterministic idempotency key, got %q", cf.createKeys[0])
+	if len(cf.createKeys) != 2 {
+		t.Fatalf("expected 2 create calls before stopping, got %d", len(cf.createKeys))
 	}
 	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
 		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
@@ -219,7 +221,20 @@ func (d *RefundGatewayDispatcher) recoverAmbiguousCreate(ctx context.Context, or
 		return details, nil
 	}
 
-	// If status lookup returned 404 or an error, do NOT rotate the idempotency key or re-create.
-	// The gateway outcome is inconclusive; return error to trigger needs_review transition.
-	return nil, fmt.Errorf("cashfree refund status unconfirmed for refund %s: %w", ref.ID, cause)
+	var apiErr *cashfree.APIError
+	if !errors.As(fetchErr, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		return nil, fmt.Errorf("cashfree refund status unconfirmed for refund %s: %w", ref.ID, cause)
+	}
+
+	// Gateway confirmed refund is absent (404) following an ambiguous 5xx/transport error.
+	// Bounded retry: retry once with a refreshed idempotency key and identical refund_id.
+	// Cashfree replays cached 5xx for a repeated idempotency key, so reusing the original key can never succeed.
+	// The fixed refund_id protects against duplicate creation upstream.
+	recoveryKey := domain.CashfreeRefundRecoveryIdempotencyKey(ref.ID, time.Now())
+	fresh, createErr := d.client.CreateRefund(ctx, orderID, refundRef, ref.AmountPaise, note, recoveryKey)
+	if createErr != nil {
+		slog.Error("refund dispatcher: recovery create failed", "error", createErr, "refund_id", ref.ID)
+		return nil, fmt.Errorf("cashfree refund recovery create error: %w", createErr)
+	}
+	return fresh, nil
 }
