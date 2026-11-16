@@ -172,28 +172,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 
 	// Fail closed if payout webhook secret is unconfigured
-	var candidateSecrets []string
-	if len(h.CashfreePayoutWebhookSecrets) > 0 {
-		for _, s := range h.CashfreePayoutWebhookSecrets {
-			if strings.TrimSpace(s) != "" {
-				candidateSecrets = append(candidateSecrets, strings.TrimSpace(s))
-			}
-		}
-	}
-	if strings.TrimSpace(h.CashfreePayoutWebhookSecret) != "" {
-		trimmed := strings.TrimSpace(h.CashfreePayoutWebhookSecret)
-		found := false
-		for _, s := range candidateSecrets {
-			if s == trimmed {
-				found = true
-				break
-			}
-		}
-		if !found {
-			candidateSecrets = append(candidateSecrets, trimmed)
-		}
-	}
-
+	candidateSecrets := cashfree.OrderedCandidateSecrets(h.CashfreePayoutWebhookSecret, h.CashfreePayoutWebhookSecrets)
 	if len(candidateSecrets) == 0 {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payout webhook secret not configured"})
 		return
@@ -759,6 +738,18 @@ func (h *Handlers) commitPayoutItem(
 			if lockErr := tx.QueryRow(ctx, `SELECT status FROM payout_items WHERE id = $1 FOR UPDATE`, itemID).Scan(&currentStatus); lockErr != nil {
 				return fmt.Errorf("lock payout item %s: %w", itemID, lockErr)
 			}
+			// Monotonic state transitions (out-of-order event protection):
+			// 1. Once Succeeded, cannot transition back to Failed or Rejected.
+			if currentStatus == domain.PayoutSucceeded && (status == domain.PayoutFailed || status == domain.PayoutRejected || status == domain.PayoutRetriableFailed) {
+				slog.Error("payout item already succeeded; refusing out-of-order failure commit", "item_id", itemID, "current_status", currentStatus, "incoming_status", status)
+				return nil
+			}
+			// 2. Once Reversed, terminal; cannot transition to Succeeded, Failed, or Rejected.
+			if currentStatus == domain.PayoutReversed && status != domain.PayoutReversed {
+				slog.Error("payout item already reversed; refusing out-of-order status commit", "item_id", itemID, "current_status", currentStatus, "incoming_status", status)
+				return nil
+			}
+			// 3. Once Failed or Rejected, cannot transition to Succeeded without reconciliation.
 			if (currentStatus == domain.PayoutFailed || currentStatus == domain.PayoutRejected || currentStatus == domain.PayoutRetriableFailed) && status == domain.PayoutSucceeded {
 				slog.Error("payout item already terminal failed; refusing late success commit", "item_id", itemID, "current_status", currentStatus)
 				return nil

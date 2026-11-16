@@ -300,6 +300,25 @@ func (r *PaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventT
 	return tag.RowsAffected() > 0, nil
 }
 
+// HasProcessedEvent checks if a webhook event with the given provider, eventType, providerRefID, and eventStatus
+// has already been recorded in processed_webhook_events.
+func (r *PaymentRepo) HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
+	if provider == "" {
+		provider = "cashfree"
+	}
+	var exists bool
+	err := r.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM processed_webhook_events
+			WHERE provider = $1 AND event_type = $2 AND provider_reference_id = $3 AND event_status = $4
+		)
+	`, provider, eventType, providerRefID, eventStatus).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("payment: check processed event: %w", err)
+	}
+	return exists, nil
+}
+
 // RecordWebhookEvent provides backwards compatibility with older interfaces.
 func (r *PaymentRepo) RecordWebhookEvent(ctx context.Context, dedupKey, provider, eventType string) (bool, error) {
 	return r.RecordProcessedEvent(ctx, provider, eventType, dedupKey, "")

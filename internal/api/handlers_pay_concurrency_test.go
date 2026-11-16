@@ -81,6 +81,13 @@ func (s *threadSafeGatewayRepo) RecordProcessedEvent(ctx context.Context, provid
 	return true, nil // newly processed
 }
 
+func (s *threadSafeGatewayRepo) HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
+	return s.processedDedup[key], nil
+}
+
 func (s *threadSafeGatewayRepo) RollbackProcessedEvent(provider, eventType, providerRefID, eventStatus string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

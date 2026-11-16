@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,37 @@ func VerifyWebhookTimestamp(tsHeader string, toleranceSec int, now time.Time) er
 		return fmt.Errorf("%w: diff=%.1fs, tolerance=%ds", ErrWebhookTimestampDrift, diff, toleranceSec)
 	}
 	return nil
+}
+
+// OrderedCandidateSecrets returns a deduplicated slice of candidate webhook secrets
+// sorted so that versioned secrets are evaluated in chronological order (oldest first),
+// adhering to the gateway contract where older active secrets are used during rotation.
+func OrderedCandidateSecrets(primary string, versioned map[string]string) []string {
+	var ordered []string
+	seen := make(map[string]bool)
+
+	if len(versioned) > 0 {
+		keys := make([]string, 0, len(versioned))
+		for k := range versioned {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sec := strings.TrimSpace(versioned[k])
+			if sec != "" && !seen[sec] {
+				ordered = append(ordered, sec)
+				seen[sec] = true
+			}
+		}
+	}
+
+	trimmedPrimary := strings.TrimSpace(primary)
+	if trimmedPrimary != "" && !seen[trimmedPrimary] {
+		ordered = append(ordered, trimmedPrimary)
+		seen[trimmedPrimary] = true
+	}
+
+	return ordered
 }
 
 // WebhookEnvelope represents the outer shell of every Cashfree webhook payload.

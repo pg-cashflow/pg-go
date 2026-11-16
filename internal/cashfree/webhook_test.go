@@ -238,3 +238,54 @@ func TestParseWebhook_MalformedAmountFailsClosed(t *testing.T) {
 		t.Fatalf("expected error parsing PAYMENT_DISPUTE_CREATED_WEBHOOK with 3 decimal places, got nil err, payload=%+v", val)
 	}
 }
+
+func TestOrderedCandidateSecrets(t *testing.T) {
+	t.Run("Empty", func(t *testing.T) {
+		res := OrderedCandidateSecrets("", nil)
+		if len(res) != 0 {
+			t.Fatalf("expected empty slice, got %v", res)
+		}
+	})
+
+	t.Run("PrimaryOnly", func(t *testing.T) {
+		res := OrderedCandidateSecrets("sec_primary", nil)
+		if len(res) != 1 || res[0] != "sec_primary" {
+			t.Fatalf("expected [sec_primary], got %v", res)
+		}
+	})
+
+	t.Run("VersionedSortedChronologically", func(t *testing.T) {
+		versioned := map[string]string{
+			"v2": "new_secret_2",
+			"v1": "old_secret_1",
+			"v3": "future_secret_3",
+		}
+		res := OrderedCandidateSecrets("sec_primary", versioned)
+		if len(res) != 4 {
+			t.Fatalf("expected 4 secrets, got %d: %v", len(res), res)
+		}
+		// Oldest version (v1) must be first
+		if res[0] != "old_secret_1" {
+			t.Errorf("expected res[0] == old_secret_1, got %s", res[0])
+		}
+		if res[1] != "new_secret_2" {
+			t.Errorf("expected res[1] == new_secret_2, got %s", res[1])
+		}
+		if res[2] != "future_secret_3" {
+			t.Errorf("expected res[2] == future_secret_3, got %s", res[2])
+		}
+		if res[3] != "sec_primary" {
+			t.Errorf("expected res[3] == sec_primary, got %s", res[3])
+		}
+	})
+
+	t.Run("DeduplicatesPrimaryIfAlreadyInVersioned", func(t *testing.T) {
+		versioned := map[string]string{
+			"v1": "shared_secret",
+		}
+		res := OrderedCandidateSecrets("shared_secret", versioned)
+		if len(res) != 1 || res[0] != "shared_secret" {
+			t.Fatalf("expected deduplicated slice [shared_secret], got %v", res)
+		}
+	})
+}

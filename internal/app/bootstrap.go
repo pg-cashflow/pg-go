@@ -503,6 +503,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		Collector:                    collectorSvc,
 		KYCSvc:                       kycSvc,
 		CashfreeSecret:               cfg.CashfreeWebhookSecret,
+		CashfreeSecrets:              cfg.CashfreeWebhookSecrets,
 		CashfreeEnv:                  cfg.CashfreeEnv,
 		CashfreeClient:               cfClient,
 		BankVerifier:                 cfClient,

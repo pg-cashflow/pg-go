@@ -44,6 +44,8 @@ type Config struct {
 	CashfreeEnv                  string
 	CashfreeRefundSpeed          string // "STANDARD" (default) | "INSTANT"
 	CashfreeWebhookSecret        string
+	CashfreePGWebhookSecrets     map[string]string
+	CashfreeWebhookSecrets       map[string]string
 	WebhookTimestampToleranceSec int
 	OrderExpiryDuration          time.Duration
 	OrderPollerBufferDuration    time.Duration
@@ -181,6 +183,10 @@ func Load() (*Config, error) {
 	}
 	if secretsStr := os.Getenv("CF_PAYOUT_WEBHOOK_SECRETS"); secretsStr != "" {
 		cfg.CashfreePayoutWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
+	}
+	if secretsStr := envFirst("CASHFREE_PG_WEBHOOK_SECRETS", "CASHFREE_WEBHOOK_SECRETS"); secretsStr != "" {
+		cfg.CashfreePGWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
+		cfg.CashfreeWebhookSecrets = cfg.CashfreePGWebhookSecrets
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
 		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)

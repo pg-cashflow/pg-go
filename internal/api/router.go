@@ -56,6 +56,7 @@ type Deps struct {
 	PaymentLookup      PaymentLookup
 	Collector          *collector.Service
 	CashfreeSecret     string
+	CashfreeSecrets    map[string]string
 	CashfreeEnv        string
 	CashfreeClient     CashfreeClient
 	BankVerifier       BankAccountVerifier

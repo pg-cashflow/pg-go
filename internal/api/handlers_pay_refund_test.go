@@ -152,6 +152,9 @@ func (m *mockRefundPaymentRepo) GetByCFPaymentID(ctx context.Context, cfID strin
 func (m *mockRefundPaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
 	return true, nil
 }
+func (m *mockRefundPaymentRepo) HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
+	return false, nil
+}
 func (m *mockRefundPaymentRepo) CreateAllocation(ctx context.Context, paymentID, dueID uuid.UUID, amountPaise int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
