@@ -58,6 +58,8 @@ type PropertyOnboardingSettings struct {
 	AllowManagerRefunds       bool      `json:"allow_manager_refunds"`
 	// ManagerRefundLimitPaise is the largest single refund a manager may issue. nil means no limit.
 	ManagerRefundLimitPaise *int64 `json:"manager_refund_limit_paise"`
+	// SingleOwnerRefundThresholdPaise is the largest refund a single owner can authorize without dual owner approval.
+	SingleOwnerRefundThresholdPaise *int64 `json:"single_owner_refund_threshold_paise,omitempty"`
 }
 
 type InviteResolution struct {

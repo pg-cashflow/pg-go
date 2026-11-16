@@ -466,6 +466,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		logger.Warn("CF_PAYOUT_DISPATCH_ENABLED or CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
 	}
 
+	refundApprovalRepo := postgres.NewRefundApprovalRepo(appPool)
+
 	router := api.NewRouter(api.Deps{
 		JWTSecret:                    cfg.JWTSecret,
 		Auth:                         authSvc,
@@ -497,8 +499,10 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		GatewayPaymentRepo:           maintPaymentRepo,
 		WebhookToleranceSec:          cfg.WebhookTimestampToleranceSec,
 		WebhookAPIVersion:            cfg.WebhookAPIVersion,
-		RefundWindowDays:             cfg.RefundWindowDays,
-		Pool:                         maintPool,
+		RefundWindowDays:                cfg.RefundWindowDays,
+		RefundApprovalRepo:              refundApprovalRepo,
+		SingleOwnerRefundThresholdPaise: cfg.SingleOwnerRefundThresholdPaise,
+		Pool:                            maintPool,
 		AppPool:                      appPool,
 		Collector:                    collectorSvc,
 		KYCSvc:                       kycSvc,

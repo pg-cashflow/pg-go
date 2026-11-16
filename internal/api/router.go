@@ -69,8 +69,10 @@ type Deps struct {
 	Pool                *pgxpool.Pool
 	AppPool             *pgxpool.Pool
 	DBCluster           *postgres.DBCluster
-	RefundTxRunner      RefundTxRunner
-	RefundWindowDays    int
+	RefundTxRunner                  RefundTxRunner
+	RefundApprovalRepo              RefundApprovalStore
+	SingleOwnerRefundThresholdPaise *int64
+	RefundWindowDays                int
 	CalendarTokenStore  CalendarTokenStore
 
 	Gamification      *gamification.Service

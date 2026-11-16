@@ -308,6 +308,18 @@ type BankAccountVerifier interface {
 	VerifyBankAccountSync(ctx context.Context, req cashfree.BankAccountVerificationRequest) (*cashfree.BankAccountVerificationResult, error)
 }
 
+// RefundApprovalStore manages maker-checker requests and atomic approvals for refunds.
+type RefundApprovalStore interface {
+	CreateRequest(ctx context.Context, req *domain.RefundApprovalRequest) error
+	GetRequestByID(ctx context.Context, id uuid.UUID) (*domain.RefundApprovalRequest, error)
+	GetRequestByPaymentAndIdempotency(ctx context.Context, paymentID uuid.UUID, idempotencyKey string) (*domain.RefundApprovalRequest, error)
+	ListRequestsByPayment(ctx context.Context, paymentID uuid.UUID) ([]domain.RefundApprovalRequest, error)
+	ListRequestsByProperty(ctx context.Context, propertyID uuid.UUID, status string) ([]domain.RefundApprovalRequest, error)
+	UpdateRequest(ctx context.Context, req *domain.RefundApprovalRequest) error
+	RecordApprovalAtomic(ctx context.Context, requestID uuid.UUID, decision domain.RefundApprovalDecision, requiredApprovals int, onApproved func(tx pgx.Tx, req *domain.RefundApprovalRequest) error) (*domain.RefundApprovalRequest, error)
+	RejectRequestAtomic(ctx context.Context, requestID uuid.UUID, rejecterID uuid.UUID, reason string) (*domain.RefundApprovalRequest, error)
+}
+
 // KYCSvc is set to a *kyc.Service in production. Optional — if nil the KYC
 // routes respond 503 with a clear message so the rest of the app keeps running.
 // (Field declaration only; the interface is defined above.)

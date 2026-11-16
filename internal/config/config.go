@@ -104,6 +104,8 @@ type Config struct {
 	MetricsSecret string
 	// WebhookSecretSource indicates the source of CashfreeWebhookSecret ("pg_secret_key" or "override").
 	WebhookSecretSource string
+	// SingleOwnerRefundThresholdPaise sets the account-level threshold below which a single owner can authorize refunds with step-up auth.
+	SingleOwnerRefundThresholdPaise *int64
 	// WhatsApp Cloud API configuration
 	WhatsAppBaseURL       string
 	WhatsAppPhoneNumberID string
@@ -201,6 +203,11 @@ func Load() (*Config, error) {
 	} else if cfg.CashfreePGSecretKey != "" {
 		cfg.CashfreeWebhookSecret = cfg.CashfreePGSecretKey
 		cfg.WebhookSecretSource = "pg_secret_key"
+	}
+	if threshStr := strings.TrimSpace(os.Getenv("REFUND_SINGLE_OWNER_THRESHOLD_PAISE")); threshStr != "" {
+		if val, err := strconv.ParseInt(threshStr, 10, 64); err == nil && val >= 0 {
+			cfg.SingleOwnerRefundThresholdPaise = &val
+		}
 	}
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")

@@ -88,6 +88,10 @@ const (
 	CodeRefundReasonLength         Code = "payment.refundReasonLength"
 	CodeRefundReasonCharacters     Code = "payment.refundReasonCharacters"
 	CodeRefundManagerLimitExceeded Code = "payment.refundManagerLimitExceeded"
+	CodeRefundMakerCannotApprove   Code = "payment.refundMakerCannotApprove"
+	CodeRefundDuplicateApprover    Code = "payment.refundDuplicateApprover"
+	CodeRefundStaleApproval        Code = "payment.refundStaleApproval"
+	CodeRefundDualControlRequired  Code = "payment.refundDualControlRequired"
 	CodeBankAccountInvalid         Code = "payment.bankAccountInvalid"
 	CodeBankNameMismatch           Code = "payment.bankNameMismatch"
 	CodeBankVerifierUnavailable    Code = "payment.bankVerifierUnavailable"
@@ -205,6 +209,10 @@ var AllCodes = []Code{
 	CodeRefundReasonLength,
 	CodeRefundReasonCharacters,
 	CodeRefundManagerLimitExceeded,
+	CodeRefundMakerCannotApprove,
+	CodeRefundDuplicateApprover,
+	CodeRefundStaleApproval,
+	CodeRefundDualControlRequired,
 	CodeBankAccountInvalid,
 	CodeBankNameMismatch,
 	CodeBankVerifierUnavailable,

@@ -1284,6 +1284,14 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, lookupErr
 	}
 
+	// Threshold evaluation for maker-checker and high-value authorization
+	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	_, singleOwnerAllowed := domain.EvaluateRefundThreshold(req.AmountPaise, effectiveLimit, h.AppEnv)
+	if !singleOwnerAllowed {
+		apierr.RespondClientErr(c, http.StatusForbidden, "refund exceeds single-owner authorization limit; dual owner approval required via refund approval requests", apierr.CodeRefundDualControlRequired)
+		return nil, errors.New("single-owner authorization not permitted for high-value refund")
+	}
+
 	// Cryptographic step-up / dual-control enforcement. Runs after the idempotent replay
 	// lookup above, so a retry of a completed request does not need a fresh one-time code.
 	// The client cannot choose an unrelated OTP purpose or payout batch.
