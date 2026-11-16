@@ -1002,7 +1002,7 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		}
 		// In development or test environments without a configured key, use a deterministic 32-byte key
 		// to enforce full signature and payee integrity checks unconditionally.
-		signingKey = []byte("pg_payout_approval_dev_key_32b!")
+		signingKey = []byte("pg_payout_approval_dev_key_32bytes!")
 		keyID = "dev-v1"
 	}
 

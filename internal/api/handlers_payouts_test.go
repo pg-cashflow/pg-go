@@ -172,8 +172,9 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			PayoutRepo:           payoutRepo,
 			TenantStore:          tenantStore,
 			UserStore:            userRepo,
-			Auth:                 authSvc,
-			PayoutChecksumSecret: "test_secret_for_http_export",
+			Auth:                     authSvc,
+			PayoutChecksumSecret:     "test_secret_for_http_export",
+			PayoutApprovalSigningKey: []byte("test_approval_signing_key_32bytes_!"),
 		},
 	}
 
@@ -304,7 +305,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 			t.Fatalf("expected verified payee to have non-nil verified_by")
 		}
 
-		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours', verified_at = NOW() - INTERVAL '25 hours' WHERE id = $1`, payeeID); err != nil {
+		if _, err := pool.Exec(ctx, `UPDATE payout_payees SET created_at = NOW() - INTERVAL '25 hours', verified_at = NOW() - INTERVAL '25 hours', verification_status = 'provider_verified' WHERE id = $1`, payeeID); err != nil {
 			t.Fatalf("age payee: %v", err)
 		}
 	})
@@ -583,7 +584,7 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 OK approving batch with valid OTP, got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("expected 200 OK approving batch with valid OTP, got %d: %s (logs: %s)", w.Code, w.Body.String(), logBuf.String())
 		}
 
 		// Replay attack with same OTP must be rejected (401 Unauthorized or 409 Conflict)
@@ -645,8 +646,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		// Insert a self-contained payee so this subtest does not depend on earlier subtests.
 		dualPayeeID := uuid.New()
 		_, err = pool.Exec(ctx, `
-			INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, is_verified, created_at)
-			VALUES ($1, $2, 'vendor', 'Dual Control Vendor', 'dc00000000000000000000000000000000000000000000000000000000000000', '0000', 'dualvendor@upi', TRUE, NOW() - INTERVAL '25 hours')`,
+			INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, account_number_last4, upi_vpa, is_verified, verification_status, verification_method, created_at)
+			VALUES ($1, $2, 'vendor', 'Dual Control Vendor', 'dc00000000000000000000000000000000000000000000000000000000000000', '0000', 'dualvendor@upi', TRUE, 'provider_verified', 'cashfree_bank_sync', NOW() - INTERVAL '25 hours')`,
 			dualPayeeID, propID)
 		if err != nil {
 			t.Fatalf("insert dual-control payee: %v", err)
@@ -678,6 +679,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &dualResp)
 		dualBatchID := dualResp.Batch.ID
 		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_approval_snapshots WHERE batch_id = $1`, dualBatchID)
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE batch_id = $1`, dualBatchID)
 			_, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, dualBatchID)
 		}()
 
@@ -723,9 +726,15 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 		router.ServeHTTP(w, req)
 		_ = json.Unmarshal(w.Body.Bytes(), &dualResp)
 		fallbackBatchID := dualResp.Batch.ID
-		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, fallbackBatchID) }()
+		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_approval_snapshots WHERE batch_id = $1`, fallbackBatchID)
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE batch_id = $1`, fallbackBatchID)
+			_, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, fallbackBatchID)
+		}()
 
 		// Remove second owner from property (cleanup earlier batch referencing owner2 first)
+		_, _ = pool.Exec(ctx, `DELETE FROM payout_approval_snapshots WHERE batch_id = $1`, dualBatchID)
+		_, _ = pool.Exec(ctx, `DELETE FROM payout_items WHERE batch_id = $1`, dualBatchID)
 		_, _ = pool.Exec(ctx, `DELETE FROM payout_batches WHERE id = $1`, dualBatchID)
 		_, err = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, owner2ID)
 		if err != nil {

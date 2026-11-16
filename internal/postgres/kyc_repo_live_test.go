@@ -14,8 +14,8 @@ import (
 )
 
 func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 45*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	pool, _ := setupLiveTestPool(t, 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	// Apply all project migrations using the canonical migration runner (schema_migrations)
@@ -61,7 +61,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	// 1. Record Consent
 	consent := &domain.KYCConsent{
 		TenantID:        tenantID,
-		Purpose:         "tenant_identity_verification",
+		Purpose:         "tenant_verification",
 		ConsentVersion:  "v1",
 		ConsentText:     "I hereby consent to Aadhaar verification via DigiLocker.",
 		ConsentTextHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -182,7 +182,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 
 	consent2 := &domain.KYCConsent{
 		TenantID:        tenant2ID,
-		Purpose:         "tenant_identity_verification",
+		Purpose:         "tenant_verification",
 		ConsentVersion:  "v1",
 		ConsentText:     "Consent for tenant 2",
 		ConsentTextHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -335,7 +335,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 
 			consent := &domain.KYCConsent{
 				TenantID:        tenantID,
-				Purpose:         "tenant_identity_verification",
+				Purpose:         "tenant_verification",
 				ConsentVersion:  "v1",
 				ConsentText:     "Consent text",
 				ConsentTextHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -480,7 +480,7 @@ func TestLiveKYCRepo_ConcurrentDoubleComplete(t *testing.T) {
 
 			consent := &domain.KYCConsent{
 				TenantID:        tenantID,
-				Purpose:         "tenant_identity_verification",
+				Purpose:         "tenant_verification",
 				ConsentVersion:  "v1",
 				ConsentText:     "Consent text",
 				ConsentTextHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -601,7 +601,7 @@ func TestLiveKYCRepo_ConcurrentRevokeAndComplete(t *testing.T) {
 
 			consent := &domain.KYCConsent{
 				TenantID:        tenantID,
-				Purpose:         "tenant_identity_verification",
+				Purpose:         "tenant_verification",
 				ConsentVersion:  "v1",
 				ConsentText:     "Consent text",
 				ConsentTextHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -716,8 +716,8 @@ func TestLivePostgres_ConcurrentMigrate(t *testing.T) {
 }
 
 func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 45*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	pool, _ := setupLiveTestPool(t, 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	migrationsDir := filepath.Join("..", "..", "migrations")

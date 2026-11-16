@@ -413,10 +413,12 @@ func TestTenantDuePay_ReadOnlyGET(t *testing.T) {
 		ID:          propID,
 		PaymentMode: domain.PaymentModeCashfree,
 	}
+	pastMajority := time.Now().Add(-20 * 365 * 24 * time.Hour)
 	tenant := &domain.Tenant{
-		ID:         tenantID,
-		PropertyID: propID,
-		Status:     domain.TenantStatusActive,
+		ID:           tenantID,
+		PropertyID:   propID,
+		Status:       domain.TenantStatusActive,
+		MajorityDate: &pastMajority,
 	}
 	due := &domain.Due{
 		ID:         dueID,
@@ -434,6 +436,7 @@ func TestTenantDuePay_ReadOnlyGET(t *testing.T) {
 			DueStore:      &mockVerifyDueStore{dues: map[uuid.UUID]*domain.Due{dueID: due}},
 			IntentStore:   &mockVerifyIntentStore{},
 			Collector:     nil, // Nil collector proves GET is read-only and does not invoke collector/gateway
+			KYCSvc:        verifiedKYCSvc(),
 		},
 	}
 

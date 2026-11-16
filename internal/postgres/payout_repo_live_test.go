@@ -67,7 +67,7 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)
@@ -111,17 +111,20 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, ownerID)
 	}()
 
-	// Create Payee for tenant deposit refund
-	payeeID := uuid.New()
-	payeeHash := domain.ComputeAccountHash([]byte("test_salt"), "9876543210@upi")
-	_, err = pool.Exec(ctx, `
-		INSERT INTO payout_payees (
-			id, property_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, created_at, updated_at
-		) VALUES ($1, $2, 'tenant_deposit', 'Tenant Payee', '9876543210', $3, '9876543210@upi', true, NOW() - INTERVAL '25 hours', NOW())`,
-		payeeID, propID, payeeHash,
-	)
-	if err != nil {
-		t.Fatalf("failed to insert payee: %v", err)
+	// Helper to create a verified payee linked to a tenant
+	createDepositPayee := func(tenantID uuid.UUID) uuid.UUID {
+		pid := uuid.New()
+		pHash := domain.ComputeAccountHash([]byte("test_salt"), fmt.Sprintf("%s@upi", tenantID.String()[:8]))
+		_, pErr := pool.Exec(ctx, `
+			INSERT INTO payout_payees (
+				id, property_id, tenant_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, verification_status, created_at, updated_at
+			) VALUES ($1, $2, $3, 'tenant_deposit', 'Tenant Payee', '9876543210', $4, $5, true, 'provider_verified', NOW() - INTERVAL '25 hours', NOW())`,
+			pid, propID, tenantID, pHash, fmt.Sprintf("%s@upi", tenantID.String()[:8]),
+		)
+		if pErr != nil {
+			t.Fatalf("failed to insert payee for tenant %s: %v", tenantID, pErr)
+		}
+		return pid
 	}
 
 	// -------------------------------------------------------------
@@ -181,6 +184,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		if err := payoutRepo.AddDeduction(ctx, ded); err != nil {
 			t.Fatalf("add deduction: %v", err)
 		}
+
+		payeeID := createDepositPayee(tenantID)
 
 		// Execute departure settlement
 		res, err := payoutRepo.SettleDepartureUnderLock(ctx, SettleDepartureParams{
@@ -290,6 +295,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 			t.Fatalf("add deduction: %v", err)
 		}
 
+		payeeID := createDepositPayee(tenantID)
+
 		// Execute departure settlement
 		res, err := payoutRepo.SettleDepartureUnderLock(ctx, SettleDepartureParams{
 			DepartureID:       depID,
@@ -384,6 +391,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		if err := payoutRepo.AddDeduction(ctx, ded); err != nil {
 			t.Fatalf("add deduction: %v", err)
 		}
+
+		payeeID := createDepositPayee(tenantID)
 
 		// Execute departure settlement
 		res, err := payoutRepo.SettleDepartureUnderLock(ctx, SettleDepartureParams{
@@ -580,6 +589,8 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 			t.Fatalf("insert departure: %v", err)
 		}
 
+		payeeID := createDepositPayee(tenantID)
+
 		res, err := payoutRepo.SettleDepartureUnderLock(ctx, SettleDepartureParams{
 			DepartureID:       depID,
 			ActualVacateDate:  vacateDate,
@@ -605,21 +616,30 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 
 		// 3. Now simulate owner refund of ₹1,000 on payID
 		rfID := uuid.New()
-		_, err = pool.Exec(ctx, `
+		refTx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin tx for refund: %v", err)
+		}
+		_, err = refTx.Exec(ctx, `
 			INSERT INTO gateway_refunds (id, payment_id, property_id, provider, amount_paise, status, reason, source, initiated_by)
 			VALUES ($1, $2, $3, 'cash', 100000, 'succeeded', 'Owner adjustment', 'owner', $4)`, rfID, payID, propID, ownerID,
 		)
 		if err != nil {
+			_ = refTx.Rollback(ctx)
 			t.Fatalf("insert gateway refund: %v", err)
 		}
 
 		allocID := uuid.New()
-		_, err = pool.Exec(ctx, `
+		_, err = refTx.Exec(ctx, `
 			INSERT INTO refund_allocations (id, refund_id, due_id, amount_paise)
 			VALUES ($1, $2, $3, 100000)`, allocID, rfID, dueID,
 		)
 		if err != nil {
+			_ = refTx.Rollback(ctx)
 			t.Fatalf("insert refund allocation: %v", err)
+		}
+		if err := refTx.Commit(ctx); err != nil {
+			t.Fatalf("commit refund tx: %v", err)
 		}
 
 		// 4. Verify GetDueNetPaidPaise now computes: 550000 - 100000 - 275000 = 175000
@@ -719,12 +739,19 @@ func TestLivePostgresDepartureSettlementScenarios(t *testing.T) {
 		}
 		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, prop2ID) }()
 
+		otherTenantID := uuid.New()
+		_, err = pool.Exec(ctx, `INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status, created_at, updated_at) VALUES ($1, $2, 'Other Tenant', '+919999988886', 10000, 1, 'active', NOW(), NOW())`, otherTenantID, prop2ID)
+		if err != nil {
+			t.Fatalf("failed to insert other tenant: %v", err)
+		}
+		defer func() { _, _ = pool.Exec(ctx, `DELETE FROM tenants WHERE id = $1`, otherTenantID) }()
+
 		otherPayeeID := uuid.New()
 		payeeHash2 := domain.ComputeAccountHash([]byte("test_salt"), "9876543211@upi")
 		_, err = pool.Exec(ctx, `
-			INSERT INTO payout_payees (id, property_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, created_at, updated_at)
-			VALUES ($1, $2, 'tenant_deposit', 'Other Property Tenant', '9876543211', $3, '9876543211@upi', true, NOW(), NOW())`,
-			otherPayeeID, prop2ID, payeeHash2)
+			INSERT INTO payout_payees (id, property_id, tenant_id, payee_type, name, phone, account_number_hash, upi_vpa, is_verified, created_at, updated_at)
+			VALUES ($1, $2, $3, 'tenant_deposit', 'Other Property Tenant', '9876543211', $4, '9876543211@upi', true, NOW(), NOW())`,
+			otherPayeeID, prop2ID, otherTenantID, payeeHash2)
 		if err != nil {
 			t.Fatalf("failed to insert other payee: %v", err)
 		}

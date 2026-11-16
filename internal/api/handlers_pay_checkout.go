@@ -225,10 +225,14 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 // the order_id, ensuring that the order belongs to the authenticated tenant or owner property.
 func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 	t := tenantFromContext(c)
-	pid, isOwner := propertyIDFromClaims(c)
-	if t == nil && (!isOwner || pid == uuid.Nil) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
+	var pid uuid.UUID
+	var isOwner bool
+	if t == nil {
+		pid, isOwner = propertyIDFromClaims(c)
+		if !isOwner || pid == uuid.Nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
 	}
 	orderID := strings.TrimSpace(c.Param("order_id"))
 	if orderID == "" {

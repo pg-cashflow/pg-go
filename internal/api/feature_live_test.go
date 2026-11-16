@@ -267,6 +267,17 @@ func TestFeatureTenantDeparture_CreateLifecycle(t *testing.T) {
 	h := newLiveHarness(t)
 	f := seedLiveTenantFixture(t, h, 1500000)
 
+	depositDueID := uuid.New()
+	now := istNow()
+	periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if _, err := h.pool.Exec(context.Background(), `
+		INSERT INTO dues (id, property_id, tenant_id, due_code, kind, status, amount, original_amount, period_start, period_end, due_date)
+		VALUES ($1, $2, $3, $4, 'deposit', 'paid', 1500000, 1500000, $5, $6, $7)`,
+		depositDueID, f.propID, f.tenantID, "D"+uuid.New().String()[:7],
+		periodStart, periodStart.AddDate(0, 1, 0), periodStart.AddDate(0, 0, 4)); err != nil {
+		t.Fatalf("seed deposit due: %v", err)
+	}
+
 	code, body := h.httpCall(t, http.MethodPost, "/api/owner/tenants/"+f.tenantID.String()+"/departures", f.ownerTok,
 		map[string]any{
 			"planned_vacate_date": "2026-11-01",

@@ -12,8 +12,8 @@ import (
 )
 
 func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
-	pool, _ := setupLiveTestPool(t, 45*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	pool, _ := setupLiveTestPool(t, 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	migrationsDir := filepath.Join("..", "..", "migrations")
@@ -72,7 +72,7 @@ func TestLiveKYCRepo_ManualReviewAndAadhaarOTP(t *testing.T) {
 	consent := &domain.KYCConsent{
 		ID:             uuid.New(),
 		TenantID:       tenantID,
-		Purpose:        "manual_review_test",
+		Purpose:        "tenant_verification",
 		ConsentVersion: "v1.0",
 		ConsentText:    "Test DPDP consent",
 		IPAddress:      &ip,

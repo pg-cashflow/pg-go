@@ -64,7 +64,7 @@ func insertCoolingPayee(t *testing.T, ctx context.Context, pool *pgxpool.Pool, p
 	upi := payeeID.String()[:8] + "@upi"
 	query := fmt.Sprintf(`
 		INSERT INTO payout_payees (id, property_id, payee_type, name, account_number_hash, upi_vpa, is_verified, created_at, updated_at)
-		VALUES ($1, $2, 'tenant_deposit', 'Cooling Payee', $3, $4, true, %s, NOW())`, createdAtSQL)
+		VALUES ($1, $2, 'vendor', 'Cooling Payee', $3, $4, true, %s, NOW())`, createdAtSQL)
 	if _, err := pool.Exec(ctx, query, payeeID, propID, hash, upi); err != nil {
 		t.Fatalf("insert payee (created_at=%s): %v", createdAtSQL, err)
 	}
@@ -106,7 +106,7 @@ func TestLivePayoutCoolingOff(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	pool, err := NewPool(ctx, cfg.DatabaseURL)

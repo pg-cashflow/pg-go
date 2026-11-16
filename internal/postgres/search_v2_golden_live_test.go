@@ -207,6 +207,17 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 		t.Fatalf("seed payments failed: %v", err)
 	}
 
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payment_allocations (id, payment_id, due_id, amount_paise)
+		VALUES
+			($1, $2, $4, 500000),
+			($3, $5, $6, 500000)`,
+		uuid.New(), payRahulID, uuid.New(), dueRahulID, paySureshID, dueSureshID,
+	)
+	if err != nil {
+		t.Fatalf("seed payment allocations failed: %v", err)
+	}
+
 	payDigitRefID := uuid.New()
 	_, err = pool.Exec(ctx, `
 		INSERT INTO payments (id, tenant_id, property_id, provider, amount, matched_by, upi_txn_id, raw_note, created_at)
@@ -301,13 +312,30 @@ func TestLivePostgresSearchV2_GoldenRelevanceSuite(t *testing.T) {
 
 	// Gateway refund:
 	refundID := uuid.New()
-	_, err = pool.Exec(ctx, `
+	refTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx for gateway refund: %v", err)
+	}
+	_, err = refTx.Exec(ctx, `
 		INSERT INTO gateway_refunds (id, payment_id, property_id, cf_refund_id, provider_refund_id, amount_paise, status, reason, source)
 		VALUES ($1, $2, $3, 'CF_REF_88', 'CF_REF_88', 100000, 'succeeded', 'Deposit refund', 'system')`,
 		refundID, payRahulID, propID,
 	)
 	if err != nil {
+		_ = refTx.Rollback(ctx)
 		t.Fatalf("seed gateway refund failed: %v", err)
+	}
+	_, err = refTx.Exec(ctx, `
+		INSERT INTO refund_allocations (id, refund_id, due_id, amount_paise)
+		VALUES ($1, $2, $3, 100000)`,
+		uuid.New(), refundID, dueRahulID,
+	)
+	if err != nil {
+		_ = refTx.Rollback(ctx)
+		t.Fatalf("seed refund allocation failed: %v", err)
+	}
+	if err := refTx.Commit(ctx); err != nil {
+		t.Fatalf("commit gateway refund tx: %v", err)
 	}
 
 	// Payout payee:

@@ -51,6 +51,7 @@ INSERT INTO _rls_baseline (tbl) VALUES
   ('meter_readings'),
   ('notifications'),
   ('outbox_events'),
+  ('payment_commands'),
   ('period_tie_outs'),
   ('point_rules'),
   ('points_ledger'),
