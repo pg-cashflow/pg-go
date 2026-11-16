@@ -978,14 +978,21 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 					kind        domain.DueKind
 				}
 				var pAllocs []pAllocItem
-				if paErr == nil {
-					for pAllocRows.Next() {
-						var pa pAllocItem
-						if err := pAllocRows.Scan(&pa.dueID, &pa.amountPaise, &pa.kind); err == nil {
-							pAllocs = append(pAllocs, pa)
-						}
+				if paErr != nil {
+					return fmt.Errorf("query payment allocations for refund %s: %w", ref.ID, paErr)
+				}
+
+				for pAllocRows.Next() {
+					var pa pAllocItem
+					if err := pAllocRows.Scan(&pa.dueID, &pa.amountPaise, &pa.kind); err != nil {
+						pAllocRows.Close()
+						return fmt.Errorf("scan payment allocation for refund %s: %w", ref.ID, err)
 					}
-					pAllocRows.Close()
+					pAllocs = append(pAllocs, pa)
+				}
+				pAllocRows.Close()
+				if err := pAllocRows.Err(); err != nil {
+					return fmt.Errorf("iterate payment allocations for refund %s: %w", ref.ID, err)
 				}
 
 				remRefund := ref.AmountPaise
@@ -1025,15 +1032,19 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 						return err
 					}
 					targetDue, err := txDueRepo.GetByIDForUpdate(ctx, pa.dueID)
-					if err == nil && targetDue != nil {
-						if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
-							return err
-						}
-						mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
-							AmountPaise: allocAmt,
-							DueKind:     string(pa.kind),
-						})
+					if err != nil {
+						return fmt.Errorf("lock due %s for refund %s: %w", pa.dueID, ref.ID, err)
 					}
+					if targetDue == nil {
+						return fmt.Errorf("due %s not found while reconciling refund %s", pa.dueID, ref.ID)
+					}
+					if err := txRepo.recomputeDueStatusUnderLock(ctx, txDueRepo, targetDue); err != nil {
+						return err
+					}
+					mirrorAllocs = append(mirrorAllocs, domain.RefundAllocationItemPayload{
+						AmountPaise: allocAmt,
+						DueKind:     string(pa.kind),
+					})
 					remRefund -= allocAmt
 				}
 			}
@@ -1070,6 +1081,20 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 						AmountPaise: allocAmt,
 						DueKind:     string(primaryDue.Kind),
 					})
+				}
+			}
+
+			// A cash refund must reverse the same amount from due allocations.
+			// Never post a full-value ledger mirror when only part (or none) of the
+			// refund can be mapped to the payment's dues. The transaction rollback
+			// leaves the provider event available for retry or manual review.
+			if !p.IsUnapplied {
+				var allocatedPaise int64
+				for _, allocation := range mirrorAllocs {
+					allocatedPaise += allocation.AmountPaise
+				}
+				if allocatedPaise != ref.AmountPaise {
+					return fmt.Errorf("refund %s allocation mismatch: refund=%d allocated=%d", ref.ID, ref.AmountPaise, allocatedPaise)
 				}
 			}
 
