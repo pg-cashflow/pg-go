@@ -139,7 +139,7 @@ const (
 		masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, method,
 		status, failure_reason, qr_status, name_mismatch, attested_photo_bytes, photo_stored,
 		reviewed_by, reviewed_at, rejection_reason, ocr_data::text, document_url,
-		verified_at, expires_at, created_at, updated_at`
+		verified_at, expires_at, created_at, updated_at, COALESCE(document_type, 'aadhaar')`
 
 	kycConsentCols = `id, tenant_id, purpose, consent_version, consent_text,
 		consent_text_hash, consent_given_at, ip_address::text, user_agent, revoked_at`
@@ -149,12 +149,13 @@ const (
 
 func (r *KYCRepo) scanKYCVerification(row pgx.Row) (*domain.KYCVerification, error) {
 	var v domain.KYCVerification
+	var docType string
 	err := row.Scan(
 		&v.ID, &v.TenantID, &v.ConsentID, &v.VendorName, &v.VendorReferenceID,
 		&v.MaskedUID, &v.IdentityHash, &v.HashKeyVersion, &v.IsDedupable, &v.DuplicateDetected, &v.Method,
 		&v.Status, &v.FailureReason, &v.QRStatus, &v.NameMismatch, &v.AttestedPhotoBytes, &v.PhotoStored,
 		&v.ReviewedBy, &v.ReviewedAt, &v.RejectionReason, &v.OCRData, &v.DocumentURL,
-		&v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt,
+		&v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt, &docType,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -162,6 +163,7 @@ func (r *KYCRepo) scanKYCVerification(row pgx.Row) (*domain.KYCVerification, err
 		}
 		return nil, err
 	}
+	v.DocumentType = domain.NormalizeDocumentType(docType)
 	if v.OCRData != nil && *v.OCRData != "" {
 		var encWrapper struct {
 			Encrypted  bool   `json:"encrypted"`
@@ -1031,9 +1033,15 @@ func (r *KYCRepo) SubmitManualReviewTx(
 	documentBytes []byte,
 	documentContentType string,
 	actor string,
+	documentType ...string,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
 	var updated *domain.KYCVerification
+
+	docTypeVal := "aadhaar"
+	if len(documentType) > 0 && documentType[0] != "" {
+		docTypeVal = string(domain.NormalizeDocumentType(documentType[0]))
+	}
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
@@ -1087,15 +1095,16 @@ func (r *KYCRepo) SubmitManualReviewTx(
 				document_bytes = $6,
 				document_content_type = $7,
 				is_dedupable = $8,
-				updated_at = $9
+				document_type = $9,
+				updated_at = $10
 			WHERE id = $1 AND status = 'pending'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, maskedUID, identityHash, ocrToStore, documentURL, encDocBytes, documentContentType, isDedupable, now))
+		`, verificationID, maskedUID, identityHash, ocrToStore, documentURL, encDocBytes, documentContentType, isDedupable, docTypeVal, now))
 		if err != nil {
 			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
 		}
 
-		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "manual_review_submitted", "document uploaded for manual review", now); err != nil {
+		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "manual_review_submitted", fmt.Sprintf("document uploaded for manual review doc_type=%s", docTypeVal), now); err != nil {
 			return fmt.Errorf("kyc: append manual review audit log: %w", err)
 		}
 		return nil

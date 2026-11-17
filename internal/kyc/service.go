@@ -80,7 +80,7 @@ type KYCRepo interface {
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 
-	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string) (*domain.KYCVerification, error)
+	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string, documentType ...string) (*domain.KYCVerification, error)
 	ApproveManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	RejectManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
@@ -96,6 +96,7 @@ type KYCRepo interface {
 // CashfreeKYCClient is the Cashfree dependency for document OCR and Aadhaar OTP.
 // Implemented by *cashfree.Client via CashfreeAdapter.
 type CashfreeKYCClient interface {
+	UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*cashfree.SmartOCRResponse, error)
 	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
 	RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error)
 	VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error)
@@ -333,21 +334,23 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	return verified, nil
 }
 
-// VerifyAadhaarDocument executes the single document-upload KYC flow using Cashfree Smart OCR (/bharat-ocr).
+// VerifyDocument executes the document-upload KYC flow using Cashfree Smart OCR (/bharat-ocr).
+// Supports voluntary document types (Aadhaar, PAN, Passport, Voter ID, Driving Licence) per Aadhaar Act.
 //
 // Invariants enforced:
 //   - Network call (Cashfree multipart upload) executes outside database transaction.
 //   - Distributed lease (kyc_in_flight_lock) prevents double-billing across horizontal Cloud Run instances.
-//   - In automatic verification, demographic fields (Name, DOB, Gender) are ephemeral inputs to ComputeIdentityHash and IsNameMatch; zero demographic persistence.
+//   - Zero raw Aadhaar UID persistence: extracted demographic fields are ephemeral inputs to ComputeIdentityHash; only masked UID is stored.
 //   - In manual review, demographic OCR data is stored encrypted and wiped upon review decision (approval, rejection, expiry, or revocation).
-//   - Attested photo crop is saved to kyc_verification.attested_photo_bytes (photo_stored=true).
-//   - tenant profile is updated with masked UID only (never overwrites name or operational id_photo_bytes).
-func (s *Service) VerifyAadhaarDocument(
+//   - Tampered documents enter a flagged pending_manual_review state and never auto-verify.
+func (s *Service) VerifyDocument(
 	ctx context.Context,
 	tenantID uuid.UUID,
 	fileReader io.Reader,
-	filename, contentType, actor string,
+	filename, contentType, documentType, actor string,
 ) (*domain.KYCVerification, error) {
+	normDocType := string(domain.NormalizeDocumentType(documentType))
+
 	// Read file bytes up to 5MB + 1 byte guard
 	fileBytes, err := io.ReadAll(io.LimitReader(fileReader, 5*1024*1024+1))
 	if err != nil {
@@ -423,10 +426,10 @@ func (s *Service) VerifyAadhaarDocument(
 
 	var resp *cashfree.SmartOCRResponse
 	if s.cashfree != nil {
-		resp, err = s.cashfree.UploadAadhaarDocument(ctx, bytes.NewReader(fileBytes), filename)
+		resp, err = s.cashfree.UploadDocument(ctx, bytes.NewReader(fileBytes), filename, normDocType)
 		if err != nil {
 			_ = s.repo.FailVerificationTx(ctx, pending.ID, "OCR_UPLOAD_FAILED", actor)
-			return nil, fmt.Errorf("kyc service: upload aadhaar document: %w", err)
+			return nil, fmt.Errorf("kyc service: upload document: %w", err)
 		}
 	}
 
@@ -436,7 +439,6 @@ func (s *Service) VerifyAadhaarDocument(
 	var identityHash string
 
 	if resp == nil || resp.Name == "" || resp.MaskedUID == "" {
-		// KYC-2: Synthetic reference ensures vendor_ref_id is collision-free under concurrent uploads.
 		syntheticID := uuid.New().String()
 		vendorRefID = fmt.Sprintf("cf_ocr_manual_%s", syntheticID)
 		maskedUID = "XXXX"
@@ -447,33 +449,44 @@ func (s *Service) VerifyAadhaarDocument(
 		name := domain.NormalizeName(tenantName)
 		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, "", "", maskedUID)
 		ocrBytes, _ = json.Marshal(map[string]any{
+			"document_type": normDocType,
 			"name":          tenantName,
 			"masked_uid":    maskedUID,
 			"name_mismatch": nameMismatch,
 			"ocr_status":    "UNAVAILABLE",
 		})
 	} else {
+		// Log allowlisted metadata ONLY; zero full UID or raw body logged
 		slog.InfoContext(ctx, "cashfree smart ocr completed",
 			"tenant_id", tenantID,
 			"cashfree_reference_id", resp.ReferenceID,
+			"document_type", normDocType,
 			"vendor_status", resp.Status,
-			"message_code", resp.MessageCode,
-			"qr_status", resp.QRStatus,
+			"masked_uid", resp.MaskedUID,
+			"is_tampered", resp.IsTampered,
 			"has_photo", len(resp.PhotoBytes) > 0,
 		)
 		vendorRefID = fmt.Sprintf("cf_ocr_%v", resp.ReferenceID)
 		nameMismatch := !domain.IsNameMatch(tenantName, resp.Name)
+		if resp.IsTampered {
+			nameMismatch = true
+		}
 		canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
 		name := domain.NormalizeName(resp.Name)
 		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
 		maskedUID = resp.MaskedUID
 		ocrBytes, _ = json.Marshal(map[string]any{
-			"name":          resp.Name,
-			"dob":           resp.DOB,
-			"gender":        resp.Gender,
-			"masked_uid":    resp.MaskedUID,
-			"qr_status":     resp.QRStatus,
-			"name_mismatch": nameMismatch,
+			"document_type":        normDocType,
+			"name":                 resp.Name,
+			"dob":                  resp.DOB,
+			"gender":               resp.Gender,
+			"masked_uid":           resp.MaskedUID,
+			"qr_status":            resp.QRStatus,
+			"name_mismatch":        nameMismatch,
+			"is_tampered":          resp.IsTampered,
+			"tamper_reason":        resp.TamperReason,
+			"image_quality_passed": resp.ImageQualityPassed,
+			"quality_issues":       resp.QualityIssues,
 		})
 	}
 
@@ -501,12 +514,24 @@ func (s *Service) VerifyAadhaarDocument(
 	underReview, err := s.repo.SubmitManualReviewTx(ctx,
 		pending.ID, maskedUID, identityHash,
 		string(ocrBytes), docURL, fileBytes, contentType, actor,
+		normDocType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
 	}
 
 	return underReview, nil
+}
+
+// VerifyAadhaarDocument executes the single document-upload KYC flow using Cashfree Smart OCR (/bharat-ocr).
+// Deprecated: use VerifyDocument to support non-Aadhaar identification per the Aadhaar Act.
+func (s *Service) VerifyAadhaarDocument(
+	ctx context.Context,
+	tenantID uuid.UUID,
+	fileReader io.Reader,
+	filename, contentType, actor string,
+) (*domain.KYCVerification, error) {
+	return s.VerifyDocument(ctx, tenantID, fileReader, filename, contentType, "aadhaar", actor)
 }
 
 // InitiateAadhaarOTP requests an Aadhaar OTP from UIDAI via Cashfree for a tenant.

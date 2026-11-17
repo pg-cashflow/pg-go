@@ -75,22 +75,42 @@ func (e *CorruptDocumentError) IsPermanent() bool {
 
 // SmartOCRResponse contains the extracted verification results from Cashfree Smart OCR (/bharat-ocr).
 type SmartOCRResponse struct {
-	ReferenceID any
-	Status      string
-	MessageCode string
-	Name        string
-	DOB         string
-	Gender      string
-	MaskedUID   string
-	QRStatus    *string
-	PhotoBytes  []byte
+	ReferenceID        any
+	Status             string
+	MessageCode        string
+	DocumentType       string
+	Name               string
+	DOB                string
+	Gender             string
+	MaskedUID          string
+	QRStatus           *string
+	PhotoBytes         []byte
+	IsTampered         bool
+	TamperReason       string
+	ImageQualityPassed bool
+	QualityIssues      []string
 }
 
-// UploadAadhaarDocument submits a single Aadhaar file (JPEG/PNG/PDF up to 5MB) to Cashfree Smart OCR.
-// Network call: callers must invoke outside database transactions.
-func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*SmartOCRResponse, error) {
+// UploadDocument submits an identity document file (JPEG/PNG/PDF up to 5MB) to Cashfree Smart OCR (/bharat-ocr).
+// Supports voluntary document types: AADHAAR, PAN, PASSPORT_FRONT, VOTER_ID, DRIVING_LICENCE.
+// Invariant: Full Aadhaar numbers/UIDs are redacted immediately upon unmarshaling.
+func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*SmartOCRResponse, error) {
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("cashfree: not configured")
+	}
+
+	var cfDocType string
+	switch strings.ToUpper(strings.TrimSpace(documentType)) {
+	case "PAN":
+		cfDocType = "PAN"
+	case "PASSPORT", "PASSPORT_FRONT":
+		cfDocType = "PASSPORT_FRONT"
+	case "VOTER_ID", "VOTER":
+		cfDocType = "VOTER_ID"
+	case "DRIVING_LICENCE", "DRIVING_LICENSE", "DL":
+		cfDocType = "DRIVING_LICENCE"
+	default:
+		cfDocType = "AADHAAR"
 	}
 
 	var body bytes.Buffer
@@ -99,7 +119,7 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 	if err := writer.WriteField("verification_id", verificationID); err != nil {
 		return nil, fmt.Errorf("cashfree ocr: write verification_id: %w", err)
 	}
-	if err := writer.WriteField("document_type", "AADHAAR"); err != nil {
+	if err := writer.WriteField("document_type", cfDocType); err != nil {
 		return nil, fmt.Errorf("cashfree ocr: write document_type: %w", err)
 	}
 	part, err := writer.CreateFormFile("file", filename)
@@ -145,31 +165,127 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 	}
 
 	var raw struct {
-		ReferenceID any    `json:"reference_id"`
-		Status      string `json:"status"`
-		MessageCode string `json:"message_code"`
-		OCRData     struct {
-			Name   string `json:"name"`
-			DOB    string `json:"dob"`
-			Gender string `json:"gender"`
-			UID    string `json:"uid"`
-			Image  string `json:"image"`
+		ReferenceID  any    `json:"reference_id"`
+		Status       string `json:"status"`
+		MessageCode  string `json:"message_code"`
+		DocumentType string `json:"document_type"`
+		OCRData      struct {
+			Name           string `json:"name"`
+			DOB            string `json:"dob"`
+			Gender         string `json:"gender"`
+			UID            string `json:"uid"`
+			PAN            string `json:"pan_number"`
+			PassportNumber string `json:"passport_number"`
+			VoterID        string `json:"voter_id_number"`
+			DLNumber       string `json:"dl_number"`
+			Image          string `json:"image"`
 		} `json:"ocr_data"`
 		QRDetails struct {
 			Status string `json:"status"`
 		} `json:"qr_details"`
+		ImageQuality struct {
+			Blur             bool `json:"blur"`
+			Glare            bool `json:"glare"`
+			PartiallyPresent bool `json:"partially_present"`
+			Obscured         bool `json:"obscured"`
+		} `json:"image_quality"`
+		FraudChecks struct {
+			IsScreenshot    bool `json:"is_screenshot"`
+			IsPhotoOfScreen bool `json:"is_photo_of_screen"`
+			IsPhotoImposed  bool `json:"is_photo_imposed"`
+			IsOverwritten   bool `json:"is_overwritten"`
+			IsForged        bool `json:"is_forged"`
+		} `json:"fraud_checks"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, &CorruptDocumentError{Reason: fmt.Sprintf("unmarshal json: %v", err)}
 	}
 
-	uidClean := strings.ReplaceAll(raw.OCRData.UID, " ", "")
+	// Data minimization & Aadhaar privacy: extract last-4 only, immediately purge raw UID from memory.
 	var maskedUID string
-	if len(uidClean) >= 4 {
-		maskedUID = uidClean[len(uidClean)-4:]
+	if raw.OCRData.UID != "" {
+		uidClean := strings.ReplaceAll(raw.OCRData.UID, " ", "")
+		if len(uidClean) >= 4 {
+			maskedUID = uidClean[len(uidClean)-4:]
+		}
+		raw.OCRData.UID = "" // Immediate in-memory redaction
+	} else if raw.OCRData.PAN != "" {
+		panClean := strings.TrimSpace(raw.OCRData.PAN)
+		if len(panClean) >= 4 {
+			maskedUID = panClean[len(panClean)-4:]
+		}
+		raw.OCRData.PAN = ""
+	} else if raw.OCRData.PassportNumber != "" {
+		passClean := strings.TrimSpace(raw.OCRData.PassportNumber)
+		if len(passClean) >= 4 {
+			maskedUID = passClean[len(passClean)-4:]
+		}
+		raw.OCRData.PassportNumber = ""
+	} else if raw.OCRData.VoterID != "" {
+		voterClean := strings.TrimSpace(raw.OCRData.VoterID)
+		if len(voterClean) >= 4 {
+			maskedUID = voterClean[len(voterClean)-4:]
+		}
+		raw.OCRData.VoterID = ""
+	} else if raw.OCRData.DLNumber != "" {
+		dlClean := strings.TrimSpace(raw.OCRData.DLNumber)
+		if len(dlClean) >= 4 {
+			maskedUID = dlClean[len(dlClean)-4:]
+		}
+		raw.OCRData.DLNumber = ""
 	}
+
+	// Zero out raw byte buffer memory to ensure full UID cannot persist in RAM
+	for i := range b {
+		b[i] = 0
+	}
+
 	if raw.OCRData.Name == "" || maskedUID == "" {
-		return nil, &CorruptDocumentError{Reason: "incomplete OCR demographic data (name or uid missing)"}
+		return nil, &CorruptDocumentError{Reason: "incomplete OCR demographic data (name or identifier missing)"}
+	}
+
+	// Parse fraud checks
+	isTampered := false
+	var tamperReasons []string
+	if raw.FraudChecks.IsForged {
+		isTampered = true
+		tamperReasons = append(tamperReasons, "is_forged")
+	}
+	if raw.FraudChecks.IsScreenshot {
+		isTampered = true
+		tamperReasons = append(tamperReasons, "is_screenshot")
+	}
+	if raw.FraudChecks.IsPhotoOfScreen {
+		isTampered = true
+		tamperReasons = append(tamperReasons, "is_photo_of_screen")
+	}
+	if raw.FraudChecks.IsOverwritten {
+		isTampered = true
+		tamperReasons = append(tamperReasons, "is_overwritten")
+	}
+	if raw.FraudChecks.IsPhotoImposed {
+		isTampered = true
+		tamperReasons = append(tamperReasons, "is_photo_imposed")
+	}
+
+	// Parse image quality
+	qualityPassed := true
+	var qualityIssues []string
+	if raw.ImageQuality.Blur {
+		qualityPassed = false
+		qualityIssues = append(qualityIssues, "blur")
+	}
+	if raw.ImageQuality.Glare {
+		qualityPassed = false
+		qualityIssues = append(qualityIssues, "glare")
+	}
+	if raw.ImageQuality.Obscured {
+		qualityPassed = false
+		qualityIssues = append(qualityIssues, "obscured")
+	}
+	if raw.ImageQuality.PartiallyPresent {
+		qualityPassed = false
+		qualityIssues = append(qualityIssues, "partially_present")
 	}
 
 	var photoBytes []byte
@@ -179,6 +295,7 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 		if decodeErr != nil {
 			return nil, &CorruptDocumentError{Reason: fmt.Sprintf("invalid base64 in ocr photo: %v", decodeErr)}
 		}
+		raw.OCRData.Image = "" // Clear base64 photo from memory
 	}
 
 	var qrStatus *string
@@ -187,17 +304,33 @@ func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader
 		qrStatus = &q
 	}
 
+	docTypeResult := raw.DocumentType
+	if docTypeResult == "" {
+		docTypeResult = cfDocType
+	}
+
 	return &SmartOCRResponse{
-		ReferenceID: raw.ReferenceID,
-		Status:      raw.Status,
-		MessageCode: raw.MessageCode,
-		Name:        raw.OCRData.Name,
-		DOB:         raw.OCRData.DOB,
-		Gender:      raw.OCRData.Gender,
-		MaskedUID:   maskedUID,
-		QRStatus:    qrStatus,
-		PhotoBytes:  photoBytes,
+		ReferenceID:        raw.ReferenceID,
+		Status:             raw.Status,
+		MessageCode:        raw.MessageCode,
+		DocumentType:       docTypeResult,
+		Name:               raw.OCRData.Name,
+		DOB:                raw.OCRData.DOB,
+		Gender:             raw.OCRData.Gender,
+		MaskedUID:          maskedUID,
+		QRStatus:           qrStatus,
+		PhotoBytes:         photoBytes,
+		IsTampered:         isTampered,
+		TamperReason:       strings.Join(tamperReasons, ", "),
+		ImageQualityPassed: qualityPassed,
+		QualityIssues:      qualityIssues,
 	}, nil
+}
+
+// UploadAadhaarDocument submits a single Aadhaar file (JPEG/PNG/PDF up to 5MB) to Cashfree Smart OCR.
+// Deprecated: use UploadDocument to support voluntary non-Aadhaar verification per the Aadhaar Act.
+func (c *Client) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*SmartOCRResponse, error) {
+	return c.UploadDocument(ctx, fileReader, filename, "AADHAAR")
 }
 
 // AadhaarOTPInitResult holds the response from initiating an Aadhaar OTP session.

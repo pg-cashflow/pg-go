@@ -129,6 +129,8 @@ type Deps struct {
 	BankAccountRepo BankAccountStore
 
 	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
+	CashfreeKYCWebhookSecret  string
+	CashfreeKYCWebhookSecrets map[string]string
 
 	RefundLocker postgres.RefundOperationLocker
 

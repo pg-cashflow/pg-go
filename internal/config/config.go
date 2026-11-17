@@ -41,6 +41,8 @@ type Config struct {
 	CashfreeKYCSecretKey         string
 	CashfreeKYCAuthMode          string // "ip" (default) | "signature"
 	CashfreeKYCPublicKeyPEM      string // PEM-encoded RSA public key for KYC signature auth
+	CashfreeKYCWebhookSecret     string
+	CashfreeKYCWebhookSecrets    map[string]string
 	CashfreeEnv                  string
 	CashfreeRefundSpeed          string // "STANDARD" (default) | "INSTANT"
 	CashfreeWebhookSecret        string
@@ -144,6 +146,7 @@ func Load() (*Config, error) {
 		CashfreeKYCSecretKey:              os.Getenv("CASHFREE_KYC_SECRET_KEY"),
 		CashfreeKYCAuthMode:               strings.ToLower(strings.TrimSpace(envOr("CASHFREE_KYC_AUTH_MODE", "ip"))),
 		CashfreeKYCPublicKeyPEM:           loadKYCPublicKeyPEM(),
+		CashfreeKYCWebhookSecret:          envFirst("CASHFREE_KYC_WEBHOOK_SECRET", "CF_KYC_WEBHOOK_SECRET"),
 		CashfreeEnv:                       envOr("CASHFREE_ENV", "sandbox"),
 		CashfreeRefundSpeed:               envOr("CASHFREE_REFUND_SPEED", "STANDARD"),
 		CashfreeWebhookSecret:             envFirst("CASHFREE_PG_WEBHOOK_SECRET", "CASHFREE_WEBHOOK_SECRET"),

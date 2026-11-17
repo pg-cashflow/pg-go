@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -330,7 +333,13 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 
 	actor := fmt.Sprintf("tenant:%s", t.ID)
-	v, err := svc.VerifyAadhaarDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, ct, actor)
+	docType := strings.TrimSpace(c.PostForm("document_type"))
+	if docType == "" {
+		docType = "aadhaar"
+	}
+	normDocType := string(domain.NormalizeDocumentType(docType))
+
+	v, err := svc.VerifyDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, ct, normDocType, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
 		return
@@ -832,6 +841,9 @@ func tenantKYCVerificationView(v *domain.KYCVerification) gin.H {
 		"created_at": v.CreatedAt,
 		"updated_at": v.UpdatedAt,
 	}
+	if v.DocumentType != "" {
+		m["document_type"] = v.DocumentType
+	}
 	if v.VerifiedAt != nil {
 		m["verified_at"] = v.VerifiedAt
 	}
@@ -851,7 +863,7 @@ func tenantKYCVerificationView(v *domain.KYCVerification) gin.H {
 }
 
 // ownerKYCVerificationView includes duplicate_detected so the owner can review
-// flagged records. Still excludes raw identity_hash (irreversible HMAC â€” no use
+// flagged records. Still excludes raw identity_hash (irreversible HMAC — no use
 // to an owner, and reduces risk if the response is logged).
 func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 	m := tenantKYCVerificationView(v)
@@ -872,4 +884,134 @@ func ownerKYCVerificationView(v *domain.KYCVerification) gin.H {
 		m["document_name"] = v.DocumentURL
 	}
 	return m
+}
+
+// CashfreeKYCWebhook handles incoming POST /webhooks/cashfree/kyc callbacks.
+// Enforces:
+// 1. Raw body capture up to 1 MiB limit.
+// 2. Signature verification: HMAC-SHA256(timestamp + rawBody, secret) with secret rotation.
+// 3. Timestamp replay tolerance (default 300 seconds).
+// 4. In-memory UID redaction before any processing.
+// 5. Monotonic status transitions: verified and rejected records are immutable.
+func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
+	const maxKYCWebhookBody = 1 << 20 // 1 MiB
+	raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxKYCWebhookBody+1))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "body read error"})
+		return
+	}
+	if len(raw) > maxKYCWebhookBody {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "body too large"})
+		return
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+
+	// Secrets hierarchy: KYC-specific secret first, fallback to general Cashfree secret
+	primarySec := h.CashfreeKYCWebhookSecret
+	if primarySec == "" {
+		primarySec = h.CashfreeSecret
+	}
+	candidateSecrets := cashfree.OrderedCandidateSecrets(primarySec, h.CashfreeKYCWebhookSecrets)
+	if len(candidateSecrets) == 0 && len(h.CashfreeSecrets) > 0 {
+		candidateSecrets = cashfree.OrderedCandidateSecrets(primarySec, h.CashfreeSecrets)
+	}
+	if len(candidateSecrets) == 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kyc webhook secret not configured"})
+		return
+	}
+
+	sig := strings.TrimSpace(c.GetHeader("x-webhook-signature"))
+	ts := strings.TrimSpace(c.GetHeader("x-webhook-timestamp"))
+	if sig == "" || ts == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing signature or timestamp header"})
+		return
+	}
+
+	validSig := false
+	for _, sec := range candidateSecrets {
+		if cashfree.VerifyWebhookHMAC(sec, ts, string(raw), sig) {
+			validSig = true
+			break
+		}
+	}
+	if !validSig {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	// Verify timestamp tolerance with fail-closed default (300s)
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
+	}
+
+	var payload struct {
+		VerificationID string `json:"verification_id"`
+		ReferenceID    any    `json:"reference_id"`
+		Status         string `json:"status"`
+		DocumentType   string `json:"document_type"`
+		OCRData        struct {
+			Name string `json:"name"`
+			UID  string `json:"uid"`
+		} `json:"ocr_data"`
+		FraudChecks struct {
+			IsForged        bool `json:"is_forged"`
+			IsScreenshot    bool `json:"is_screenshot"`
+			IsPhotoOfScreen bool `json:"is_photo_of_screen"`
+		} `json:"fraud_checks"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json payload"})
+		return
+	}
+
+	// Immediate in-memory redaction: purge full UID
+	payload.OCRData.UID = ""
+	for i := range raw {
+		raw[i] = 0
+	}
+
+	svc := h.KYCSvc
+	if svc == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
+		return
+	}
+
+	vendorRef := fmt.Sprintf("cf_ocr_%v", payload.ReferenceID)
+	v, err := svc.GetVerificationByVendorRefID(c.Request.Context(), vendorRef)
+	if err != nil || v == nil {
+		// Callback for unknown or already cleaned record
+		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "verification not found"})
+		return
+	}
+
+	// Replay and Monotonicity Guard: Terminal states (verified, rejected, revoked, expired) are immutable.
+	if v.Status == domain.KYCStatusVerified ||
+		v.Status == domain.KYCStatusRejected ||
+		v.Status == domain.KYCStatusRevoked ||
+		v.Status == domain.KYCStatusExpired {
+		c.JSON(http.StatusOK, gin.H{
+			"status":         "already_processed",
+			"current_status": v.Status,
+		})
+		return
+	}
+
+	// Record fraud flags in audit trail if detected by webhook
+	if payload.FraudChecks.IsForged || payload.FraudChecks.IsScreenshot || payload.FraudChecks.IsPhotoOfScreen {
+		slog.WarnContext(c.Request.Context(), "kyc webhook: document fraud detected in callback",
+			"verification_id", v.ID,
+			"reference_id", payload.ReferenceID,
+		)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "received",
+		"ref_id":  payload.ReferenceID,
+		"state":   v.Status,
+	})
 }

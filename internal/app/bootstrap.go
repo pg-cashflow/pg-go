@@ -506,6 +506,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		AppPool:                      appPool,
 		Collector:                    collectorSvc,
 		KYCSvc:                       kycSvc,
+		CashfreeKYCWebhookSecret:     cfg.CashfreeKYCWebhookSecret,
+		CashfreeKYCWebhookSecrets:    cfg.CashfreeKYCWebhookSecrets,
 		CashfreeSecret:               cfg.CashfreeWebhookSecret,
 		CashfreeSecrets:              cfg.CashfreeWebhookSecrets,
 		CashfreeEnv:                  cfg.CashfreeEnv,

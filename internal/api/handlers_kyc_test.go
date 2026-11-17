@@ -58,6 +58,13 @@ func (f *fakeKYCSvc) VerifyAadhaarDocument(ctx context.Context, tenantID uuid.UU
 	now := time.Now()
 	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, VerifiedAt: &now}, nil
 }
+func (f *fakeKYCSvc) VerifyDocument(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, documentType, actor string) (*domain.KYCVerification, error) {
+	if f.uploadFn != nil {
+		return f.uploadFn(ctx, tenantID, fileReader, filename, contentType, actor)
+	}
+	now := time.Now()
+	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified, DocumentType: domain.NormalizeDocumentType(documentType), VerifiedAt: &now}, nil
+}
 func (f *fakeKYCSvc) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
 	if f.photoFn != nil {
 		return f.photoFn(ctx, tenantID)

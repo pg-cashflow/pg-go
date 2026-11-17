@@ -201,7 +201,7 @@ func (f *fakeRepo) GetTenantName(_ context.Context, _ uuid.UUID) (string, error)
 func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return f.attestedPhoto, nil
 }
-func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string, _ ...string) (*domain.KYCVerification, error) {
 	var raw struct {
 		NameMismatch bool `json:"name_mismatch"`
 	}
@@ -311,6 +311,10 @@ type fakeCashfree struct {
 }
 
 func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
+	f.ocrCalled = true
+	return f.ocrResp, f.ocrErr
+}
+func (f *fakeCashfree) UploadDocument(_ context.Context, _ io.Reader, _ string, _ string) (*cashfree.SmartOCRResponse, error) {
 	f.ocrCalled = true
 	return f.ocrResp, f.ocrErr
 }

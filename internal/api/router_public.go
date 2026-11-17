@@ -14,6 +14,7 @@ func registerPublicRoutes(r *gin.Engine, d Deps, h *Handlers, healthHandler gin.
 	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 	r.POST("/webhooks/cashfree/settlements", h.CashfreeSettlementWebhook)
+	r.POST("/webhooks/cashfree/kyc", h.CashfreeKYCWebhook)
 }
 
 func healthHandler() gin.HandlerFunc {

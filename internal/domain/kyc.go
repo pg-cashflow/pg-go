@@ -36,6 +36,32 @@ const (
 	KYCMethodQR         KYCMethod = "qr"
 )
 
+type DocumentType string
+
+const (
+	DocTypeAadhaar        DocumentType = "aadhaar"
+	DocTypePAN            DocumentType = "pan"
+	DocTypePassport       DocumentType = "passport"
+	DocTypeVoterID        DocumentType = "voter_id"
+	DocTypeDrivingLicence DocumentType = "driving_licence"
+)
+
+// NormalizeDocumentType canonicalizes incoming document type strings.
+func NormalizeDocumentType(docType string) DocumentType {
+	switch strings.ToLower(strings.TrimSpace(docType)) {
+	case "pan":
+		return DocTypePAN
+	case "passport", "passport_front":
+		return DocTypePassport
+	case "voter_id", "voter":
+		return DocTypeVoterID
+	case "driving_licence", "driving_license", "dl":
+		return DocTypeDrivingLicence
+	default:
+		return DocTypeAadhaar
+	}
+}
+
 // AadhaarOTPMaxAttempts defines the unified retry and burst budget for Aadhaar OTP verification.
 // Used concurrently by the API rate-limiter burst capacity and the KYC service retry counter
 // to prevent divergence between HTTP 429 rate limiting and logical attempts remaining.
@@ -90,8 +116,9 @@ type KYCVerification struct {
 	HashKeyVersion     int16      `json:"hash_key_version"`
 	IsDedupable        bool       `json:"is_dedupable"`
 	DuplicateDetected  bool       `json:"duplicate_detected"`
-	Method             KYCMethod  `json:"method"`
-	Status             KYCStatus  `json:"status"`
+	Method             KYCMethod    `json:"method"`
+	DocumentType       DocumentType `json:"document_type,omitempty"`
+	Status             KYCStatus    `json:"status"`
 	FailureReason      *string    `json:"failure_reason,omitempty"`
 	QRStatus           *string    `json:"qr_status,omitempty"`
 	NameMismatch       bool       `json:"name_mismatch"`
