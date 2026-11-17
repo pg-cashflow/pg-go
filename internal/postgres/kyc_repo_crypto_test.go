@@ -176,8 +176,8 @@ type mockKYCRow struct {
 }
 
 func (m *mockKYCRow) Scan(dest ...any) error {
-	if len(dest) != 26 {
-		return fmt.Errorf("expected 26 destinations, got %d", len(dest))
+	if len(dest) != 28 {
+		return fmt.Errorf("expected 28 destinations, got %d", len(dest))
 	}
 	if ptr, ok := dest[20].(**string); ok {
 		*ptr = m.ocrData
@@ -248,4 +248,31 @@ func TestKYCRepo_Crypto_OCRDataFieldEncryptionAndDualRead(t *testing.T) {
 			t.Fatalf("expected ErrOCRDecryptionFailed with wrong key, got: %v", err)
 		}
 	})
+}
+
+type mockKYCFullRow struct {
+	cfRef *string
+}
+
+func (m *mockKYCFullRow) Scan(dest ...any) error {
+	if len(dest) != 28 {
+		return fmt.Errorf("expected 28 destinations, got %d", len(dest))
+	}
+	if ptr, ok := dest[27].(**string); ok {
+		*ptr = m.cfRef
+	}
+	return nil
+}
+
+func TestKYCRepo_ScanWithCFReferenceID(t *testing.T) {
+	refID := "cf_ref_12345"
+	row := &mockKYCFullRow{cfRef: &refID}
+	repo := NewKYCRepo(nil, bytes.Repeat([]byte{0x77}, 32))
+	v, err := repo.scanKYCVerification(row)
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if v.CFReferenceID == nil || *v.CFReferenceID != refID {
+		t.Fatalf("expected cf_reference_id %s, got %v", refID, v.CFReferenceID)
+	}
 }

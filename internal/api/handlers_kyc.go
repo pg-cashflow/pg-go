@@ -404,6 +404,69 @@ func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
 	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP verification is discontinued; please upload your ID document.", apierr.Code("kyc.method_discontinued"))
 }
 
+type digiLockerInitRequestBody struct {
+	RedirectURL string `json:"redirect_url" binding:"required"`
+	UserFlow    string `json:"user_flow"`
+}
+
+// TenantKYCInitiateDigiLocker handles POST /api/tenant/kyc/digilocker/init.
+func (h *Handlers) TenantKYCInitiateDigiLocker(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	var req digiLockerInitRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apierr.RespondBindErr(c, "redirect_url is required", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+	ver, url, err := svc.InitiateDigiLockerVerification(c.Request.Context(), t.ID, req.RedirectURL, req.UserFlow, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"verification":    tenantKYCVerificationView(ver),
+		"redirect_url":   url,
+		"verification_id": ver.ID,
+	})
+}
+
+// TenantKYCDigiLockerStatus handles GET /api/tenant/kyc/digilocker/status.
+func (h *Handlers) TenantKYCDigiLockerStatus(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+	ver, err := svc.PollDigiLockerStatus(c.Request.Context(), t.ID, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, tenantKYCVerificationView(ver))
+}
+
 // ---------------------------------------------------------------------------
 // Owner-facing KYC endpoints
 // ---------------------------------------------------------------------------
@@ -949,6 +1012,62 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
+	svc := h.KYCSvc
+	if svc == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
+		return
+	}
+
+	// 1. Check for Cashfree DigiLocker event envelope or payload
+	var dglEnvelope struct {
+		EventType string          `json:"event_type"`
+		Type      string          `json:"type"`
+		Data      json.RawMessage `json:"data"`
+	}
+	_ = json.Unmarshal(raw, &dglEnvelope)
+	eventType := dglEnvelope.EventType
+	if eventType == "" {
+		eventType = dglEnvelope.Type
+	}
+
+	if strings.HasPrefix(eventType, "DIGILOCKER_") {
+		var dglData struct {
+			VerificationID string `json:"verification_id"`
+			ReferenceID    any    `json:"reference_id"`
+			Status         string `json:"status"`
+			Message        string `json:"message"`
+		}
+		if len(dglEnvelope.Data) > 0 {
+			_ = json.Unmarshal(dglEnvelope.Data, &dglData)
+		}
+		if dglData.VerificationID == "" && dglData.ReferenceID == nil {
+			_ = json.Unmarshal(raw, &dglData)
+		}
+
+		refStr := ""
+		if dglData.ReferenceID != nil {
+			refStr = fmt.Sprintf("%v", dglData.ReferenceID)
+		}
+
+		v, err := svc.ProcessDigiLockerCallback(c.Request.Context(), dglData.VerificationID, refStr, eventType, dglData.Status, "system:webhook")
+		if err != nil {
+			if errors.Is(err, domain.ErrVerificationNotFound) {
+				c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "verification not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status": "received",
+			"ref_id": refStr,
+			"state":  v.Status,
+		})
+		return
+	}
+
+	// 2. Fallback to Smart OCR document verification webhook payload
 	var payload struct {
 		VerificationID string `json:"verification_id"`
 		ReferenceID    any    `json:"reference_id"`
@@ -973,12 +1092,6 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	payload.OCRData.UID = ""
 	for i := range raw {
 		raw[i] = 0
-	}
-
-	svc := h.KYCSvc
-	if svc == nil {
-		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
-		return
 	}
 
 	vendorRef := fmt.Sprintf("cf_ocr_%v", payload.ReferenceID)

@@ -69,7 +69,9 @@ type KYCRepo interface {
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
 	GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
+	GetVerificationByCFReferenceID(ctx context.Context, cfRefID string) (*domain.KYCVerification, error)
 	UpdateVendorRefIDTx(ctx context.Context, verificationID uuid.UUID, vendorRefID string) error
+	UpdateCFReferenceIDTx(ctx context.Context, verificationID uuid.UUID, cfRefID string) error
 	GetLatestVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
 	ClearDuplicateFlag(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
 
@@ -79,6 +81,7 @@ type KYCRepo interface {
 	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+	CanTenantPayWithPendingKYC(ctx context.Context, tenantID uuid.UUID) (bool, error)
 
 	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string, documentType ...string) (*domain.KYCVerification, error)
 	ApproveManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
@@ -93,13 +96,16 @@ type KYCRepo interface {
 	RecordGuardianConsentTx(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
 }
 
-// CashfreeKYCClient is the Cashfree dependency for document OCR and Aadhaar OTP.
+// CashfreeKYCClient is the Cashfree dependency for document OCR, DigiLocker, and Aadhaar OTP.
 // Implemented by *cashfree.Client via CashfreeAdapter.
 type CashfreeKYCClient interface {
 	UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*cashfree.SmartOCRResponse, error)
 	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
 	RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error)
 	VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error)
+	CreateDigiLockerURL(ctx context.Context, in cashfree.CreateDigiLockerURLInput) (*cashfree.DigiLockerSession, error)
+	GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatusResult, error)
+	GetDigiLockerAadhaar(ctx context.Context, verificationID string) (*cashfree.DigiLockerAadhaar, error)
 }
 
 // Config holds the invariant configuration for the KYC service.
@@ -998,4 +1004,204 @@ func (s *Service) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 // RecordGuardianConsent records guardian details and cryptographic audit log for a tenant.
 func (s *Service) RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error) {
 	return s.repo.RecordGuardianConsentTx(ctx, tenantID, guardianName, guardianPhone, relation, refID, actor)
+}
+
+// InitiateDigiLockerVerification begins a Cashfree Secure ID DigiLocker consent flow.
+func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID uuid.UUID, redirectURL, userFlow, actor string) (*domain.KYCVerification, string, error) {
+	if s.cashfree == nil {
+		return nil, "", errors.New("kyc service: cashfree client unconfigured")
+	}
+	consent, err := s.repo.GetActiveConsentByTenant(ctx, tenantID)
+	if err != nil || consent == nil || !consent.IsActive() {
+		return nil, "", ErrNoActiveConsent
+	}
+
+	leaseToken, acquired, err := s.acquireLease(ctx, tenantID, 30*time.Second)
+	if err != nil {
+		return nil, "", fmt.Errorf("kyc service: acquire lock: %w", err)
+	}
+	if !acquired {
+		return nil, "", domain.ErrVerificationInProgress
+	}
+	defer func() {
+		s.releaseLease(context.Background(), tenantID, leaseToken)
+	}()
+
+	vendorRefID := fmt.Sprintf("cf_dgl_%s", uuid.New().String())
+	sess, err := s.cashfree.CreateDigiLockerURL(ctx, cashfree.CreateDigiLockerURLInput{
+		VerificationID: vendorRefID,
+		RedirectURL:    redirectURL,
+		UserFlow:       userFlow,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("kyc service: create digilocker url: %w", err)
+	}
+
+	pending, err := s.repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRefID, actor)
+	if err != nil {
+		return nil, "", fmt.Errorf("kyc service: initiate digilocker verification: %w", err)
+	}
+
+	if sess.ReferenceID != "" {
+		_ = s.repo.UpdateCFReferenceIDTx(ctx, pending.ID, sess.ReferenceID)
+		pending.CFReferenceID = &sess.ReferenceID
+	}
+
+	return pending, sess.URL, nil
+}
+
+// ProcessDigiLockerCallback processes a status change delivered by webhook or polling.
+// It handles all 5 Cashfree DigiLocker event types.
+func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error) {
+	var v *domain.KYCVerification
+	var err error
+
+	verificationIDStr = strings.TrimSpace(verificationIDStr)
+	cfRefID = strings.TrimSpace(cfRefID)
+
+	if verificationIDStr != "" {
+		v, err = s.repo.GetVerificationByVendorRefID(ctx, verificationIDStr)
+	}
+	if (v == nil || err != nil) && cfRefID != "" {
+		v, err = s.repo.GetVerificationByCFReferenceID(ctx, cfRefID)
+	}
+	if err != nil || v == nil {
+		return nil, domain.ErrVerificationNotFound
+	}
+
+	// Terminal states are strictly immutable.
+	if v.Status == domain.KYCStatusVerified ||
+		v.Status == domain.KYCStatusRejected ||
+		v.Status == domain.KYCStatusRevoked ||
+		v.Status == domain.KYCStatusExpired {
+		return v, nil
+	}
+
+	// Handle link expiration / user consent failure events
+	switch eventType {
+	case domain.WebhookEventDigiLockerLinkExpired:
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	case domain.WebhookEventDigiLockerConsentDenied:
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	case domain.WebhookEventDigiLockerConsentExpired:
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_EXPIRED", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	case domain.WebhookEventDigiLockerFailure:
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "VERIFICATION_FAILURE", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	}
+
+	if status == string(cashfree.DigiLockerExpired) {
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	}
+	if status == string(cashfree.DigiLockerConsentDenied) {
+		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor)
+		return s.repo.GetVerificationByID(ctx, v.ID)
+	}
+
+	// On SUCCESS / AUTHENTICATED: retrieve document from Cashfree
+	if eventType == domain.WebhookEventDigiLockerSuccess || status == string(cashfree.DigiLockerAuthenticated) {
+		if s.cashfree == nil {
+			return nil, errors.New("kyc service: cashfree client unconfigured")
+		}
+		doc, err := s.cashfree.GetDigiLockerAadhaar(ctx, v.VendorReferenceID)
+		if err != nil {
+			if errors.Is(err, cashfree.ErrDigiLockerPending) {
+				return v, nil
+			}
+			return nil, fmt.Errorf("kyc service: get digilocker aadhaar: %w", err)
+		}
+
+		if doc.Status == cashfree.DigiLockerAadhaarNotLinked {
+			_ = s.repo.FailVerificationTx(ctx, v.ID, "AADHAAR_NOT_LINKED", actor)
+			return s.repo.GetVerificationByID(ctx, v.ID)
+		}
+
+		tenantName, _ := s.repo.GetTenantName(ctx, v.TenantID)
+		nameMismatch := !domain.IsNameMatch(tenantName, doc.Name)
+
+		canonicalDOB, isDedupable, _ := domain.NormalizeDOB(doc.DOB)
+		var majorityDate *time.Time
+		if isDedupable {
+			majorityDate, _ = domain.MajorityDateFromDOB(canonicalDOB)
+		}
+		normName := domain.NormalizeName(doc.Name)
+		identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, normName, canonicalDOB, doc.Gender, doc.MaskedUID)
+
+		// STRICT NAME-MISMATCH INVARIANT:
+		// If name does NOT match, do NOT auto-verify. Route to pending_manual_review!
+		if nameMismatch {
+			ocrJSON, _ := json.Marshal(map[string]any{
+				"document_type": "aadhaar",
+				"source":        "digilocker",
+				"name":          doc.Name,
+				"dob":           doc.DOB,
+				"gender":        doc.Gender,
+				"masked_uid":    doc.MaskedUID,
+				"name_mismatch": true,
+			})
+			return s.repo.SubmitManualReviewTx(ctx, v.ID, doc.MaskedUID, identityHash, string(ocrJSON), "", doc.PhotoBytes, "image/jpeg", actor, "aadhaar")
+		}
+
+		now := time.Now().UTC()
+		var expiresAt time.Time
+		if s.cfg.VerificationValidityDays > 0 {
+			expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
+		}
+		return s.repo.CompleteVerificationTx(ctx,
+			v.ID, doc.MaskedUID, identityHash, isDedupable,
+			s.cfg.HashKeyVersion, nil, false, doc.PhotoBytes,
+			now, expiresAt, majorityDate, actor,
+		)
+	}
+
+	return v, nil
+}
+
+// PollDigiLockerStatus checks the live status of an in-flight DigiLocker session.
+func (s *Service) PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	v, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil || v == nil {
+		return nil, domain.ErrVerificationNotFound
+	}
+	if v.Status != domain.KYCStatusPending || v.Method != domain.KYCMethodDigiLocker {
+		return v, nil
+	}
+	if s.cashfree == nil {
+		return v, nil
+	}
+	res, err := s.cashfree.GetDigiLockerStatus(ctx, v.VendorReferenceID)
+	if err != nil {
+		return nil, fmt.Errorf("kyc service: poll digilocker status: %w", err)
+	}
+	if res.ReferenceID != "" && (v.CFReferenceID == nil || *v.CFReferenceID != res.ReferenceID) {
+		_ = s.repo.UpdateCFReferenceIDTx(ctx, v.ID, res.ReferenceID)
+	}
+	if res.Status.IsTerminal() {
+		return s.ProcessDigiLockerCallback(ctx, v.VendorReferenceID, res.ReferenceID, "", string(res.Status), actor)
+	}
+	return v, nil
+}
+
+// CanTenantPay determines if the tenant can make rent payments under the current KYC state and property policy.
+func (s *Service) CanTenantPay(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	v, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil || v == nil {
+		return false, nil
+	}
+	if v.Status == domain.KYCStatusVerified {
+		return true, nil
+	}
+	if v.Status == domain.KYCStatusPendingManualReview {
+		return s.repo.CanTenantPayWithPendingKYC(ctx, tenantID)
+	}
+	return false, nil
+}
+
+// GetVerificationByCFReferenceID retrieves a verification record by Cashfree's gateway reference ID.
+func (s *Service) GetVerificationByCFReferenceID(ctx context.Context, cfRefID string) (*domain.KYCVerification, error) {
+	return s.repo.GetVerificationByCFReferenceID(ctx, cfRefID)
 }

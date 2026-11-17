@@ -21,6 +21,15 @@ func (h *Handlers) IsKYCVerified(ctx context.Context, tenantID uuid.UUID) bool {
 	return err == nil && ver != nil && ver.Status == domain.KYCStatusVerified
 }
 
+// CanTenantPay checks if a tenant is allowed to pay rent based on verified KYC or owner manual review override.
+func (h *Handlers) CanTenantPay(ctx context.Context, tenantID uuid.UUID) bool {
+	if h.KYCSvc == nil {
+		return false
+	}
+	canPay, err := h.KYCSvc.CanTenantPay(ctx, tenantID)
+	return err == nil && canPay
+}
+
 // KYCOnboardingGatePassed reports whether the tenant has done their part of identity
 // verification well enough to proceed past onboarding into the dashboard.
 //
@@ -42,7 +51,7 @@ func (h *Handlers) KYCOnboardingGatePassed(ctx context.Context, tenantID uuid.UU
 }
 
 // RequireKYCVerified returns a middleware that requires the authenticated tenant
-// to have completed KYC verification (status == domain.KYCStatusVerified).
+// to have completed KYC verification (or have owner override enabled during manual review).
 func (h *Handlers) RequireKYCVerified() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		t := tenantFromContext(c)
@@ -53,7 +62,7 @@ func (h *Handlers) RequireKYCVerified() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{Error: "kyc service not configured"})
 			return
 		}
-		if !h.IsKYCVerified(c.Request.Context(), t.ID) {
+		if !h.CanTenantPay(c.Request.Context(), t.ID) {
 			apierr.Abort(c, http.StatusForbidden, "kyc verification required", apierr.CodeAuthForbidden)
 			return
 		}

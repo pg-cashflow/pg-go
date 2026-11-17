@@ -298,6 +298,21 @@ func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID
 		GuardianConsentVerifiedAt: &now,
 	}, nil
 }
+func (f *fakeRepo) GetVerificationByCFReferenceID(_ context.Context, cfRefID string) (*domain.KYCVerification, error) {
+	if f.verification != nil && f.verification.CFReferenceID != nil && *f.verification.CFReferenceID == cfRefID {
+		return f.verification, nil
+	}
+	return nil, domain.ErrVerificationNotFound
+}
+func (f *fakeRepo) UpdateCFReferenceIDTx(_ context.Context, _ uuid.UUID, cfRefID string) error {
+	if f.verification != nil {
+		f.verification.CFReferenceID = &cfRefID
+	}
+	return nil
+}
+func (f *fakeRepo) CanTenantPayWithPendingKYC(_ context.Context, _ uuid.UUID) (bool, error) {
+	return false, nil
+}
 
 type fakeCashfree struct {
 	ocrResp          *cashfree.SmartOCRResponse
@@ -308,6 +323,55 @@ type fakeCashfree struct {
 	requestOTPCalled bool
 	verifyOTPErr     error
 	verifyOTPResp    *cashfree.AadhaarOTPVerifyResult
+	digiLockerSession *cashfree.DigiLockerSession
+	digiLockerErr     error
+	digiLockerStatus  *cashfree.DigiLockerStatusResult
+	digiLockerDoc     *cashfree.DigiLockerAadhaar
+}
+
+func (f *fakeCashfree) CreateDigiLockerURL(_ context.Context, in cashfree.CreateDigiLockerURLInput) (*cashfree.DigiLockerSession, error) {
+	if f.digiLockerErr != nil {
+		return nil, f.digiLockerErr
+	}
+	if f.digiLockerSession != nil {
+		return f.digiLockerSession, nil
+	}
+	return &cashfree.DigiLockerSession{
+		VerificationID: in.VerificationID,
+		ReferenceID:    "12345",
+		URL:            "https://verification.cashfree.com/dgl/mock123",
+		Status:         cashfree.DigiLockerPending,
+	}, nil
+}
+func (f *fakeCashfree) GetDigiLockerStatus(_ context.Context, verificationID string) (*cashfree.DigiLockerStatusResult, error) {
+	if f.digiLockerErr != nil {
+		return nil, f.digiLockerErr
+	}
+	if f.digiLockerStatus != nil {
+		return f.digiLockerStatus, nil
+	}
+	return &cashfree.DigiLockerStatusResult{
+		VerificationID: verificationID,
+		ReferenceID:    "12345",
+		Status:         cashfree.DigiLockerAuthenticated,
+	}, nil
+}
+func (f *fakeCashfree) GetDigiLockerAadhaar(_ context.Context, verificationID string) (*cashfree.DigiLockerAadhaar, error) {
+	if f.digiLockerErr != nil {
+		return nil, f.digiLockerErr
+	}
+	if f.digiLockerDoc != nil {
+		return f.digiLockerDoc, nil
+	}
+	return &cashfree.DigiLockerAadhaar{
+		VerificationID: verificationID,
+		ReferenceID:    "12345",
+		Status:         cashfree.DigiLockerDocSuccess,
+		MaskedUID:      "xxxxxxxx1234",
+		Name:           "Ravi Kumar",
+		DOB:            "15-06-1995",
+		Gender:         "M",
+	}, nil
 }
 
 func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ string) (*cashfree.SmartOCRResponse, error) {
@@ -1266,4 +1330,289 @@ func TestCompleteAadhaarOTP_InFlightLockContention(t *testing.T) {
 	if !errors.Is(err, domain.ErrVerificationInProgress) {
 		t.Fatalf("expected ErrVerificationInProgress, got %v", err)
 	}
+}
+
+// ---- DigiLocker Tests (ASD-STE100 & Lauren Tan Trust Pyramid) ----------------
+
+func TestInitiateDigiLockerVerification_Success(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerSession: &cashfree.DigiLockerSession{
+			VerificationID: "cf_dgl_test",
+			ReferenceID:    "cf_ref_999",
+			URL:            "https://verification.cashfree.com/dgl/session123",
+			Status:         cashfree.DigiLockerPending,
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.test/kyc/return", "signup", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error initiating digilocker: %v", err)
+	}
+	if url != "https://verification.cashfree.com/dgl/session123" {
+		t.Errorf("unexpected redirect url: %s", url)
+	}
+	if v == nil || v.Status != domain.KYCStatusPending {
+		t.Fatalf("expected pending verification record, got %+v", v)
+	}
+	if v.Method != domain.KYCMethodDigiLocker {
+		t.Errorf("expected method digilocker, got %s", v.Method)
+	}
+	if v.CFReferenceID == nil || *v.CFReferenceID != "cf_ref_999" {
+		t.Errorf("expected cf_reference_id cf_ref_999, got %v", v.CFReferenceID)
+	}
+}
+
+func TestInitiateDigiLockerVerification_MissingConsent_FailsClosed(t *testing.T) {
+	tenantID := uuid.New()
+	repo := &fakeRepo{
+		consent: nil, // no active consent
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	_, _, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.test/kyc/return", "", "tenant:"+tenantID.String())
+	if !errors.Is(err, kycsvc.ErrNoActiveConsent) {
+		t.Fatalf("expected ErrNoActiveConsent, got %v", err)
+	}
+}
+
+func TestProcessDigiLockerCallback_All5Events(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	vendorRef := "cf_dgl_abc"
+	cfRef := "cf_ref_777"
+
+	tests := []struct {
+		name       string
+		event      string
+		status     string
+		wantStatus domain.KYCStatus
+		wantReason string
+	}{
+		{
+			name:       "link expired webhook",
+			event:      domain.WebhookEventDigiLockerLinkExpired,
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "LINK_EXPIRED",
+		},
+		{
+			name:       "consent denied webhook",
+			event:      domain.WebhookEventDigiLockerConsentDenied,
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "CONSENT_DENIED",
+		},
+		{
+			name:       "consent expired webhook",
+			event:      domain.WebhookEventDigiLockerConsentExpired,
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "CONSENT_EXPIRED",
+		},
+		{
+			name:       "general failure webhook",
+			event:      domain.WebhookEventDigiLockerFailure,
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "VERIFICATION_FAILURE",
+		},
+		{
+			name:       "polling expired status",
+			status:     string(cashfree.DigiLockerExpired),
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "LINK_EXPIRED",
+		},
+		{
+			name:       "polling consent denied status",
+			status:     string(cashfree.DigiLockerConsentDenied),
+			wantStatus: domain.KYCStatusFailed,
+			wantReason: "CONSENT_DENIED",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{
+				verification: &domain.KYCVerification{
+					ID:                verifID,
+					TenantID:          tenantID,
+					VendorReferenceID: vendorRef,
+					CFReferenceID:     &cfRef,
+					Status:            domain.KYCStatusPending,
+					Method:            domain.KYCMethodDigiLocker,
+				},
+			}
+			svc := newTestService(repo, &fakeCashfree{})
+
+			v, err := svc.ProcessDigiLockerCallback(context.Background(), vendorRef, cfRef, tt.event, tt.status, "system:webhook")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if v.Status != tt.wantStatus {
+				t.Errorf("expected status %s, got %s", tt.wantStatus, v.Status)
+			}
+			if v.FailureReason == nil || *v.FailureReason != tt.wantReason {
+				t.Errorf("expected failure reason %s, got %v", tt.wantReason, v.FailureReason)
+			}
+		})
+	}
+}
+
+func TestProcessDigiLockerCallback_SuccessWithMatchingName_AutoVerifies(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	vendorRef := "cf_dgl_success_1"
+	cfRef := "cf_ref_1001"
+
+	repo := &fakeRepo{
+		tenantName: "Ravi Kumar",
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			VendorReferenceID: vendorRef,
+			CFReferenceID:     &cfRef,
+			Status:            domain.KYCStatusPending,
+			Method:            domain.KYCMethodDigiLocker,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerDoc: &cashfree.DigiLockerAadhaar{
+			VerificationID: vendorRef,
+			ReferenceID:    cfRef,
+			Status:         cashfree.DigiLockerDocSuccess,
+			Name:           "Ravi Kumar",
+			DOB:            "12-05-1996",
+			Gender:         "M",
+			MaskedUID:      "xxxxxxxx8888",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.ProcessDigiLockerCallback(context.Background(), vendorRef, cfRef, domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+	if err != nil {
+		t.Fatalf("unexpected callback error: %v", err)
+	}
+	if v.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified on matching name, got %s", v.Status)
+	}
+	if v.MaskedUID == nil || *v.MaskedUID != "xxxxxxxx8888" {
+		t.Errorf("expected masked uid xxxxxxxx8888, got %v", v.MaskedUID)
+	}
+}
+
+func TestProcessDigiLockerCallback_NameMismatch_EscalatesToManualReview(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	vendorRef := "cf_dgl_mismatch_1"
+	cfRef := "cf_ref_1002"
+
+	repo := &fakeRepo{
+		tenantName: "Ravi Kumar",
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			VendorReferenceID: vendorRef,
+			CFReferenceID:     &cfRef,
+			Status:            domain.KYCStatusPending,
+			Method:            domain.KYCMethodDigiLocker,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerDoc: &cashfree.DigiLockerAadhaar{
+			VerificationID: vendorRef,
+			ReferenceID:    cfRef,
+			Status:         cashfree.DigiLockerDocSuccess,
+			Name:           "Suresh Raina", // Name completely different from tenant profile
+			DOB:            "12-05-1996",
+			Gender:         "M",
+			MaskedUID:      "xxxxxxxx9999",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	// STRICT INVARIANT: Name mismatch must route to pending_manual_review, NOT auto-verify!
+	v, err := svc.ProcessDigiLockerCallback(context.Background(), vendorRef, cfRef, domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+	if err != nil {
+		t.Fatalf("unexpected callback error: %v", err)
+	}
+	if v.Status != domain.KYCStatusPendingManualReview {
+		t.Fatalf("CRITICAL SECURITY INVARIANT VIOLATED: name mismatch auto-verified! Expected pending_manual_review, got %s", v.Status)
+	}
+	if !v.NameMismatch {
+		t.Error("expected NameMismatch flag set to true")
+	}
+}
+
+func TestProcessDigiLockerCallback_AadhaarNotLinked_FailsClosed(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	vendorRef := "cf_dgl_not_linked"
+	cfRef := "cf_ref_1003"
+
+	repo := &fakeRepo{
+		verification: &domain.KYCVerification{
+			ID:                verifID,
+			TenantID:          tenantID,
+			VendorReferenceID: vendorRef,
+			CFReferenceID:     &cfRef,
+			Status:            domain.KYCStatusPending,
+			Method:            domain.KYCMethodDigiLocker,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerDoc: &cashfree.DigiLockerAadhaar{
+			VerificationID: vendorRef,
+			ReferenceID:    cfRef,
+			Status:         cashfree.DigiLockerAadhaarNotLinked,
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	v, err := svc.ProcessDigiLockerCallback(context.Background(), vendorRef, cfRef, domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+	if err != nil {
+		t.Fatalf("unexpected callback error: %v", err)
+	}
+	if v.Status != domain.KYCStatusFailed {
+		t.Fatalf("expected status failed when aadhaar not linked, got %s", v.Status)
+	}
+	if v.FailureReason == nil || *v.FailureReason != "AADHAAR_NOT_LINKED" {
+		t.Errorf("expected failure reason AADHAAR_NOT_LINKED, got %v", v.FailureReason)
+	}
+}
+
+func TestCanTenantPay_GatingMatrix(t *testing.T) {
+	tenantID := uuid.New()
+
+	t.Run("verified tenant can always pay", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				TenantID: tenantID,
+				Status:   domain.KYCStatusVerified,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || !canPay {
+			t.Fatalf("expected verified tenant to be allowed to pay, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+
+	t.Run("pending tenant cannot pay", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				TenantID: tenantID,
+				Status:   domain.KYCStatusPending,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || canPay {
+			t.Fatalf("expected pending tenant blocked from paying, got canPay=%v, err=%v", canPay, err)
+		}
+	})
 }

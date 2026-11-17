@@ -1054,13 +1054,22 @@ async function showTenant(err) {
         <p style="margin:0.2rem 0;">Your <strong>${esc((kyc.verification.document_type || "document").toUpperCase())}</strong> has been submitted. Our property reviewer is validating the identity details.</p>
         <small class="badge warn">Pending Manual Review</small>
       </div>
+    ` : kyc.verification && kyc.verification.status === "pending" && kyc.verification.method === "digilocker" ? `
+      <div class="card" style="border-left: 4px solid #3b82f6;">
+        <h2>DigiLocker Verification in Progress ⏳</h2>
+        <p style="margin:0.2rem 0;">Awaiting confirmation from the DigiLocker portal.</p>
+        <div class="row" style="margin-top:0.75rem;">
+          <button id="kyc_refresh_status_btn">Check Verification Status</button>
+        </div>
+        <div id="kyc_status_msg" style="margin-top:0.5rem;"></div>
+      </div>
     ` : `
-      <details class="card" ${!kyc.has_verification || (kyc.verification && kyc.verification.status === "rejected") ? "open" : ""}>
+      <details class="card" ${!kyc.has_verification || (kyc.verification && (kyc.verification.status === "rejected" || kyc.verification.status === "failed")) ? "open" : ""}>
         <summary><strong>Identity Verification (KYC)</strong> ${!kyc.has_verification ? `<span class="badge warn">Required</span>` : ""}</summary>
-        ${kyc.verification && kyc.verification.status === "rejected" ? `
+        ${kyc.verification && (kyc.verification.status === "rejected" || kyc.verification.status === "failed") ? `
           <div style="background:#fef2f2;border:1px solid #ef4444;border-radius:6px;padding:0.75rem;margin:0.5rem 0;">
-            <p style="color:#b91c1c;margin:0;font-weight:600;">Verification Rejected</p>
-            <p style="color:#7f1d1d;margin:0.2rem 0 0;font-size:0.85rem;">Reason: ${esc(kyc.verification.rejection_reason || "Document illegible or details mismatched")}. Please re-upload a clear document.</p>
+            <p style="color:#b91c1c;margin:0;font-weight:600;">Verification ${kyc.verification.status === "rejected" ? "Rejected" : "Failed"}</p>
+            <p style="color:#7f1d1d;margin:0.2rem 0 0;font-size:0.85rem;">Reason: ${esc(kyc.verification.failure_reason || kyc.verification.rejection_reason || "Verification could not be completed")}. Please try again.</p>
           </div>
         ` : ""}
         <p class="muted" style="margin:0.5rem 0 0.8rem;">In compliance with India's DPDP Act, your identity is verified voluntarily solely for PG occupancy. Full numbers are never stored in plain text.</p>
@@ -1069,36 +1078,45 @@ async function showTenant(err) {
           <p style="margin:0;"><strong>DPDP Notice:</strong> Identity document is collected voluntarily for tenant record keeping. Aadhaar is voluntary per the Aadhaar Act; PAN, Passport, Voter ID, and Driving Licence are also accepted.</p>
         </div>
 
-        <label>Select Identity Document Type</label>
-        <select id="kyc_doc_type">
-          <option value="aadhaar">Aadhaar (Voluntary)</option>
-          <option value="pan">PAN Card</option>
-          <option value="passport">Passport</option>
-          <option value="voter_id">Voter ID</option>
-          <option value="driving_licence">Driving Licence</option>
-        </select>
-
-        <label>Upload Document (Photo or PDF, max 5MB)</label>
-        <input type="file" id="kyc_file" accept="image/jpeg,image/png,application/pdf" capture="environment">
-
-        <label class="muted" style="display:flex;align-items:flex-start;gap:8px;margin-top:0.75rem;">
-          <input type="checkbox" id="kyc_consent" style="margin-top:3px;">
-          <span>I consent to identity verification and secure encrypted processing per DPDP Act notice v1.</span>
+        <label class="muted" style="display:flex;align-items:flex-start;gap:8px;margin-bottom:0.75rem;">
+          <input type="checkbox" id="kyc_consent" style="margin-top:3px;" checked>
+          <span>I consent to voluntary identity verification and secure encrypted processing per DPDP Act notice v1.</span>
         </label>
 
-        <div class="row" style="margin-top:0.75rem;">
-          <button id="kyc_upload_btn">Upload & Verify</button>
+        <!-- Primary Option: DigiLocker Instant Verification -->
+        <div style="background:#1e293b;border:1px solid #3b82f6;border-radius:8px;padding:1rem;margin-bottom:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
+            <strong style="color:#60a5fa;font-size:1.05rem;">Fastest: Verify with DigiLocker</strong>
+            <span class="badge ok">Instant</span>
+          </div>
+          <p class="muted" style="margin:0 0 0.75rem;font-size:0.85rem;">Authenticate securely via the government DigiLocker portal. No physical document copy needed.</p>
+          <div class="row">
+            <button id="kyc_digilocker_btn" style="background:#2563eb;color:#fff;border:none;font-weight:600;padding:0.6rem 1.2rem;">Verify with DigiLocker ➔</button>
+          </div>
         </div>
-        <div id="kyc_status_msg" style="margin-top:0.5rem;"></div>
 
-        <details style="margin-top:1rem;border-top:1px solid #333;padding-top:0.5rem;">
-          <summary class="muted">Or scan / paste Secure QR</summary>
-          <label>Secure QR payload</label>
-          <textarea id="kyc_qr" rows="2" placeholder="Paste scanned QR text"></textarea>
-          <div class="row" style="margin-top:0.5rem;">
-            <button class="secondary" id="kyc_qr_btn">Verify QR</button>
+        <!-- Fallback Option: Document Upload with Manual Review -->
+        <details style="border-top:1px solid var(--line);padding-top:0.75rem;">
+          <summary class="muted">Alternative: Upload Document for Manual Review</summary>
+          <p class="muted" style="font-size:0.85rem;margin:0.5rem 0;">Uploaded documents require manual review by property management before rent payment.</p>
+          <label>Select Identity Document Type</label>
+          <select id="kyc_doc_type">
+            <option value="pan">PAN Card</option>
+            <option value="passport">Passport</option>
+            <option value="voter_id">Voter ID</option>
+            <option value="driving_licence">Driving Licence</option>
+            <option value="aadhaar">Aadhaar (Voluntary)</option>
+          </select>
+
+          <label>Upload Document (Photo or PDF, max 5MB)</label>
+          <input type="file" id="kyc_file" accept="image/jpeg,image/png,application/pdf" capture="environment">
+
+          <div class="row" style="margin-top:0.75rem;">
+            <button class="secondary" id="kyc_upload_btn">Upload & Submit for Review</button>
           </div>
         </details>
+
+        <div id="kyc_status_msg" style="margin-top:0.75rem;"></div>
       </details>
     `}
     <button class="ghost" id="out">Sign out</button>
@@ -1240,6 +1258,78 @@ async function showTenant(err) {
     };
   }
 
+  const pollDigiLocker = async () => {
+    const statusMsg = n.querySelector("#kyc_status_msg");
+    if (statusMsg) statusMsg.innerHTML = `<p class="muted">Checking verification status...</p>`;
+    try {
+      const res = await api("/tenant/kyc/digilocker/status");
+      if (res && res.status === "verified") {
+        if (statusMsg) statusMsg.innerHTML = `<p class="ok">Identity verified successfully!</p>`;
+        setTimeout(() => showTenant(), 800);
+      } else if (res && (res.status === "failed" || res.status === "rejected")) {
+        if (statusMsg) statusMsg.innerHTML = `<p class="err">Verification ${res.status}: ${esc(res.failure_reason || "Please try again")}</p>`;
+        setTimeout(() => showTenant(), 1500);
+      } else {
+        if (statusMsg) statusMsg.innerHTML = `<p class="muted">Status: ${esc(res.status || "pending")}. Awaiting portal confirmation.</p>`;
+      }
+    } catch (e) {
+      if (statusMsg) statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+    }
+  };
+
+  const refreshStatusBtn = n.querySelector("#kyc_refresh_status_btn");
+  if (refreshStatusBtn) {
+    refreshStatusBtn.onclick = pollDigiLocker;
+  }
+  if (kyc.verification && kyc.verification.status === "pending" && kyc.verification.method === "digilocker") {
+    setTimeout(pollDigiLocker, 1200);
+  }
+
+  const digiLockerBtn = n.querySelector("#kyc_digilocker_btn");
+  if (digiLockerBtn) {
+    digiLockerBtn.onclick = async () => {
+      const statusMsg = n.querySelector("#kyc_status_msg");
+      const consentCb = n.querySelector("#kyc_consent");
+
+      if (consentCb && !consentCb.checked) {
+        statusMsg.innerHTML = `<p class="err">You must agree to the DPDP consent notice before continuing.</p>`;
+        return;
+      }
+
+      digiLockerBtn.disabled = true;
+      digiLockerBtn.textContent = "Connecting to DigiLocker...";
+      statusMsg.innerHTML = `<p class="muted">Initializing DigiLocker session...</p>`;
+
+      try {
+        await api("/tenant/kyc/consent", {
+          method: "POST",
+          body: JSON.stringify({
+            purpose: "tenant_verification",
+            consent_version: "v1",
+            consent_text: "I hereby give consent to verify my identity via DigiLocker for rental onboarding."
+          })
+        });
+
+        const res = await api("/tenant/kyc/digilocker/init", {
+          method: "POST",
+          body: JSON.stringify({
+            redirect_url: window.location.origin + window.location.pathname,
+            user_flow: "signin"
+          })
+        });
+
+        if (!res.redirect_url) {
+          throw new Error("Did not receive a valid redirect URL from verification gateway");
+        }
+        window.location.href = res.redirect_url;
+      } catch (e) {
+        statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+        digiLockerBtn.disabled = false;
+        digiLockerBtn.textContent = "Verify with DigiLocker ➔";
+      }
+    };
+  }
+
   const uploadBtn = n.querySelector("#kyc_upload_btn");
   if (uploadBtn) {
     uploadBtn.onclick = async () => {
@@ -1263,7 +1353,7 @@ async function showTenant(err) {
       }
 
       uploadBtn.disabled = true;
-      uploadBtn.textContent = "Uploading & Analyzing...";
+      uploadBtn.textContent = "Uploading & Submitting...";
       statusMsg.innerHTML = `<p class="muted">Recording consent and processing document...</p>`;
 
       try {
@@ -1271,7 +1361,8 @@ async function showTenant(err) {
           method: "POST",
           body: JSON.stringify({
             purpose: "tenant_verification",
-            consent_version: "v1"
+            consent_version: "v1",
+            consent_text: "I hereby give consent to verify my identity via document upload for rental onboarding."
           })
         });
 
@@ -1292,43 +1383,12 @@ async function showTenant(err) {
           throw new Error(errData.error || ("Upload failed (status " + res.status + ")"));
         }
 
-        statusMsg.innerHTML = `<p class="ok">Document uploaded successfully! Under review.</p>`;
+        statusMsg.innerHTML = `<p class="ok">Document uploaded successfully! Under review by property owner.</p>`;
         setTimeout(() => showTenant(), 1000);
       } catch (e) {
         statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
         uploadBtn.disabled = false;
-        uploadBtn.textContent = "Upload & Verify";
-      }
-    };
-  }
-
-  const qrBtn = n.querySelector("#kyc_qr_btn");
-  if (qrBtn) {
-    qrBtn.onclick = async () => {
-      const qrText = n.querySelector("#kyc_qr").value.trim();
-      const consentCb = n.querySelector("#kyc_consent");
-      const statusMsg = n.querySelector("#kyc_status_msg");
-
-      if (!consentCb || !consentCb.checked) {
-        statusMsg.innerHTML = `<p class="err">Please check the consent box before verifying.</p>`;
-        return;
-      }
-      if (!qrText) {
-        statusMsg.innerHTML = `<p class="err">Please paste the scanned QR payload.</p>`;
-        return;
-      }
-      try {
-        await api("/tenant/kyc/consent", {
-          method: "POST",
-          body: JSON.stringify({ purpose: "tenant_verification", consent_version: "v1" })
-        });
-        await api("/tenant/kyc/qr/verify", {
-          method: "POST",
-          body: JSON.stringify({ qr_payload: qrText })
-        });
-        showTenant();
-      } catch (e) {
-        statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+        uploadBtn.textContent = "Upload & Submit for Review";
       }
     };
   }

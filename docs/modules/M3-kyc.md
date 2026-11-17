@@ -4,5 +4,5 @@
 
 ## Gate 8
 
-- [x] Tenant KYC routes and jobs (`kyc-expiry`; `digilocker-reconcile` retired in favor of Offline Aadhaar OTP and Secure QR)
+- [x] Tenant KYC routes and jobs (`kyc-expiry`; DigiLocker primary automated path, Smart OCR document upload with manual review fallback; Offline Aadhaar OTP discontinued)
 - [ ] R9-F7 identity projection audit

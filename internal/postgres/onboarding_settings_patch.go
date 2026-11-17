@@ -19,8 +19,9 @@ type OnboardingSettingsPatch struct {
 	SlotInviteDefaultTTLDays  *int
 	WaitlistEnabled           *bool
 	WaitlistOfferTTLHours     *int
-	RequireKYCBeforePay       *bool
-	JoinPendingTTLDays        *int
+	RequireKYCBeforePay        *bool
+	AllowPayDuringManualReview *bool
+	JoinPendingTTLDays         *int
 	ReferralEnabled           *bool
 	JoinerDiscountBps         *int
 	ReferrerRewardBps         *int

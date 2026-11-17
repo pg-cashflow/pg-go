@@ -25,7 +25,8 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 			slot_invite_default_ttl_days, waitlist_enabled, waitlist_offer_ttl_hours, profile_schema_version,
 			require_kyc_before_pay, join_pending_ttl_days,
 			referral_enabled, joiner_discount_bps, referrer_reward_bps,
-			COALESCE(allow_manager_refunds, false), manager_refund_limit_paise
+			COALESCE(allow_manager_refunds, false), manager_refund_limit_paise,
+			COALESCE(allow_pay_during_manual_review, false)
 		FROM property_onboarding_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.DefaultRentPaise, &s.DefaultDepositPaise, &s.DefaultDueDay,
@@ -34,6 +35,7 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 		&s.RequireKYCBeforePay, &s.JoinPendingTTLDays,
 		&s.ReferralEnabled, &s.JoinerDiscountBps, &s.ReferrerRewardBps,
 		&s.AllowManagerRefunds, &s.ManagerRefundLimitPaise,
+		&s.AllowPayDuringManualReview,
 	)
 	if err != nil {
 		return nil, err
@@ -102,6 +104,9 @@ func (r *OnboardingSettingsRepo) Update(ctx context.Context, propertyID uuid.UUI
 	}
 	if patch.RequireKYCBeforePay != nil {
 		add("require_kyc_before_pay", *patch.RequireKYCBeforePay)
+	}
+	if patch.AllowPayDuringManualReview != nil {
+		add("allow_pay_during_manual_review", *patch.AllowPayDuringManualReview)
 	}
 	if patch.JoinPendingTTLDays != nil {
 		add("join_pending_ttl_days", *patch.JoinPendingTTLDays)

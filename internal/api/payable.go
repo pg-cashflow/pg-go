@@ -30,6 +30,6 @@ func (h *Handlers) tenantPayable(ctx context.Context, t *domain.Tenant) bool {
 	if h.KYCSvc == nil {
 		return false
 	}
-	kycVerified := h.IsKYCVerified(ctx, t.ID)
+	kycVerified := h.CanTenantPay(ctx, t.ID)
 	return t.Payable(true, kycVerified)
 }

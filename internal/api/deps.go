@@ -35,6 +35,10 @@ type KYCService interface {
 	GetOwnerView(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
 	GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
 	ClearDuplicateFlag(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
+	InitiateDigiLockerVerification(ctx context.Context, tenantID uuid.UUID, redirectURL, userFlow, actor string) (*domain.KYCVerification, string, error)
+	ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
+	PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	CanTenantPay(ctx context.Context, tenantID uuid.UUID) (bool, error)
 	InitiateAadhaarOTP(ctx context.Context, tenantID uuid.UUID, aadhaarNumber, actor string) (refID string, err error)
 	CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)

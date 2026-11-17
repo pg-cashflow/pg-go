@@ -1,14 +1,15 @@
-# ADR 004: Tenant Identity Onboarding via Cashfree Secure ID (DigiLocker Direct API) & Secure QR Fallback
+# ADR 004: Tenant Identity Onboarding via Cashfree Secure ID (DigiLocker Direct API) & Smart OCR Manual Review Fallback
 
 ## Status
-Superseded in part by Migration 077 (Aadhaar OTP + Smart OCR Manual Review + UIDAI Secure QR)
-*Note: DigiLocker direct redirection has been retired in favor of Cashfree Offline Aadhaar OTP, UIDAI Secure QR offline parsing, and single-document Smart OCR with manual review queue (Migration 077).*
+Accepted & Active (Reactivated, Hardened, and Upgraded via Migration 114)
+*Note: Direct Offline Aadhaar OTP has been discontinued upstream by Cashfree and UIDAI. DigiLocker is restored and active as the primary automated verification mechanism. Smart OCR document upload with property-owner manual review serves as the fallback mechanism (Migration 114).*
 
 ## Context
-Tenants must verify identity (Aadhaar) during onboarding before room allocation. Calling UIDAI directly as an AUA/KUA is legally closed to a startup.
-- Raw Offline Aadhaar OTP to UIDAI is discontinued for non-regulated entities.
+Tenants must verify identity (Aadhaar or alternate ID) during onboarding before room allocation. Calling UIDAI directly as an AUA/KUA is legally closed to a startup.
+- Upstream Offline Aadhaar OTP verification via Cashfree is discontinued.
 - DigiLocker provides a UIDAI-backed, government-hosted authentication interface where tenants log in and consent directly.
-- For tenants with no linked mobile number or where DigiLocker is unavailable, an offline fallback is required.
+- For tenants where DigiLocker is unavailable or who choose non-Aadhaar IDs (PAN, Passport, Voter ID, Driving Licence), Smart OCR document upload with manual property-owner review is the fallback path.
+- Migration 114 adds `cf_reference_id` for Cashfree callback correlation and property-level `allow_pay_during_manual_review` payment gating.
 
 ## Decisions
 
@@ -34,9 +35,9 @@ Tenants must verify identity (Aadhaar) during onboarding before room allocation.
    - **Network-Before-Transaction Invariant & Accepted Trade-off**: The Cashfree API call (`CreateDigiLockerLink`) occurs *before* opening the DB transaction so no locks are held across network I/O.
      - **Accepted Trade-off (Orphaned Vendor Session)**: If the Cashfree call succeeds but the subsequent DB transaction aborts (e.g. lock timeout, database partition, commit error), an orphaned session exists on Cashfree's servers with no corresponding database record. This is explicitly accepted because: (1) Cashfree links auto-expire after their short TTL (~10 min), (2) the tenant's retry generates a brand-new `vendor_reference_id` and fresh link, and (3) holding row locks across external HTTP requests poses a severe connection-pool exhaustion and deadlock risk that far outweighs an orphaned vendor session.
 
-4. **Webhook & Callback Idempotency & Retirement Stub**:
+4. **Webhook & Callback Idempotency & Live Processing**:
    - Cashfree webhook deliveries can be duplicated.
-   - **Retirement Stub**: DigiLocker direct redirection is retired. The endpoint `/webhooks/cashfree/kyc` validates HMAC and timestamp headers, then returns `200 OK` without database state mutation. This prevents upstream vendor delivery retries. Real-time verification flows use synchronous Aadhaar OTP and offline Secure QR.
+   - **Active Webhook**: The endpoint `/webhooks/cashfree/kyc` validates HMAC-SHA256 (`x-webhook-signature`) and replay-tolerated timestamp (`x-webhook-timestamp`), then processes DigiLocker lifecycle events (`DIGILOCKER_VERIFICATION_SUCCESS`, `LINK_EXPIRED`, `CONSENT_DENIED`, `CONSENT_EXPIRED`, `FAILURE`) or OCR document events. Terminal records (`verified`, `rejected`, `revoked`, `expired`) are immutable and return `already_processed`.
 
 5. **`KYC_HMAC_SECRET` Rotation Runbook & Known Limitation**:
    - Each verification records `hash_key_version SMALLINT NOT NULL DEFAULT 1`.

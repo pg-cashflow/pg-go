@@ -139,7 +139,8 @@ const (
 		masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, method,
 		status, failure_reason, qr_status, name_mismatch, attested_photo_bytes, photo_stored,
 		reviewed_by, reviewed_at, rejection_reason, ocr_data::text, document_url,
-		verified_at, expires_at, created_at, updated_at, COALESCE(document_type, 'aadhaar')`
+		verified_at, expires_at, created_at, updated_at, COALESCE(document_type, 'aadhaar'),
+		cf_reference_id`
 
 	kycConsentCols = `id, tenant_id, purpose, consent_version, consent_text,
 		consent_text_hash, consent_given_at, ip_address::text, user_agent, revoked_at`
@@ -156,6 +157,7 @@ func (r *KYCRepo) scanKYCVerification(row pgx.Row) (*domain.KYCVerification, err
 		&v.Status, &v.FailureReason, &v.QRStatus, &v.NameMismatch, &v.AttestedPhotoBytes, &v.PhotoStored,
 		&v.ReviewedBy, &v.ReviewedAt, &v.RejectionReason, &v.OCRData, &v.DocumentURL,
 		&v.VerifiedAt, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt, &docType,
+		&v.CFReferenceID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -683,6 +685,57 @@ func (r *KYCRepo) UpdateVendorRefIDTx(ctx context.Context, verificationID uuid.U
 		}
 		return nil
 	})
+}
+
+// GetVerificationByCFReferenceID retrieves a verification record by Cashfree's gateway reference ID.
+func (r *KYCRepo) GetVerificationByCFReferenceID(ctx context.Context, cfRefID string) (*domain.KYCVerification, error) {
+	cfRefID = strings.TrimSpace(cfRefID)
+	if cfRefID == "" {
+		return nil, domain.ErrVerificationNotFound
+	}
+	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification
+		WHERE cf_reference_id = $1
+	`, cfRefID))
+}
+
+// UpdateCFReferenceIDTx updates the unique cf_reference_id on an existing verification record.
+func (r *KYCRepo) UpdateCFReferenceIDTx(ctx context.Context, verificationID uuid.UUID, cfRefID string) error {
+	now := time.Now().UTC()
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE kyc_verification
+			SET cf_reference_id = $2,
+				updated_at = $3
+			WHERE id = $1
+		`, verificationID, strings.TrimSpace(cfRefID), now)
+		if err != nil {
+			return fmt.Errorf("kyc: update cf_reference_id: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrVerificationNotFound
+		}
+		return nil
+	})
+}
+
+// CanTenantPayWithPendingKYC checks whether the property allows rent payment while KYC is in pending_manual_review.
+func (r *KYCRepo) CanTenantPayWithPendingKYC(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	var allowed bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(pos.allow_pay_during_manual_review, false)
+		FROM tenants t
+		JOIN property_onboarding_settings pos ON pos.property_id = t.property_id
+		WHERE t.id = $1
+	`, tenantID).Scan(&allowed)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("kyc: check can tenant pay with pending kyc: %w", err)
+	}
+	return allowed, nil
 }
 
 // CheckDuplicateIdentity checks if an active, verified identity hash matches another tenant.

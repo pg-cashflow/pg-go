@@ -28,12 +28,20 @@ const (
 type KYCMethod string
 
 const (
-	// KYCMethodDigiLocker is retained as a read-only tag for historical records.
-	// Active verification uses Aadhaar OTP or Manual Document OCR.
+	// KYCMethodDigiLocker is the primary automated identity verification method via Cashfree Secure ID.
 	KYCMethodDigiLocker KYCMethod = "digilocker"
 	KYCMethodAadhaarOTP KYCMethod = "aadhaar_otp"
 	KYCMethodOCR        KYCMethod = "ocr"
 	KYCMethodQR         KYCMethod = "qr"
+)
+
+// Cashfree DigiLocker Webhook Event Types
+const (
+	WebhookEventDigiLockerSuccess        = "DIGILOCKER_VERIFICATION_SUCCESS"
+	WebhookEventDigiLockerLinkExpired    = "DIGILOCKER_VERIFICATION_LINK_EXPIRED"
+	WebhookEventDigiLockerConsentDenied  = "DIGILOCKER_VERIFICATION_CONSENT_DENIED"
+	WebhookEventDigiLockerConsentExpired = "DIGILOCKER_VERIFICATION_CONSENT_EXPIRED"
+	WebhookEventDigiLockerFailure        = "DIGILOCKER_VERIFICATION_FAILURE"
 )
 
 type DocumentType string
@@ -111,6 +119,7 @@ type KYCVerification struct {
 	ConsentID          uuid.UUID  `json:"consent_id"`
 	VendorName         string     `json:"vendor_name"`
 	VendorReferenceID  string     `json:"vendor_reference_id"`
+	CFReferenceID      *string    `json:"cf_reference_id,omitempty"`
 	MaskedUID          *string    `json:"masked_uid,omitempty"`
 	IdentityHash       *string    `json:"identity_hash,omitempty"`
 	HashKeyVersion     int16      `json:"hash_key_version"`

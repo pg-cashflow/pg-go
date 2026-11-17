@@ -155,6 +155,36 @@ func (f *fakeKYCSvc) RecordGuardianConsent(ctx context.Context, tenantID uuid.UU
 		GuardianConsentVerifiedAt: &now,
 	}, nil
 }
+func (f *fakeKYCSvc) InitiateDigiLockerVerification(ctx context.Context, tenantID uuid.UUID, redirectURL, userFlow, actor string) (*domain.KYCVerification, string, error) {
+	return &domain.KYCVerification{
+		ID:                uuid.New(),
+		TenantID:          tenantID,
+		Status:            domain.KYCStatusPending,
+		Method:            domain.KYCMethodDigiLocker,
+		VendorReferenceID: "cf_dgl_mock_123",
+	}, "https://verification.cashfree.com/dgl/mock_123", nil
+}
+func (f *fakeKYCSvc) ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{
+		ID:                uuid.New(),
+		VendorReferenceID: verificationIDStr,
+		Status:            domain.KYCStatusVerified,
+	}, nil
+}
+func (f *fakeKYCSvc) PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, actor string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{
+		ID:       uuid.New(),
+		TenantID: tenantID,
+		Status:   domain.KYCStatusVerified,
+	}, nil
+}
+func (f *fakeKYCSvc) CanTenantPay(ctx context.Context, tenantID uuid.UUID) (bool, error) {
+	ver, _, err := f.GetStatus(ctx, tenantID)
+	if err != nil || ver == nil {
+		return false, nil
+	}
+	return ver.Status == domain.KYCStatusVerified, nil
+}
 
 // ---- Test router helpers ----------------------------------------------------
 
@@ -188,6 +218,8 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	tenant_g := r.Group("/api/tenant/kyc")
 	{
 		tenant_g.POST("/consent", h.TenantKYCConsent)
+		tenant_g.POST("/digilocker/init", h.TenantKYCInitiateDigiLocker)
+		tenant_g.GET("/digilocker/status", h.TenantKYCDigiLockerStatus)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
 		tenant_g.POST("/qr/verify", h.TenantKYCSecureQRVerify)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)

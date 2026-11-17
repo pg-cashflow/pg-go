@@ -148,6 +148,18 @@ func (s *stubPIIKYCService) RecordGuardianConsent(_ context.Context, tenantID uu
 		GuardianConsentVerifiedAt: &now,
 	}, nil
 }
+func (s *stubPIIKYCService) InitiateDigiLockerVerification(_ context.Context, tenantID uuid.UUID, _, _, _ string) (*domain.KYCVerification, string, error) {
+	return &domain.KYCVerification{ID: uuid.New(), TenantID: tenantID, Status: domain.KYCStatusPending, Method: domain.KYCMethodDigiLocker}, "https://mock.cashfree.com/dgl", nil
+}
+func (s *stubPIIKYCService) ProcessDigiLockerCallback(_ context.Context, _, _, _, _, _ string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusVerified}, nil
+}
+func (s *stubPIIKYCService) PollDigiLockerStatus(_ context.Context, tenantID uuid.UUID, _ string) (*domain.KYCVerification, error) {
+	return &domain.KYCVerification{ID: uuid.New(), TenantID: tenantID, Status: domain.KYCStatusVerified}, nil
+}
+func (s *stubPIIKYCService) CanTenantPay(_ context.Context, _ uuid.UUID) (bool, error) {
+	return true, nil
+}
 
 type stubPIIAuthService struct {
 	requestedPhone string
