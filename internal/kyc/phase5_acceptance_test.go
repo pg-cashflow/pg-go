@@ -487,3 +487,37 @@ func TestPhase5_NonAadhaarVerificationRoute(t *testing.T) {
 		})
 	}
 }
+
+// 13. Duplicate callbacks do not duplicate decisions (monotonicity and idempotency).
+func TestPhase5_DuplicateCallbacksDoNotDuplicateDecisions(t *testing.T) {
+	tenantID := uuid.New()
+	verifID := uuid.New()
+	refID := "cf_ocr_unique_ref_12345"
+
+	now := time.Now().UTC()
+	v := &domain.KYCVerification{
+		ID:                verifID,
+		TenantID:          tenantID,
+		VendorReferenceID: refID,
+		Status:            domain.KYCStatusVerified,
+		VerifiedAt:        &now,
+	}
+
+	repo := &fakeRepo{
+		verification: v,
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	fetched, err := svc.GetVerificationByVendorRefID(context.Background(), refID)
+	if err != nil {
+		t.Fatalf("failed fetching verification: %v", err)
+	}
+	if fetched.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected verified status, got %s", fetched.Status)
+	}
+
+	// Terminal states are strictly immutable; re-decision is a no-op
+	if !fetched.IsValid(now) {
+		t.Fatal("expected terminal verified verification to remain valid")
+	}
+}

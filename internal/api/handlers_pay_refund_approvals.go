@@ -311,7 +311,14 @@ func (h *Handlers) OwnerApproveRefundRequest(c *gin.Context) {
 		return h.dispatchApprovedRefundTx(ctx, tx, pid, uid, r)
 	}
 
-	updatedReq, err := h.RefundApprovalRepo.RecordApprovalAtomic(ctx, requestID, decision, req.RequiredApprovals, onApproved)
+	requiredApprovals := req.RequiredApprovals
+	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	latestRequired, _ := domain.EvaluateRefundThreshold(req.AmountPaise, effectiveLimit, h.AppEnv)
+	if latestRequired > requiredApprovals {
+		requiredApprovals = latestRequired
+	}
+
+	updatedReq, err := h.RefundApprovalRepo.RecordApprovalAtomic(ctx, requestID, decision, requiredApprovals, onApproved)
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrMakerCannotApprove):

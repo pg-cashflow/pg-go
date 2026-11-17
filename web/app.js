@@ -444,13 +444,14 @@ async function showWaiting(err) {
 
 async function showOwner(err) {
   const tab = S.tab || "occupancy";
-  let joins = { join_requests: [] }, reports = { payment_reports: [] }, invite = {}, dues = { dues: [] }, occ = {};
+  let joins = { join_requests: [] }, reports = { payment_reports: [] }, invite = {}, dues = { dues: [] }, occ = {}, kycQueue = { items: [] };
   try {
     joins = await api("/owner/join-requests?status=pending");
     reports = await api("/owner/payment-reports?status=pending_review");
     invite = await api("/owner/invite");
     dues = await api("/owner/dues");
     try { occ = await api("/owner/occupancy"); } catch (_) {}
+    try { kycQueue = await api("/owner/kyc/queue"); } catch (_) {}
   } catch (e) { err = e; }
   const n = el(`<main>
     <h1>Owner</h1>
@@ -459,6 +460,7 @@ async function showOwner(err) {
       <button data-tab="occupancy" class="${tab === "occupancy" ? "on" : ""}">Occupancy</button>
       <button data-tab="joins" class="${tab === "joins" ? "on" : ""}">Join requests</button>
       <button data-tab="reports" class="${tab === "reports" ? "on" : ""}">UTR reports</button>
+      <button data-tab="kyc" class="${tab === "kyc" ? "on" : ""}">KYC Review${(kycQueue.items || []).length ? ` (${kycQueue.items.length})` : ""}</button>
       <button data-tab="dues" class="${tab === "dues" ? "on" : ""}">Dues</button>
       <button data-tab="gamification" class="${tab === "gamification" ? "on" : ""}">Gamification</button>
       <button data-tab="more" class="${tab === "more" ? "on" : ""}">More</button>
@@ -466,6 +468,7 @@ async function showOwner(err) {
     <section id="occupancy" class="${tab === "occupancy" ? "" : "hidden"}"></section>
     <section id="joins" class="${tab === "joins" ? "" : "hidden"}"></section>
     <section id="reports" class="${tab === "reports" ? "" : "hidden"}"></section>
+    <section id="kyc" class="${tab === "kyc" ? "" : "hidden"}"></section>
     <section id="dues" class="${tab === "dues" ? "" : "hidden"}"></section>
     <section id="gamification" class="${tab === "gamification" ? "" : "hidden"}"></section>
     <section id="more" class="${tab === "more" ? "" : "hidden"}"></section>
@@ -646,6 +649,102 @@ async function showOwner(err) {
     };
     rbox.appendChild(c);
   });
+
+  const kycBox = n.querySelector("#kyc");
+  if (kycBox) {
+    const items = kycQueue.items || [];
+    if (!items.length) {
+      kycBox.innerHTML = `<div class="card"><p class="muted">No pending KYC reviews. All tenant identity documents are up to date.</p></div>`;
+    } else {
+      kycBox.innerHTML = `<div style="margin-bottom:1rem;">
+        <h2>Pending KYC Reviews (${items.length})</h2>
+        <p class="muted">Review uploaded identity documents and verify tenant names against room bookings.</p>
+      </div>`;
+      items.forEach((item) => {
+        const docLabel = (item.document_type || "Aadhaar").toUpperCase();
+        const card = el(`<div class="card">
+          <div class="row" style="justify-content:space-between;align-items:flex-start;">
+            <div>
+              <strong>Tenant ID: ${esc(item.tenant_id || item.id)}</strong>
+              <p class="muted" style="margin:0.2rem 0;">Doc: <strong>${esc(docLabel)}</strong> · Masked ID: ****${esc(item.masked_uid || "")}</p>
+              ${item.name_mismatch ? `<span class="badge warn">⚠️ Name Mismatch</span>` : `<span class="badge ok">✓ Name Match</span>`}
+              ${item.qr_status ? `<span class="badge ${item.qr_status === 'SECURE' ? 'ok' : 'warn'}">QR: ${esc(item.qr_status)}</span>` : ""}
+            </div>
+            <div style="text-align:right;">
+              <small class="muted">${new Date(item.created_at).toLocaleDateString()}</small>
+            </div>
+          </div>
+          <div class="row" style="margin-top:1rem;gap:0.5rem;">
+            <button class="secondary" data-act="view-doc">View Document</button>
+            <button data-act="approve">Approve</button>
+            <button class="ghost" style="color:#ef4444;" data-act="reject">Reject</button>
+          </div>
+          <div class="doc-viewer" style="margin-top:0.75rem;display:none;"></div>
+          <div class="reject-box" style="margin-top:0.75rem;display:none;">
+            <label>Rejection Reason (audited, visible to tenant):</label>
+            <input type="text" placeholder="e.g. Blurry photo, name mismatch, expired document" class="reject-reason">
+            <div class="row" style="margin-top:0.5rem;">
+              <button class="btn-sm" style="background:#ef4444;color:#fff;" data-act="confirm-reject">Confirm Rejection</button>
+              <button class="secondary btn-sm" data-act="cancel-reject">Cancel</button>
+            </div>
+          </div>
+        </div>`);
+
+        const docViewer = card.querySelector(".doc-viewer");
+        const rejectBox = card.querySelector(".reject-box");
+
+        card.querySelector("[data-act=view-doc]").onclick = async () => {
+          if (docViewer.style.display === "block") {
+            docViewer.style.display = "none";
+            return;
+          }
+          docViewer.style.display = "block";
+          docViewer.innerHTML = `<p class="muted">Loading secure document bytes...</p>`;
+          try {
+            const blobUrl = await authedBlob("/owner/kyc/" + item.id + "/document");
+            if (blobUrl) {
+              docViewer.innerHTML = `<iframe src="${blobUrl}" style="width:100%;height:400px;border:1px solid #333;border-radius:4px;"></iframe>`;
+            } else {
+              docViewer.innerHTML = `<p class="err">Document could not be decrypted or loaded.</p>`;
+            }
+          } catch (e) {
+            docViewer.innerHTML = `<p class="err">Failed to load document: ${esc(e.message)}</p>`;
+          }
+        };
+
+        card.querySelector("[data-act=approve]").onclick = async () => {
+          if (!confirm("Approve tenant KYC verification? This decision is audited and immutable.")) return;
+          try {
+            await api("/owner/kyc/" + item.id + "/approve", { method: "POST", body: "{}" });
+            showOwner();
+          } catch (e) { alert("Approval failed: " + e.message); }
+        };
+
+        card.querySelector("[data-act=reject]").onclick = () => {
+          rejectBox.style.display = "block";
+        };
+        card.querySelector("[data-act=cancel-reject]").onclick = () => {
+          rejectBox.style.display = "none";
+        };
+        card.querySelector("[data-act=confirm-reject]").onclick = async () => {
+          const reason = rejectBox.querySelector(".reject-reason").value.trim();
+          if (!reason) {
+            alert("A valid rejection reason is required.");
+            return;
+          }
+          try {
+            await api("/owner/kyc/" + item.id + "/reject", {
+              method: "POST",
+              body: JSON.stringify({ reason: reason })
+            });
+            showOwner();
+          } catch (e) { alert("Rejection failed: " + e.message); }
+        };
+
+        kycBox.appendChild(card);
+      });
+    }
+  }
 
   const dbox = n.querySelector("#dues");
   const pendingDues = (dues.dues || []).filter((d) => d.status === "pending" || d.status === "partial");
@@ -832,7 +931,7 @@ async function showOwner(err) {
 }
 
 async function showTenant(err) {
-  let me, dues, pts = {}, rsvp = {}, rewards = { rewards: [] }, insp = { inspections: [] }, viols = { violations: [] };
+  let me, dues, pts = {}, rsvp = {}, rewards = { rewards: [] }, insp = { inspections: [] }, viols = { violations: [] }, kyc = {};
   try {
     me = await api("/tenant/me");
     dues = await api("/tenant/dues");
@@ -841,6 +940,7 @@ async function showTenant(err) {
     try { rewards = await api("/tenant/rewards"); } catch (_) {}
     try { insp = await api("/tenant/inspections"); } catch (_) {}
     try { viols = await api("/tenant/violations"); } catch (_) {}
+    try { kyc = await api("/tenant/kyc/status"); } catch (_) {}
   } catch (e) {
     if (e.status === 403 && String(e.message).includes("waiting")) return showWaiting(e);
     err = e;
@@ -933,14 +1033,74 @@ async function showTenant(err) {
       <div id="push_status"></div>
     </details>
 
-    <details class="card">
-      <summary>Aadhaar (optional)</summary>
-      <label>Secure QR payload</label><textarea id="qr" rows="2"></textarea>
-      <label>Or last-4</label><input id="last4" maxlength="4">
-      <label class="muted"><input type="checkbox" id="consent"> Consent to store last-4 only</label>
-      <div id="aprev"></div>
-      <div class="row"><button class="secondary" id="adecode">Preview</button><button id="asave">Save</button></div>
-    </details>
+    <!-- Identity Verification & Privacy (KYC) -->
+    ${kyc.verification && kyc.verification.status === "verified" ? `
+      <div class="card" style="border-left: 4px solid #10b981;">
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <div>
+            <h2>Identity Verified ✓</h2>
+            <p class="muted" style="margin:0.2rem 0;">Doc: <strong>${esc((kyc.verification.document_type || "Aadhaar").toUpperCase())}</strong> · Masked ID: ****${esc(kyc.verification.masked_uid || "")}</p>
+            <small class="badge ok">Verified on ${new Date(kyc.verification.verified_at || Date.now()).toLocaleDateString()}</small>
+          </div>
+          <div>
+            <button class="ghost btn-sm" style="color:#ef4444;" id="kyc_revoke_btn">Revoke Consent</button>
+          </div>
+        </div>
+        <p class="muted" style="font-size:0.8rem;margin-top:0.5rem;">Per DPDP Act Rule 8, you may revoke consent at any time to delete stored verification records.</p>
+      </div>
+    ` : kyc.verification && kyc.verification.status === "pending_manual_review" ? `
+      <div class="card" style="border-left: 4px solid #f59e0b;">
+        <h2>Verification Under Review ⏳</h2>
+        <p style="margin:0.2rem 0;">Your <strong>${esc((kyc.verification.document_type || "document").toUpperCase())}</strong> has been submitted. Our property reviewer is validating the identity details.</p>
+        <small class="badge warn">Pending Manual Review</small>
+      </div>
+    ` : `
+      <details class="card" ${!kyc.has_verification || (kyc.verification && kyc.verification.status === "rejected") ? "open" : ""}>
+        <summary><strong>Identity Verification (KYC)</strong> ${!kyc.has_verification ? `<span class="badge warn">Required</span>` : ""}</summary>
+        ${kyc.verification && kyc.verification.status === "rejected" ? `
+          <div style="background:#fef2f2;border:1px solid #ef4444;border-radius:6px;padding:0.75rem;margin:0.5rem 0;">
+            <p style="color:#b91c1c;margin:0;font-weight:600;">Verification Rejected</p>
+            <p style="color:#7f1d1d;margin:0.2rem 0 0;font-size:0.85rem;">Reason: ${esc(kyc.verification.rejection_reason || "Document illegible or details mismatched")}. Please re-upload a clear document.</p>
+          </div>
+        ` : ""}
+        <p class="muted" style="margin:0.5rem 0 0.8rem;">In compliance with India's DPDP Act, your identity is verified voluntarily solely for PG occupancy. Full numbers are never stored in plain text.</p>
+        
+        <div style="background:#222;padding:0.75rem;border-radius:6px;font-size:0.85rem;margin-bottom:0.75rem;">
+          <p style="margin:0;"><strong>DPDP Notice:</strong> Identity document is collected voluntarily for tenant record keeping. Aadhaar is voluntary per the Aadhaar Act; PAN, Passport, Voter ID, and Driving Licence are also accepted.</p>
+        </div>
+
+        <label>Select Identity Document Type</label>
+        <select id="kyc_doc_type">
+          <option value="aadhaar">Aadhaar (Voluntary)</option>
+          <option value="pan">PAN Card</option>
+          <option value="passport">Passport</option>
+          <option value="voter_id">Voter ID</option>
+          <option value="driving_licence">Driving Licence</option>
+        </select>
+
+        <label>Upload Document (Photo or PDF, max 5MB)</label>
+        <input type="file" id="kyc_file" accept="image/jpeg,image/png,application/pdf" capture="environment">
+
+        <label class="muted" style="display:flex;align-items:flex-start;gap:8px;margin-top:0.75rem;">
+          <input type="checkbox" id="kyc_consent" style="margin-top:3px;">
+          <span>I consent to identity verification and secure encrypted processing per DPDP Act notice v1.</span>
+        </label>
+
+        <div class="row" style="margin-top:0.75rem;">
+          <button id="kyc_upload_btn">Upload & Verify</button>
+        </div>
+        <div id="kyc_status_msg" style="margin-top:0.5rem;"></div>
+
+        <details style="margin-top:1rem;border-top:1px solid #333;padding-top:0.5rem;">
+          <summary class="muted">Or scan / paste Secure QR</summary>
+          <label>Secure QR payload</label>
+          <textarea id="kyc_qr" rows="2" placeholder="Paste scanned QR text"></textarea>
+          <div class="row" style="margin-top:0.5rem;">
+            <button class="secondary" id="kyc_qr_btn">Verify QR</button>
+          </div>
+        </details>
+      </details>
+    `}
     <button class="ghost" id="out">Sign out</button>
   </main>`);
 
@@ -1069,25 +1229,109 @@ async function showTenant(err) {
     }
   };
 
-  n.querySelector("#adecode").onclick = async () => {
-    try {
-      const out = await api("/tenant/aadhaar", { method: "POST", body: JSON.stringify({
-        consent: n.querySelector("#consent").checked, qr_payload: n.querySelector("#qr").value, confirm: false,
-      })});
-      n.querySelector("#aprev").innerHTML = `<p class="ok">${esc(out.name)} · ****${esc(out.uid_last4)} ${out.verified ? "(verified)" : ""}</p>`;
-    } catch (e) { showTenant(e); }
-  };
-  n.querySelector("#asave").onclick = async () => {
-    try {
-      await api("/tenant/aadhaar", { method: "POST", body: JSON.stringify({
-        consent: n.querySelector("#consent").checked,
-        qr_payload: n.querySelector("#qr").value,
-        uid_last4: n.querySelector("#last4").value,
-        confirm: true,
-      })});
-      showTenant();
-    } catch (e) { showTenant(e); }
-  };
+  const revokeBtn = n.querySelector("#kyc_revoke_btn");
+  if (revokeBtn) {
+    revokeBtn.onclick = async () => {
+      if (!confirm("Are you sure you want to revoke consent? This will scrub your identity verification data per DPDP Act Rule 8.")) return;
+      try {
+        await api("/tenant/kyc/revoke", { method: "POST", body: "{}" });
+        showTenant();
+      } catch (e) { alert("Failed to revoke: " + e.message); }
+    };
+  }
+
+  const uploadBtn = n.querySelector("#kyc_upload_btn");
+  if (uploadBtn) {
+    uploadBtn.onclick = async () => {
+      const statusMsg = n.querySelector("#kyc_status_msg");
+      const consentCb = n.querySelector("#kyc_consent");
+      const fileInput = n.querySelector("#kyc_file");
+      const docType = n.querySelector("#kyc_doc_type").value;
+
+      if (!consentCb || !consentCb.checked) {
+        statusMsg.innerHTML = `<p class="err">You must agree to the DPDP consent notice before uploading.</p>`;
+        return;
+      }
+      if (!fileInput.files || !fileInput.files[0]) {
+        statusMsg.innerHTML = `<p class="err">Please select or capture a document file.</p>`;
+        return;
+      }
+      const file = fileInput.files[0];
+      if (file.size > 5 * 1024 * 1024) {
+        statusMsg.innerHTML = `<p class="err">File size exceeds the 5MB limit. Please upload a smaller image or PDF.</p>`;
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "Uploading & Analyzing...";
+      statusMsg.innerHTML = `<p class="muted">Recording consent and processing document...</p>`;
+
+      try {
+        await api("/tenant/kyc/consent", {
+          method: "POST",
+          body: JSON.stringify({
+            purpose: "tenant_verification",
+            consent_version: "v1"
+          })
+        });
+
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("document_type", docType);
+
+        const res = await fetch(S.api + "/tenant/kyc/upload", {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + S.token
+          },
+          body: formData
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || ("Upload failed (status " + res.status + ")"));
+        }
+
+        statusMsg.innerHTML = `<p class="ok">Document uploaded successfully! Under review.</p>`;
+        setTimeout(() => showTenant(), 1000);
+      } catch (e) {
+        statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = "Upload & Verify";
+      }
+    };
+  }
+
+  const qrBtn = n.querySelector("#kyc_qr_btn");
+  if (qrBtn) {
+    qrBtn.onclick = async () => {
+      const qrText = n.querySelector("#kyc_qr").value.trim();
+      const consentCb = n.querySelector("#kyc_consent");
+      const statusMsg = n.querySelector("#kyc_status_msg");
+
+      if (!consentCb || !consentCb.checked) {
+        statusMsg.innerHTML = `<p class="err">Please check the consent box before verifying.</p>`;
+        return;
+      }
+      if (!qrText) {
+        statusMsg.innerHTML = `<p class="err">Please paste the scanned QR payload.</p>`;
+        return;
+      }
+      try {
+        await api("/tenant/kyc/consent", {
+          method: "POST",
+          body: JSON.stringify({ purpose: "tenant_verification", consent_version: "v1" })
+        });
+        await api("/tenant/kyc/qr/verify", {
+          method: "POST",
+          body: JSON.stringify({ qr_payload: qrText })
+        });
+        showTenant();
+      } catch (e) {
+        statusMsg.innerHTML = `<p class="err">${esc(e.message)}</p>`;
+      }
+    };
+  }
 
   const box = n.querySelector("#dues");
   for (const d of dues.dues || []) {

@@ -235,6 +235,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	collectorSvc := collector.New(intentRepo, cfOrders)
 
 	var kycSvc api.KYCService
+	var kycRepo *postgres.KYCRepo
 	if cfg.KYCIdentitySecret != "" {
 		// Decode AES-256-GCM key for Aadhaar document-bytes encryption.
 		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
@@ -258,7 +259,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		} else {
 			return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory whenever KYC is enabled (DPDP Section 8(5) requirement)")
 		}
-		kycRepo := postgres.NewKYCRepo(maintPool, kycDocKey)
+		kycRepo = postgres.NewKYCRepo(maintPool, kycDocKey)
 		validityDays := cfg.KYCVerificationValidityDays
 		if validityDays <= 0 {
 			validityDays = 365
@@ -571,6 +572,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		cfClient:        cfClient,
 		paymentRepo:     maintPaymentRepo,
 		referralSvc:     referralSvc,
+		kycRepo:         kycRepo,
 	}
 
 	cleanup := func() {
@@ -609,6 +611,7 @@ type backgroundConfig struct {
 	cfClient        *cashfree.Client
 	paymentRepo     *postgres.PaymentRepo
 	referralSvc     *referral.Service
+	kycRepo         *postgres.KYCRepo
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -643,6 +646,24 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 				bg.logger.Error("report image purge failed", "err", err)
 			} else if in > 0 {
 				bg.logger.Info("report image purge complete", "deleted", in)
+			}
+			if bg.kycRepo != nil {
+				now := time.Now().UTC()
+				if expLapsed, err := bg.kycRepo.ExpireLapsedVerifications(ctx, now); err != nil {
+					bg.logger.Error("kyc lapsed verification purge failed", "err", err)
+				} else if expLapsed > 0 {
+					bg.logger.Info("kyc lapsed verification purge complete", "expired", expLapsed)
+				}
+				if expPending, err := bg.kycRepo.ExpireStalePendingVerifications(ctx, now.Add(-24*time.Hour)); err != nil {
+					bg.logger.Error("kyc stale pending verification purge failed", "err", err)
+				} else if expPending > 0 {
+					bg.logger.Info("kyc stale pending verification purge complete", "expired", expPending)
+				}
+				if expReviews, err := bg.kycRepo.ExpireStaleManualReviews(ctx, now.Add(-30*24*time.Hour)); err != nil {
+					bg.logger.Error("kyc stale manual review purge failed", "err", err)
+				} else if expReviews > 0 {
+					bg.logger.Info("kyc stale manual review purge complete", "expired", expReviews)
+				}
 			}
 		}
 
