@@ -55,11 +55,20 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 	if r.pool == nil {
 		return nil, errors.New("database pool unavailable")
 	}
-	var allocationsToCreate []refundAllocItem
 	err := postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
-		txPayRepo := postgres.NewPaymentRepo(tx)
+		return prepareRefundTx(ctx, tx, pid, p, req, rfRow)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
 
-		// 1. Lock Tenant (1)
+func prepareRefundTx(ctx context.Context, tx pgx.Tx, pid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, rfRow *domain.GatewayRefund) error {
+	var allocationsToCreate []refundAllocItem
+	txPayRepo := postgres.NewPaymentRepo(tx)
+
+	// 1. Lock Tenant (1)
 		var dummy uuid.UUID
 		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
 			return fmt.Errorf("lock tenant: %w", err)
@@ -302,11 +311,6 @@ func (r *postgresRefundTxRunner) PrepareRefund(ctx context.Context, pid uuid.UUI
 		}
 
 		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return allocationsToCreate, nil
 }
 
 func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {

@@ -15,6 +15,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -466,8 +467,48 @@ func (h *Handlers) ListPaymentRefundRequests(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"refund_requests": filtered})
 }
 
+// OwnerListRefundRequests handles GET /owner/refund-requests.
+// Bounded to 200 records, property-scoped, allow-listed status filter.
+func (h *Handlers) OwnerListRefundRequests(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+
+	if h.RefundApprovalRepo == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "refund approval repository unavailable"})
+		return
+	}
+
+	statusFilter := strings.TrimSpace(c.Query("status"))
+	if statusFilter != "" {
+		switch statusFilter {
+		case domain.RefundApprovalPending, domain.RefundApprovalPartiallyApproved,
+			domain.RefundApprovalApproved, domain.RefundApprovalRejected,
+			domain.RefundApprovalDispatched, domain.RefundApprovalCancelled:
+			// valid
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status filter"})
+			return
+		}
+	}
+
+	list, err := h.RefundApprovalRepo.ListRequestsByProperty(c.Request.Context(), pid, statusFilter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list refund requests"})
+		return
+	}
+
+	const maxLimit = 200
+	if len(list) > maxLimit {
+		list = list[:maxLimit]
+	}
+
+	c.JSON(http.StatusOK, gin.H{"refund_requests": list})
+}
+
 // dispatchApprovedRefundTx atomically writes the authorized refund record and outbox event
-// inside the caller's database transaction.
+// inside the caller's database transaction using the authoritative preparation and allocation engine.
 func (h *Handlers) dispatchApprovedRefundTx(ctx context.Context, tx pgx.Tx, pid, approverID uuid.UUID, r *domain.RefundApprovalRequest) error {
 	rfID := uuid.New()
 	r.RefundID = &rfID
@@ -476,44 +517,46 @@ func (h *Handlers) dispatchApprovedRefundTx(ctx context.Context, tx pgx.Tx, pid,
 		return nil
 	}
 
+	txPayRepo := postgres.NewPaymentRepo(tx)
+	p, err := txPayRepo.GetByID(ctx, r.PaymentID)
+	if err != nil {
+		return fmt.Errorf("fetch payment for approved refund dispatch: %w", err)
+	}
+	if p == nil {
+		return fmt.Errorf("payment %s not found for approved refund dispatch", r.PaymentID)
+	}
+
 	cleanUUID := strings.ReplaceAll(uuid.New().String(), "-", "")
 	refundRef := fmt.Sprintf("rf%s", cleanUUID)
 	now := time.Now().UTC()
 	idempKey := r.IdempotencyKey
 
-	// 1. Insert gateway_refunds row in initiated state
-	_, err := tx.Exec(ctx, `
-		INSERT INTO gateway_refunds (
-			id, payment_id, property_id, provider, refund_reference, idempotency_key,
-			amount_paise, status, source, initiated_by, reason, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, 'cashfree', $4, $5,
-			$6, 'initiated', 'owner', $7, $8, $9, $10
-		)`,
-		rfID, r.PaymentID, pid, refundRef, idempKey,
-		r.AmountPaise, r.RequestedBy, r.Reason, now, now,
-	)
-	if err != nil {
-		return fmt.Errorf("insert gateway_refunds: %w", err)
+	rfRow := &domain.GatewayRefund{
+		ID:              rfID,
+		PaymentID:       r.PaymentID,
+		PropertyID:      pid,
+		Provider:        "cashfree",
+		RefundReference: &refundRef,
+		IdempotencyKey:  &idempKey,
+		AmountPaise:     r.AmountPaise,
+		Status:          "initiated",
+		Source:          "owner",
+		InitiatedBy:     &r.RequestedBy,
+		Reason:          r.Reason,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
-	r.RefundID = &rfID
-
-	// 2. Insert outbox command atomically
-	payloadJSON := fmt.Sprintf(`{"refund_id":"%s","payment_id":"%s","amount_paise":%d,"reason":"%s"}`,
-		rfID, r.PaymentID, r.AmountPaise, r.Reason)
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO payment_commands (
-			command_type, property_id, source_id, payload, idempotency_key, status, created_at, next_retry_at
-		) VALUES (
-			'CREATE_GATEWAY_REFUND', $1, $2, $3::jsonb, $4, 'pending', $5, $5
-		)`,
-		pid, rfID, payloadJSON, idempKey, now,
-	)
-	if err != nil {
-		return fmt.Errorf("insert payment_commands outbox: %w", err)
+	ownerReq := OwnerRefundRequest{
+		AmountPaise: r.AmountPaise,
+		Reason:      r.Reason,
 	}
 
+	err = prepareRefundTx(ctx, tx, pid, p, ownerReq, rfRow)
+	if err != nil {
+		return fmt.Errorf("prepare and allocate approved refund: %w", err)
+	}
+
+	r.RefundID = &rfRow.ID
 	return nil
 }

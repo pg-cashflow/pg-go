@@ -72,6 +72,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/payments/:id/refund", h.OwnerRefundPayment)
 	owner.POST("/payments/:id/refund/requests", h.OwnerCreateRefundRequest)
 	owner.GET("/payments/:id/refund/requests", h.ListPaymentRefundRequests)
+	owner.GET("/refund-requests", h.OwnerListRefundRequests)
 	owner.GET("/refund-requests/:id", h.GetRefundRequest)
 	owner.POST("/refund-requests/:id/approve", h.OwnerApproveRefundRequest)
 	owner.POST("/refund-requests/:id/reject", h.OwnerRejectRefundRequest)
