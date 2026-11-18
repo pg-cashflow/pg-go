@@ -1,11 +1,19 @@
 package kyc_test
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +58,8 @@ type fakeRepo struct {
 	auditLogs               []domain.KYCAuditLog
 	tenantName              string
 	attestedPhoto           []byte
+	docBytes                []byte
+	docContentType         string
 	lockAcquired            *bool
 	lockAcquireErr          error
 	lockReleaseErr          error
@@ -218,11 +228,20 @@ func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedU
 	if f.verification != nil && f.verification.ID == id {
 		f.verification = v
 	}
+	f.docBytes = docBytes
+	f.docContentType = docContentType
 	return v, nil
 }
 func (f *fakeRepo) GetKYCDocument(_ context.Context, _ uuid.UUID) ([]byte, string, error) {
 	if len(f.attestedPhoto) > 0 {
 		return f.attestedPhoto, "image/jpeg", nil
+	}
+	if len(f.docBytes) > 0 {
+		ct := f.docContentType
+		if ct == "" {
+			ct = "image/jp2"
+		}
+		return f.docBytes, ct, nil
 	}
 	return []byte("dummy-doc"), "application/pdf", nil
 }
@@ -239,6 +258,11 @@ func (f *fakeRepo) ApproveManualReviewTx(_ context.Context, id, _, reviewerID uu
 		VerifiedAt: &now,
 	}
 	f.latestVerif = v
+	if f.verification != nil && f.verification.ID == id {
+		f.verification = v
+	}
+	f.docBytes = nil
+	f.docContentType = ""
 	return v, nil
 }
 func (f *fakeRepo) RejectManualReviewTx(_ context.Context, id, _, reviewerID uuid.UUID, reason, _ string) (*domain.KYCVerification, error) {
@@ -251,6 +275,11 @@ func (f *fakeRepo) RejectManualReviewTx(_ context.Context, id, _, reviewerID uui
 		RejectionReason: &reason,
 	}
 	f.latestVerif = v
+	if f.verification != nil && f.verification.ID == id {
+		f.verification = v
+	}
+	f.docBytes = nil
+	f.docContentType = ""
 	return v, nil
 }
 func (f *fakeRepo) ListPendingReviews(_ context.Context, _ uuid.UUID) ([]domain.KYCVerification, error) {
@@ -632,6 +661,98 @@ func TestVerifySecureQR_BypassRejection(t *testing.T) {
 				t.Errorf("bypass payload %q must not create any KYC verification record", tc.name)
 			}
 		})
+	}
+}
+
+func TestVerifySecureQR_RoutesToManualReviewAndPurgesOnApproval(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	if err := aadhaar.SetSecureQRPublicKeyPEM(string(pemBytes)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = aadhaar.SetSecureQRPublicKeyPEM("") })
+
+	tenantID := uuid.New()
+	propID := uuid.New()
+	reviewerID := uuid.New()
+
+	repo := &fakeRepo{
+		tenantName: "Ravi Kumar",
+		consent: &domain.KYCConsent{
+			ID:        uuid.New(),
+			TenantID:  tenantID,
+			RevokedAt: nil,
+		},
+	}
+	svc := newTestService(repo, &fakeCashfree{})
+
+	// 1. Build a valid Secure QR payload with embedded J2K photo bytes
+	j2kPhoto := []byte{0xFF, 0x4F, 0xFF, 0x51, 0x11, 0x22, 0xFF, 0x33, 0x44, 0xFF, 0xD9}
+	var data []byte
+	data = append(data, 0) // no email/mobile
+	data = append(data, []byte("555544443333")...)
+	data = append(data, 255)
+	data = append(data, []byte("Ravi Kumar")...) // clean name match
+	data = append(data, 255)
+	data = append(data, []byte("M")...)
+	data = append(data, 255)
+	data = append(data, []byte("1994")...)
+	data = append(data, 255) // separator before photo
+	data = append(data, j2kPhoto...)
+
+	sum := sha256.Sum256(data)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := append(append([]byte{}, data...), sig...)
+	rawQR := new(big.Int).SetBytes(buf).Text(10)
+
+	// 2. Execute VerifySecureQR
+	verif, err := svc.VerifySecureQR(context.Background(), tenantID, rawQR, "tenant:ravi")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 3. Assert it does NOT auto-verify, but lands in pending_manual_review
+	if verif.Status != domain.KYCStatusPendingManualReview {
+		t.Fatalf("expected status %s, got %s", domain.KYCStatusPendingManualReview, verif.Status)
+	}
+	if !bytes.Equal(repo.docBytes, j2kPhoto) {
+		t.Fatalf("expected photo bytes %x, got %x", j2kPhoto, repo.docBytes)
+	}
+	if repo.docContentType != "image/jp2" {
+		t.Fatalf("expected content type image/jp2, got %s", repo.docContentType)
+	}
+
+	// 4. Assert owner can inspect document photo bytes before decision
+	docBytes, ct, err := svc.GetKYCDocument(context.Background(), verif.ID, propID)
+	if err != nil {
+		t.Fatalf("failed to retrieve kyc document: %v", err)
+	}
+	if !bytes.Equal(docBytes, j2kPhoto) || ct != "image/jp2" {
+		t.Fatalf("GetKYCDocument mismatch: got ct=%s, bytes=%x", ct, docBytes)
+	}
+
+	// 5. Owner approves manual review
+	approved, err := svc.ApproveManualReview(context.Background(), verif.ID, propID, reviewerID, "owner:admin")
+	if err != nil {
+		t.Fatalf("ApproveManualReview failed: %v", err)
+	}
+	if approved.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status %s, got %s", domain.KYCStatusVerified, approved.Status)
+	}
+
+	// 6. DPDP data minimisation: photo bytes must be purged to nil upon approval
+	if repo.docBytes != nil {
+		t.Fatalf("expected photo bytes to be purged to nil after approval, got %x", repo.docBytes)
 	}
 }
 

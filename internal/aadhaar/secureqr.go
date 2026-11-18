@@ -1,6 +1,7 @@
 package aadhaar
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -116,7 +117,8 @@ func decodeSecureQR(raw string) (AadhaarData, error) {
 		data = padded
 	}
 
-	fields := splitFF(data)
+	textData, photo := isolatePhoto(data)
+	fields := splitFF(textData)
 	if len(fields) < 4 {
 		return AadhaarData{}, ErrSecureQRFormat
 	}
@@ -127,13 +129,31 @@ func decodeSecureQR(raw string) (AadhaarData, error) {
 	}
 	name, gender, dob, yob := pickDemographics(fields)
 	return AadhaarData{
-		Name:     name,
-		DOB:      dob,
-		YOB:      yob,
-		Gender:   normalizeGender(gender),
-		UIDLast4: last4(uid),
-		Verified: true,
+		Name:       name,
+		DOB:        dob,
+		YOB:        yob,
+		Gender:     normalizeGender(gender),
+		UIDLast4:   last4(uid),
+		PhotoBytes: photo,
+		Verified:   true,
 	}, nil
+}
+
+func isolatePhoto(data []byte) ([]byte, []byte) {
+	// Look for JPEG 2000 codestream marker (SOC 0xFF4F + SIZ 0xFF51)
+	// or standard JPEG marker (SOI 0xFFD8 + 0xFF).
+	idx := bytes.Index(data, []byte{0xFF, 0x4F, 0xFF, 0x51})
+	if idx == -1 {
+		idx = bytes.Index(data, []byte{0xFF, 0xD8, 0xFF})
+	}
+	if idx != -1 {
+		textEnd := idx
+		if textEnd > 0 && data[textEnd-1] == 255 {
+			textEnd--
+		}
+		return data[:textEnd], data[idx:]
+	}
+	return data, nil
 }
 
 func verifySecureQR(pub *rsa.PublicKey, data, sig []byte) error {

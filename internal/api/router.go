@@ -53,6 +53,7 @@ type Deps struct {
 	JoinIdempotency    JoinIdempotencyStore
 	ReportStore        ReportStore
 	IntentStore        IntentStore
+	IntentLifecycle    IntentLifecycle
 	PaymentLookup      PaymentLookup
 	Collector          *collector.Service
 	CashfreeSecret     string
@@ -181,6 +182,12 @@ func NewRouter(d Deps) *gin.Engine {
 	if d.UnmatchedReceipts == nil && d.GatewayPaymentRepo != nil {
 		if u, ok := d.GatewayPaymentRepo.(UnmatchedReceiptStore); ok {
 			d.UnmatchedReceipts = u
+		}
+	}
+
+	if d.IntentLifecycle == nil && d.IntentStore != nil {
+		if store, ok := d.IntentStore.(payment.IntentLifecycleStore); ok {
+			d.IntentLifecycle = payment.NewIntentLifecycle(store)
 		}
 	}
 

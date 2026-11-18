@@ -222,6 +222,15 @@ type IntentStore interface {
 	LatestOpenForDue(ctx context.Context, dueID uuid.UUID) (*domain.PaymentIntent, error)
 }
 
+// IntentLifecycle manages payment intent status transitions, retries, and verification lookups.
+type IntentLifecycle interface {
+	RecordAttemptFailed(ctx context.Context, orderID, cfPaymentID string) error
+	MarkSettled(ctx context.Context, intentID uuid.UUID, cfPaymentID string) error
+	ReusableSessionForDue(ctx context.Context, dueID uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error)
+	IntentToVerify(ctx context.Context, orderID string) (*domain.PaymentIntent, error)
+	IntentToVerifyForDue(ctx context.Context, dueID uuid.UUID) (*domain.PaymentIntent, error)
+}
+
 type PaymentLookup interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 }

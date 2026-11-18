@@ -118,6 +118,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	joinRepo := postgres.NewJoinRepo(maintPool)
 	reportRepo := postgres.NewPaymentReportRepo(scopedDB)
 	intentRepo := postgres.NewPaymentIntentRepo(scopedDB)
+	intentLifecycle := payment.NewIntentLifecycle(intentRepo)
 	preferencesRepo := postgres.NewPreferencesRepo(scopedDB)
 	calendarTokenRepo := postgres.NewCalendarTokenRepo(scopedDB)
 
@@ -496,6 +497,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		JoinIdempotency:              joinIdempotencyRepo,
 		ReportStore:                  reportRepo,
 		IntentStore:                  intentRepo,
+		IntentLifecycle:              intentLifecycle,
 		PaymentLookup:                maintPaymentRepo,
 		GatewayPaymentRepo:           maintPaymentRepo,
 		WebhookToleranceSec:          cfg.WebhookTimestampToleranceSec,

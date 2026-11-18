@@ -9,12 +9,13 @@ import (
 // AadhaarData holds fields extracted from a UIDAI QR payload.
 // Only last-4 of UID is retained for storage; full UID is never persisted by callers.
 type AadhaarData struct {
-	Name     string `json:"name,omitempty"`
-	DOB      string `json:"dob,omitempty"`
-	YOB      string `json:"yob,omitempty"`
-	Gender   string `json:"gender,omitempty"`
-	UIDLast4 string `json:"uid_last4,omitempty"`
-	Verified bool   `json:"verified,omitempty"`
+	Name       string `json:"name,omitempty"`
+	DOB        string `json:"dob,omitempty"`
+	YOB        string `json:"yob,omitempty"`
+	Gender     string `json:"gender,omitempty"`
+	UIDLast4   string `json:"uid_last4,omitempty"`
+	PhotoBytes []byte `json:"-"`
+	Verified   bool   `json:"verified,omitempty"`
 }
 
 var (

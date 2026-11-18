@@ -99,6 +99,17 @@ func (r *PaymentIntentRepo) Touch(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+func (r *PaymentIntentRepo) TouchNonTerminalByOrderID(ctx context.Context, orderID string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE payment_intents
+		SET updated_at=NOW()
+		WHERE provider_order_id=$1
+		  AND status NOT IN ('paid', 'refunded', 'failed', 'superseded')`,
+		orderID,
+	)
+	return err
+}
+
 func (r *PaymentIntentRepo) RecencyForDue(ctx context.Context, dueID uuid.UUID) (count int, latest *time.Time, err error) {
 	err = r.db.QueryRow(ctx, `
 		SELECT COUNT(*), MAX(updated_at) FROM payment_intents WHERE due_id=$1`, dueID).Scan(&count, &latest)

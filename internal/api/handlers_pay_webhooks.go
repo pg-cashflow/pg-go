@@ -371,7 +371,8 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 		// order until order_expiry_time. Leave the intent status untouched so a later
 		// PAYMENT_SUCCESS_WEBHOOK or TenantDuePayVerify still finds it via LatestOpenForDue.
 		// Terminal order failure/expiry is set by the stale-intent poller, not by this event.
-		if _, err := tx.Exec(ctx, `UPDATE payment_intents SET updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded', 'failed', 'superseded')`, fail.OrderID); err != nil {
+		txIntentRepo := postgres.NewPaymentIntentRepo(tx)
+		if err := txIntentRepo.TouchNonTerminalByOrderID(ctx, fail.OrderID); err != nil {
 			return err
 		}
 		return nil

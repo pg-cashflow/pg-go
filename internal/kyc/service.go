@@ -279,7 +279,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	if dobStr == "" {
 		dobStr = data.YOB // year-only fallback
 	}
-	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(dobStr)
+	canonicalDOB, _, _ := domain.NormalizeDOB(dobStr)
 	name := domain.NormalizeName(data.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
 
@@ -294,50 +294,37 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, fmt.Errorf("kyc service: initiate qr verification: %w", err)
 	}
 
-	// 7. Route based on name match:
-	// A standalone QR verification must never auto-verify if the name does not match the registered tenant.
-	// Any name mismatch must go to manual review with highlighted mismatch flag.
+	// 7. Route to manual review:
+	// A standalone Secure QR verification must never auto-verify based on cryptographic signature
+	// and name matching alone, as anyone with a photo of another person's QR could pass.
+	// Both clean matches and name mismatches are routed to pending_manual_review via SubmitManualReviewTx.
+	// Tenants can pay dues during manual review (allow_pay_during_manual_review).
+	// Final verification occurs when the owner/manager approves the review (ApproveManualReviewTx),
+	// which auto-purges biometric document/photo bytes per DPDP Act 2023.
 	qrStatus := domain.QRStatusSecure
-	if nameMismatch {
-		qrDataJSON, _ := json.Marshal(map[string]any{
-			"name":          data.Name,
-			"dob":           dobStr,
-			"gender":        data.Gender,
-			"masked_uid":    data.UIDLast4,
-			"qr_status":     qrStatus,
-			"name_mismatch": true,
-		})
-		underReview, err := s.repo.SubmitManualReviewTx(ctx,
-			pending.ID, data.UIDLast4, identityHash,
-			string(qrDataJSON), "", nil, "", actor,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("kyc service: submit mismatched qr for review: %w", err)
-		}
-		return underReview, nil
+	contentType := "image/jp2"
+	if len(data.PhotoBytes) >= 3 && data.PhotoBytes[0] == 0xFF && data.PhotoBytes[1] == 0xD8 && data.PhotoBytes[2] == 0xFF {
+		contentType = "image/jpeg"
 	}
 
-	// 8. If clean match, complete verification.
-	now := time.Now().UTC()
-	var expiresAt time.Time
-	if s.cfg.VerificationValidityDays > 0 {
-		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
-	}
-	// KYC-06: Year-only DOB (isDedupable=false) must not establish adulthood on January 1.
-	// Only full-precision DOBs yield a deterministic MajorityDate.
-	var majorityDate *time.Time
-	if isDedupable {
-		majorityDate, _ = domain.MajorityDateFromDOB(canonicalDOB)
-	}
-	verified, err := s.repo.CompleteVerificationTx(ctx,
-		pending.ID, data.UIDLast4, identityHash, isDedupable,
-		s.cfg.HashKeyVersion, &qrStatus, false, nil,
-		now, expiresAt, majorityDate, actor,
+	qrDataJSON, _ := json.Marshal(map[string]any{
+		"name":          data.Name,
+		"dob":           dobStr,
+		"gender":        data.Gender,
+		"masked_uid":    data.UIDLast4,
+		"qr_status":     qrStatus,
+		"name_mismatch": nameMismatch,
+		"has_photo":     len(data.PhotoBytes) > 0,
+	})
+
+	underReview, err := s.repo.SubmitManualReviewTx(ctx,
+		pending.ID, data.UIDLast4, identityHash,
+		string(qrDataJSON), "", data.PhotoBytes, contentType, actor, "aadhaar",
 	)
 	if err != nil {
-		return nil, fmt.Errorf("kyc service: complete qr verification: %w", err)
+		return nil, fmt.Errorf("kyc service: submit qr for manual review: %w", err)
 	}
-	return verified, nil
+	return underReview, nil
 }
 
 // VerifyDocument executes the document-upload KYC flow using Cashfree Smart OCR (/bharat-ocr).

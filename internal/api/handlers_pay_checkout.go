@@ -60,7 +60,19 @@ func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 	// otherwise return a read-only PayIntent without creating a provider order.
 	if c.Request.Method == http.MethodGet && prop.PaymentMode == domain.PaymentModeCashfree {
 		payable := due.Status == domain.DueStatusPending || due.Status == domain.DueStatusPartial
-		if h.IntentStore != nil {
+		if h.IntentLifecycle != nil {
+			if existing, _ := h.IntentLifecycle.ReusableSessionForDue(c.Request.Context(), due.ID, 0); existing != nil && existing.PaymentSessionID != nil && *existing.PaymentSessionID != "" {
+				c.JSON(http.StatusOK, domain.PayIntent{
+					Mode:             domain.PaymentModeCashfree,
+					PaymentSessionID: *existing.PaymentSessionID,
+					DueCode:          due.DueCode,
+					AmountPaise:      due.Amount,
+					Note:             domain.UPINote(due.DueCode),
+					Payable:          payable,
+				})
+				return
+			}
+		} else if h.IntentStore != nil {
 			if existing, _ := h.IntentStore.LatestOpenForDue(c.Request.Context(), due.ID); existing != nil && existing.PaymentSessionID != nil && *existing.PaymentSessionID != "" {
 				c.JSON(http.StatusOK, domain.PayIntent{
 					Mode:             domain.PaymentModeCashfree,
@@ -163,12 +175,17 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 		return
 	}
 
-	if h.IntentStore == nil || h.CashfreeClient == nil || h.Payments == nil {
+	if (h.IntentLifecycle == nil && h.IntentStore == nil) || h.CashfreeClient == nil || h.Payments == nil {
 		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
 	}
 
-	intent, err := h.IntentStore.LatestOpenForDue(c.Request.Context(), id)
+	var intent *domain.PaymentIntent
+	if h.IntentLifecycle != nil {
+		intent, err = h.IntentLifecycle.IntentToVerifyForDue(c.Request.Context(), id)
+	} else {
+		intent, err = h.IntentStore.LatestOpenForDue(c.Request.Context(), id)
+	}
 	if err != nil || intent == nil || intent.ProviderOrderID == "" {
 		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
 		return
@@ -240,12 +257,18 @@ func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 		return
 	}
 
-	if h.IntentStore == nil || h.CashfreeClient == nil || h.Payments == nil {
+	if (h.IntentLifecycle == nil && h.IntentStore == nil) || h.CashfreeClient == nil || h.Payments == nil {
 		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": []string{}})
 		return
 	}
 
-	intent, err := h.IntentStore.GetByOrderID(c.Request.Context(), orderID)
+	var intent *domain.PaymentIntent
+	var err error
+	if h.IntentLifecycle != nil {
+		intent, err = h.IntentLifecycle.IntentToVerify(c.Request.Context(), orderID)
+	} else {
+		intent, err = h.IntentStore.GetByOrderID(c.Request.Context(), orderID)
+	}
 	if err != nil || intent == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
