@@ -110,9 +110,10 @@ type Expense struct {
 
 // ExpenseVoid carries the audit data written when an expense is voided.
 type ExpenseVoid struct {
-	Reason   string
-	VoidedBy uuid.UUID
-	VoidedAt time.Time
+	Reason    string
+	VoidedBy  uuid.UUID
+	ActorRole string
+	VoidedAt  time.Time
 }
 
 type DailyFinancialRollup struct {

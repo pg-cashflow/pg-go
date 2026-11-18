@@ -168,6 +168,10 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 
 	if h.RefundApprovalRepo != nil {
 		if err := h.RefundApprovalRepo.CreateRequest(ctx, req); err != nil {
+			if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
+				apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
+				return
+			}
 			slog.Error("failed to create refund approval request", "payment_id", paymentID, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record refund approval request"})
 			return

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 // ResolveReceiptCreditReq payload for converting an unapplied receipt to tenant advance credit.
@@ -261,9 +262,21 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 		return
 	}
 
-	if isManager && managerRefundExceedsLimit(managerLimit, receipt.AmountPaise) {
-		apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
-		return
+	if isManager {
+		if managerRefundExceedsLimit(managerLimit, receipt.AmountPaise) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
+			return
+		}
+		if h.Pool != nil {
+			if err := postgres.AssertCapabilityTx(c.Request.Context(), h.Pool, pid, uid, "manager", "refunds.issue"); err != nil {
+				if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
+					apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to verify capability"})
+				return
+			}
+		}
 	}
 
 	// 2. Cryptographic Step-Up Authentication / Dual Control Verification
@@ -339,7 +352,11 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 
 	// Set Idempotency-Key on context request header so executePaymentRefund sees it
 	c.Request.Header.Set("Idempotency-Key", idempotencyKey)
-	refRow, err := h.executePaymentRefund(c, pid, uid, paymentID, refundReq, "owner")
+	source := "owner"
+	if isManager {
+		source = "manager"
+	}
+	refRow, err := h.executePaymentRefund(c, pid, uid, paymentID, refundReq, source)
 	if err != nil {
 		return
 	}

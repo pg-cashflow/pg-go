@@ -1246,6 +1246,14 @@ func (r *KYCRepo) ApproveManualReviewTx(
 	var updated *domain.KYCVerification
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		actorRole := "owner"
+		if strings.HasPrefix(actor, "manager:") || actor == "manager" {
+			actorRole = "manager"
+		}
+		if err := AssertCapabilityTx(ctx, tx, propertyID, reviewerID, actorRole, "kyc.documents.review"); err != nil {
+			return err
+		}
+
 		var tenantID uuid.UUID
 		err := tx.QueryRow(ctx, `
 			SELECT kv.tenant_id
@@ -1362,6 +1370,14 @@ func (r *KYCRepo) RejectManualReviewTx(
 	var updated *domain.KYCVerification
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		actorRole := "owner"
+		if strings.HasPrefix(actor, "manager:") || actor == "manager" {
+			actorRole = "manager"
+		}
+		if err := AssertCapabilityTx(ctx, tx, propertyID, reviewerID, actorRole, "kyc.documents.review"); err != nil {
+			return err
+		}
+
 		var tenantID uuid.UUID
 		err := tx.QueryRow(ctx, `
 			SELECT kv.tenant_id

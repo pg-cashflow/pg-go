@@ -30,6 +30,9 @@ func (r *FinanceRepo) InsertExpenseAtomic(ctx context.Context, e *domain.Expense
 	defer tx.Rollback(ctx)
 
 	if e.CreatedByRole == string(domain.RoleManager) {
+		if err := AssertCapabilityTx(ctx, tx, e.PropertyID, e.CreatedBy, e.CreatedByRole, "expenses.post"); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, e.PropertyID, e.CreatedBy); err != nil {
 			return fmt.Errorf("lock manager spend: %w", err)
 		}
@@ -158,7 +161,8 @@ func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID
 	}
 
 	var cur string
-	err = tx.QueryRow(ctx, `SELECT status FROM expenses WHERE id = $1 FOR UPDATE`, expenseID).Scan(&cur)
+	var pid uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT status, property_id FROM expenses WHERE id = $1 FOR UPDATE`, expenseID).Scan(&cur, &pid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
 	}
@@ -167,6 +171,16 @@ func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID
 	}
 	if domain.ExpenseStatus(cur) != expected {
 		return domain.ErrExpenseStateChanged
+	}
+
+	role := v.ActorRole
+	if role == "" {
+		_ = tx.QueryRow(ctx, `SELECT role FROM users WHERE id = $1`, v.VoidedBy).Scan(&role)
+	}
+	if role == string(domain.RoleManager) || role == string(domain.PayerManager) || role == "manager" {
+		if err := AssertCapabilityTx(ctx, tx, pid, v.VoidedBy, "manager", "expenses.void"); err != nil {
+			return err
+		}
 	}
 
 	if _, err := tx.Exec(ctx, `
@@ -208,6 +222,9 @@ func (r *FinanceRepo) RecordExpensePaymentAtomic(ctx context.Context, p *domain.
 	defer tx.Rollback(ctx)
 
 	if p.PayerRole == domain.PayerManager {
+		if err := AssertCapabilityTx(ctx, tx, p.PropertyID, p.PayerUserID, string(p.PayerRole), "expenses.post"); err != nil {
+			return nil, err
+		}
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext(format('manager-spend:%s:%s', $1::text, $2::text)))`, p.PropertyID, p.PayerUserID); err != nil {
 			return nil, fmt.Errorf("lock manager spend: %w", err)
 		}

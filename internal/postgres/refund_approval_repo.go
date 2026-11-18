@@ -39,21 +39,29 @@ func (r *RefundApprovalRepo) CreateRequest(ctx context.Context, req *domain.Refu
 		approvalsJSON = []byte("[]")
 	}
 
-	_, err = r.pool.Exec(ctx, `
-		INSERT INTO refund_approval_requests (
-			id, property_id, payment_id, tenant_id, amount_paise, reason, idempotency_key,
-			requested_by, requested_by_role, status, required_approvals, material_hash,
-			approvals, rejected_by, rejected_at, rejection_reason, refund_id, created_at, updated_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7,
-			$8, $9, $10, $11, $12,
-			$13, $14, $15, $16, $17, $18, $19
-		)`,
-		req.ID, req.PropertyID, req.PaymentID, req.TenantID, req.AmountPaise, req.Reason, req.IdempotencyKey,
-		req.RequestedBy, req.RequestedByRole, req.Status, req.RequiredApprovals, req.MaterialHash,
-		approvalsJSON, req.RejectedBy, req.RejectedAt, req.RejectionReason, req.RefundID, req.CreatedAt, req.UpdatedAt,
-	)
-	return err
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if req.RequestedByRole == string(domain.RoleManager) || req.RequestedByRole == "manager" {
+			if err := AssertCapabilityTx(ctx, tx, req.PropertyID, req.RequestedBy, req.RequestedByRole, "refunds.issue"); err != nil {
+				return err
+			}
+		}
+
+		_, err := tx.Exec(ctx, `
+			INSERT INTO refund_approval_requests (
+				id, property_id, payment_id, tenant_id, amount_paise, reason, idempotency_key,
+				requested_by, requested_by_role, status, required_approvals, material_hash,
+				approvals, rejected_by, rejected_at, rejection_reason, refund_id, created_at, updated_at
+			) VALUES (
+				$1, $2, $3, $4, $5, $6, $7,
+				$8, $9, $10, $11, $12,
+				$13, $14, $15, $16, $17, $18, $19
+			)`,
+			req.ID, req.PropertyID, req.PaymentID, req.TenantID, req.AmountPaise, req.Reason, req.IdempotencyKey,
+			req.RequestedBy, req.RequestedByRole, req.Status, req.RequiredApprovals, req.MaterialHash,
+			approvalsJSON, req.RejectedBy, req.RejectedAt, req.RejectionReason, req.RefundID, req.CreatedAt, req.UpdatedAt,
+		)
+		return err
+	})
 }
 
 func (r *RefundApprovalRepo) scanRow(row pgx.Row) (*domain.RefundApprovalRequest, error) {

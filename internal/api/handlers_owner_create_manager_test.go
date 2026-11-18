@@ -17,7 +17,8 @@ import (
 )
 
 type mockManagerUserStore struct {
-	createdUsers []*domain.User
+	createdUsers   []*domain.User
+	getByPhoneUser *domain.User
 }
 
 func (m *mockManagerUserStore) Create(_ context.Context, u *domain.User) error {
@@ -25,6 +26,9 @@ func (m *mockManagerUserStore) Create(_ context.Context, u *domain.User) error {
 	return nil
 }
 func (m *mockManagerUserStore) GetByPhone(_ context.Context, _ string) (*domain.User, error) {
+	if m.getByPhoneUser != nil {
+		return m.getByPhoneUser, nil
+	}
 	return nil, domain.ErrNotFound
 }
 func (m *mockManagerUserStore) GetByID(_ context.Context, _ uuid.UUID) (*domain.User, error) {
@@ -230,4 +234,132 @@ func TestOwnerCreateManager_CapabilityGrantFailure(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status 500 when capability grant fails, got %d body=%s", w.Code, w.Body.String())
 	}
+}
+
+func TestOwnerCreateManager_RoleAndPropertyProtection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test-secret-key-with-sufficient-length-32"
+	propID := uuid.New()
+	otherPropID := uuid.New()
+
+	ownerToken, err := auth.IssueToken(jwtSecret, &domain.User{
+		ID:         uuid.New(),
+		Role:       domain.RoleOwner,
+		PropertyID: &propID,
+	})
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	t.Run("Existing tenant account returns 409 Conflict", func(t *testing.T) {
+		tenantUser := &domain.User{
+			ID:         uuid.New(),
+			Phone:      "+919876543210",
+			Role:       domain.RoleTenant,
+			PropertyID: &propID,
+		}
+		store := &mockManagerUserStore{getByPhoneUser: tenantUser}
+		capStore := &mockFailingCapabilityStore{}
+		router := gin.New()
+		h := &Handlers{Deps: Deps{
+			JWTSecret:       jwtSecret,
+			UserStore:       store,
+			CapabilityStore: capStore,
+		}}
+		owner := router.Group("/api/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
+		owner.POST("/managers", h.OwnerCreateManager)
+
+		payload := map[string]any{
+			"phone":       "9876543210",
+			"property_id": propID.String(),
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/managers", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected status 409 for role mismatch, got %d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "automatic conversion is denied") {
+			t.Fatalf("expected error message to mention automatic conversion denied, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("Existing manager on different property returns 409 Conflict", func(t *testing.T) {
+		otherMgr := &domain.User{
+			ID:         uuid.New(),
+			Phone:      "+919876543210",
+			Role:       domain.RoleManager,
+			PropertyID: &otherPropID,
+		}
+		store := &mockManagerUserStore{getByPhoneUser: otherMgr}
+		capStore := &mockFailingCapabilityStore{}
+		router := gin.New()
+		h := &Handlers{Deps: Deps{
+			JWTSecret:       jwtSecret,
+			UserStore:       store,
+			CapabilityStore: capStore,
+		}}
+		owner := router.Group("/api/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
+		owner.POST("/managers", h.OwnerCreateManager)
+
+		payload := map[string]any{
+			"phone":       "9876543210",
+			"property_id": propID.String(),
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/managers", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("expected status 409 for cross-property transfer, got %d body=%s", w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "cross-property transfer is denied") {
+			t.Fatalf("expected error message to mention cross-property transfer denied, got %s", w.Body.String())
+		}
+	})
+
+	t.Run("Existing manager on same property returns 200 without re-granting", func(t *testing.T) {
+		sameMgr := &domain.User{
+			ID:         uuid.New(),
+			Phone:      "+919876543210",
+			Role:       domain.RoleManager,
+			PropertyID: &propID,
+		}
+		store := &mockManagerUserStore{getByPhoneUser: sameMgr}
+		// If grant is called, it would fail
+		capStore := &mockFailingCapabilityStore{grantErr: errors.New("should not call grant for existing")}
+		router := gin.New()
+		h := &Handlers{Deps: Deps{
+			JWTSecret:       jwtSecret,
+			UserStore:       store,
+			CapabilityStore: capStore,
+		}}
+		owner := router.Group("/api/owner", auth.RequireOwner(jwtSecret, nil), h.ResolveOwnerPropertyScope())
+		owner.POST("/managers", h.OwnerCreateManager)
+
+		payload := map[string]any{
+			"phone":       "9876543210",
+			"property_id": propID.String(),
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/managers", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200 for existing manager on same property, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
 }

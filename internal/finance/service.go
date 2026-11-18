@@ -288,7 +288,7 @@ func (s *Service) voidExpenseOnce(ctx context.Context, in VoidExpenseInput, reas
 		}
 	}
 
-	v := domain.ExpenseVoid{Reason: reason, VoidedBy: in.ActorID, VoidedAt: at}
+	v := domain.ExpenseVoid{Reason: reason, VoidedBy: in.ActorID, ActorRole: string(in.ActorRole), VoidedAt: at}
 	if err := s.Store.VoidExpenseAtomic(ctx, e.ID, e.Status, lines, v); err != nil {
 		return nil, err
 	}

@@ -68,6 +68,17 @@ func prepareRefundTx(ctx context.Context, tx pgx.Tx, pid uuid.UUID, p *domain.Pa
 	var allocationsToCreate []refundAllocItem
 	txPayRepo := postgres.NewPaymentRepo(tx)
 
+	// Level 1 users and Level 2 manager_capabilities check:
+	if rfRow != nil && rfRow.InitiatedBy != nil {
+		actorRole := "owner"
+		if rfRow.Source == "manager" {
+			actorRole = "manager"
+		}
+		if err := postgres.AssertCapabilityTx(ctx, tx, pid, *rfRow.InitiatedBy, actorRole, "refunds.issue"); err != nil {
+			return err
+		}
+	}
+
 	// 1. Lock Tenant (1)
 		var dummy uuid.UUID
 		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
@@ -318,6 +329,12 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 		return errors.New("database pool unavailable")
 	}
 	return postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if rfRow != nil && rfRow.InitiatedBy != nil && rfRow.Source == "manager" {
+			if err := postgres.AssertCapabilityTx(ctx, tx, rfRow.PropertyID, *rfRow.InitiatedBy, "manager", "refunds.issue"); err != nil {
+				return err
+			}
+		}
+
 		var curStatus string
 		err := tx.QueryRow(ctx, `SELECT status FROM gateway_refunds WHERE id = $1 FOR UPDATE`, rfRow.ID).Scan(&curStatus)
 		if err == nil && domain.NormalizeRefundStatus(curStatus) == domain.RefundStatusSucceeded {
@@ -803,9 +820,18 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 		return
 	}
 
+	claims, _ := auth.ClaimsFromContext(c)
+	if claims.Role == domain.RoleManager {
+		rf.Source = "manager"
+		rf.InitiatedBy = &uid
+	}
 	rf.Status = domain.RefundStatusCancelled
 	rf.UpdatedAt = time.Now().UTC()
 	if err := runner.CleanupFailedRefund(ctx, rf); err != nil {
+		if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to cancel refunds", apierr.CodeFinanceForbidden)
+			return
+		}
 		slog.Error("cleanup cancelled refund failed", "error", err, "refund_id", rf.ID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed cancelling refund"})
 		return
@@ -1367,6 +1393,10 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 			} else {
 				c.JSON(status, gin.H{"error": vErr.msg})
 			}
+			return nil, err
+		}
+		if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
 			return nil, err
 		}
 		respondErr(c, err)

@@ -19,6 +19,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"golang.org/x/time/rate"
 )
 
@@ -151,6 +152,8 @@ func kycClientErr(err error) error {
 		return clientErrWithCode(http.StatusNotFound, "verification not found", apierr.Code("kyc.not_found"))
 	case errors.Is(err, domain.ErrVerificationNotPending):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.Code("kyc.not_pending"))
+	case errors.Is(err, postgres.ErrCapabilityDenied), errors.Is(err, postgres.ErrManagerInactive):
+		return clientErrWithCode(http.StatusForbidden, "manager lacks required permission to review kyc documents", apierr.CodeAuthForbidden)
 	default:
 		return err
 	}
@@ -841,7 +844,11 @@ func (h *Handlers) OwnerKYCApprove(c *gin.Context) {
 		return
 	}
 
-	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	actorRole := "owner"
+	if claims.Role == domain.RoleManager {
+		actorRole = "manager"
+	}
+	actor := fmt.Sprintf("%s:%s", actorRole, claims.UserID)
 	v, err := svc.ApproveManualReview(c.Request.Context(), verificationID, propertyID, claims.UserID, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
@@ -881,7 +888,11 @@ func (h *Handlers) OwnerKYCReject(c *gin.Context) {
 		return
 	}
 
-	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	actorRole := "owner"
+	if claims.Role == domain.RoleManager {
+		actorRole = "manager"
+	}
+	actor := fmt.Sprintf("%s:%s", actorRole, claims.UserID)
 	v, err := svc.RejectManualReview(c.Request.Context(), verificationID, propertyID, claims.UserID, body.Reason, actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))

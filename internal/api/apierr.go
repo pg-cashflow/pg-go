@@ -107,7 +107,7 @@ func financeClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, "accounting period is closed", apierr.CodeFinancePeriodClosed)
 	case errors.Is(err, finance.ErrNotFound):
 		return clientErrWithCode(http.StatusNotFound, "not found", apierr.CodeFinanceNotFound)
-	case errors.Is(err, finance.ErrForbidden):
+	case errors.Is(err, finance.ErrForbidden), errors.Is(err, postgres.ErrCapabilityDenied), errors.Is(err, postgres.ErrManagerInactive):
 		return clientErrWithCode(http.StatusForbidden, "forbidden", apierr.CodeFinanceForbidden)
 	case errors.Is(err, finance.ErrExpenseNotVoidable):
 		return clientErrWithCode(http.StatusConflict, err.Error(), apierr.CodeFinanceExpenseNotVoidable)

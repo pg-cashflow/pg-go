@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -97,17 +98,28 @@ func (h *Handlers) OwnerCreateManager(c *gin.Context) {
 	}
 	existing, _ := h.UserStore.GetByPhone(c.Request.Context(), normPhone)
 	if existing != nil {
-		u = existing
-		if u.Role != domain.RoleManager || u.PropertyID == nil || *u.PropertyID != pid {
-			u.Role = domain.RoleManager
-			u.PropertyID = &pid
-			_ = h.UserStore.SetPropertyID(c.Request.Context(), u.ID, pid)
-		}
-	} else {
-		if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
-			respondErr(c, err)
+		if existing.Role != domain.RoleManager {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "account already exists with a different role; automatic conversion is denied",
+				"code":  apierr.CodeAuthForbidden,
+			})
 			return
 		}
+		if existing.PropertyID == nil || *existing.PropertyID != pid {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "manager already assigned to another property; cross-property transfer is denied",
+				"code":  apierr.CodeAuthForbidden,
+			})
+			return
+		}
+		// Existing manager on this property: return existing without blindly reactivating revoked capabilities
+		c.JSON(http.StatusOK, gin.H{"manager": existing})
+		return
+	}
+
+	if err := h.UserStore.Create(c.Request.Context(), u); err != nil {
+		respondErr(c, err)
+		return
 	}
 
 	if h.CapabilityStore != nil {

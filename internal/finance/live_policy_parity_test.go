@@ -70,6 +70,19 @@ func TestLivePostgres_PolicyExceededErrorIdentity(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, managerID)
 	}()
 
+	// Seed manager capability for expenses.post
+	_, err = pool.Exec(ctx, `
+		INSERT INTO manager_capabilities (property_id, user_id, capability, granted_by, granted_at)
+		VALUES ($1, $2, 'expenses.post', $2, NOW())
+		ON CONFLICT (property_id, user_id, capability) DO NOTHING
+	`, propID, managerID)
+	if err != nil {
+		t.Fatalf("failed to grant manager capability: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM manager_capabilities WHERE property_id = $1 AND user_id = $2`, propID, managerID)
+	}()
+
 	// 3. Initialize Finance Service with Postgres repository
 	repo := postgres.NewFinanceRepo(pool)
 	svc := finance.NewService(repo, nil)

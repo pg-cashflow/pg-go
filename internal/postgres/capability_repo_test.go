@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -348,4 +349,265 @@ func TestCapabilityRepo_RevokeAll(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mockUserRow implements pgx.Row for user locking queries.
+type mockUserRow struct {
+	role   string
+	propID *uuid.UUID
+	err    error
+}
+
+func (r *mockUserRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) >= 2 {
+		if ptrRole, ok := dest[0].(*string); ok {
+			*ptrRole = r.role
+		}
+		if ptrProp, ok := dest[1].(**uuid.UUID); ok {
+			*ptrProp = r.propID
+		}
+	} else if len(dest) == 1 {
+		if ptrID, ok := dest[0].(*uuid.UUID); ok && r.propID != nil {
+			*ptrID = *r.propID
+		}
+	}
+	return nil
+}
+
+// mockIntRow implements pgx.Row for single int queries (SELECT 1).
+type mockIntRow struct {
+	val int
+	err error
+}
+
+func (r *mockIntRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(dest) > 0 {
+		if ptr, ok := dest[0].(*int); ok {
+			*ptr = r.val
+		}
+	}
+	return nil
+}
+
+func TestAssertCapabilityTx(t *testing.T) {
+	propID := uuid.New()
+	userID := uuid.New()
+	otherPropID := uuid.New()
+
+	t.Run("Owner bypass succeeds without DB query", func(t *testing.T) {
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				t.Fatal("DB query should not be called for owner")
+				return nil
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "owner", "expenses.post")
+		if err != nil {
+			t.Fatalf("expected nil for owner, got %v", err)
+		}
+	})
+
+	t.Run("Tenant role returns ErrManagerInactive", func(t *testing.T) {
+		db := &mockCapabilityDB{}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "tenant", "expenses.post")
+		if !errors.Is(err, ErrManagerInactive) {
+			t.Fatalf("expected ErrManagerInactive, got %v", err)
+		}
+	})
+
+	t.Run("Manager user not found in DB returns ErrManagerInactive", func(t *testing.T) {
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockUserRow{err: pgx.ErrNoRows}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if !errors.Is(err, ErrManagerInactive) {
+			t.Fatalf("expected ErrManagerInactive, got %v", err)
+		}
+	})
+
+	t.Run("Manager property mismatch returns ErrManagerInactive", func(t *testing.T) {
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockUserRow{role: "manager", propID: &otherPropID}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if !errors.Is(err, ErrManagerInactive) {
+			t.Fatalf("expected ErrManagerInactive, got %v", err)
+		}
+	})
+
+	t.Run("Manager role mismatch in DB returns ErrManagerInactive", func(t *testing.T) {
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockUserRow{role: "tenant", propID: &propID}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if !errors.Is(err, ErrManagerInactive) {
+			t.Fatalf("expected ErrManagerInactive, got %v", err)
+		}
+	})
+
+	t.Run("Manager capability revoked or missing returns ErrCapabilityDenied", func(t *testing.T) {
+		queryCount := 0
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				queryCount++
+				if queryCount == 1 {
+					return &mockUserRow{role: "manager", propID: &propID}
+				}
+				return &mockIntRow{err: pgx.ErrNoRows}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if !errors.Is(err, ErrCapabilityDenied) {
+			t.Fatalf("expected ErrCapabilityDenied, got %v", err)
+		}
+	})
+
+	t.Run("Active manager with active grant succeeds", func(t *testing.T) {
+		queryCount := 0
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				queryCount++
+				if queryCount == 1 {
+					return &mockUserRow{role: "manager", propID: &propID}
+				}
+				return &mockIntRow{val: 1}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if err != nil {
+			t.Fatalf("expected nil for active manager with capability, got %v", err)
+		}
+		if queryCount != 2 {
+			t.Fatalf("expected 2 hierarchical queries, got %d", queryCount)
+		}
+	})
+}
+
+func TestCapabilityRepo_TxLockHierarchy(t *testing.T) {
+	propID := uuid.New()
+	userID := uuid.New()
+	grantedBy := uuid.New()
+
+	t.Run("GrantTx locks users FOR UPDATE before inserting capability", func(t *testing.T) {
+		step := 0
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				step++
+				if !strings.Contains(sql, "FROM users WHERE id = $1 FOR UPDATE") {
+					t.Fatalf("step 1 must lock users FOR UPDATE, got sql: %s", sql)
+				}
+				return &mockUserRow{propID: &propID}
+			},
+			execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				if step != 1 {
+					t.Fatalf("exec must follow user lock step 1, got step: %d", step)
+				}
+				if !strings.Contains(sql, "INSERT INTO manager_capabilities") {
+					t.Fatalf("exec must insert into manager_capabilities, got: %s", sql)
+				}
+				return pgconn.NewCommandTag("INSERT 0 1"), nil
+			},
+		}
+		repo := NewCapabilityRepo(db)
+		err := repo.GrantTx(context.Background(), db, propID, userID, "expenses.post", grantedBy)
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if step != 1 {
+			t.Fatalf("expected user lock step executed, got %d", step)
+		}
+	})
+
+	t.Run("RevokeTx locks users FOR UPDATE before revoking capability", func(t *testing.T) {
+		step := 0
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				step++
+				if !strings.Contains(sql, "FROM users WHERE id = $1 FOR UPDATE") {
+					t.Fatalf("step 1 must lock users FOR UPDATE, got sql: %s", sql)
+				}
+				return &mockUserRow{propID: &propID}
+			},
+			execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				if step != 1 {
+					t.Fatalf("exec must follow user lock step 1, got step: %d", step)
+				}
+				if !strings.Contains(sql, "UPDATE manager_capabilities SET revoked_at = NOW()") {
+					t.Fatalf("exec must update manager_capabilities, got: %s", sql)
+				}
+				return pgconn.NewCommandTag("UPDATE 1"), nil
+			},
+		}
+		repo := NewCapabilityRepo(db)
+		err := repo.RevokeTx(context.Background(), db, propID, userID, "expenses.post")
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if step != 1 {
+			t.Fatalf("expected user lock step executed, got %d", step)
+		}
+	})
+
+	t.Run("RevokeAllTx locks users FOR UPDATE before revoking all capabilities", func(t *testing.T) {
+		step := 0
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				step++
+				if !strings.Contains(sql, "FROM users WHERE id = $1 FOR UPDATE") {
+					t.Fatalf("step 1 must lock users FOR UPDATE, got sql: %s", sql)
+				}
+				return &mockUserRow{propID: &propID}
+			},
+			execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				if step != 1 {
+					t.Fatalf("exec must follow user lock step 1, got step: %d", step)
+				}
+				if !strings.Contains(sql, "UPDATE manager_capabilities SET revoked_at = NOW()") {
+					t.Fatalf("exec must update manager_capabilities, got: %s", sql)
+				}
+				return pgconn.NewCommandTag("UPDATE 3"), nil
+			},
+		}
+		repo := NewCapabilityRepo(db)
+		err := repo.RevokeAllTx(context.Background(), db, propID, userID)
+		if err != nil {
+			t.Fatalf("expected nil, got %v", err)
+		}
+		if step != 1 {
+			t.Fatalf("expected user lock step executed, got %d", step)
+		}
+	})
+
+	t.Run("Lock failure in RevokeAllTx fails fast without executing Level 2", func(t *testing.T) {
+		execCalled := false
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockUserRow{err: pgx.ErrNoRows}
+			},
+			execFn: func(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+				execCalled = true
+				return pgconn.CommandTag{}, nil
+			},
+		}
+		repo := NewCapabilityRepo(db)
+		err := repo.RevokeAllTx(context.Background(), db, propID, userID)
+		if err == nil {
+			t.Fatalf("expected error on missing user, got nil")
+		}
+		if execCalled {
+			t.Fatalf("Level 2 exec must not be called when Level 1 lock fails")
+		}
+	})
 }
