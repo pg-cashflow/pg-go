@@ -218,8 +218,6 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	tenant_g := r.Group("/api/tenant/kyc")
 	{
 		tenant_g.POST("/consent", h.TenantKYCConsent)
-		tenant_g.POST("/digilocker/init", h.TenantKYCInitiateDigiLocker)
-		tenant_g.GET("/digilocker/status", h.TenantKYCDigiLockerStatus)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
 		tenant_g.POST("/qr/verify", h.TenantKYCSecureQRVerify)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)

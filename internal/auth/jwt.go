@@ -31,6 +31,10 @@ func tokenVersionOf(user *domain.User) int {
 }
 
 const (
+	// JWTIssuer and JWTAudience bind access tokens to this API; VerifyToken enforces both.
+	JWTIssuer   = "pg-cashflow"
+	JWTAudience = "pg-cashflow-api"
+
 	AccessTokenTTL  = 15 * time.Minute
 	RefreshTokenTTL = 30 * 24 * time.Hour
 )
@@ -51,6 +55,8 @@ func issueTokenWithTTL(secret string, user *domain.User, ttl time.Duration, fami
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        uuid.New().String(),
 			Subject:   user.ID.String(),
+			Issuer:    JWTIssuer,
+			Audience:  jwt.ClaimStrings{JWTAudience},
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
@@ -94,6 +100,8 @@ func VerifyToken(secret, tokenString string) (*Claims, error) {
 		},
 		jwt.WithValidMethods([]string{"HS256"}),
 		jwt.WithExpirationRequired(),
+		jwt.WithIssuer(JWTIssuer),
+		jwt.WithAudience(JWTAudience),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("parse token: %w", err)

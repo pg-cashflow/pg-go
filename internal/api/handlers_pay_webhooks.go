@@ -367,7 +367,11 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 		if idempotencyHeader != "" {
 			_, _ = txPayRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 		}
-		if _, err := tx.Exec(ctx, `UPDATE payment_intents SET status='failed', updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded')`, fail.OrderID); err != nil {
+		// A failed ATTEMPT is not a failed ORDER: Cashfree lets the payer retry on the same
+		// order until order_expiry_time. Leave the intent status untouched so a later
+		// PAYMENT_SUCCESS_WEBHOOK or TenantDuePayVerify still finds it via LatestOpenForDue.
+		// Terminal order failure/expiry is set by the stale-intent poller, not by this event.
+		if _, err := tx.Exec(ctx, `UPDATE payment_intents SET updated_at=NOW() WHERE provider_order_id=$1 AND status NOT IN ('paid', 'refunded', 'failed', 'superseded')`, fail.OrderID); err != nil {
 			return err
 		}
 		return nil

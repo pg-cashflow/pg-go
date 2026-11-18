@@ -469,3 +469,95 @@ func TestTenantDuePay_ReadOnlyGET(t *testing.T) {
 		t.Errorf("expected empty payment_session_id on GET without prior intent, got %s", resp.PaymentSessionID)
 	}
 }
+
+func TestTenantDuePayVerify_RetryAfterFailedAttempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	orderID := "order_test_retry_success"
+	cfPaymentID := "cf_pay_retry_succ_99"
+	bankRef := "UTR_RETRY_99"
+	amountPaise := int64(150000)
+
+	tenant := &domain.Tenant{
+		ID:         tenantID,
+		PropertyID: propID,
+		Status:     domain.TenantStatusActive,
+	}
+	due := &domain.Due{
+		ID:         dueID,
+		PropertyID: propID,
+		TenantID:   tenantID,
+		Amount:     amountPaise,
+		Status:     domain.DueStatusPending,
+	}
+
+	// Because PAYMENT_FAILED_WEBHOOK leaves intent status untouched (e.g. 'created' or 'initiating')
+	// instead of marking the whole order intent 'failed', LatestOpenForDue correctly finds the intent.
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		DueID:           dueID,
+		Provider:        "cashfree",
+		ProviderOrderID: orderID,
+		AmountPaise:     amountPaise,
+		Status:          domain.IntentCreated,
+	}
+
+	dueStore := &mockVerifyDueStore{
+		dues: map[uuid.UUID]*domain.Due{dueID: due},
+	}
+	intentStore := &mockVerifyIntentStore{
+		intent: intent,
+		snapshot: []domain.PaymentIntentDue{
+			{DueID: dueID, AmountPaise: amountPaise},
+		},
+	}
+	cfClient := &mockVerifyCFClient{
+		cfID:    cfPaymentID,
+		bankRef: bankRef,
+		amount:  amountPaise,
+		ok:      true,
+	}
+	paySvc := &mockVerifyPayService{}
+
+	h := &Handlers{
+		Deps: Deps{
+			DueStore:       dueStore,
+			IntentStore:    intentStore,
+			CashfreeClient: cfClient,
+			Payments:       paySvc,
+		},
+	}
+
+	r := gin.New()
+	r.POST("/tenant/dues/:id/pay/verify", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, tenant)
+		h.TenantDuePayVerify(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/tenant/dues/%s/pay/verify", dueID), nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Paid   bool   `json:"paid"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if !resp.Paid || resp.Status != "PAID" {
+		t.Fatalf("expected paid=true, status=PAID, got %+v", resp)
+	}
+
+	if len(paySvc.settledDues) != 1 || paySvc.settledDues[0] != dueID {
+		t.Fatalf("expected due %s to be settled, got %v", dueID, paySvc.settledDues)
+	}
+}

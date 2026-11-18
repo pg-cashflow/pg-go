@@ -71,6 +71,13 @@ func (c *Config) ValidateForRealDeployment() error {
 		errs = append(errs, "OTP_HMAC_SECRET and MAGIC_LINK_HMAC_SECRET must be distinct secrets")
 	}
 
+	// Invariant: Cashfree KYC credentials without an identity secret would leave the KYC
+	// service unbuilt (every KYC route answers 503). Fail at startup instead.
+	if (strings.TrimSpace(c.CashfreeKYCAppID) != "" || strings.TrimSpace(c.CashfreeKYCSecretKey) != "") &&
+		strings.TrimSpace(c.KYCIdentitySecret) == "" && len(c.KYCIdentitySecrets) == 0 {
+		errs = append(errs, "KYC_IDENTITY_SECRET (or KYC_IDENTITY_SECRETS) is required when Cashfree KYC credentials are set")
+	}
+
 	// Invariant: KYC_DOC_CRYPTO_KEY is mandatory whenever KYC is enabled (DPDP Section 8(5))
 	kycEnabled := strings.TrimSpace(c.KYCIdentitySecret) != "" || len(c.KYCIdentitySecrets) > 0
 	if kycEnabled {
