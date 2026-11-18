@@ -36,6 +36,7 @@ type fakeKYCSvc struct {
 	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 	approveFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	rejectFn             func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	processDigiLockerFn  func(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
 }
 
 func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error) {
@@ -165,6 +166,9 @@ func (f *fakeKYCSvc) InitiateDigiLockerVerification(ctx context.Context, tenantI
 	}, "https://verification.cashfree.com/dgl/mock_123", nil
 }
 func (f *fakeKYCSvc) ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error) {
+	if f.processDigiLockerFn != nil {
+		return f.processDigiLockerFn(ctx, verificationIDStr, cfRefID, eventType, status, actor)
+	}
 	return &domain.KYCVerification{
 		ID:                uuid.New(),
 		VendorReferenceID: verificationIDStr,
@@ -218,6 +222,8 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 	tenant_g := r.Group("/api/tenant/kyc")
 	{
 		tenant_g.POST("/consent", h.TenantKYCConsent)
+		tenant_g.POST("/digilocker/init", h.TenantKYCDigiLockerInit)
+		tenant_g.GET("/digilocker/status", h.TenantKYCDigiLockerStatus)
 		tenant_g.POST("/upload", h.TenantKYCUpload)
 		tenant_g.POST("/qr/verify", h.TenantKYCSecureQRVerify)
 		tenant_g.POST("/aadhaar/otp/request", h.TenantKYCAadhaarOTPRequest)
@@ -446,6 +452,79 @@ func TestTenantKYCSecureQRVerify_NoConsent(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 Conflict for missing consent, got %d", w.Code)
+	}
+}
+
+// ---- TenantKYCDigiLocker ----------------------------------------------------
+
+func TestTenantKYCDigiLockerInit_MissingConsent(t *testing.T) {
+	svc := &fakeKYCSvc{
+		statusFn: func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+			return nil, nil, nil // No consent
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/digilocker/init", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for missing consent, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTenantKYCDigiLockerInit_Success(t *testing.T) {
+	svc := &fakeKYCSvc{
+		statusFn: func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error) {
+			return nil, &domain.KYCConsent{
+				ID:             uuid.New(),
+				ConsentVersion: "v1",
+			}, nil
+		},
+	}
+	r := kycTestTenantRouter(svc, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/digilocker/init", bytes.NewReader([]byte(`{"user_flow":"signin"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed unmarshaling response: %v", err)
+	}
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true, got %v", resp["ok"])
+	}
+	if resp["redirect_url"] != "https://verification.cashfree.com/dgl/mock_123" {
+		t.Errorf("unexpected redirect_url: %v", resp["redirect_url"])
+	}
+}
+
+func TestTenantKYCDigiLockerStatus_Success(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	r := kycTestTenantRouter(svc, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/digilocker/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed unmarshaling response: %v", err)
+	}
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true, got %v", resp["ok"])
 	}
 }
 
@@ -1228,6 +1307,50 @@ func TestCashfreeKYCWebhook_DuplicateCallbacksDoNotDuplicateDecisions(t *testing
 	_ = json.Unmarshal(wRej.Body.Bytes(), &respRej)
 	if respRej["status"] != "already_processed" || respRej["current_status"] != "rejected" {
 		t.Fatalf("expected already_processed with current_status rejected, got %v", respRej)
+	}
+}
+
+func TestCashfreeKYCWebhook_DigiLockerCallback_Success(t *testing.T) {
+	secret := "test_webhook_secret_key_12345"
+	called := false
+	verifID := uuid.New()
+	svc := &fakeKYCSvc{
+		processDigiLockerFn: func(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error) {
+			called = true
+			if verificationIDStr != "cf_dgl_123456" {
+				t.Errorf("expected verificationID cf_dgl_123456, got %s", verificationIDStr)
+			}
+			if eventType != domain.WebhookEventDigiLockerSuccess {
+				t.Errorf("expected event %s, got %s", domain.WebhookEventDigiLockerSuccess, eventType)
+			}
+			return &domain.KYCVerification{
+				ID:     verifID,
+				Status: domain.KYCStatusVerified,
+			}, nil
+		},
+	}
+	r := kycTestTenantRouter(svc, secret)
+
+	body := `{"verification_id":"cf_dgl_123456","event":"DIGILOCKER_VERIFICATION_SUCCESS","status":"AUTHENTICATED"}`
+	nowTS := fmt.Sprintf("%d", time.Now().Unix())
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/kyc", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-webhook-timestamp", nowTS)
+	req.Header.Set("x-webhook-signature", signTestHMAC(secret, nowTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	if !called {
+		t.Fatal("expected ProcessDigiLockerCallback to be called")
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "received" || resp["state"] != "verified" {
+		t.Errorf("unexpected response body: %v", resp)
 	}
 }
 

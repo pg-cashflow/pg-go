@@ -820,6 +820,52 @@ func (r *KYCRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time
 	return tag.RowsAffected(), nil
 }
 
+// ListPendingDigiLockerForReconciliation returns in-flight DigiLocker verification sessions
+// aged between minAgeCutoff (e.g. 5 minutes ago) and maxAgeCutoff (e.g. 60 minutes ago).
+func (r *KYCRepo) ListPendingDigiLockerForReconciliation(ctx context.Context, minAgeCutoff, maxAgeCutoff time.Time) ([]domain.KYCVerification, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification
+		WHERE status = 'pending'
+		  AND method = 'digilocker'
+		  AND created_at <= $1
+		  AND created_at > $2
+		ORDER BY created_at ASC
+	`, minAgeCutoff, maxAgeCutoff)
+	if err != nil {
+		return nil, fmt.Errorf("kyc: list pending digilocker for reconciliation: %w", err)
+	}
+	defer rows.Close()
+
+	var list []domain.KYCVerification
+	for rows.Next() {
+		v, err := r.scanKYCVerification(rows)
+		if err != nil {
+			return nil, fmt.Errorf("kyc: scan pending digilocker: %w", err)
+		}
+		list = append(list, *v)
+	}
+	return list, rows.Err()
+}
+
+// ExpireConsentWindowPendingDigiLocker transitions pending DigiLocker sessions older than the
+// 60-minute consent window to failed with reason 'consent_window_expired'.
+func (r *KYCRepo) ExpireConsentWindowPendingDigiLocker(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE kyc_verification
+		SET status = 'failed',
+			failure_reason = 'consent_window_expired',
+			updated_at = NOW()
+		WHERE status = 'pending'
+		  AND method = 'digilocker'
+		  AND created_at <= $1
+	`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("kyc: expire consent window pending digilocker: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ExpireLapsedVerifications transitions verified records that have passed their expires_at date
 // to 'expired' and atomically nulls out tenants.aadhaar_last4 to prevent stale PII display.
 // Strictly enforces the global lock hierarchy (tenants -> kyc_verification) per tenant.

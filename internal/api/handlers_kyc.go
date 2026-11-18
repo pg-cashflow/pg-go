@@ -389,6 +389,94 @@ func (h *Handlers) TenantKYCSecureQRVerify(c *gin.Context) {
 	c.JSON(http.StatusOK, tenantKYCVerificationView(v))
 }
 
+type tenantKYCDigiLockerInitRequest struct {
+	UserFlow string `json:"user_flow"`
+}
+
+// TenantKYCDigiLockerInit handles POST /api/tenant/kyc/digilocker/init.
+// Generates a Cashfree DigiLocker authorization URL with server-controlled redirect URL.
+func (h *Handlers) TenantKYCDigiLockerInit(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	var req tenantKYCDigiLockerInitRequest
+	if err := c.ShouldBindJSON(&req); err != nil && err != io.EOF {
+		apierr.RespondBindErr(c, "invalid request body", apierr.CodeRequestInvalidBody)
+		return
+	}
+
+	// Fail closed: enforce active DPDP consent before session initiation
+	_, consent, err := svc.GetStatus(c.Request.Context(), t.ID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if consent == nil {
+		apierr.RespondClientErr(c, http.StatusConflict, "no active consent recorded", apierr.Code("kyc.no_consent"))
+		return
+	}
+
+	// Security: construct redirect_url strictly on server from configured origin
+	baseURL := strings.TrimRight(h.FrontendURL, "/")
+	if baseURL == "" {
+		baseURL = "https://app.pgcashflow.in"
+	}
+	redirectURL := baseURL + "/tenant/kyc/return"
+
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+	v, sessionURL, err := svc.InitiateDigiLockerVerification(c.Request.Context(), t.ID, redirectURL, req.UserFlow, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":              true,
+		"verification_id": v.VendorReferenceID,
+		"redirect_url":    sessionURL,
+		"status":          v.Status,
+	})
+}
+
+// TenantKYCDigiLockerStatus handles GET /api/tenant/kyc/digilocker/status.
+// Polls Cashfree DigiLocker consent and document status and reconciles terminal state.
+func (h *Handlers) TenantKYCDigiLockerStatus(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	t := tenantFromContext(c)
+	if t == nil {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
+		return
+	}
+
+	actor := fmt.Sprintf("tenant:%s", t.ID)
+	v, err := svc.PollDigiLockerStatus(c.Request.Context(), t.ID, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ok":           true,
+		"verification": tenantKYCVerificationView(v),
+	})
+}
+
 type aadhaarOTPRequestBody struct {
 	AadhaarNumber string `json:"aadhaar_number" binding:"required"`
 }
@@ -966,8 +1054,11 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
-	// Smart OCR document verification webhook payload (DigiLocker events are no longer handled).
+	// Webhook payload supporting both Smart OCR and DigiLocker callbacks.
 	var payload struct {
+		Event          string `json:"event"`
+		EventType      string `json:"event_type"`
+		Type           string `json:"type"`
 		VerificationID string `json:"verification_id"`
 		ReferenceID    any    `json:"reference_id"`
 		Status         string `json:"status"`
@@ -991,6 +1082,47 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	payload.OCRData.UID = ""
 	for i := range raw {
 		raw[i] = 0
+	}
+
+	event := payload.Event
+	if event == "" {
+		event = payload.EventType
+	}
+	if event == "" {
+		event = payload.Type
+	}
+
+	refIDStr := ""
+	if payload.ReferenceID != nil {
+		refIDStr = fmt.Sprintf("%v", payload.ReferenceID)
+	}
+
+	isDigiLocker := strings.HasPrefix(payload.VerificationID, "cf_dgl_") ||
+		strings.HasPrefix(refIDStr, "cf_dgl_") ||
+		strings.HasPrefix(event, "DIGILOCKER_")
+
+	if isDigiLocker {
+		// Demultiplex: DigiLocker Verification Callback.
+		// Webhook is treated as an event notification/hint: ProcessDigiLockerCallback
+		// validates state and retrieves attested credentials directly from Cashfree's secure API.
+		v, err := svc.ProcessDigiLockerCallback(c.Request.Context(), payload.VerificationID, refIDStr, event, payload.Status, "cashfree:webhook")
+		if err != nil {
+			slog.WarnContext(c.Request.Context(), "kyc webhook: digilocker callback processing returned error",
+				"err", err,
+				"verification_id", payload.VerificationID,
+				"ref_id", refIDStr,
+				"event", event,
+			)
+			c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":          "received",
+			"verification_id": v.ID,
+			"state":           v.Status,
+		})
+		return
 	}
 
 	vendorRef := fmt.Sprintf("cf_ocr_%v", payload.ReferenceID)

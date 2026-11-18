@@ -1182,9 +1182,8 @@ func (s *Service) CanTenantPay(ctx context.Context, tenantID uuid.UUID) (bool, e
 	if v.Status == domain.KYCStatusVerified {
 		return true, nil
 	}
-	if v.Status == domain.KYCStatusPendingManualReview {
-		return s.repo.CanTenantPayWithPendingKYC(ctx, tenantID)
-	}
+	// Fail closed: only a verified identity can pay. A document in manual review
+	// does not grant payment access, and no property setting can change that.
 	return false, nil
 }
 

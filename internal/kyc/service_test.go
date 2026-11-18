@@ -52,6 +52,7 @@ func TestGetStatusRejectsExpiredVerificationWithoutExpiryJob(t *testing.T) {
 }
 
 type fakeRepo struct {
+	pendingPayAllowed       bool
 	consent                 *domain.KYCConsent
 	verification            *domain.KYCVerification
 	latestVerif             *domain.KYCVerification
@@ -340,7 +341,7 @@ func (f *fakeRepo) UpdateCFReferenceIDTx(_ context.Context, _ uuid.UUID, cfRefID
 	return nil
 }
 func (f *fakeRepo) CanTenantPayWithPendingKYC(_ context.Context, _ uuid.UUID) (bool, error) {
-	return false, nil
+	return f.pendingPayAllowed, nil
 }
 
 type fakeCashfree struct {
@@ -1734,6 +1735,21 @@ func TestCanTenantPay_GatingMatrix(t *testing.T) {
 		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
 		if err != nil || canPay {
 			t.Fatalf("expected pending tenant blocked from paying, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+
+	t.Run("manual review tenant cannot pay even if repo says allowed", func(t *testing.T) {
+		repo := &fakeRepo{
+			pendingPayAllowed: true,
+			verification: &domain.KYCVerification{
+				TenantID: tenantID,
+				Status:   domain.KYCStatusPendingManualReview,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || canPay {
+			t.Fatalf("expected manual-review tenant blocked from paying, got canPay=%v, err=%v", canPay, err)
 		}
 	})
 }

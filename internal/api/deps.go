@@ -42,6 +42,9 @@ type KYCService interface {
 	ApproveManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	RejectManualReview(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error)
+	InitiateDigiLockerVerification(ctx context.Context, tenantID uuid.UUID, redirectURL, userFlow, actor string) (*domain.KYCVerification, string, error)
+	PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
 }
 
 // AuthService handles Firebase ID-token exchange (and legacy OTP helpers kept for rollback).

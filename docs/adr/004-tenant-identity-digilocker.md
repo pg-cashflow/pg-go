@@ -9,7 +9,7 @@ Tenants must verify identity (Aadhaar or alternate ID) during onboarding before 
 - Upstream Offline Aadhaar OTP verification via Cashfree is discontinued.
 - DigiLocker provides a UIDAI-backed, government-hosted authentication interface where tenants log in and consent directly.
 - For tenants where DigiLocker is unavailable or who choose non-Aadhaar IDs (PAN, Passport, Voter ID, Driving Licence), Smart OCR document upload with manual property-owner review is the fallback path.
-- Migration 114 adds `cf_reference_id` for Cashfree callback correlation and property-level `allow_pay_during_manual_review` payment gating.
+- Migration 114 adds `cf_reference_id` for Cashfree callback correlation; manual review maintains strict fail-closed payment gating (payment requires `verified` status).
 
 ## Decisions
 
@@ -101,10 +101,9 @@ rewards screens) that the product no longer needs to support or test.
 
 **What "pass the gate" means.** A tenant passes once `kyc_verification.status` is
 one of:
-- `verified` — an automatic method (DigiLocker, Aadhaar OTP, or Secure QR)
-  completed. These are near-instant (DigiLocker: a redirect and consent screen;
-  Aadhaar OTP: two round trips, no redirect at all), so the gate does not block on
-  anything outside the tenant's own next action.
+- `verified` — an automatic method (DigiLocker or Secure QR)
+  completed. These are near-instant (DigiLocker: a redirect and consent screen),
+  so the gate does not block on anything outside the tenant's own next action.
 - `pending_manual_review` — the tenant uploaded a document. The remaining step
   (owner review) is outside the tenant's control. Making them wait at a blank gate
   for an owner to act would strand them with no path forward, so the gate treats
@@ -123,9 +122,9 @@ Any other status (`unverified`, `pending` mid-flow with no action taken yet,
 2. **Client (feels instant).** `TenantKYCOnboardingGate`
    (`src/components/shared/TenantKYCOnboardingGate.tsx`) wraps every `/tenant/*`
    route. It checks `GET /tenant/kyc/status` directly (no extra round trip through
-   `/me/onboarding`) and renders a full-screen verification screen — both DigiLocker
-   and Aadhaar OTP presented as equal, upfront choices, exactly as `TenantKYCCard`
-   already offers them — instead of the dashboard, until the gate passes.
+   `/me/onboarding`) and renders a full-screen verification screen — with DigiLocker
+   as primary and Document Upload / Secure QR as fallbacks, as `TenantKYCCard`
+   offers them — instead of the dashboard, until the gate passes.
 
 The client check is a UX convenience, not a security boundary: it must stay fast
 and frictionless, but it is not what makes the gate correct. Every existing

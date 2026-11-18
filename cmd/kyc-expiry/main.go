@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/jobs"
+	"github.com/pg-cashflow/pg-go/internal/kyc"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -71,7 +73,24 @@ func main() {
 			repo.SetKeyRing(kr)
 		}
 	}
-	job := jobs.NewKYCExpiryJob(repo)
+	var poller jobs.DigiLockerPoller
+	if cfg.CashfreeKYCAppID != "" && cfg.CashfreeKYCSecretKey != "" {
+		cfKYCClient := cashfree.NewClient(cashfree.Config{
+			AppID:        cfg.CashfreeKYCAppID,
+			SecretKey:    cfg.CashfreeKYCSecretKey,
+			KYCClientID:  cfg.CashfreeKYCAppID,
+			KYCSecretKey: cfg.CashfreeKYCSecretKey,
+			Env:          cfg.CashfreeEnv,
+			KYCAuthMode:  cfg.CashfreeKYCAuthMode,
+		})
+		cfAdapter := kyc.NewCashfreeAdapter(cfKYCClient)
+		poller = kyc.NewService(repo, cfAdapter, kyc.Config{
+			IdentitySecret:           cfg.KYCIdentitySecret,
+			HashKeyVersion:           1,
+			VerificationValidityDays: cfg.KYCVerificationValidityDays,
+		})
+	}
+	job := jobs.NewKYCExpiryJob(repo).WithPoller(poller)
 
 	now := time.Now().UTC()
 	// TTL for pending sessions is set to 24h to safely exceed Cashfree's max webhook retry
