@@ -1,5 +1,7 @@
 package main
 
+//m12:validate-exempt manual live verification harness; validates target URL and flags independently
+
 import (
 	"bytes"
 	"context"

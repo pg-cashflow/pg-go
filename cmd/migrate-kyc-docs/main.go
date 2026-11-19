@@ -1,5 +1,7 @@
 package main
 
+//m12:validate-exempt one-off document encryption migration utility; validates DB and KMS keys directly
+
 import (
 	"bytes"
 	"context"
