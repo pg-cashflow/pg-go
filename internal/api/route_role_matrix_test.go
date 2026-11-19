@@ -62,6 +62,7 @@ var exactPublicPaths = map[string]bool{
 	"/p/:token":                      true,
 	"/p/:token/push/subscribe":       true,
 	"/webhooks/cashfree":             true,
+	"/webhooks/cashfree/kyc":         true,
 	"/webhooks/cashfree/payouts":     true,
 	"/webhooks/cashfree/settlements": true,
 	"/api/healthz":                   true,

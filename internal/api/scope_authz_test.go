@@ -45,8 +45,14 @@ func (s *scopeTestUserStore) Create(_ context.Context, _ *domain.User) error { r
 func (s *scopeTestUserStore) GetByPhone(_ context.Context, _ string) (*domain.User, error) {
 	return nil, errors.New("not found")
 }
-func (s *scopeTestUserStore) GetByPropertyAndRole(_ context.Context, _ uuid.UUID, _ domain.Role) ([]domain.User, error) {
-	return nil, nil
+func (s *scopeTestUserStore) GetByPropertyAndRole(_ context.Context, pid uuid.UUID, role domain.Role) ([]domain.User, error) {
+	var out []domain.User
+	for _, u := range s.users {
+		if u.PropertyID != nil && *u.PropertyID == pid && u.Role == role {
+			out = append(out, *u)
+		}
+	}
+	return out, nil
 }
 func (s *scopeTestUserStore) GetByID(_ context.Context, id uuid.UUID) (*domain.User, error) {
 	if u, ok := s.users[id]; ok {
