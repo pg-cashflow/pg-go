@@ -164,6 +164,10 @@ func (v *KYCVerification) IsValid(now time.Time) bool {
 	return true
 }
 
+func (v *KYCVerification) IsTerminal() bool {
+	return v != nil && v.Status.IsTerminal()
+}
+
 func (v *KYCVerification) TrustTier() string {
 	if v.Status != KYCStatusVerified {
 		return "unverified"

@@ -40,6 +40,7 @@ var (
 	ErrRefreshTokenExpired   = errors.New("refresh token expired")
 	ErrNoCurrentSession      = errors.New("cannot identify current session")
 	ErrAccountReLinkDenied   = errors.New("auth: account re-link denied")
+	ErrAccessRevoked         = errors.New("auth: account disabled or access revoked")
 )
 
 // RateLimitError conveys the remaining duration until retry is permitted.
@@ -505,6 +506,9 @@ func (s *Service) IssueTokenForVerifiedPhone(ctx context.Context, phone string) 
 }
 
 func (s *Service) finishLogin(ctx context.Context, user *domain.User) (string, *domain.User, error) {
+	if user.IsDisabled() {
+		return "", nil, ErrAccessRevoked
+	}
 	if user.Role == domain.RoleTenant && user.TenantID != nil {
 		tenant, terr := s.tenants.GetByID(ctx, *user.TenantID)
 		if terr != nil {
@@ -680,6 +684,9 @@ func (s *Service) IssueSession(ctx context.Context, user *domain.User) (accessTo
 
 // IssueSessionWithClient creates an access token and binds device metadata to the refresh token family.
 func (s *Service) IssueSessionWithClient(ctx context.Context, user *domain.User, userAgent, ipAddress string) (accessToken string, plaintextRefreshToken string, err error) {
+	if user.IsDisabled() {
+		return "", "", ErrAccessRevoked
+	}
 	familyID := uuid.New()
 	accessToken, err = IssueAccessTokenWithFamily(s.jwtSecret, user, &familyID)
 	if err != nil {
@@ -769,6 +776,13 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	// Pre-validate user existence and status before committing rotation transaction
 	if existingRT, err := s.refreshRepo.GetRefreshTokenByHash(ctx, oldHash); err == nil && existingRT != nil {
 		if preUser, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && preUser != nil {
+			if preUser.IsDisabled() {
+				if s.refreshRepo != nil {
+					InvalidateFamily(existingRT.FamilyID)
+					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
+				}
+				return "", "", nil, ErrAccessRevoked
+			}
 			if preUser.TenantID != nil && s.tenants != nil {
 				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && !t.CanSignIn() {
 					if s.refreshRepo != nil {
@@ -792,6 +806,13 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 			graceUser, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
 			if uerr != nil {
 				return "", "", nil, fmt.Errorf("grace window: load user: %w", uerr)
+			}
+			if graceUser.IsDisabled() {
+				if s.refreshRepo != nil {
+					InvalidateFamily(rotatedRT.FamilyID)
+					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+				}
+				return "", "", nil, ErrAccessRevoked
 			}
 			if graceUser.TenantID != nil && s.tenants != nil {
 				t, terr := s.tenants.GetByID(ctx, *graceUser.TenantID)
@@ -829,6 +850,13 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 	user, err = s.users.GetByID(ctx, rotatedRT.UserID)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("load user: %w", err)
+	}
+	if user.IsDisabled() {
+		if s.refreshRepo != nil {
+			InvalidateFamily(rotatedRT.FamilyID)
+			_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+		}
+		return "", "", nil, ErrAccessRevoked
 	}
 
 	// Verify tenant status if tenant

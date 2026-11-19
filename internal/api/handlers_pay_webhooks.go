@@ -140,8 +140,8 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		idempotencyHeader = strings.TrimSpace(c.GetHeader("x-idempotency-key"))
 	}
 	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
-		alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
-		if err == nil && alreadyProcessed {
+		firstSeen, err := h.GatewayPaymentRepo.RecordProcessedEvent(c.Request.Context(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+		if err == nil && !firstSeen {
 			slog.Info("cashfree payment webhook duplicate delivery suppressed by x-idempotency-header", "idempotency_header", idempotencyHeader)
 			c.Status(http.StatusOK)
 			return

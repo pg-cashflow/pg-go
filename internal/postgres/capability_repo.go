@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,19 +40,20 @@ func AssertCapabilityTx(ctx context.Context, tx DBTX, propertyID, userID uuid.UU
 	// Level 1: Lock manager's users row with FOR SHARE
 	var role string
 	var propID *uuid.UUID
+	var disabledAt *time.Time
 	err := tx.QueryRow(ctx, `
-		SELECT role, property_id
+		SELECT role, property_id, disabled_at
 		FROM users
 		WHERE id = $1
 		FOR SHARE`, userID,
-	).Scan(&role, &propID)
+	).Scan(&role, &propID, &disabledAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrManagerInactive
 		}
 		return fmt.Errorf("assert capability lock user: %w", err)
 	}
-	if role != string(domain.RoleManager) || propID == nil || *propID != propertyID {
+	if role != string(domain.RoleManager) || propID == nil || *propID != propertyID || disabledAt != nil {
 		return ErrManagerInactive
 	}
 
@@ -80,8 +82,13 @@ func (r *CapabilityRepo) HasActive(ctx context.Context, propertyID, userID uuid.
 	var ok bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM manager_capabilities
-			WHERE property_id = $1 AND user_id = $2 AND capability = $3 AND revoked_at IS NULL
+			SELECT 1 FROM manager_capabilities mc
+			JOIN users u ON u.id = mc.user_id
+			WHERE mc.property_id = $1
+			  AND mc.user_id = $2
+			  AND mc.capability = $3
+			  AND mc.revoked_at IS NULL
+			  AND u.disabled_at IS NULL
 		)`, propertyID, userID, capability).Scan(&ok)
 	return ok, err
 }
@@ -89,9 +96,13 @@ func (r *CapabilityRepo) HasActive(ctx context.Context, propertyID, userID uuid.
 // ListActive returns unrevoked capability names for the user on the property.
 func (r *CapabilityRepo) ListActive(ctx context.Context, propertyID, userID uuid.UUID) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT capability FROM manager_capabilities
-		WHERE property_id = $1 AND user_id = $2 AND revoked_at IS NULL
-		ORDER BY capability`, propertyID, userID)
+		SELECT mc.capability FROM manager_capabilities mc
+		JOIN users u ON u.id = mc.user_id
+		WHERE mc.property_id = $1
+		  AND mc.user_id = $2
+		  AND mc.revoked_at IS NULL
+		  AND u.disabled_at IS NULL
+		ORDER BY mc.capability`, propertyID, userID)
 	if err != nil {
 		return nil, err
 	}

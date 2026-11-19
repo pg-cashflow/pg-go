@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -353,9 +354,10 @@ func TestCapabilityRepo_RevokeAll(t *testing.T) {
 
 // mockUserRow implements pgx.Row for user locking queries.
 type mockUserRow struct {
-	role   string
-	propID *uuid.UUID
-	err    error
+	role       string
+	propID     *uuid.UUID
+	disabledAt *time.Time
+	err        error
 }
 
 func (r *mockUserRow) Scan(dest ...any) error {
@@ -368,6 +370,11 @@ func (r *mockUserRow) Scan(dest ...any) error {
 		}
 		if ptrProp, ok := dest[1].(**uuid.UUID); ok {
 			*ptrProp = r.propID
+		}
+		if len(dest) >= 3 {
+			if ptrDisabled, ok := dest[2].(**time.Time); ok {
+				*ptrDisabled = r.disabledAt
+			}
 		}
 	} else if len(dest) == 1 {
 		if ptrID, ok := dest[0].(*uuid.UUID); ok && r.propID != nil {
@@ -454,6 +461,19 @@ func TestAssertCapabilityTx(t *testing.T) {
 		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
 		if !errors.Is(err, ErrManagerInactive) {
 			t.Fatalf("expected ErrManagerInactive, got %v", err)
+		}
+	})
+
+	t.Run("Disabled manager returns ErrManagerInactive", func(t *testing.T) {
+		now := time.Now().UTC()
+		db := &mockCapabilityDB{
+			queryRowFn: func(ctx context.Context, sql string, args ...any) pgx.Row {
+				return &mockUserRow{role: "manager", propID: &propID, disabledAt: &now}
+			},
+		}
+		err := AssertCapabilityTx(context.Background(), db, propID, userID, "manager", "expenses.post")
+		if !errors.Is(err, ErrManagerInactive) {
+			t.Fatalf("expected ErrManagerInactive for disabled manager, got %v", err)
 		}
 	})
 

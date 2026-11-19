@@ -294,6 +294,10 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 			status = http.StatusForbidden
 			msg = "access revoked"
 			code = apierr.CodeAuthAccessRevoked
+		case errors.Is(err, auth.ErrAccessRevoked):
+			status = http.StatusForbidden
+			msg = "access revoked: account disabled"
+			code = apierr.CodeAuthAccessRevoked
 		case errors.Is(err, auth.ErrAccountReLinkDenied):
 			status = http.StatusForbidden
 			msg = "account re-link denied: owner or manager requires verified Google email match"
@@ -351,7 +355,8 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 		isDefinitiveFailure := errors.Is(err, auth.ErrInvalidToken) ||
 			errors.Is(err, auth.ErrRefreshTokenExpired) ||
 			errors.Is(err, auth.ErrReplayDetected) ||
-			errors.Is(err, auth.ErrTenantVacated)
+			errors.Is(err, auth.ErrTenantVacated) ||
+			errors.Is(err, auth.ErrAccessRevoked)
 
 		if isDefinitiveFailure {
 			h.clearRefreshCookie(c)
@@ -368,6 +373,10 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 		case errors.Is(err, auth.ErrTenantVacated):
 			code = apierr.CodeAuthAccessRevoked
 			msg = "tenant vacated"
+			status = http.StatusForbidden
+		case errors.Is(err, auth.ErrAccessRevoked):
+			code = apierr.CodeAuthAccessRevoked
+			msg = "account disabled"
 			status = http.StatusForbidden
 		case !isDefinitiveFailure:
 			// Transient server-side failure: client must retry, session is intact.

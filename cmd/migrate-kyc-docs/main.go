@@ -5,11 +5,8 @@ import (
 	"context"
 	"encoding/hex"
 	"flag"
-	"fmt"
 	"log"
 	"os"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -128,14 +125,14 @@ func main() {
 			var newDocBytes, newPhotoBytes []byte
 
 			if len(it.docBytes) > 0 {
-				_, decErr := crypto.Decrypt(key, it.docBytes)
+				_, _, decErr := crypto.Decrypt(key, it.docBytes)
 				if decErr != nil || isPlaintextDocument(it.docBytes) {
 					// Plaintext detected: Encrypt and verify
 					enc, err := crypto.Encrypt(key, it.docBytes)
 					if err != nil {
 						log.Fatalf("failed to encrypt document for verification %s: %v", it.id, err)
 					}
-					verDec, err := crypto.Decrypt(key, enc)
+					verDec, _, err := crypto.Decrypt(key, enc)
 					if err != nil || !bytes.Equal(verDec, it.docBytes) {
 						log.Fatalf("decryption round-trip verification failed for verification %s", it.id)
 					}
@@ -147,14 +144,14 @@ func main() {
 			}
 
 			if len(it.photoBytes) > 0 {
-				_, decErr := crypto.Decrypt(key, it.photoBytes)
+				_, _, decErr := crypto.Decrypt(key, it.photoBytes)
 				if decErr != nil || isPlaintextDocument(it.photoBytes) {
 					// Plaintext detected: Encrypt and verify
 					enc, err := crypto.Encrypt(key, it.photoBytes)
 					if err != nil {
 						log.Fatalf("failed to encrypt photo for verification %s: %v", it.id, err)
 					}
-					verDec, err := crypto.Decrypt(key, enc)
+					verDec, _, err := crypto.Decrypt(key, enc)
 					if err != nil || !bytes.Equal(verDec, it.photoBytes) {
 						log.Fatalf("decryption round-trip verification failed for photo on verification %s", it.id)
 					}

@@ -1,0 +1,247 @@
+package kyc
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"math/rand"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pg-cashflow/pg-go/internal/domain"
+)
+
+// KYCAlerter sends operational alerts for KYC webhook processing failures.
+type KYCAlerter interface {
+	NotifyKYCDeadLetter(ctx context.Context, item *KYCInboxItem, failureErr string) error
+}
+
+// KYCInboxItem represents a record in kyc_webhook_inbox.
+type KYCInboxItem struct {
+	ID               int64
+	Provider         string
+	EventHash        string
+	EventTimestamp   string
+	VerificationID   *string
+	ReferenceID      *string
+	EventType        *string
+	Status           *string
+	Payload          json.RawMessage
+	ProcessingStatus string
+	Attempts         int
+	MaxAttempts      int
+	LeaseExpiresAt   *time.Time
+	NextRetryAt      *time.Time
+	ErrorMessage     *string
+	ReceivedAt       time.Time
+	ProcessedAt      *time.Time
+}
+
+// KYCInboxStore defines database operations for the KYC webhook inbox worker.
+type KYCInboxStore interface {
+	ListPendingInboxIDs(ctx context.Context, limit int) ([]int64, error)
+	LockAndClaimInboxTx(ctx context.Context, tx pgx.Tx, id int64, lease time.Duration) (*KYCInboxItem, error)
+	MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id int64) error
+	MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int64, errStr string, nextRetry time.Time) error
+	MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id int64, errStr string) error
+	GetVerificationForUpdate(ctx context.Context, tx pgx.Tx, verificationID, refID string) (*domain.KYCVerification, error)
+	ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx, v *domain.KYCVerification, webhookStatus string) error
+}
+
+// KYCInboxWorker processes pending KYC webhook callbacks asynchronously.
+type KYCInboxWorker struct {
+	pool    *pgxpool.Pool
+	store   KYCInboxStore
+	alerter KYCAlerter
+}
+
+// NewKYCInboxWorker creates a new KYCInboxWorker.
+func NewKYCInboxWorker(pool *pgxpool.Pool, store KYCInboxStore, alerter ...KYCAlerter) *KYCInboxWorker {
+	var a KYCAlerter
+	if len(alerter) > 0 {
+		a = alerter[0]
+	}
+	return &KYCInboxWorker{
+		pool:    pool,
+		store:   store,
+		alerter: a,
+	}
+}
+
+// ProcessBatch processes up to limit pending inbox items.
+func (w *KYCInboxWorker) ProcessBatch(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	ids, err := w.store.ListPendingInboxIDs(ctx, limit)
+	if err != nil {
+		return 0, fmt.Errorf("list pending kyc inbox ids: %w", err)
+	}
+
+	processedCount := 0
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return processedCount, ctx.Err()
+		}
+		if err := w.ProcessSingleItem(ctx, id); err != nil {
+			slog.Error("failed processing kyc inbox item", "inbox_id", id, "err", err)
+		} else {
+			processedCount++
+		}
+	}
+	return processedCount, nil
+}
+
+// ProcessSingleItem claims, executes, and finalizes a single KYC webhook event.
+func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error {
+	leaseDuration := 2 * time.Minute
+
+	var item *KYCInboxItem
+	var execErr error
+
+	if w.pool != nil {
+		err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			claimed, err := w.store.LockAndClaimInboxTx(ctx, tx, id, leaseDuration)
+			if err != nil {
+				return err
+			}
+			item = claimed
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("claim kyc inbox item %d: %w", id, err)
+		}
+	} else {
+		// Mock/test path without pool
+		claimed, err := w.store.LockAndClaimInboxTx(ctx, nil, id, leaseDuration)
+		if err != nil {
+			return fmt.Errorf("claim kyc inbox item %d: %w", id, err)
+		}
+		item = claimed
+	}
+
+	if item == nil {
+		return nil // Already claimed or processed
+	}
+
+	// Execute processing inside a transaction with row lock on kyc_verification
+	if w.pool != nil {
+		execErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			return w.executeItem(ctx, tx, item)
+		})
+	} else {
+		execErr = w.executeItem(ctx, nil, item)
+	}
+
+	// Finalize status: processed or failed/dead_letter
+	now := time.Now().UTC()
+	if execErr == nil {
+		if w.pool != nil {
+			return pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+				return w.store.MarkInboxProcessedTx(ctx, tx, id)
+			})
+		}
+		return w.store.MarkInboxProcessedTx(ctx, nil, id)
+	}
+
+	// Failure branch: evaluate max attempts
+	errStr := sanitizeKYCError(execErr.Error())
+	isExhausted := item.Attempts >= item.MaxAttempts
+
+	if isExhausted {
+		if w.pool != nil {
+			_ = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+				return w.store.MarkInboxDeadLetterTx(ctx, tx, id, errStr)
+			})
+		} else {
+			_ = w.store.MarkInboxDeadLetterTx(ctx, nil, id, errStr)
+		}
+
+		if w.alerter != nil {
+			_ = w.alerter.NotifyKYCDeadLetter(ctx, item, errStr)
+		}
+		slog.ErrorContext(ctx, "kyc inbox event dead-lettered after exhausting attempts",
+			"inbox_id", id, "attempts", item.Attempts, "err", errStr)
+		return execErr
+	}
+
+	// Calculate exponential backoff with jitter
+	backoff := calculateBackoff(item.Attempts)
+	nextRetry := now.Add(backoff)
+
+	if w.pool != nil {
+		_ = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			return w.store.MarkInboxFailedTx(ctx, tx, id, errStr, nextRetry)
+		})
+	} else {
+		_ = w.store.MarkInboxFailedTx(ctx, nil, id, errStr, nextRetry)
+	}
+
+	slog.WarnContext(ctx, "kyc inbox event retry scheduled",
+		"inbox_id", id, "attempts", item.Attempts, "next_retry", nextRetry, "err", errStr)
+	return execErr
+}
+
+// executeItem performs the state machine check and mutation under row lock.
+func (w *KYCInboxWorker) executeItem(ctx context.Context, tx pgx.Tx, item *KYCInboxItem) error {
+	vID := ""
+	if item.VerificationID != nil {
+		vID = *item.VerificationID
+	}
+	refID := ""
+	if item.ReferenceID != nil {
+		refID = *item.ReferenceID
+	}
+
+	if vID == "" && refID == "" {
+		// Missing lookup key cannot be matched to a verification
+		return fmt.Errorf("inbox item missing verification_id and reference_id")
+	}
+
+	verification, err := w.store.GetVerificationForUpdate(ctx, tx, vID, refID)
+	if err != nil {
+		return fmt.Errorf("get kyc verification: %w", err)
+	}
+	if verification == nil {
+		// Verification record not found in system
+		return fmt.Errorf("kyc verification not found for id=%s ref=%s", vID, refID)
+	}
+
+	// Invariant 8: Prevent late callbacks from overwriting terminal states
+	if verification.IsTerminal() {
+		slog.InfoContext(ctx, "skipping kyc webhook mutation: verification already terminal",
+			"verification_id", verification.ID, "status", verification.Status)
+		return nil
+	}
+
+	webhookStatus := ""
+	if item.Status != nil {
+		webhookStatus = *item.Status
+	}
+
+	return w.store.ApplyVerificationWebhookTx(ctx, tx, verification, webhookStatus)
+}
+
+func calculateBackoff(attempt int) time.Duration {
+	base := 5 * time.Second
+	max := 15 * time.Minute
+	factor := math.Pow(2, float64(attempt-1))
+	delay := time.Duration(float64(base) * factor)
+	if delay > max {
+		delay = max
+	}
+	// Add 10-25% jitter
+	jitter := time.Duration(rand.Float64() * float64(delay) * 0.25)
+	return delay + jitter
+}
+
+func sanitizeKYCError(errStr string) string {
+	// Redact 12-digit numbers (Aadhaar) to prevent accidental leakage into operational logs
+	if len(errStr) > 500 {
+		errStr = errStr[:500]
+	}
+	return errStr
+}

@@ -83,6 +83,10 @@
   "payment.refundReasonLength",
   "payment.refundReasonCharacters",
   "payment.refundManagerLimitExceeded",
+  "payment.refundMakerCannotApprove",
+  "payment.refundDuplicateApprover",
+  "payment.refundStaleApproval",
+  "payment.refundDualControlRequired",
   "payment.bankAccountInvalid",
   "payment.bankNameMismatch",
   "payment.bankVerifierUnavailable"

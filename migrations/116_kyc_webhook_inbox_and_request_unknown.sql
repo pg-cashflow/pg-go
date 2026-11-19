@@ -28,7 +28,11 @@ CREATE TABLE IF NOT EXISTS kyc_webhook_inbox (
     event_type VARCHAR(128),
     status VARCHAR(64),
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    processing_status VARCHAR(32) NOT NULL DEFAULT 'received' CHECK (processing_status IN ('received', 'processed', 'duplicate', 'failed')),
+    processing_status VARCHAR(32) NOT NULL DEFAULT 'received' CHECK (processing_status IN ('received', 'processing', 'processed', 'duplicate', 'failed', 'dead_letter')),
+    attempts INT NOT NULL DEFAULT 0,
+    max_attempts INT NOT NULL DEFAULT 5,
+    lease_expires_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ,
     error_message TEXT,
     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processed_at TIMESTAMPTZ,
@@ -37,8 +41,9 @@ CREATE TABLE IF NOT EXISTS kyc_webhook_inbox (
 
 CREATE INDEX IF NOT EXISTS idx_kyc_webhook_inbox_verification_id 
     ON kyc_webhook_inbox(verification_id) WHERE verification_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_kyc_webhook_inbox_status 
-    ON kyc_webhook_inbox(processing_status) WHERE processing_status = 'received';
+CREATE INDEX IF NOT EXISTS idx_kyc_webhook_inbox_claim 
+    ON kyc_webhook_inbox(next_retry_at, lease_expires_at) 
+    WHERE processing_status IN ('received', 'failed');
 
 -- Step 3: Grants
 DO $$

@@ -82,6 +82,10 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.refundInFlight`         | 409         | Payment     | Refund is currently in flight; cancellation locked for 2 minutes                 |
 | `payment.refundNotEligible`      | 400         | Payment     | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)      |
 | `payment.refundManagerLimitExceeded` | 403     | Payment     | Refund amount exceeds manager single refund limit                                 |
+| `payment.refundMakerCannotApprove`   | 403     | Payment     | Maker cannot approve own refund request; self-approval prohibited                 |
+| `payment.refundDuplicateApprover`    | 409     | Payment     | One owner cannot satisfy both approvals; distinct approver required               |
+| `payment.refundStaleApproval`        | 409     | Payment     | Stale approval: material transaction details changed; approval invalidated        |
+| `payment.refundDualControlRequired`  | 403     | Payment     | Refund exceeds single-owner authorization limit; dual owner approval required     |
 | `payment.bankAccountInvalid`     | 422         | Payment     | Bank account is invalid, inactive, blocked, or unsupported at destination bank   |
 | `payment.bankNameMismatch`       | 422         | Payment     | Bank account holder name does not match tenant registered legal name             |
 | `payment.bankVerifierUnavailable`| 503         | Payment     | Bank verification service temporarily unavailable                                |
@@ -1013,6 +1017,10 @@ Validation & error responses:
 | **Payment**     | `payment.refundInFlight`         | 409         | Refund is currently in flight; cancellation locked for 2 minutes                             |
 | **Payment**     | `payment.refundNotEligible`      | 400         | Payment is not eligible for gateway refund (non-Cashfree or exceeds window)                  |
 | **Payment**     | `payment.refundManagerLimitExceeded` | 403     | Refund amount exceeds manager single refund limit                                            |
+| **Payment**     | `payment.refundMakerCannotApprove`   | 403     | Maker cannot approve own refund request; self-approval prohibited                             |
+| **Payment**     | `payment.refundDuplicateApprover`    | 409     | One owner cannot satisfy both approvals; distinct approver required                           |
+| **Payment**     | `payment.refundStaleApproval`        | 409     | Stale approval: material transaction details changed; approval invalidated                    |
+| **Payment**     | `payment.refundDualControlRequired`  | 403     | Refund exceeds single-owner authorization limit; dual owner approval required                 |
 | **Payment**     | `payment.bankAccountInvalid`     | 422         | Bank account is invalid, inactive, blocked, or unsupported at destination bank               |
 | **Payment**     | `payment.bankNameMismatch`       | 422         | Bank account holder name does not match tenant registered legal name                         |
 | **Payment**     | `payment.bankVerifierUnavailable`| 503         | Bank verification service temporarily unavailable                                            |

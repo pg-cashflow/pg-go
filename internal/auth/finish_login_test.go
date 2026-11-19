@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -91,5 +92,23 @@ func TestCreateUserForIdentity_TenantStatus(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestFinishLogin_DisabledUser(t *testing.T) {
+	phone := "+919876543210"
+	now := time.Now().UTC()
+	userID := uuid.New()
+	users := &stubUsers{byPhone: map[string]*domain.User{
+		phone: {
+			ID: userID, Phone: phone, Role: domain.RoleManager,
+			DisabledAt: &now, TokenVersion: 1,
+		},
+	}}
+	svc := NewService(nil, users, &stubTenantsAuth{}, stubProps{}, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
+
+	_, _, err := svc.IssueTokenForVerifiedPhone(context.Background(), phone)
+	if !errors.Is(err, ErrAccessRevoked) {
+		t.Fatalf("want ErrAccessRevoked for disabled user, got %v", err)
 	}
 }
