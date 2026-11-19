@@ -300,6 +300,22 @@ func (r *PaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventT
 	return tag.RowsAffected() > 0, nil
 }
 
+// DeleteProcessedEvent removes a recorded event from processed_webhook_events.
+// Used to release idempotency reservations when webhook processing encounters a transient error.
+func (r *PaymentRepo) DeleteProcessedEvent(ctx context.Context, provider, eventType, providerRefID string) error {
+	if provider == "" {
+		provider = "cashfree"
+	}
+	_, err := r.db.Exec(ctx, `
+		DELETE FROM processed_webhook_events
+		WHERE provider = $1 AND event_type = $2 AND provider_reference_id = $3
+	`, provider, eventType, providerRefID)
+	if err != nil {
+		return fmt.Errorf("payment: delete processed event: %w", err)
+	}
+	return nil
+}
+
 // HasProcessedEvent checks if a webhook event with the given provider, eventType, providerRefID, and eventStatus
 // has already been recorded in processed_webhook_events.
 func (r *PaymentRepo) HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {

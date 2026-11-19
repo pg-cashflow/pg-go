@@ -42,7 +42,7 @@ func (j *KYCExpiryJob) WithPoller(poller DigiLockerPoller) *KYCExpiryJob {
 }
 
 func (j *KYCExpiryJob) Run(ctx context.Context, now time.Time, pendingTTL time.Duration) error {
-	return j.RunWithManualReviewTTL(ctx, now, pendingTTL, 7*24*time.Hour)
+	return j.RunWithManualReviewTTL(ctx, now, pendingTTL, 48*time.Hour)
 }
 
 func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time, pendingTTL, manualReviewTTL time.Duration) error {
@@ -59,25 +59,25 @@ func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time
 		return fmt.Errorf("kyc job: expire lapsed verifications: %w", err)
 	}
 
-	// 3. Expire stale pending manual review verifications past retention cutoff
+	// 3. Expire stale pending manual review verifications past retention cutoff (48-hour SLA)
 	manualCutoff := now.Add(-manualReviewTTL)
 	staleManual, err := j.Repo.ExpireStaleManualReviews(ctx, manualCutoff)
 	if err != nil {
 		return fmt.Errorf("kyc job: expire stale manual reviews: %w", err)
 	}
 
-	// 4. Force-fail pending DigiLocker sessions older than 60-minute Cashfree consent window
-	consentCutoff := now.Add(-60 * time.Minute)
+	// 4. Force-fail pending DigiLocker sessions older than 15-minute Cashfree consent window
+	consentCutoff := now.Add(-15 * time.Minute)
 	consentExpired, err := j.Repo.ExpireConsentWindowPendingDigiLocker(ctx, consentCutoff)
 	if err != nil {
 		return fmt.Errorf("kyc job: expire consent window pending digilocker: %w", err)
 	}
 
-	// 5. Active reconciliation sweep: poll in-flight DigiLocker sessions aged 5 to 60 minutes
+	// 5. Active reconciliation sweep: poll in-flight DigiLocker sessions aged 5 to 15 minutes
 	var reconciledCount int
 	if j.Poller != nil {
 		minAgeCutoff := now.Add(-5 * time.Minute)
-		maxAgeCutoff := now.Add(-60 * time.Minute)
+		maxAgeCutoff := now.Add(-15 * time.Minute)
 		pendingDGL, err := j.Repo.ListPendingDigiLockerForReconciliation(ctx, minAgeCutoff, maxAgeCutoff)
 		if err != nil {
 			slog.Warn("kyc job: list pending digilocker for reconciliation failed", "err", err)

@@ -139,6 +139,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 	if idempotencyHeader == "" {
 		idempotencyHeader = strings.TrimSpace(c.GetHeader("x-idempotency-key"))
 	}
+	var idempotencyRecorded bool
 	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
 		firstSeen, err := h.GatewayPaymentRepo.RecordProcessedEvent(c.Request.Context(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 		if err == nil && !firstSeen {
@@ -146,7 +147,18 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
+		if err == nil && firstSeen {
+			idempotencyRecorded = true
+		}
 	}
+	defer func() {
+		if idempotencyRecorded && c.Writer.Status() >= 400 {
+			// Roll back idempotency reservation on transient error so gateway retry can be processed.
+			if h.GatewayPaymentRepo != nil {
+				_ = h.GatewayPaymentRepo.DeleteProcessedEvent(context.Background(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader)
+			}
+		}
+	}()
 
 	// Parse verified payload before audit ingestion to enforce data minimization
 	val, evtType, parseErr := cashfree.ParseWebhook(raw)

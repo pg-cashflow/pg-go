@@ -367,6 +367,9 @@ func (s *stubGatewayRepo) GetByCFPaymentID(context.Context, string) (*domain.Pay
 func (s *stubGatewayRepo) RecordProcessedEvent(context.Context, string, string, string, string) (bool, error) {
 	return true, nil
 }
+func (s *stubGatewayRepo) DeleteProcessedEvent(context.Context, string, string, string) error {
+	return nil
+}
 func (s *stubGatewayRepo) HasProcessedEvent(context.Context, string, string, string, string) (bool, error) {
 	return false, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,18 @@ func (s *threadSafeGatewayRepo) RollbackProcessedEvent(provider, eventType, prov
 	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
 	delete(s.processedDedup, key)
+}
+
+func (s *threadSafeGatewayRepo) DeleteProcessedEvent(ctx context.Context, provider, eventType, providerRefID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := fmt.Sprintf("%s:%s:%s:", provider, eventType, providerRefID)
+	for k := range s.processedDedup {
+		if strings.HasPrefix(k, prefix) {
+			delete(s.processedDedup, k)
+		}
+	}
+	return nil
 }
 
 func (s *threadSafeGatewayRepo) CreateAllocation(ctx context.Context, pID, dID uuid.UUID, amt int64) error {

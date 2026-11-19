@@ -274,6 +274,7 @@ type GatewayPaymentRepo interface {
 	GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error)
 	GetByCFPaymentID(ctx context.Context, cfID string) (*domain.Payment, error)
 	RecordProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error)
+	DeleteProcessedEvent(ctx context.Context, provider, eventType, providerRefID string) error
 	HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error)
 	CreateAllocation(ctx context.Context, paymentID, dueID uuid.UUID, amountPaise int64) error
 	ListAllocationsByPayment(ctx context.Context, paymentID uuid.UUID) ([]domain.PaymentAllocation, error)

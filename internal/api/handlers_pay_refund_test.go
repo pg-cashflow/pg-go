@@ -152,6 +152,9 @@ func (m *mockRefundPaymentRepo) GetByCFPaymentID(ctx context.Context, cfID strin
 func (m *mockRefundPaymentRepo) RecordProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
 	return true, nil
 }
+func (m *mockRefundPaymentRepo) DeleteProcessedEvent(ctx context.Context, provider, eventType, providerRefID string) error {
+	return nil
+}
 func (m *mockRefundPaymentRepo) HasProcessedEvent(ctx context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
 	return false, nil
 }

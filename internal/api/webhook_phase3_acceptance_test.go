@@ -6,9 +6,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -59,6 +61,16 @@ func (m *phase3MockGatewayRepo) RecordProcessedEvent(_ context.Context, provider
 	}
 	m.processedMap[key] = true
 	return true, nil
+}
+func (m *phase3MockGatewayRepo) DeleteProcessedEvent(_ context.Context, provider, eventType, providerRefID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range m.processedMap {
+		if strings.HasPrefix(k, fmt.Sprintf("%s:%s:%s:", provider, eventType, providerRefID)) {
+			delete(m.processedMap, k)
+		}
+	}
+	return nil
 }
 func (m *phase3MockGatewayRepo) HasProcessedEvent(_ context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
 	m.mu.Lock()
@@ -143,12 +155,16 @@ type phase3MockOrderSettler struct {
 	mu           sync.Mutex
 	settleCalls  int
 	settledOrder string
+	failErr      error
 }
 
 func (s *phase3MockOrderSettler) SettleGatewayOrder(_ context.Context, orderID, _ string, _ string, _ int64, _ *domain.PaymentIntent, _ []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settleCalls++
+	if s.failErr != nil {
+		return s.failErr
+	}
 	s.settledOrder = orderID
 	return nil
 }
@@ -679,5 +695,91 @@ func TestPhase3_ConcurrentDuplicateStampedeWithIdempotencyHeader(t *testing.T) {
 	// Exactly 1 settlement call occurred
 	if settler.settleCalls != 1 {
 		t.Fatalf("expected exactly 1 settlement call under concurrent stampede, got %d", settler.settleCalls)
+	}
+}
+
+func TestCashfreeWebhook_Phase3_RetryAfterTransientFailureSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "test_secret_for_phase3_retry_test"
+	repo := newPhase3MockGatewayRepo()
+	settler := &phase3MockOrderSettler{
+		failErr: errors.New("transient database connection failure"),
+	}
+
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "order_transient_1",
+		AmountPaise:     100000,
+		Status:          domain.IntentCreated,
+	}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		GatewayPaymentRepo:  repo,
+		OrderSettler:        settler,
+		IntentStore:         &phase3MockIntentStore{intent: intent},
+		WebhookToleranceSec: 300,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"order_transient_1","order_currency":"INR"},"payment":{"cf_payment_id":998822,"payment_status":"SUCCESS","payment_amount":1000.00,"payment_currency":"INR"}}}`
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+	sig := signTestHMAC(secret, ts+body)
+	idempHeader := "retry_evt_idemp_" + uuid.New().String()
+
+	// First attempt: settler returns 500 error
+	req1 := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req1.Header.Set("x-webhook-timestamp", ts)
+	req1.Header.Set("x-webhook-signature", sig)
+	req1.Header.Set("x-idempotency-header", idempHeader)
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusInternalServerError {
+		t.Fatalf("expected initial attempt to fail with 500, got %d", w1.Code)
+	}
+	if settler.settleCalls != 1 {
+		t.Fatalf("expected 1 settle call, got %d", settler.settleCalls)
+	}
+
+	// Fix transient failure
+	settler.mu.Lock()
+	settler.failErr = nil
+	settler.mu.Unlock()
+
+	// Second attempt: Cashfree retries with SAME idempotency header.
+	// Since first attempt failed with 500, idempotency reservation must have been rolled back.
+	req2 := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req2.Header.Set("x-webhook-timestamp", ts)
+	req2.Header.Set("x-webhook-signature", sig)
+	req2.Header.Set("x-idempotency-header", idempHeader)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected retry after transient failure to return 200 OK, got %d", w2.Code)
+	}
+	if settler.settleCalls != 2 {
+		t.Fatalf("expected retry to invoke settler (total 2 calls), got %d", settler.settleCalls)
+	}
+	if settler.settledOrder != "order_transient_1" {
+		t.Fatalf("expected settled order 'order_transient_1', got %q", settler.settledOrder)
+	}
+
+	// Third attempt: Duplicate delivery of the already-settled event with same idempotency header.
+	// This must be suppressed as duplicate and return 200 OK without calling settler again.
+	req3 := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req3.Header.Set("x-webhook-timestamp", ts)
+	req3.Header.Set("x-webhook-signature", sig)
+	req3.Header.Set("x-idempotency-header", idempHeader)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusOK {
+		t.Fatalf("expected duplicate delivery to return 200 OK, got %d", w3.Code)
+	}
+	if settler.settleCalls != 2 {
+		t.Fatalf("expected settler calls to remain 2, got %d", settler.settleCalls)
 	}
 }

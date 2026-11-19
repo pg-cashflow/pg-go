@@ -88,7 +88,7 @@ func TestKYCExpiryJob_Run(t *testing.T) {
 	if !mockRepo.cutoffPassed.Equal(expectedCutoff) {
 		t.Errorf("cutoff = %v, want %v", mockRepo.cutoffPassed, expectedCutoff)
 	}
-	expectedManualCutoff := now.Add(-7 * 24 * time.Hour)
+	expectedManualCutoff := now.Add(-48 * time.Hour)
 	if !mockRepo.manualCutoff.Equal(expectedManualCutoff) {
 		t.Errorf("manualCutoff = %v, want %v", mockRepo.manualCutoff, expectedManualCutoff)
 	}
@@ -136,15 +136,15 @@ func TestKYCExpiryJob_DigiLockerReconciliation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// 1. Consent window expired cutoff should be now - 60m
-	expectedConsentCutoff := now.Add(-60 * time.Minute)
+	// 1. Consent window expired cutoff should be now - 15m
+	expectedConsentCutoff := now.Add(-15 * time.Minute)
 	if !mockRepo.consentCutoffPassed.Equal(expectedConsentCutoff) {
 		t.Errorf("consentCutoff = %v, want %v", mockRepo.consentCutoffPassed, expectedConsentCutoff)
 	}
 
-	// 2. Reconciliation window should be now - 5m to now - 60m
+	// 2. Reconciliation window should be now - 5m to now - 15m
 	expectedMinAge := now.Add(-5 * time.Minute)
-	expectedMaxAge := now.Add(-60 * time.Minute)
+	expectedMaxAge := now.Add(-15 * time.Minute)
 	if !mockRepo.minAgePassed.Equal(expectedMinAge) {
 		t.Errorf("minAge = %v, want %v", mockRepo.minAgePassed, expectedMinAge)
 	}
