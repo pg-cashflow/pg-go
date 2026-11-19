@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1054,6 +1056,9 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
+	eventHashBytes := sha256.Sum256([]byte(ts + ":" + string(raw)))
+	eventHash := hex.EncodeToString(eventHashBytes[:])
+
 	// Webhook payload supporting both Smart OCR and DigiLocker callbacks.
 	var payload struct {
 		Event          string `json:"event"`
@@ -1078,12 +1083,6 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
-	// Immediate in-memory redaction: purge full UID
-	payload.OCRData.UID = ""
-	for i := range raw {
-		raw[i] = 0
-	}
-
 	event := payload.Event
 	if event == "" {
 		event = payload.EventType
@@ -1097,6 +1096,43 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		refIDStr = fmt.Sprintf("%v", payload.ReferenceID)
 	}
 
+	// Immediate in-memory redaction: purge full UID
+	payload.OCRData.UID = ""
+	for i := range raw {
+		raw[i] = 0
+	}
+
+	pool := h.getPool()
+	var inboxID int64
+	if pool != nil {
+		ctx := c.Request.Context()
+		err := pool.QueryRow(ctx, `
+			INSERT INTO kyc_webhook_inbox (
+				provider, event_hash, event_timestamp, verification_id, reference_id,
+				event_type, status, payload, processing_status, received_at
+			) VALUES (
+				'cashfree', $1, $2, $3, $4, $5, $6, '{}'::jsonb, 'received', NOW()
+			)
+			ON CONFLICT (provider, event_hash) DO NOTHING
+			RETURNING id`,
+			eventHash, ts, nullIfEmptyStr(payload.VerificationID), nullIfEmptyStr(refIDStr),
+			nullIfEmptyStr(event), nullIfEmptyStr(payload.Status),
+		).Scan(&inboxID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.ErrorContext(ctx, "kyc webhook: failed to persist to inbox", "err", err, "hash", eventHash)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record webhook"})
+			return
+		}
+		if inboxID == 0 {
+			var prevStatus string
+			_ = pool.QueryRow(ctx, `SELECT processing_status FROM kyc_webhook_inbox WHERE provider = 'cashfree' AND event_hash = $1`, eventHash).Scan(&prevStatus)
+			if prevStatus == "processed" || prevStatus == "duplicate" {
+				c.JSON(http.StatusOK, gin.H{"status": "already_processed"})
+				return
+			}
+		}
+	}
+
 	isDigiLocker := strings.HasPrefix(payload.VerificationID, "cf_dgl_") ||
 		strings.HasPrefix(refIDStr, "cf_dgl_") ||
 		strings.HasPrefix(event, "DIGILOCKER_")
@@ -1107,14 +1143,25 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		// validates state and retrieves attested credentials directly from Cashfree's secure API.
 		v, err := svc.ProcessDigiLockerCallback(c.Request.Context(), payload.VerificationID, refIDStr, event, payload.Status, "cashfree:webhook")
 		if err != nil {
-			slog.WarnContext(c.Request.Context(), "kyc webhook: digilocker callback processing returned error",
+			if pool != nil && inboxID > 0 {
+				_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'failed', error_message = $1 WHERE id = $2`, err.Error(), inboxID)
+			}
+			if errors.Is(err, domain.ErrVerificationNotFound) {
+				c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": err.Error()})
+				return
+			}
+			slog.ErrorContext(c.Request.Context(), "kyc webhook: digilocker callback processing returned error",
 				"err", err,
 				"verification_id", payload.VerificationID,
 				"ref_id", refIDStr,
 				"event", event,
 			)
-			c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": err.Error()})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to process digilocker callback"})
 			return
+		}
+
+		if pool != nil && inboxID > 0 {
+			_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'processed', processed_at = NOW() WHERE id = $1`, inboxID)
 		}
 
 		c.JSON(http.StatusOK, gin.H{
@@ -1128,6 +1175,9 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	vendorRef := fmt.Sprintf("cf_ocr_%v", payload.ReferenceID)
 	v, err := svc.GetVerificationByVendorRefID(c.Request.Context(), vendorRef)
 	if err != nil || v == nil {
+		if pool != nil && inboxID > 0 {
+			_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'processed', processed_at = NOW() WHERE id = $1`, inboxID)
+		}
 		// Callback for unknown or already cleaned record
 		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "verification not found"})
 		return
@@ -1138,6 +1188,9 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		v.Status == domain.KYCStatusRejected ||
 		v.Status == domain.KYCStatusRevoked ||
 		v.Status == domain.KYCStatusExpired {
+		if pool != nil && inboxID > 0 {
+			_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'processed', processed_at = NOW() WHERE id = $1`, inboxID)
+		}
 		c.JSON(http.StatusOK, gin.H{
 			"status":         "already_processed",
 			"current_status": v.Status,
@@ -1153,9 +1206,13 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		)
 	}
 
+	if pool != nil && inboxID > 0 {
+		_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'processed', processed_at = NOW() WHERE id = $1`, inboxID)
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "received",
-		"ref_id":  payload.ReferenceID,
-		"state":   v.Status,
+		"status": "received",
+		"ref_id": payload.ReferenceID,
+		"state":  v.Status,
 	})
 }

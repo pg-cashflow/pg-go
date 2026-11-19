@@ -482,7 +482,7 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 		apierr.Abort(c, http.StatusServiceUnavailable, "service temporarily unavailable", apierr.Code("service.unavailable"))
 		return false
 	}
-	if u == nil {
+	if u == nil || u.IsDisabled() {
 		apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
 		return false
 	}

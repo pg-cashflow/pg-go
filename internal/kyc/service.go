@@ -66,6 +66,7 @@ type KYCRepo interface {
 	InitiateVerificationTx(ctx context.Context, tenantID, consentID uuid.UUID, method domain.KYCMethod, vendorName, vendorRefID, actor string) (*domain.KYCVerification, error)
 	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, majorityDate *time.Time, actor string) (*domain.KYCVerification, error)
 	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
+	MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
 	GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
@@ -1015,18 +1016,24 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	}()
 
 	vendorRefID := fmt.Sprintf("cf_dgl_%s", uuid.New().String())
+	pending, err := s.repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRefID, actor)
+	if err != nil {
+		return nil, "", fmt.Errorf("kyc service: initiate digilocker verification: %w", err)
+	}
+
 	sess, err := s.cashfree.CreateDigiLockerURL(ctx, cashfree.CreateDigiLockerURLInput{
 		VerificationID: vendorRefID,
 		RedirectURL:    redirectURL,
 		UserFlow:       userFlow,
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || isAmbiguousTransportError(err) {
+			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor)
+			pending.Status = domain.KYCStatusRequestUnknown
+			return pending, "", fmt.Errorf("kyc service: create digilocker url ambiguous state: %w", err)
+		}
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, "CREATE_URL_FAILED", actor)
 		return nil, "", fmt.Errorf("kyc service: create digilocker url: %w", err)
-	}
-
-	pending, err := s.repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRefID, actor)
-	if err != nil {
-		return nil, "", fmt.Errorf("kyc service: initiate digilocker verification: %w", err)
 	}
 
 	if sess.ReferenceID != "" {
@@ -1035,6 +1042,18 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	}
 
 	return pending, sess.URL, nil
+}
+
+func isAmbiguousTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "eof")
 }
 
 // ProcessDigiLockerCallback processes a status change delivered by webhook or polling.
@@ -1154,7 +1173,7 @@ func (s *Service) PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, 
 	if err != nil || v == nil {
 		return nil, domain.ErrVerificationNotFound
 	}
-	if v.Status != domain.KYCStatusPending || v.Method != domain.KYCMethodDigiLocker {
+	if (v.Status != domain.KYCStatusPending && v.Status != domain.KYCStatusRequestUnknown) || v.Method != domain.KYCMethodDigiLocker {
 		return v, nil
 	}
 	if s.cashfree == nil {

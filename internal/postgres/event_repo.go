@@ -105,12 +105,12 @@ func NewUserRepo(db DBTX) *UserRepo { return &UserRepo{db: db} }
 
 func (r *UserRepo) WithTx(tx pgx.Tx) *UserRepo { return &UserRepo{db: tx} }
 
-const userCols = `id, phone, email, role, tenant_id, property_id, firebase_uid, token_version, created_at, last_login_at`
+const userCols = `id, phone, email, role, tenant_id, property_id, firebase_uid, token_version, created_at, last_login_at, disabled_at, COALESCE(profile, 'custom')`
 
 func scanUser(row pgx.Row) (*domain.User, error) {
 	var u domain.User
-	var phone, email sql.NullString
-	err := row.Scan(&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.TokenVersion, &u.CreatedAt, &u.LastLoginAt)
+	var phone, email, profile sql.NullString
+	err := row.Scan(&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID, &u.TokenVersion, &u.CreatedAt, &u.LastLoginAt, &u.DisabledAt, &profile)
 	if err != nil {
 		return nil, err
 	}
@@ -119,6 +119,11 @@ func scanUser(row pgx.Row) (*domain.User, error) {
 	}
 	if email.Valid {
 		u.Email = email.String
+	}
+	if profile.Valid {
+		u.Profile = profile.String
+	} else {
+		u.Profile = "custom"
 	}
 	if u.TokenVersion < 1 {
 		u.TokenVersion = 1
@@ -142,10 +147,14 @@ func (r *UserRepo) Create(ctx context.Context, u *domain.User) error {
 		email = &lower
 	}
 	phone := nullIfEmptyStr(u.Phone)
+	profile := strings.TrimSpace(u.Profile)
+	if profile == "" {
+		profile = "custom"
+	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO users (phone, email, role, tenant_id, property_id, firebase_uid, created_at, last_login_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-		phone, email, u.Role, u.TenantID, u.PropertyID, u.FirebaseUID, u.CreatedAt, u.LastLoginAt,
+		INSERT INTO users (phone, email, role, tenant_id, property_id, firebase_uid, created_at, last_login_at, disabled_at, profile)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+		phone, email, u.Role, u.TenantID, u.PropertyID, u.FirebaseUID, u.CreatedAt, u.LastLoginAt, u.DisabledAt, profile,
 	).Scan(&u.ID)
 }
 

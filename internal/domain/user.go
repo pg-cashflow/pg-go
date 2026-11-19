@@ -28,8 +28,14 @@ type User struct {
 	HasSavedPreference bool       `json:"has_saved_preference"`
 	Theme              *string    `json:"theme,omitempty"`
 	HasSavedTheme      bool       `json:"has_saved_theme"`
+	DisabledAt         *time.Time `json:"disabled_at,omitempty"`
+	Profile            string     `json:"profile,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+}
+
+func (u *User) IsDisabled() bool {
+	return u != nil && u.DisabledAt != nil
 }
 
 func (u *User) IsOwner() bool {

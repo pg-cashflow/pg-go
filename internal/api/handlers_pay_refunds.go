@@ -74,7 +74,7 @@ func prepareRefundTx(ctx context.Context, tx pgx.Tx, pid uuid.UUID, p *domain.Pa
 		if rfRow.Source == "manager" {
 			actorRole = "manager"
 		}
-		if err := postgres.AssertCapabilityTx(ctx, tx, pid, *rfRow.InitiatedBy, actorRole, "refunds.issue"); err != nil {
+		if err := postgres.AssertCapabilityTx(ctx, tx, pid, *rfRow.InitiatedBy, actorRole, "refunds.request"); err != nil {
 			return err
 		}
 	}
@@ -330,7 +330,7 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 	}
 	return postgres.WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		if rfRow != nil && rfRow.InitiatedBy != nil && rfRow.Source == "manager" {
-			if err := postgres.AssertCapabilityTx(ctx, tx, rfRow.PropertyID, *rfRow.InitiatedBy, "manager", "refunds.issue"); err != nil {
+			if err := postgres.AssertCapabilityTx(ctx, tx, rfRow.PropertyID, *rfRow.InitiatedBy, "manager", "refunds.request"); err != nil {
 				return err
 			}
 		}

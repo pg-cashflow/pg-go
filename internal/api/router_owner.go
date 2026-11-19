@@ -138,10 +138,12 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/rooms", h.OwnerCreateRoom)
 	owner.GET("/managers", h.OwnerListManagers)
 	owner.POST("/managers", h.OwnerCreateManager)
+	owner.GET("/managers/audit", h.OwnerAuditManagers)
 	owner.PUT("/managers/:id/capabilities", h.OwnerPutManagerCapabilities)
 	owner.POST("/managers/:id/deactivate", h.OwnerDeactivateManager)
 	owner.POST("/managers/:id/reactivate", h.OwnerReactivateManager)
 	owner.POST("/managers/:id/reset-credentials", h.OwnerResetManagerCredentials)
+	owner.POST("/managers/:id/repair", h.OwnerRepairManager)
 	owner.GET("/gamification/redemptions", h.OwnerListRedemptions)
 	owner.POST("/gamification/redemptions/:id/fulfil", h.OwnerFulfilRedemption)
 

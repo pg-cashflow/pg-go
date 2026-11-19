@@ -41,7 +41,7 @@ func (r *RefundApprovalRepo) CreateRequest(ctx context.Context, req *domain.Refu
 
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		if req.RequestedByRole == string(domain.RoleManager) || req.RequestedByRole == "manager" {
-			if err := AssertCapabilityTx(ctx, tx, req.PropertyID, req.RequestedBy, req.RequestedByRole, "refunds.issue"); err != nil {
+			if err := AssertCapabilityTx(ctx, tx, req.PropertyID, req.RequestedBy, req.RequestedByRole, "refunds.request"); err != nil {
 				return err
 			}
 		}

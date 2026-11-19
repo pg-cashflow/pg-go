@@ -160,6 +160,14 @@ func (f *fakeRepo) FailVerificationTx(_ context.Context, id uuid.UUID, reason, _
 	}
 	return nil
 }
+
+func (f *fakeRepo) MarkRequestUnknownTx(_ context.Context, id uuid.UUID, reason, _ string) error {
+	if f.verification != nil && f.verification.ID == id {
+		f.verification.Status = domain.KYCStatusRequestUnknown
+		f.verification.FailureReason = &reason
+	}
+	return nil
+}
 func (f *fakeRepo) GetActiveVerificationByTenant(_ context.Context, _ uuid.UUID) (*domain.KYCVerification, error) {
 	if f.verification == nil {
 		return nil, domain.ErrVerificationNotFound
@@ -1503,6 +1511,35 @@ func TestInitiateDigiLockerVerification_MissingConsent_FailsClosed(t *testing.T)
 	_, _, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.test/kyc/return", "", "tenant:"+tenantID.String())
 	if !errors.Is(err, kycsvc.ErrNoActiveConsent) {
 		t.Fatalf("expected ErrNoActiveConsent, got %v", err)
+	}
+}
+
+func TestInitiateDigiLockerVerification_AmbiguousTimeout_SetsRequestUnknown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerErr: context.DeadlineExceeded,
+	}
+	svc := newTestService(repo, cf)
+
+	v, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.test/kyc/return", "signup", "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatalf("expected error on timeout, got nil")
+	}
+	if url != "" {
+		t.Errorf("expected empty url, got %s", url)
+	}
+	if v == nil || v.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected verification status request_unknown, got %+v", v)
+	}
+	if repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected repo verification status request_unknown, got %s", repo.verification.Status)
 	}
 }
 

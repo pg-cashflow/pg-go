@@ -233,7 +233,7 @@ func TestRequireCapability_SensitiveFinancialBypassesCache(t *testing.T) {
 	propID := uuid.New()
 	userID := uuid.New()
 
-	for _, capName := range []string{"refunds.issue", "expenses.post", "expenses.void"} {
+	for _, capName := range []string{"refunds.request", "refunds.issue", "expenses.post", "expenses.void"} {
 		t.Run(capName, func(t *testing.T) {
 			checker := &countingCapabilityChecker{allow: true}
 			handler := RequireCapability(capName, checker)

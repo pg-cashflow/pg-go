@@ -17,6 +17,7 @@ type KYCStatus string
 
 const (
 	KYCStatusPending             KYCStatus = "pending"
+	KYCStatusRequestUnknown      KYCStatus = "request_unknown"
 	KYCStatusPendingManualReview KYCStatus = "pending_manual_review"
 	KYCStatusVerified            KYCStatus = "verified"
 	KYCStatusFailed              KYCStatus = "failed"
@@ -24,6 +25,15 @@ const (
 	KYCStatusExpired             KYCStatus = "expired"
 	KYCStatusRevoked             KYCStatus = "revoked"
 )
+
+func (s KYCStatus) IsTerminal() bool {
+	switch s {
+	case KYCStatusVerified, KYCStatusRejected, KYCStatusExpired, KYCStatusRevoked:
+		return true
+	default:
+		return false
+	}
+}
 
 type KYCMethod string
 

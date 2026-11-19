@@ -268,7 +268,7 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 			return
 		}
 		if h.Pool != nil {
-			if err := postgres.AssertCapabilityTx(c.Request.Context(), h.Pool, pid, uid, "manager", "refunds.issue"); err != nil {
+			if err := postgres.AssertCapabilityTx(c.Request.Context(), h.Pool, pid, uid, "manager", "refunds.request"); err != nil {
 				if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
 					apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
 					return

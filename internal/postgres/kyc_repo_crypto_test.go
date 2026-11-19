@@ -121,38 +121,29 @@ func TestKYCRepo_Crypto_UnencryptedDevMode(t *testing.T) {
 	}
 }
 
-func TestKYCRepo_Crypto_LegacyMagicBytes(t *testing.T) {
+func TestKYCRepo_Crypto_UnencryptedDocsFailClosed(t *testing.T) {
 	key := bytes.Repeat([]byte{0x55}, 32)
 	repo := NewKYCRepo(nil, key)
 
 	// JPEG header
 	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F'}
-	dec, err := repo.decryptBytes(jpeg)
-	if err != nil {
-		t.Fatalf("decrypt legacy JPEG failed: %v", err)
-	}
-	if !bytes.Equal(dec, jpeg) {
-		t.Fatalf("expected legacy JPEG to pass through unmolested")
+	_, err := repo.decryptBytes(jpeg)
+	if err == nil {
+		t.Fatalf("expected unencrypted legacy JPEG to fail closed with AEAD error")
 	}
 
 	// PNG header
 	png := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
-	dec, err = repo.decryptBytes(png)
-	if err != nil {
-		t.Fatalf("decrypt legacy PNG failed: %v", err)
-	}
-	if !bytes.Equal(dec, png) {
-		t.Fatalf("expected legacy PNG to pass through unmolested")
+	_, err = repo.decryptBytes(png)
+	if err == nil {
+		t.Fatalf("expected unencrypted legacy PNG to fail closed with AEAD error")
 	}
 
 	// PDF header
 	pdf := []byte{'%', 'P', 'D', 'F', '-', '1', '.', '4'}
-	dec, err = repo.decryptBytes(pdf)
-	if err != nil {
-		t.Fatalf("decrypt legacy PDF failed: %v", err)
-	}
-	if !bytes.Equal(dec, pdf) {
-		t.Fatalf("expected legacy PDF to pass through unmolested")
+	_, err = repo.decryptBytes(pdf)
+	if err == nil {
+		t.Fatalf("expected unencrypted legacy PDF to fail closed with AEAD error")
 	}
 }
 
