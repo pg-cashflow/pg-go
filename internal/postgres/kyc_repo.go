@@ -725,24 +725,6 @@ func (r *KYCRepo) UpdateCFReferenceIDTx(ctx context.Context, verificationID uuid
 	})
 }
 
-// CanTenantPayWithPendingKYC checks whether the property allows rent payment while KYC is in pending_manual_review.
-func (r *KYCRepo) CanTenantPayWithPendingKYC(ctx context.Context, tenantID uuid.UUID) (bool, error) {
-	var allowed bool
-	err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(pos.allow_pay_during_manual_review, false)
-		FROM tenants t
-		JOIN property_onboarding_settings pos ON pos.property_id = t.property_id
-		WHERE t.id = $1
-	`, tenantID).Scan(&allowed)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("kyc: check can tenant pay with pending kyc: %w", err)
-	}
-	return allowed, nil
-}
-
 // CheckDuplicateIdentity checks if an active, verified identity hash matches another tenant.
 func (r *KYCRepo) CheckDuplicateIdentity(ctx context.Context, identityHash string, hashKeyVersion int16, excludeTenantID uuid.UUID) (bool, error) {
 	var exists bool

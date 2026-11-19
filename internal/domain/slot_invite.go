@@ -50,8 +50,6 @@ type PropertyOnboardingSettings struct {
 	WaitlistEnabled           bool      `json:"waitlist_enabled"`
 	WaitlistOfferTTLHours     int       `json:"waitlist_offer_ttl_hours"`
 	ProfileSchemaVersion      int       `json:"profile_schema_version"`
-	RequireKYCBeforePay       bool      `json:"require_kyc_before_pay"`
-	AllowPayDuringManualReview bool     `json:"allow_pay_during_manual_review"`
 	JoinPendingTTLDays        int       `json:"join_pending_ttl_days"`
 	ReferralEnabled           bool      `json:"referral_enabled"`
 	JoinerDiscountBps         int       `json:"joiner_discount_bps"`

@@ -82,7 +82,6 @@ type KYCRepo interface {
 	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
-	CanTenantPayWithPendingKYC(ctx context.Context, tenantID uuid.UUID) (bool, error)
 
 	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string, documentType ...string) (*domain.KYCVerification, error)
 	ApproveManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
@@ -299,7 +298,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	// A standalone Secure QR verification must never auto-verify based on cryptographic signature
 	// and name matching alone, as anyone with a photo of another person's QR could pass.
 	// Both clean matches and name mismatches are routed to pending_manual_review via SubmitManualReviewTx.
-	// Tenants can pay dues during manual review (allow_pay_during_manual_review).
+	// Only verified tenants can pay dues (KYC verification is mandatory platform-wide).
 	// Final verification occurs when the owner/manager approves the review (ApproveManualReviewTx),
 	// which auto-purges biometric document/photo bytes per DPDP Act 2023.
 	qrStatus := domain.QRStatusSecure

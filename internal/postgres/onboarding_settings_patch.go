@@ -19,8 +19,6 @@ type OnboardingSettingsPatch struct {
 	SlotInviteDefaultTTLDays  *int
 	WaitlistEnabled           *bool
 	WaitlistOfferTTLHours     *int
-	RequireKYCBeforePay        *bool
-	AllowPayDuringManualReview *bool
 	JoinPendingTTLDays         *int
 	ReferralEnabled           *bool
 	JoinerDiscountBps         *int
@@ -57,12 +55,6 @@ func (p OnboardingSettingsPatch) Validate() error {
 		if *p.DefaultDueDay < 1 || *p.DefaultDueDay > 28 {
 			return fmt.Errorf("%w: due_day", ErrOnboardingSettingsInvalid)
 		}
-	}
-	if p.RequireKYCBeforePay != nil && !*p.RequireKYCBeforePay {
-		return fmt.Errorf("%w: require_kyc_before_pay cannot be disabled; KYC is mandatory platform-wide", ErrOnboardingSettingsInvalid)
-	}
-	if p.AllowPayDuringManualReview != nil && *p.AllowPayDuringManualReview {
-		return fmt.Errorf("%w: allow_pay_during_manual_review cannot be enabled; only verified tenants can pay", ErrOnboardingSettingsInvalid)
 	}
 	if p.JoinerDiscountBps != nil && (*p.JoinerDiscountBps < 0 || *p.JoinerDiscountBps > 10000) {
 		return fmt.Errorf("%w: joiner_discount_bps", ErrOnboardingSettingsInvalid)

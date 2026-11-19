@@ -39,7 +39,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.GET("/refund-account", h.TenantGetRefundAccount)
 	tenant.POST("/refund-account", h.TenantIDRateLimit(5.0/60, 3), h.TenantRegisterRefundAccount)
 
-	// Payment routes enforce KYC verification based on property policy (RequireKYCBeforePay)
+	// Payment routes enforce mandatory platform-wide KYC verification
 	payGated := tenant.Group("", h.RequireKYCIfPolicyEnforced())
 	payGated.GET("/dues/:id/qr", h.TenantDueQR)
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)

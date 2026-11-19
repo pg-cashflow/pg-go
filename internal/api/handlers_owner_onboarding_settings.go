@@ -47,7 +47,6 @@ type patchOnboardingSettingsBody struct {
 	SlotInviteDefaultTTLDays  *int                        `json:"slot_invite_default_ttl_days"`
 	WaitlistEnabled           *bool                       `json:"waitlist_enabled"`
 	WaitlistOfferTTLHours     *int                        `json:"waitlist_offer_ttl_hours"`
-	RequireKYCBeforePay       *bool                       `json:"require_kyc_before_pay"`
 	JoinPendingTTLDays        *int                        `json:"join_pending_ttl_days"`
 	ReferralEnabled           *bool                       `json:"referral_enabled"`
 	JoinerDiscountBps         *int                        `json:"joiner_discount_bps"`
@@ -80,7 +79,6 @@ func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
 		SlotInviteDefaultTTLDays:  body.SlotInviteDefaultTTLDays,
 		WaitlistEnabled:           body.WaitlistEnabled,
 		WaitlistOfferTTLHours:     body.WaitlistOfferTTLHours,
-		RequireKYCBeforePay:       body.RequireKYCBeforePay,
 		JoinPendingTTLDays:        body.JoinPendingTTLDays,
 		ReferralEnabled:           body.ReferralEnabled,
 		JoinerDiscountBps:         body.JoinerDiscountBps,
