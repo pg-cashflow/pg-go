@@ -54,6 +54,7 @@ type Deps struct {
 	ReportStore        ReportStore
 	IntentStore        IntentStore
 	IntentLifecycle    IntentLifecycle
+	FeatureKYCDigiLocker bool
 	PaymentLookup      PaymentLookup
 	Collector          *collector.Service
 	CashfreeSecret     string

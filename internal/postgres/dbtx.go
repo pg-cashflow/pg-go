@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -88,4 +89,36 @@ func WithinTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error)
 		return fmt.Errorf("commit tx: %w", err)
 	}
 	return nil
+}
+
+// PoolFromDB extracts the underlying *pgxpool.Pool if the handle is or wraps a pool.
+func PoolFromDB(db DBTX) *pgxpool.Pool {
+	if pool, ok := db.(*pgxpool.Pool); ok {
+		return pool
+	}
+	if scoped, ok := db.(*ScopedDB); ok {
+		return scoped.Pool()
+	}
+	if provider, ok := db.(interface{ Pool() *pgxpool.Pool }); ok {
+		return provider.Pool()
+	}
+	return nil
+}
+
+// ExecuteInTx executes fn within an atomic transaction.
+// If an active transaction exists in ctx, fn is executed directly.
+// If db is already a pgx.Tx, fn is executed directly.
+// If db is or wraps *pgxpool.Pool, it opens a transaction via WithinTx.
+// Otherwise, it returns an explicit error to prevent unguarded non-transactional execution.
+func ExecuteInTx(ctx context.Context, db DBTX, fn func(tx pgx.Tx) error) error {
+	if existingTx, ok := TxFromContext(ctx); ok {
+		return fn(existingTx)
+	}
+	if tx, ok := db.(pgx.Tx); ok {
+		return fn(tx)
+	}
+	if pool := PoolFromDB(db); pool != nil {
+		return WithinTx(ctx, pool, fn)
+	}
+	return errors.New("dbtx: cannot execute multi-statement operation: db handle is not transaction-capable")
 }

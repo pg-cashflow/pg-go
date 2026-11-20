@@ -67,3 +67,45 @@ func TestPaymentIntentRepo_CreateWithDues_OuterTxErrorPropagation(t *testing.T) 
 		t.Fatalf("expected exactly 2 exec calls before stopping, got %d", mockDB.execCount)
 	}
 }
+
+func TestPoolFromDB_UnwrapsScopedDB(t *testing.T) {
+	scoped := &ScopedDB{pool: nil}
+	if pool := PoolFromDB(scoped); pool != nil {
+		t.Fatal("expected nil pool from empty ScopedDB")
+	}
+}
+
+type mockVacatedTenantDBTX struct {
+	mockFailingDBTX
+}
+
+func (m *mockVacatedTenantDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return &mockStatusRow{status: domain.TenantStatusVacated}
+}
+
+type mockStatusRow struct {
+	status domain.TenantStatus
+}
+
+func (m *mockStatusRow) Scan(dest ...any) error {
+	if len(dest) > 0 {
+		if ptr, ok := dest[0].(*domain.TenantStatus); ok {
+			*ptr = m.status
+			return nil
+		}
+	}
+	return nil
+}
+
+func TestPaymentIntentRepo_ClaimInitiatingIntent_VacatedTenantBlocked(t *testing.T) {
+	mockDB := &mockVacatedTenantDBTX{}
+	repo := NewPaymentIntentRepo(mockDB)
+
+	tenantID := uuid.New()
+	dueID := uuid.New()
+
+	_, _, _, err := repo.ClaimInitiatingIntent(context.Background(), tenantID, []uuid.UUID{dueID}, []int64{1000}, 1000, "ord-1", 10)
+	if err == nil {
+		t.Fatal("expected error claiming intent for vacated tenant, got nil")
+	}
+}

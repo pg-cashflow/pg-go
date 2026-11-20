@@ -217,6 +217,7 @@ func kycTestTenantRouterWithTenant(svc KYCService, cashfreeSecret string, tenant
 		KYCSvc:                   svc,
 		CashfreeSecret:           cashfreeSecret,
 		CashfreeKYCWebhookSecret: cashfreeSecret,
+		FeatureKYCDigiLocker:     true,
 	}}
 
 	tenant_g := r.Group("/api/tenant/kyc")
@@ -525,6 +526,29 @@ func TestTenantKYCDigiLockerStatus_Success(t *testing.T) {
 	}
 	if resp["ok"] != true {
 		t.Errorf("expected ok=true, got %v", resp["ok"])
+	}
+}
+
+func TestTenantKYCDigiLocker_DisabledByDefault(t *testing.T) {
+	svc := &fakeKYCSvc{}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()})
+		c.Next()
+	})
+	h := &Handlers{Deps: Deps{
+		KYCSvc:               svc,
+		FeatureKYCDigiLocker: false, // Default
+	}}
+	r.POST("/api/tenant/kyc/digilocker/init", h.TenantKYCDigiLockerInit)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/digilocker/init", bytes.NewReader([]byte("{}")))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when digilocker disabled, got %d", w.Code)
 	}
 }
 

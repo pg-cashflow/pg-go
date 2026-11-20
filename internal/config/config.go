@@ -70,6 +70,7 @@ type Config struct {
 	// Format: "1:hexkey1,2:hexkey2".
 	KYCDocCryptoKeys                  map[byte][]byte
 	KYCVerificationValidityDays       int
+	FeatureKYCDigiLocker              bool
 	RefundWindowDays                  int
 	CashfreePayoutClientID            string
 	CashfreePayoutClientSecret        string
@@ -167,7 +168,8 @@ func Load() (*Config, error) {
 		AadhaarQRPublicKeyPEM:             os.Getenv("AADHAAR_QR_PUBLIC_KEY_PEM"),
 		KYCIdentitySecret:                 os.Getenv("KYC_IDENTITY_SECRET"),
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
-		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 365),
+		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 0),
+		FeatureKYCDigiLocker:              envBoolDefaultFalse("FEATURE_KYC_DIGILOCKER"),
 		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 120),
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),

@@ -23,6 +23,11 @@ func NewScopedDB(pool *pgxpool.Pool) *ScopedDB {
 	return &ScopedDB{pool: pool}
 }
 
+// Pool returns the underlying *pgxpool.Pool for transaction management.
+func (s *ScopedDB) Pool() *pgxpool.Pool {
+	return s.pool
+}
+
 // Exec executes a statement. It runs within an atomic pipelined transaction block with
 // transaction-local app.current_property_id.
 func (s *ScopedDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {

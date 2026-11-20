@@ -1197,11 +1197,11 @@ func (s *Service) CanTenantPay(ctx context.Context, tenantID uuid.UUID) (bool, e
 	if err != nil || v == nil {
 		return false, nil
 	}
-	if v.Status == domain.KYCStatusVerified {
+	if v.IsValid(time.Now().UTC()) {
 		return true, nil
 	}
-	// Fail closed: only a verified identity can pay. A document in manual review
-	// does not grant payment access, and no property setting can change that.
+	// Fail closed: only a verified, non-expired identity can pay. A document in manual review
+	// does not grant payment access, and an expired verification blocks payment immediately.
 	return false, nil
 }
 

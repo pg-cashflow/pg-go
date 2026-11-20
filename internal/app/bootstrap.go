@@ -262,9 +262,6 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		}
 		kycRepo = postgres.NewKYCRepo(maintPool, kycDocKey)
 		validityDays := cfg.KYCVerificationValidityDays
-		if validityDays <= 0 {
-			validityDays = 365
-		}
 		kycRepo.SetVerificationValidityDays(validityDays)
 		if len(kycDocKey) == 32 {
 			kycKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey)
@@ -498,6 +495,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		ReportStore:                  reportRepo,
 		IntentStore:                  intentRepo,
 		IntentLifecycle:              intentLifecycle,
+		FeatureKYCDigiLocker:         cfg.FeatureKYCDigiLocker,
 		PaymentLookup:                maintPaymentRepo,
 		GatewayPaymentRepo:           maintPaymentRepo,
 		WebhookToleranceSec:          cfg.WebhookTimestampToleranceSec,

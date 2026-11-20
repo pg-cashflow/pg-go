@@ -1742,8 +1742,11 @@ func TestProcessDigiLockerCallback_AadhaarNotLinked_FailsClosed(t *testing.T) {
 
 func TestCanTenantPay_GatingMatrix(t *testing.T) {
 	tenantID := uuid.New()
+	now := time.Now().UTC()
+	future := now.Add(48 * time.Hour)
+	past := now.Add(-48 * time.Hour)
 
-	t.Run("verified tenant can always pay", func(t *testing.T) {
+	t.Run("verified tenant without expiry can pay", func(t *testing.T) {
 		repo := &fakeRepo{
 			verification: &domain.KYCVerification{
 				TenantID: tenantID,
@@ -1753,7 +1756,53 @@ func TestCanTenantPay_GatingMatrix(t *testing.T) {
 		svc := newTestService(repo, &fakeCashfree{})
 		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
 		if err != nil || !canPay {
-			t.Fatalf("expected verified tenant to be allowed to pay, got canPay=%v, err=%v", canPay, err)
+			t.Fatalf("expected verified tenant without expiry to be allowed to pay, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+
+	t.Run("verified tenant with future expiry can pay", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				TenantID:  tenantID,
+				Status:    domain.KYCStatusVerified,
+				ExpiresAt: &future,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || !canPay {
+			t.Fatalf("expected verified tenant with future expiry to be allowed to pay, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+
+	t.Run("verified tenant with past expiry cannot pay", func(t *testing.T) {
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				TenantID:  tenantID,
+				Status:    domain.KYCStatusVerified,
+				ExpiresAt: &past,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || canPay {
+			t.Fatalf("expected verified tenant with past expiry to be blocked from paying, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+
+	t.Run("verified tenant expired at now cannot pay", func(t *testing.T) {
+		exactNow := time.Now().UTC()
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				TenantID:  tenantID,
+				Status:    domain.KYCStatusVerified,
+				ExpiresAt: &exactNow,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
+		if err != nil || canPay {
+			t.Fatalf("expected verified tenant expired at now to be blocked from paying, got canPay=%v, err=%v", canPay, err)
 		}
 	})
 

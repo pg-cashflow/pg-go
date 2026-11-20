@@ -384,6 +384,26 @@ func TestBatchTransferStatusResponse_TransferUTRDecoding(t *testing.T) {
 	}
 }
 
+func TestTransferStatusItem_AmountDecoding(t *testing.T) {
+	payload := []byte(`{
+		"transfer_id": "pgo_item_1",
+		"cf_transfer_id": "cf_tr_1",
+		"status": "SUCCESS",
+		"transfer_amount": 1500.50
+	}`)
+	var item TransferStatusItem
+	if err := json.Unmarshal(payload, &item); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	paise, err := item.AmountPaise()
+	if err != nil {
+		t.Fatalf("AmountPaise failed: %v", err)
+	}
+	if paise != 150050 {
+		t.Fatalf("expected 150050 paise, got %d", paise)
+	}
+}
+
 func TestPayoutSignature_RSAOAEP_SHA1(t *testing.T) {
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

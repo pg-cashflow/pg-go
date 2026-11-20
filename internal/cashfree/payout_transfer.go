@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -44,26 +46,31 @@ type BatchTransferResponse struct {
 // Cashfree batch transfer schema sends 'transfer_utr', while some endpoints send 'utr'.
 // Both fields are supported with seamless fallback.
 type TransferStatusItem struct {
-	TransferID        string  `json:"transfer_id"`
-	CFTransferID      string  `json:"cf_transfer_id"`
-	Status            string  `json:"status"`      // "SUCCESS", "PENDING", "FAILED", "APPROVAL_PENDING", "REVERSED", "REJECTED"
-	StatusCode        string  `json:"status_code"` // e.g. "WAIT_TIME_EXCEEDED", "BENE_BANK_DECLINED"
-	StatusDescription string  `json:"status_description"`
-	UTR               *string `json:"utr,omitempty"`
-	TransferUTR       *string `json:"transfer_utr,omitempty"`
-	AcknowledgedAt    *string `json:"acknowledged_at,omitempty"`
+	TransferID        string      `json:"transfer_id"`
+	CFTransferID      string      `json:"cf_transfer_id"`
+	Status            string      `json:"status"`      // "SUCCESS", "PENDING", "FAILED", "APPROVAL_PENDING", "REVERSED", "REJECTED"
+	StatusCode        string      `json:"status_code"` // e.g. "WAIT_TIME_EXCEEDED", "BENE_BANK_DECLINED"
+	StatusDescription string      `json:"status_description"`
+	TransferAmount    json.Number `json:"transfer_amount"`
+	UTR               *string     `json:"utr,omitempty"`
+	TransferUTR       *string     `json:"transfer_utr,omitempty"`
+	AcknowledgedAt    *string     `json:"acknowledged_at,omitempty"`
 }
 
 func (t *TransferStatusItem) UnmarshalJSON(data []byte) error {
 	type alias TransferStatusItem
 	var aux struct {
 		alias
-		TransferUTR *string `json:"transfer_utr,omitempty"`
+		TransferUTR *string     `json:"transfer_utr,omitempty"`
+		Amount      json.Number `json:"amount,omitempty"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	*t = TransferStatusItem(aux.alias)
+	if t.TransferAmount == "" && aux.Amount != "" {
+		t.TransferAmount = aux.Amount
+	}
 	if (t.UTR == nil || *t.UTR == "") && aux.TransferUTR != nil && *aux.TransferUTR != "" {
 		t.UTR = aux.TransferUTR
 	}
@@ -71,6 +78,18 @@ func (t *TransferStatusItem) UnmarshalJSON(data []byte) error {
 		t.TransferUTR = t.UTR
 	}
 	return nil
+}
+
+// AmountPaise parses TransferAmount into integer paise.
+func (t *TransferStatusItem) AmountPaise() (int64, error) {
+	if t.TransferAmount == "" {
+		return 0, errors.New("cashfree: transfer_amount is missing")
+	}
+	f, err := t.TransferAmount.Float64()
+	if err != nil {
+		return 0, fmt.Errorf("cashfree: invalid transfer_amount %q: %w", t.TransferAmount, err)
+	}
+	return int64(math.Round(f * 100)), nil
 }
 
 // BatchTransferStatusResponse represents the response from GET /payout/transfers/batch.

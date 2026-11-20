@@ -399,6 +399,10 @@ type tenantKYCDigiLockerInitRequest struct {
 // TenantKYCDigiLockerInit handles POST /api/tenant/kyc/digilocker/init.
 // Generates a Cashfree DigiLocker authorization URL with server-controlled redirect URL.
 func (h *Handlers) TenantKYCDigiLockerInit(c *gin.Context) {
+	if !h.FeatureKYCDigiLocker {
+		apierr.RespondClientErr(c, http.StatusForbidden, "digilocker verification is disabled", apierr.Code("kyc.methodDisabled"))
+		return
+	}
 	svc := h.kycSvcOrErr(c)
 	if svc == nil {
 		return
@@ -454,6 +458,10 @@ func (h *Handlers) TenantKYCDigiLockerInit(c *gin.Context) {
 // TenantKYCDigiLockerStatus handles GET /api/tenant/kyc/digilocker/status.
 // Polls Cashfree DigiLocker consent and document status and reconciles terminal state.
 func (h *Handlers) TenantKYCDigiLockerStatus(c *gin.Context) {
+	if !h.FeatureKYCDigiLocker {
+		apierr.RespondClientErr(c, http.StatusForbidden, "digilocker verification is disabled", apierr.Code("kyc.methodDisabled"))
+		return
+	}
 	svc := h.kycSvcOrErr(c)
 	if svc == nil {
 		return
@@ -1139,6 +1147,14 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		strings.HasPrefix(event, "DIGILOCKER_")
 
 	if isDigiLocker {
+		if !h.FeatureKYCDigiLocker {
+			slog.InfoContext(c.Request.Context(), "kyc webhook: digilocker disabled; acknowledging without processing",
+				"verification_id", payload.VerificationID,
+				"event", event,
+			)
+			c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "digilocker disabled"})
+			return
+		}
 		// Demultiplex: DigiLocker Verification Callback.
 		// Webhook is treated as an event notification/hint: ProcessDigiLockerCallback
 		// validates state and retrieves attested credentials directly from Cashfree's secure API.

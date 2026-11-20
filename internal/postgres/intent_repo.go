@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -142,7 +141,7 @@ func (r *PaymentIntentRepo) CreateWithDues(ctx context.Context, p *domain.Paymen
 		return nil
 	}
 
-	if pool, ok := r.db.(*pgxpool.Pool); ok {
+	if pool := PoolFromDB(r.db); pool != nil {
 		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
 			return insertAll(r.WithTx(tx))
 		})
@@ -213,9 +212,15 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 
 	execClaim := func(txRepo *PaymentIntentRepo) (*domain.PaymentIntent, bool, bool, error) {
 		// 1. Universal lock order: tenants -> dues -> payment_intents
-		var dummy uuid.UUID
-		if err := txRepo.db.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&dummy); err != nil && !isNoRows(err) {
+		var tenantStatus domain.TenantStatus
+		if err := txRepo.db.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&tenantStatus); err != nil {
+			if isNoRows(err) {
+				return nil, false, false, errors.New("tenant not found")
+			}
 			return nil, false, false, fmt.Errorf("lock tenant: %w", err)
+		}
+		if tenantStatus != domain.TenantStatusActive {
+			return nil, false, false, fmt.Errorf("cannot claim payment intent: tenant status is %q", tenantStatus)
 		}
 		rows, err := txRepo.db.Query(ctx, `SELECT id FROM dues WHERE id = ANY($1) ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
 		if err != nil {
@@ -342,7 +347,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		return newIntent, false, false, nil
 	}
 
-	if pool, ok := r.db.(*pgxpool.Pool); ok {
+	if pool := PoolFromDB(r.db); pool != nil {
 		var intent *domain.PaymentIntent
 		var reused, inFlight bool
 		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
@@ -407,7 +412,7 @@ func (r *PaymentIntentRepo) GetReusableIntentUnderLock(ctx context.Context, tena
 		return scanIntent(row)
 	}
 
-	if pool, ok := r.db.(*pgxpool.Pool); ok {
+	if pool := PoolFromDB(r.db); pool != nil {
 		var out *domain.PaymentIntent
 		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 			var qErr error
@@ -426,9 +431,15 @@ func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Conte
 
 	query := func(repo *PaymentIntentRepo) (*domain.PaymentIntent, error) {
 		// Universal lock order: tenants -> dues -> payment_intents
-		var dummy uuid.UUID
-		if err := repo.db.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&dummy); err != nil && !isNoRows(err) {
+		var tenantStatus domain.TenantStatus
+		if err := repo.db.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&tenantStatus); err != nil {
+			if isNoRows(err) {
+				return nil, errors.New("tenant not found")
+			}
 			return nil, err
+		}
+		if tenantStatus != domain.TenantStatusActive {
+			return nil, fmt.Errorf("cannot reuse payment intent: tenant status is %q", tenantStatus)
 		}
 		rows, err := repo.db.Query(ctx, `SELECT id FROM dues WHERE id = ANY($1) ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
 		if err != nil {
@@ -468,7 +479,7 @@ func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Conte
 		return scanIntent(row)
 	}
 
-	if pool, ok := r.db.(*pgxpool.Pool); ok {
+	if pool := PoolFromDB(r.db); pool != nil {
 		var out *domain.PaymentIntent
 		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
 			var qErr error

@@ -606,25 +606,87 @@ func (s *Service) UpdateTenant(ctx context.Context, t *domain.Tenant) error {
 	return nil
 }
 
-// Vacate marks tenant vacated, deletes push subscriptions, publishes TenantVacated.
+// Vacate marks tenant vacated, supersedes outstanding payment intents,
+// retires active KYC records, deletes push subscriptions, and publishes TenantVacated.
 // Payment tokens are intentionally left intact.
 func (s *Service) Vacate(ctx context.Context, tenantID uuid.UUID) error {
-	t, err := s.tenants.GetByID(ctx, tenantID)
-	if err != nil {
-		return err
+	var propID uuid.UUID
+	if s.pool != nil {
+		err := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
+			// 1. Lock tenant FOR UPDATE
+			var currentStatus domain.TenantStatus
+			err := tx.QueryRow(ctx, `SELECT status, property_id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&currentStatus, &propID)
+			if err != nil {
+				return err
+			}
+			if currentStatus == domain.TenantStatusVacated {
+				return nil // already vacated
+			}
+
+			// 2. Lock tenant dues FOR UPDATE
+			rows, err := tx.Query(ctx, `SELECT id FROM dues WHERE tenant_id=$1 FOR UPDATE`, tenantID)
+			if err != nil {
+				return fmt.Errorf("lock dues: %w", err)
+			}
+			rows.Close()
+
+			// 3. Supersede all open payment intents for this tenant
+			_, err = tx.Exec(ctx, `
+				UPDATE payment_intents
+				SET status='superseded', updated_at=NOW()
+				WHERE status IN ('initiating', 'created') AND (
+					due_id IN (SELECT id FROM dues WHERE tenant_id=$1)
+					OR id IN (
+						SELECT payment_intent_id FROM payment_intent_dues pid
+						JOIN dues d ON pid.due_id = d.id
+						WHERE d.tenant_id=$1
+					)
+				)`, tenantID)
+			if err != nil {
+				return fmt.Errorf("supersede open payment intents: %w", err)
+			}
+
+			// 4. Retire active KYC verifications upon departure
+			_, err = tx.Exec(ctx, `
+				UPDATE kyc_verification
+				SET status='superseded', updated_at=NOW()
+				WHERE tenant_id=$1 AND status IN ('verified', 'pending', 'pending_manual_review')`,
+				tenantID,
+			)
+			if err != nil {
+				return fmt.Errorf("retire kyc on vacate: %w", err)
+			}
+
+			// 5. Update tenant status to vacated
+			_, err = tx.Exec(ctx, `UPDATE tenants SET status=$2, updated_at=NOW() WHERE id=$1`, tenantID, domain.TenantStatusVacated)
+			if err != nil {
+				return fmt.Errorf("update tenant status: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	} else {
+		t, err := s.tenants.GetByID(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		propID = t.PropertyID
+		t.Status = domain.TenantStatusVacated
+		if err := s.tenants.Update(ctx, t); err != nil {
+			return err
+		}
 	}
-	t.Status = domain.TenantStatusVacated
-	if err := s.tenants.Update(ctx, t); err != nil {
-		return err
-	}
+
 	if s.push != nil {
 		if err := s.push.DeleteByTenant(ctx, tenantID); err != nil {
 			return fmt.Errorf("tenant: delete push subscriptions: %w", err)
 		}
 	}
 	return s.pub.Publish(ctx, domain.Event{
-		TenantID:   domain.Ptr(t.ID),
-		PropertyID: t.PropertyID,
+		TenantID:   domain.Ptr(tenantID),
+		PropertyID: propID,
 		EventType:  domain.EvtTenantVacated,
 		OccurredAt: s.now(),
 		Payload:    json.RawMessage(`{}`),
