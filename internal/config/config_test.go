@@ -835,7 +835,7 @@ func TestLoad_RefundWindowDays(t *testing.T) {
 	}
 }
 
-func TestWebhookAPIVersion_DefaultIs2026_01_01(t *testing.T) {
+func TestWebhookAPIVersion_DefaultIs2025_01_01(t *testing.T) {
 	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
 	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
 	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
@@ -846,7 +846,7 @@ func TestWebhookAPIVersion_DefaultIs2026_01_01(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error loading config: %v", err)
 	}
-	if cfg.WebhookAPIVersion != "2026-01-01" {
-		t.Fatalf("expected default WebhookAPIVersion to be 2026-01-01, got %q", cfg.WebhookAPIVersion)
+	if cfg.WebhookAPIVersion != "2025-01-01" {
+		t.Fatalf("expected default WebhookAPIVersion to be 2025-01-01, got %q", cfg.WebhookAPIVersion)
 	}
 }

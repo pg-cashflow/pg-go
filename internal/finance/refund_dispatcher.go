@@ -138,6 +138,15 @@ func (d *RefundGatewayDispatcher) DispatchRefund(ctx context.Context, refundID u
 			return nil // definitive failure handled, do not retry outbox event
 		}
 
+		// A 429 means Cashfree rejected the call before it processed it, so no refund exists
+		// at the gateway. Leave the refund 'initiated' and return the error: the command worker
+		// retries with backoff and the same deterministic idempotency key, and raises a
+		// dead-letter alert if the limit is exhausted. Moving to needs_review here would stop
+		// automated retries for a refund that was never created.
+		if isRateLimitError(cfErr) {
+			return fmt.Errorf("refund dispatcher: cashfree rate limited refund %s; will retry with same idempotency key: %w", ref.ID, cfErr)
+		}
+
 		// R6: Resolve ambiguous create by querying gateway first.
 		resolved, recoverErr := d.recoverAmbiguousCreate(ctx, orderID, refundRef, ref, cfNote, cfErr)
 		if recoverErr != nil {
@@ -197,6 +206,12 @@ func isServerOrTransportError(err error) bool {
 		return apiErr.StatusCode >= 500
 	}
 	return true
+}
+
+// isRateLimitError reports a Cashfree 429 response.
+func isRateLimitError(err error) bool {
+	var apiErr *cashfree.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
 }
 
 // recoverAmbiguousCreate resolves an ambiguous CreateRefund failure by consulting the gateway.

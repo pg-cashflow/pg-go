@@ -423,14 +423,24 @@ func TestRefundGatewayDispatcher_RateLimitDoesNotRotateKey(t *testing.T) {
 	}
 	d := NewRefundGatewayDispatcher(repo, cf)
 
-	if err := d.DispatchRefund(context.Background(), refID); err != nil {
-		t.Fatalf("unexpected error on needs_review transition: %v", err)
+	// A 429 means the gateway never processed the call. The dispatcher must return an error so the
+	// command worker retries with backoff and the same key, and must not park the refund in
+	// needs_review (which would stop automated retries for a refund that was never created).
+	err := d.DispatchRefund(context.Background(), refID)
+	if err == nil {
+		t.Fatalf("expected a retryable error on 429, got nil")
 	}
 	if len(cf.createKeys) != 1 {
 		t.Errorf("429 must not trigger an inline re-create; calls=%d", len(cf.createKeys))
 	}
-	if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
-		t.Errorf("expected reconcile to 'needs_review', got %v", repo.reconcileLog)
+	if cf.createKeys[0] != domain.CashfreeRefundIdempotencyKey(refID) {
+		t.Errorf("429 attempt must use the deterministic idempotency key, got %q", cf.createKeys[0])
+	}
+	if cf.fetchCalls != 0 {
+		t.Errorf("429 must not trigger a status lookup; fetch calls=%d", cf.fetchCalls)
+	}
+	if len(repo.reconcileLog) != 0 {
+		t.Errorf("429 must leave the refund 'initiated' with no transition, got %v", repo.reconcileLog)
 	}
 }
 
