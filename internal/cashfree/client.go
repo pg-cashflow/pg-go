@@ -25,7 +25,7 @@ type Config struct {
 	AppID                      string
 	SecretKey                  string
 	Env                        string // sandbox | production
-	APIVersion                 string // e.g. "2025-01-01"
+	APIVersion                 string // e.g. "2026-01-01"
 	OrderExpiryDuration        time.Duration
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
 	ReturnURL                  string
@@ -542,7 +542,7 @@ func (c *Client) sign(req *http.Request) {
 	req.Header.Set("x-client-secret", c.cfg.SecretKey)
 	ver := c.cfg.APIVersion
 	if ver == "" {
-		ver = "2025-01-01"
+		ver = "2026-01-01"
 	}
 	req.Header.Set("x-api-version", ver)
 }

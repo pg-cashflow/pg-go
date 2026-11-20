@@ -448,7 +448,7 @@ func TestFetchSuccessfulPayment_AmbiguousCaptures(t *testing.T) {
 		}
 	})
 
-	t.Run("default_api_version_header_is_2025_01_01", func(t *testing.T) {
+	t.Run("default_api_version_header_is_2026_01_01", func(t *testing.T) {
 		var capturedVersion string
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			capturedVersion = r.Header.Get("x-api-version")
@@ -459,8 +459,8 @@ func TestFetchSuccessfulPayment_AmbiguousCaptures(t *testing.T) {
 
 		c := NewClient(Config{AppID: "app_1", SecretKey: "sec_1"}).WithBaseURL(ts.URL)
 		_, _, _, _, _ = c.FetchSuccessfulPayment(context.Background(), "ord_test_ver")
-		if capturedVersion != "2025-01-01" {
-			t.Fatalf("expected default x-api-version header to be 2025-01-01, got %q", capturedVersion)
+		if capturedVersion != "2026-01-01" {
+			t.Fatalf("expected default x-api-version header to be 2026-01-01, got %q", capturedVersion)
 		}
 	})
 }
