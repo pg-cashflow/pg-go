@@ -351,12 +351,12 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 		if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, rfRow.ID); err != nil {
 			return fmt.Errorf("delete refund allocations: %w", err)
 		}
-		_, _ = tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			UPDATE unmatched_gateway_receipts
-			SET status = 'held',
-			    resolution_refund_id = NULL,
-			    updated_at = NOW()
-			WHERE resolution_refund_id = $1 AND status = 'resolving'`, rfRow.ID)
+			SET updated_at = NOW()
+			WHERE resolution_refund_id = $1 AND status = 'resolving'`, rfRow.ID); err != nil {
+			return fmt.Errorf("cleanup failed refund receipt update: %w", err)
+		}
 		_, _ = tx.Exec(ctx, `
 			UPDATE payment_commands
 			SET status = 'completed',
@@ -1331,6 +1331,13 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("step up verification failed")
 	}
 
+	return h.executePaymentRefundAuthorized(c, pid, uid, p, req, source, idempotencyKey)
+}
+
+func (h *Handlers) executePaymentRefundAuthorized(c *gin.Context, pid, uid uuid.UUID, p *domain.Payment, req OwnerRefundRequest, source, idempotencyKey string) (*domain.GatewayRefund, error) {
+	ctx := c.Request.Context()
+	now := time.Now().UTC()
+
 	// Resolve Cashfree Order ID
 	var orderID string
 	if p.CFPaymentID != nil && *p.CFPaymentID != "" && h.IntentStore != nil {
@@ -1380,7 +1387,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("database pool unavailable")
 	}
 
-	_, err = runner.PrepareRefund(ctx, pid, p, req, rfRow)
+	_, err := runner.PrepareRefund(ctx, pid, p, req, rfRow)
 	if err != nil {
 		var vErr *refundValidationErr
 		if errors.As(err, &vErr) {
@@ -1421,7 +1428,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	// Publish domain event for telemetry/consumers.
 	if h.Events != nil && p.TenantID != uuid.Nil {
 		eventData, _ := json.Marshal(map[string]any{
-			"payment_id":   paymentID,
+			"payment_id":   p.ID,
 			"refund_id":    rfRow.ID,
 			"amount_paise": rfRow.AmountPaise,
 			"reason":       rfRow.Reason,

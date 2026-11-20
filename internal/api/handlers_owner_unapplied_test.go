@@ -200,10 +200,29 @@ func (m *mockUnappliedUserStore) SetPropertyID(ctx context.Context, id uuid.UUID
 
 type mockUnappliedAuth struct {
 	AuthService
+	usedOTPs    map[string]bool
+	lastPurpose string
+	lastPhone   string
+}
+
+func (m *mockUnappliedAuth) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpose string, batchID *uuid.UUID) (string, string, error) {
+	m.lastPhone = phone
+	m.lastPurpose = purpose
+	return "sms", phone, nil
 }
 
 func (m *mockUnappliedAuth) VerifyStepUpOTPSpecific(ctx context.Context, phone, otp, purpose string, batchID *uuid.UUID) error {
+	m.lastPhone = phone
+	m.lastPurpose = purpose
+	if m.usedOTPs == nil {
+		m.usedOTPs = make(map[string]bool)
+	}
 	if otp == "123456" {
+		key := fmt.Sprintf("%s:%s:%s", phone, otp, purpose)
+		if m.usedOTPs[key] {
+			return auth.ErrInvalidOTP
+		}
+		m.usedOTPs[key] = true
 		return nil
 	}
 	return auth.ErrInvalidOTP
@@ -229,6 +248,7 @@ func setupUnappliedRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 	owner.GET("/payments/unapplied-receipts/:id", h.OwnerGetUnappliedReceipt)
 	owner.POST("/payments/unapplied-receipts/:id/credit", h.OwnerApplyUnappliedReceiptCredit)
 	owner.POST("/payments/unapplied-receipts/:id/refund", h.OwnerRefundUnappliedReceipt)
+	owner.POST("/payments/unapplied-receipts/:id/refund/request-otp", h.RequestUnappliedReceiptRefundOTP)
 
 	return r
 }
@@ -445,6 +465,54 @@ func TestOwnerUnappliedReceipts_Workflow(t *testing.T) {
 
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 Bad Request on already resolved receipt with different key, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("Refund OTP issuance - validates property, status, and compact purpose", func(t *testing.T) {
+		unappliedID := uuid.New()
+		held := &domain.UnmatchedGatewayReceipt{
+			ID:                unappliedID,
+			PropertyID:        &propID,
+			TenantID:          &tenantID,
+			Provider:          "cashfree",
+			ProviderPaymentID: "cf_pay_otp_test",
+			AmountPaise:       500000,
+			Status:            domain.ReceiptStatusHeld,
+			CreatedAt:         time.Now(),
+			UpdatedAt:         time.Now(),
+		}
+		receiptStore.receipts[unappliedID] = held
+
+		// Request OTP for valid held receipt
+		req := httptest.NewRequest(http.MethodPost, "/api/owner/payments/unapplied-receipts/"+unappliedID.String()+"/refund/request-otp", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for refund OTP request, got %d: %s", rec.Code, rec.Body.String())
+		}
+		expectedPurpose := unappliedReceiptRefundPurpose(unappliedID)
+		if len(expectedPurpose) != 24 || len(expectedPurpose) > 32 {
+			t.Fatalf("expected 24-character purpose within VARCHAR(32), got %d (%s)", len(expectedPurpose), expectedPurpose)
+		}
+		if authSvc.lastPurpose != expectedPurpose {
+			t.Fatalf("expected auth service to receive purpose %s, got %s", expectedPurpose, authSvc.lastPurpose)
+		}
+
+		// Request OTP for foreign property receipt returns 404
+		reqForeign := httptest.NewRequest(http.MethodPost, "/api/owner/payments/unapplied-receipts/"+foreignReceiptID.String()+"/refund/request-otp", nil)
+		recForeign := httptest.NewRecorder()
+		router.ServeHTTP(recForeign, reqForeign)
+		if recForeign.Code != http.StatusNotFound {
+			t.Fatalf("expected 404 for foreign receipt OTP request, got %d: %s", recForeign.Code, recForeign.Body.String())
+		}
+
+		// Request OTP for already resolved receipt returns 400
+		reqResolved := httptest.NewRequest(http.MethodPost, "/api/owner/payments/unapplied-receipts/"+receiptID.String()+"/refund/request-otp", nil)
+		recResolved := httptest.NewRecorder()
+		router.ServeHTTP(recResolved, reqResolved)
+		if recResolved.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for resolved receipt OTP request, got %d: %s", recResolved.Code, recResolved.Body.String())
 		}
 	})
 }

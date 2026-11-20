@@ -13,6 +13,8 @@ const (
 	RoleTenant Role = "tenant"
 	// RoleManager operates daily property management and operational flows.
 	RoleManager Role = "manager"
+	// RolePlatformOps operates platform-level reconciliation and exception queues.
+	RolePlatformOps Role = "platform_ops"
 )
 
 type User struct {
@@ -48,4 +50,8 @@ func (u *User) IsManager() bool {
 
 func (u *User) IsManagerOrOwner() bool {
 	return u != nil && (u.Role == RoleOwner || u.Role == RoleManager)
+}
+
+func (u *User) IsPlatformOps() bool {
+	return u != nil && u.Role == RolePlatformOps
 }

@@ -81,6 +81,7 @@ const (
 	EvtPaymentReconciled        EventType = "PaymentReconciled"
 	EvtTieOutReopened           EventType = "TieOutReopened"
 	EvtReconcilingAlert         EventType = "ReconcilingAlert"
+	EvtPlatformPayoutReconciled EventType = "PlatformPayoutReconciled"
 )
 
 type Event struct {
@@ -101,6 +102,18 @@ type DuePaidPayload struct {
 	PaidAt          string `json:"paid_at"`
 	DaysEarlyOrLate int    `json:"days_early_or_late"`
 	MatchedBy       string `json:"matched_by"`
+}
+
+type PlatformPayoutReconciledPayload struct {
+	PayoutItemID  string     `json:"payout_item_id"`
+	OldStatus     string     `json:"old_status"`
+	NewStatus     string     `json:"new_status"`
+	UTR           *string    `json:"utr,omitempty"`
+	CFTransferID  *string    `json:"cf_transfer_id,omitempty"`
+	SettledAt     *time.Time `json:"settled_at,omitempty"`
+	FailureReason *string    `json:"failure_reason,omitempty"`
+	OperatorID    string     `json:"operator_id"`
+	Notes         string     `json:"notes"`
 }
 
 type DueProratedPayload struct {

@@ -232,15 +232,12 @@ func (j *CashfreePollJob) runRefunds(ctx context.Context) error {
 }
 
 func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, ref domain.GatewayRefund, log *slog.Logger) error {
-	refundID := ""
-	if ref.RefundReference != nil && *ref.RefundReference != "" {
-		refundID = *ref.RefundReference
-	} else if ref.CFRefundID != nil {
-		refundID = *ref.CFRefundID
-	}
-	if refundID == "" {
+	if ref.RefundReference == nil || *ref.RefundReference == "" {
+		log.Error("cashfree poll refund missing merchant refund_reference; cannot verify gateway status, manual review required",
+			"payment_id", ref.PaymentID, "cf_refund_id", ref.CFRefundID)
 		return nil
 	}
+	refundID := *ref.RefundReference
 	orderID := ""
 	hasVerifiedOrderID := false
 	if len(ref.RawPayload) > 0 {
@@ -311,14 +308,21 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 	if details == nil {
 		return nil
 	}
-	if details.AmountPaise <= 0 || details.AmountPaise != ref.AmountPaise {
-		log.Error("cashfree poll refund amount mismatch or missing/non-positive; leaving initiated for manual investigation",
-			"order_id", orderID, "refund_id", refundID, "gateway_amount", details.AmountPaise, "local_amount", ref.AmountPaise)
+	if err := cashfree.ValidateRefundResponse(orderID, refundID, ref.AmountPaise, details); err != nil {
+		log.Error("cashfree poll refund response failed strict validation; leaving initiated for manual investigation",
+			"order_id", orderID, "refund_id", refundID, "err", err)
 		return nil
 	}
+	if ref.CFRefundID != nil && *ref.CFRefundID != "" && *ref.CFRefundID != details.CFRefundID {
+		log.Error("CRITICAL: cashfree poll cf_refund_id mismatch against stored record; manual investigation required",
+			"stored", *ref.CFRefundID, "received", details.CFRefundID, "refund_id", refundID)
+		return nil
+	}
+	discoveredCFID := false
 	if details.CFRefundID != "" && (ref.CFRefundID == nil || *ref.CFRefundID == "") {
 		ref.CFRefundID = &details.CFRefundID
 		ref.ProviderRefundID = &details.CFRefundID
+		discoveredCFID = true
 	}
 	newStatus := domain.NormalizeRefundStatus(details.RefundStatus)
 	if newStatus == domain.RefundStatusOnHold {
@@ -339,6 +343,11 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 				reconcileErr = err
 				log.Error("cashfree poll update refund failed", "refund_id", refundID, "status", newStatus, "err", err)
 			}
+		}
+	} else if discoveredCFID {
+		ref.UpdatedAt = time.Now().UTC()
+		if err := j.Refunds.CreateOrUpdateRefund(ctx, &ref); err != nil {
+			log.Error("cashfree poll persist discovered cf_refund_id failed", "refund_id", refundID, "cf_refund_id", details.CFRefundID, "err", err)
 		}
 	}
 	if reconcileErr == nil && (newStatus == "succeeded" || ref.Status == "succeeded") && j.Referrals != nil {

@@ -151,8 +151,33 @@ func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID
 	}
 	defer tx.Rollback(ctx)
 
-	// Lock order: pending approval rows first, then the expense row.
-	// DecideApprovalAtomic uses the same order, so the two paths cannot deadlock.
+	// 1. Resolve property_id and current status without acquiring domain row locks
+	var pid uuid.UUID
+	var cur string
+	err = tx.QueryRow(ctx, `SELECT property_id, status FROM expenses WHERE id = $1`, expenseID).Scan(&pid, &cur)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("query expense for void: %w", err)
+	}
+
+	// 2. Validate trusted actor role (fail-closed)
+	role := v.ActorRole
+	if role == "" {
+		return fmt.Errorf("void expense rejected: actor role is required")
+	}
+
+	// 3. Comply with AUTH-05: Acquire User and Capability locks first (Levels 1 & 2)
+	if role == string(domain.RoleManager) || role == string(domain.PayerManager) || role == "manager" {
+		if err := AssertCapabilityTx(ctx, tx, pid, v.VoidedBy, "manager", "expenses.void"); err != nil {
+			return err
+		}
+	} else if role != string(domain.RoleOwner) && role != "owner" {
+		return fmt.Errorf("void expense rejected: unauthorized actor role %q", role)
+	}
+
+	// 4. Lock pending approval rows in deterministic order (Level 3)
 	if _, err := tx.Exec(ctx, `
 		SELECT id FROM approval_requests
 		WHERE kind = 'expense' AND subject_id = $1 AND status = 'pending'
@@ -160,27 +185,22 @@ func (r *FinanceRepo) VoidExpenseAtomic(ctx context.Context, expenseID uuid.UUID
 		return fmt.Errorf("lock approvals: %w", err)
 	}
 
-	var cur string
-	var pid uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT status, property_id FROM expenses WHERE id = $1 FOR UPDATE`, expenseID).Scan(&cur, &pid)
+	// 5. Lock expense row FOR UPDATE (Level 3)
+	var lockedPid uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT status, property_id FROM expenses WHERE id = $1 FOR UPDATE`, expenseID).Scan(&cur, &lockedPid)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
 	}
 	if err != nil {
 		return fmt.Errorf("lock expense: %w", err)
 	}
+
+	// 6. Revalidate immutable property and expected status
+	if lockedPid != pid {
+		return fmt.Errorf("expense property mutated during lock acquisition")
+	}
 	if domain.ExpenseStatus(cur) != expected {
 		return domain.ErrExpenseStateChanged
-	}
-
-	role := v.ActorRole
-	if role == "" {
-		_ = tx.QueryRow(ctx, `SELECT role FROM users WHERE id = $1`, v.VoidedBy).Scan(&role)
-	}
-	if role == string(domain.RoleManager) || role == string(domain.PayerManager) || role == "manager" {
-		if err := AssertCapabilityTx(ctx, tx, pid, v.VoidedBy, "manager", "expenses.void"); err != nil {
-			return err
-		}
 	}
 
 	if _, err := tx.Exec(ctx, `

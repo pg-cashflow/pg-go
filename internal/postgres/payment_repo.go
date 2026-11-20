@@ -915,17 +915,57 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 		}
 
 		var dummy uuid.UUID
+		// AUTH-05 Monotonic lock hierarchy: lock receipt before tenant if linked
+		_ = tx.QueryRow(ctx, `SELECT id FROM unmatched_gateway_receipts WHERE resolution_refund_id = $1 FOR UPDATE`, ref.ID).Scan(&dummy)
+
 		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("lock tenant for refund reconcile: %w", err)
 		}
 
 		txDueRepo := NewDueRepo(tx)
+		// Collect all relevant due IDs and lock them deterministically before locking payment and gateway refund
+		dueMap := make(map[uuid.UUID]struct{})
+		if p.DueID != uuid.Nil {
+			dueMap[p.DueID] = struct{}{}
+		}
+		if rRows, qErr := tx.Query(ctx, `SELECT due_id FROM refund_allocations WHERE refund_id = $1`, ref.ID); qErr == nil {
+			for rRows.Next() {
+				var dID *uuid.UUID
+				if sErr := rRows.Scan(&dID); sErr == nil && dID != nil && *dID != uuid.Nil {
+					dueMap[*dID] = struct{}{}
+				}
+			}
+			rRows.Close()
+		}
+		if pRows, qErr := tx.Query(ctx, `SELECT due_id FROM payment_allocations WHERE payment_id = $1`, p.ID); qErr == nil {
+			for pRows.Next() {
+				var dID *uuid.UUID
+				if sErr := pRows.Scan(&dID); sErr == nil && dID != nil && *dID != uuid.Nil {
+					dueMap[*dID] = struct{}{}
+				}
+			}
+			pRows.Close()
+		}
+		if len(dueMap) > 0 {
+			allDueIDs := make([]uuid.UUID, 0, len(dueMap))
+			for dID := range dueMap {
+				allDueIDs = append(allDueIDs, dID)
+			}
+			_, err = tx.Exec(ctx, `
+				SELECT id FROM dues
+				WHERE id = ANY($1)
+				ORDER BY due_date ASC, id ASC FOR UPDATE`, allDueIDs)
+			if err != nil {
+				return fmt.Errorf("lock dues for refund reconcile: %w", err)
+			}
+		}
+
 		var primaryDue *domain.Due
 		if p.DueID != uuid.Nil {
 			var pDueErr error
-			primaryDue, pDueErr = txDueRepo.GetByIDForUpdate(ctx, p.DueID)
+			primaryDue, pDueErr = txDueRepo.GetByID(ctx, p.DueID)
 			if pDueErr != nil && !errors.Is(pDueErr, pgx.ErrNoRows) {
-				return fmt.Errorf("lock primary due for refund reconcile: %w", pDueErr)
+				return fmt.Errorf("load primary due for refund reconcile: %w", pDueErr)
 			}
 		}
 
@@ -1170,24 +1210,26 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 			if err != nil {
 				return fmt.Errorf("enqueue refund ledger outbox in reconcile: %w", err)
 			}
-			_, _ = tx.Exec(ctx, `
+			if _, err := tx.Exec(ctx, `
 				UPDATE unmatched_gateway_receipts
 				SET status = 'resolved',
 				    resolved_at = NOW(),
 				    resolution_action = 'refunded',
 				    updated_at = NOW()
-				WHERE resolution_refund_id = $1 AND status <> 'resolved'`, ref.ID)
+				WHERE resolution_refund_id = $1 AND status <> 'resolved'`, ref.ID); err != nil {
+				return fmt.Errorf("reconcile update unmatched receipt resolved: %w", err)
+			}
 
 		case "failed", "cancelled":
 			if _, err := tx.Exec(ctx, `DELETE FROM refund_allocations WHERE refund_id = $1`, ref.ID); err != nil {
 				return fmt.Errorf("delete refund allocations in reconcile: %w", err)
 			}
-			_, _ = tx.Exec(ctx, `
+			if _, err := tx.Exec(ctx, `
 				UPDATE unmatched_gateway_receipts
-				SET status = 'held',
-				    resolution_refund_id = NULL,
-				    updated_at = NOW()
-				WHERE resolution_refund_id = $1 AND status = 'resolving'`, ref.ID)
+				SET updated_at = NOW()
+				WHERE resolution_refund_id = $1 AND status = 'resolving'`, ref.ID); err != nil {
+				return fmt.Errorf("reconcile update unmatched receipt failed: %w", err)
+			}
 		}
 		return nil
 	}

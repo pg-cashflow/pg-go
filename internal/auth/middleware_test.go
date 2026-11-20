@@ -592,3 +592,53 @@ func TestRequireOwner_FamilyBoundSessionRevocation(t *testing.T) {
 		}
 	}
 }
+
+func TestRequirePlatformOps(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "platform-ops-test-secret"
+
+	t.Run("fails when token is missing", func(t *testing.T) {
+		r := gin.New()
+		r.GET("/platform/payouts", RequirePlatformOps(secret, nil), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/platform/payouts", nil)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("fails when role is owner", func(t *testing.T) {
+		owner := &domain.User{ID: uuid.New(), Role: domain.RoleOwner, Phone: "+919999900001"}
+		token, _ := IssueAccessToken(secret, owner)
+		r := gin.New()
+		r.GET("/platform/payouts", RequirePlatformOps(secret, nil), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/platform/payouts", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected 403, got %d", w.Code)
+		}
+	})
+
+	t.Run("passes when role is platform_ops", func(t *testing.T) {
+		opsUser := &domain.User{ID: uuid.New(), Role: domain.RolePlatformOps, Phone: "+919999900002"}
+		token, _ := IssueAccessToken(secret, opsUser)
+		r := gin.New()
+		r.GET("/platform/payouts", RequirePlatformOps(secret, nil), func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/platform/payouts", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", w.Code)
+		}
+	})
+}

@@ -67,6 +67,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.GET("/payments/unapplied-receipts/:id", h.OwnerGetUnappliedReceipt)
 	owner.POST("/payments/unapplied-receipts/:id/credit", h.OwnerApplyUnappliedReceiptCredit)
 	owner.POST("/payments/unapplied-receipts/:id/refund", h.OwnerRefundUnappliedReceipt)
+	owner.POST("/payments/unapplied-receipts/:id/refund/request-otp", userOrIPRateLimit(3.0/60, 3), h.RequestUnappliedReceiptRefundOTP)
 	owner.POST("/payments/verify", h.OwnerVerifyPayment)
 	owner.POST("/payments/:id/correct", h.OwnerCorrectPayment)
 	owner.POST("/payments/:id/refund", h.OwnerRefundPayment)

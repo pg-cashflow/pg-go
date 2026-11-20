@@ -387,3 +387,12 @@ type PayoutWebhookStore interface {
 	SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error
 	SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error
 }
+
+// PayoutPlatformStore defines cross-property payout operations for platform operations.
+type PayoutPlatformStore interface {
+	ListPayoutExceptions(ctx context.Context, limit, offset int) ([]domain.PayoutExceptionItem, error)
+	ListAllPayoutBatches(ctx context.Context, status *domain.PayoutBatchStatus, limit, offset int) ([]domain.PayoutBatch, error)
+	GetBatchByIDCrossProperty(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error)
+	ListPayoutItemsByBatchCrossProperty(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error)
+	ReconcilePayoutItemManual(ctx context.Context, itemID uuid.UUID, newStatus domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string, operatorID uuid.UUID, notes string) (*domain.PayoutItem, error)
+}

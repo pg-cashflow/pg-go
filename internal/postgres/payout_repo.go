@@ -1898,3 +1898,354 @@ func (r *PayoutRepo) DisburseDepartureCashUnderLock(ctx context.Context, params 
 
 	return &dep, nil
 }
+
+// ---------------------------------------------------------
+// Platform Operations & Reconciliation
+// ---------------------------------------------------------
+
+// ListPayoutExceptions queries payout items requiring platform operations review across all properties.
+// Items include failed, rejected, retriable_failed, cashfree_approval_pending, stale processing (>30m),
+// and items belonging to batches in dispatch_unknown or failed state.
+func (r *PayoutRepo) ListPayoutExceptions(ctx context.Context, limit, offset int) ([]domain.PayoutExceptionItem, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	staleThreshold := time.Now().UTC().Add(-30 * time.Minute)
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	rows, err := tx.Query(ctx, `
+		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
+		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at,
+		       pp.property_id, p.name AS property_name, pp.name AS payee_name, pp.payee_type,
+		       pb.batch_number
+		FROM payout_items pi
+		JOIN payout_payees pp ON pp.id = pi.payee_id
+		JOIN properties p ON p.id = pp.property_id
+		LEFT JOIN payout_batches pb ON pb.id = pi.batch_id
+		WHERE pi.status IN ('failed', 'rejected', 'retriable_failed', 'cashfree_approval_pending')
+		   OR (pi.status = 'processing' AND pi.updated_at < $1)
+		   OR pb.status IN ('dispatch_unknown', 'failed')
+		ORDER BY pi.updated_at DESC, pi.id DESC
+		LIMIT $2 OFFSET $3`,
+		staleThreshold, limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.PayoutExceptionItem
+	for rows.Next() {
+		var it domain.PayoutExceptionItem
+		if err := rows.Scan(
+			&it.ID, &it.BatchID, &it.PayeeID, &it.DepartureID, &it.ReferenceNumber,
+			&it.AmountPaise, &it.Purpose, &it.PeriodLabel, &it.Status, &it.UTR, &it.SettledAt,
+			&it.FailureReason, &it.CFTransferID, &it.RetryOf, &it.CreatedAt, &it.UpdatedAt,
+			&it.PropertyID, &it.PropertyName, &it.PayeeName, &it.PayeeType,
+			&it.BatchNumber,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListAllPayoutBatches retrieves payout batches across all properties with optional status filtering.
+func (r *PayoutRepo) ListAllPayoutBatches(ctx context.Context, status *domain.PayoutBatchStatus, limit, offset int) ([]domain.PayoutBatch, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	var rows pgx.Rows
+	if status != nil && *status != "" {
+		rows, err = tx.Query(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE status = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, *status, limit, offset)
+	} else {
+		rows, err = tx.Query(ctx, `SELECT `+batchCols+` FROM payout_batches ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.PayoutBatch
+	for rows.Next() {
+		b, err := scanBatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *b)
+	}
+	return out, rows.Err()
+}
+
+// GetBatchByIDCrossProperty retrieves a payout batch without requiring property scoping.
+func (r *PayoutRepo) GetBatchByIDCrossProperty(ctx context.Context, id uuid.UUID) (*domain.PayoutBatch, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	row := tx.QueryRow(ctx, `SELECT `+batchCols+` FROM payout_batches WHERE id=$1`, id)
+	b, err := scanBatch(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, err
+	}
+	return b, nil
+}
+
+// ListPayoutItemsByBatchCrossProperty retrieves items in a batch across properties.
+func (r *PayoutRepo) ListPayoutItemsByBatchCrossProperty(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	rows, err := tx.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.PayoutItem
+	for rows.Next() {
+		it, err := scanPayoutItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *it)
+	}
+	return out, rows.Err()
+}
+
+// ReconcilePayoutItemManual executes a platform-level manual reconciliation unit-of-work on a payout item.
+// It locks the item, validates status transition, updates status/UTR/reason, records financial ledger outbox events,
+// inserts a platform audit event, and recalculates parent batch status.
+func (r *PayoutRepo) ReconcilePayoutItemManual(
+	ctx context.Context,
+	itemID uuid.UUID,
+	newStatus domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+	operatorID uuid.UUID,
+	notes string,
+) (*domain.PayoutItem, error) {
+	if operatorID == uuid.Nil {
+		return nil, errors.New("operator_id is required")
+	}
+	if strings.TrimSpace(notes) == "" {
+		return nil, errors.New("reconciliation notes are required")
+	}
+
+	switch newStatus {
+	case domain.PayoutSucceeded:
+		if utr == nil || strings.TrimSpace(*utr) == "" {
+			return nil, errors.New("utr is required when status is succeeded")
+		}
+		if settledAt == nil || settledAt.IsZero() {
+			now := time.Now().UTC()
+			settledAt = &now
+		}
+	case domain.PayoutFailed, domain.PayoutRejected:
+		if failureReason == nil || strings.TrimSpace(*failureReason) == "" {
+			return nil, errors.New("failure_reason is required when status is failed or rejected")
+		}
+	case domain.PayoutReversed:
+		// Reversal permitted
+	default:
+		return nil, fmt.Errorf("invalid manual reconciliation status: %s", newStatus)
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin manual reconcile tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	var (
+		item       domain.PayoutItem
+		propertyID uuid.UUID
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
+		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at,
+		       pp.property_id
+		FROM payout_items pi
+		JOIN payout_payees pp ON pp.id = pi.payee_id
+		WHERE pi.id = $1
+		FOR UPDATE OF pi`, itemID,
+	).Scan(
+		&item.ID, &item.BatchID, &item.PayeeID, &item.DepartureID, &item.ReferenceNumber,
+		&item.AmountPaise, &item.Purpose, &item.PeriodLabel, &item.Status, &item.UTR, &item.SettledAt,
+		&item.FailureReason, &item.CFTransferID, &item.RetryOf, &item.CreatedAt, &item.UpdatedAt,
+		&propertyID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("lock payout item %s: %w", itemID, err)
+	}
+
+	// State transition guard
+	if item.Status == domain.PayoutSucceeded && newStatus != domain.PayoutReversed {
+		return nil, fmt.Errorf("cannot transition payout item in terminal succeeded status to %s", newStatus)
+	}
+	if item.Status == domain.PayoutReversed {
+		return nil, errors.New("cannot transition payout item in terminal reversed status")
+	}
+
+	if err := r.UpdatePayoutItemStatusTx(ctx, tx, itemID, newStatus, cfTransferID, utr, settledAt, failureReason); err != nil {
+		return nil, fmt.Errorf("update payout item status: %w", err)
+	}
+
+	// Enqueue ledger outbox if transitioning to succeeded or reversed
+	if r.outbox != nil && propertyID != uuid.Nil && item.AmountPaise > 0 {
+		occurredAt := time.Now().UTC()
+		if settledAt != nil && !settledAt.IsZero() {
+			occurredAt = *settledAt
+		}
+		switch newStatus {
+		case domain.PayoutSucceeded:
+			if item.Status != domain.PayoutSucceeded {
+				payload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+					PropertyID:   propertyID,
+					PayoutItemID: itemID,
+					AmountPaise:  item.AmountPaise,
+					OccurredAt:   occurredAt,
+				})
+				if mErr != nil {
+					return nil, fmt.Errorf("marshal payout settlement payload: %w", mErr)
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      domain.LedgerOutboxPayoutSettlement,
+					PropertyID:     propertyID,
+					SourceID:       itemID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payout_settled:%s", itemID),
+					MaxAttempts:    5,
+				}
+				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+					return nil, fmt.Errorf("insert payout settlement outbox event: %w", err)
+				}
+			}
+		case domain.PayoutReversed:
+			if item.Status != domain.PayoutReversed {
+				if item.Status != domain.PayoutSucceeded {
+					sPayload, smErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+						PropertyID:   propertyID,
+						PayoutItemID: itemID,
+						AmountPaise:  item.AmountPaise,
+						OccurredAt:   occurredAt,
+					})
+					if smErr != nil {
+						return nil, fmt.Errorf("marshal payout settlement payload before reversal: %w", smErr)
+					}
+					sOutboxEvt := &domain.LedgerOutboxEvent{
+						EventType:      domain.LedgerOutboxPayoutSettlement,
+						PropertyID:     propertyID,
+						SourceID:       itemID,
+						Payload:        sPayload,
+						IdempotencyKey: fmt.Sprintf("payout_settled:%s", itemID),
+						MaxAttempts:    5,
+					}
+					if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, sOutboxEvt); err != nil {
+						return nil, fmt.Errorf("insert payout settlement outbox event before reversal: %w", err)
+					}
+				}
+				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+					PropertyID:   propertyID,
+					PayoutItemID: itemID,
+					AmountPaise:  item.AmountPaise,
+					OccurredAt:   occurredAt,
+				})
+				if mErr != nil {
+					return nil, fmt.Errorf("marshal payout reversal payload: %w", mErr)
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      domain.LedgerOutboxPayoutReversal,
+					PropertyID:     propertyID,
+					SourceID:       itemID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payout_reversed:%s", itemID),
+					MaxAttempts:    5,
+				}
+				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+					return nil, fmt.Errorf("insert payout reversal outbox event: %w", err)
+				}
+			}
+		}
+	}
+
+	// Insert platform reconciliation audit event
+	evtPayload, err := json.Marshal(domain.PlatformPayoutReconciledPayload{
+		PayoutItemID:  itemID.String(),
+		OldStatus:     string(item.Status),
+		NewStatus:     string(newStatus),
+		UTR:           utr,
+		CFTransferID:  cfTransferID,
+		SettledAt:     settledAt,
+		FailureReason: failureReason,
+		OperatorID:    operatorID.String(),
+		Notes:         notes,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal platform reconciliation event: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO events (property_id, event_type, occurred_at, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		propertyID, domain.EvtPlatformPayoutReconciled, time.Now().UTC(), evtPayload, time.Now().UTC(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert platform payout reconciled event: %w", err)
+	}
+
+	// Recalculate parent batch status if item belongs to a batch
+	if item.BatchID != nil {
+		if _, err := r.UpdateBatchStatusFromItemsTx(ctx, tx, *item.BatchID); err != nil {
+			return nil, fmt.Errorf("update batch status from items: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit manual reconcile tx: %w", err)
+	}
+
+	// Fetch fresh state of item
+	freshRow := r.pool.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id = $1`, itemID)
+	return scanPayoutItem(freshRow)
+}

@@ -183,6 +183,15 @@ type PayoutItem struct {
 	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
+type PayoutExceptionItem struct {
+	PayoutItem
+	PropertyID   uuid.UUID `json:"property_id"`
+	PropertyName string    `json:"property_name"`
+	PayeeName    string    `json:"payee_name"`
+	PayeeType    PayeeType `json:"payee_type"`
+	BatchNumber  *string   `json:"batch_number,omitempty"`
+}
+
 // ComputeBatchChecksum computes HMAC-SHA256 over deterministic concatenation of payout items.
 func ComputeBatchChecksum(secret []byte, items []PayoutItem) string {
 	h := hmac.New(sha256.New, secret)

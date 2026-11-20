@@ -45,6 +45,9 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
 	registerTenantRoutes(tenant, h)
 
+	platform := api.Group("/platform", auth.RequirePlatformOps(d.JWTSecret, d.AuthUserRepo))
+	registerPlatformRoutes(platform, h)
+
 	api.GET("/search", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), userOrIPRateLimit(120.0/60, 20), h.Search)
 	api.GET("/locales", h.ListLocales)
 
@@ -62,4 +65,14 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 		notifs.PATCH("/read-all", h.MarkAllNotificationsRead)
 	}
 
+}
+
+func registerPlatformRoutes(platform *gin.RouterGroup, h *Handlers) {
+	payouts := platform.Group("/payouts")
+	{
+		payouts.GET("/exceptions", h.PlatformListPayoutExceptions)
+		payouts.GET("/batches", h.PlatformListPayoutBatches)
+		payouts.GET("/batches/:id", h.PlatformGetPayoutBatch)
+		payouts.POST("/items/:id/reconcile", h.PlatformReconcilePayoutItem)
+	}
 }

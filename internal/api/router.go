@@ -103,6 +103,7 @@ type Deps struct {
 
 	PayoutRepo                   *postgres.PayoutRepo
 	PayoutBatchRepo              PayoutBatchStore
+	PayoutPlatformRepo           PayoutPlatformStore
 	PayoutWebhookRepo            PayoutWebhookStore
 	PayoutChecksumSecret         string
 	PayoutApprovalSigningKey     []byte

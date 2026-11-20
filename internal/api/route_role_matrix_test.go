@@ -46,9 +46,10 @@ const (
 	callerManager     matrixCaller = "manager"
 	callerTenant      matrixCaller = "tenant"
 	callerPendingJoin matrixCaller = "pending_join"
+	callerPlatformOps matrixCaller = "platform_ops"
 )
 
-var matrixCallers = []matrixCaller{callerAnon, callerOwner, callerManager, callerTenant, callerPendingJoin}
+var matrixCallers = []matrixCaller{callerAnon, callerOwner, callerManager, callerTenant, callerPendingJoin, callerPlatformOps}
 
 type routeClass struct {
 	allowed map[matrixCaller]bool
@@ -105,6 +106,8 @@ func classifyRoute(path string) (routeClass, bool) {
 		return routeClass{allowed: allow(callerOwner, callerManager)}, true
 	case strings.HasPrefix(path, "/api/tenant/"):
 		return routeClass{allowed: allow(callerTenant)}, true
+	case strings.HasPrefix(path, "/api/platform/"):
+		return routeClass{allowed: allow(callerPlatformOps)}, true
 	case path == "/api/me/onboarding":
 		return routeClass{allowed: allow(callerTenant)}, true
 	case path == "/api/search", path == "/api/notifications",
@@ -121,10 +124,11 @@ type matrixFixture struct {
 	propB       uuid.UUID // belongs to someone else
 	ownerUser   *domain.User
 	managerUser *domain.User
-	tenantUser  *domain.User
-	pendingUser *domain.User
-	tenantID    uuid.UUID
-	tokens      map[matrixCaller]string
+	tenantUser     *domain.User
+	pendingUser    *domain.User
+	platformOpsUser *domain.User
+	tenantID       uuid.UUID
+	tokens         map[matrixCaller]string
 }
 
 func newMatrixFixture(t *testing.T) *matrixFixture {
@@ -140,12 +144,14 @@ func newMatrixFixture(t *testing.T) *matrixFixture {
 	f.managerUser = &domain.User{ID: uuid.New(), Role: domain.RoleManager, Phone: "+919000000102", PropertyID: &propA}
 	f.tenantUser = &domain.User{ID: uuid.New(), Role: domain.RoleTenant, Phone: "+919000000103", PropertyID: &propA, TenantID: &tenantID}
 	f.pendingUser = &domain.User{ID: uuid.New(), Role: domain.RoleTenant, Phone: "+919000000104", PropertyID: &propA}
+	f.platformOpsUser = &domain.User{ID: uuid.New(), Role: domain.RolePlatformOps, Phone: "+919000000105"}
 	f.tokens = map[matrixCaller]string{}
 	for caller, u := range map[matrixCaller]*domain.User{
 		callerOwner:       f.ownerUser,
 		callerManager:     f.managerUser,
 		callerTenant:      f.tenantUser,
 		callerPendingJoin: f.pendingUser,
+		callerPlatformOps: f.platformOpsUser,
 	} {
 		tok, err := auth.IssueToken(f.secret, u)
 		if err != nil {
@@ -163,10 +169,11 @@ func (f *matrixFixture) newRouter() *gin.Engine {
 		f.propB: {ID: f.propB, OwnerPhone: "+919000000199"}, // owned by someone else
 	}}
 	userStore := &scopeTestUserStore{users: map[uuid.UUID]*domain.User{
-		f.ownerUser.ID:   f.ownerUser,
-		f.managerUser.ID: f.managerUser,
-		f.tenantUser.ID:  f.tenantUser,
-		f.pendingUser.ID: f.pendingUser,
+		f.ownerUser.ID:       f.ownerUser,
+		f.managerUser.ID:     f.managerUser,
+		f.tenantUser.ID:      f.tenantUser,
+		f.pendingUser.ID:     f.pendingUser,
+		f.platformOpsUser.ID: f.platformOpsUser,
 	}}
 	return NewRouter(Deps{
 		JWTSecret:       f.secret,

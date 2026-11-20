@@ -212,9 +212,12 @@ type stubRefundFetch struct {
 	err     error
 }
 
-func (s stubRefundFetch) FetchRefundStatus(context.Context, string, string) (*cashfree.RefundDetails, error) {
+func (s stubRefundFetch) FetchRefundStatus(_ context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
 	if s.err != nil {
 		return nil, s.err
+	}
+	if s.details != nil && s.details.OrderID == "" {
+		s.details.OrderID = orderID
 	}
 	return s.details, nil
 }
@@ -735,6 +738,180 @@ func TestCashfreePollStopsOn429RateLimit(t *testing.T) {
 
 	if countingClient.calls != 1 {
 		t.Fatalf("expected exactly 1 call before rate limit abort, got: %d", countingClient.calls)
+	}
+}
+
+func TestCashfreePoll_RejectsOrderIDMismatch(t *testing.T) {
+	refRef := "rf_test_oid_mismatch"
+	ref := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_expected_123"}`),
+		Status:          "initiated",
+		AmountPaise:     50000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{ref}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_different_999",
+			RefundID:     refRef,
+			CFRefundID:   "cf_rf_mismatch_1",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  50000,
+		},
+	}
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if refundRepo.reconciledStatus != "" || refundRepo.updated != nil {
+		t.Fatalf("expected no refund mutation on order_id mismatch, got status=%q updated=%+v", refundRepo.reconciledStatus, refundRepo.updated)
+	}
+}
+
+func TestCashfreePoll_RejectsRefundIDMismatch(t *testing.T) {
+	refRef := "rf_test_ref_expected"
+	ref := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_123"}`),
+		Status:          "initiated",
+		AmountPaise:     50000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{ref}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_123",
+			RefundID:     "rf_different_456",
+			CFRefundID:   "cf_rf_mismatch_2",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  50000,
+		},
+	}
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if refundRepo.reconciledStatus != "" || refundRepo.updated != nil {
+		t.Fatalf("expected no refund mutation on refund_id mismatch, got status=%q updated=%+v", refundRepo.reconciledStatus, refundRepo.updated)
+	}
+}
+
+func TestCashfreePoll_RejectsAmountMismatch(t *testing.T) {
+	refRef := "rf_test_amt_mismatch"
+	ref := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_123"}`),
+		Status:          "initiated",
+		AmountPaise:     50000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{ref}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_123",
+			RefundID:     refRef,
+			CFRefundID:   "cf_rf_mismatch_3",
+			RefundStatus: "SUCCESS",
+			AmountPaise:  40000, // mismatch!
+		},
+	}
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if refundRepo.reconciledStatus != "" || refundRepo.updated != nil {
+		t.Fatalf("expected no refund mutation on amount mismatch, got status=%q updated=%+v", refundRepo.reconciledStatus, refundRepo.updated)
+	}
+}
+
+func TestCashfreePoll_RejectsCFRefundIDMismatch(t *testing.T) {
+	refRef := "rf_test_cfid_mismatch"
+	storedCFID := "cf_existing_111"
+	ref := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef,
+		CFRefundID:      &storedCFID,
+		RawPayload:      []byte(`{"order_id": "order_123"}`),
+		Status:          "initiated",
+		AmountPaise:     50000,
+	}
+	refundRepo := &stubRefundReconciler{
+		stubRefundStale: stubRefundStale{list: []domain.GatewayRefund{ref}},
+	}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_123",
+			RefundID:     refRef,
+			CFRefundID:   "cf_different_222", // mismatch against stored!
+			RefundStatus: "SUCCESS",
+			AmountPaise:  50000,
+		},
+	}
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if refundRepo.reconciledStatus != "" || refundRepo.updated != nil {
+		t.Fatalf("expected no refund mutation on cf_refund_id mismatch, got status=%q updated=%+v", refundRepo.reconciledStatus, refundRepo.updated)
+	}
+}
+
+func TestCashfreePoll_PersistsDiscoveredCFRefundIDWhenStatusUnchanged(t *testing.T) {
+	refRef := "rf_test_discover_cfid"
+	ref := domain.GatewayRefund{
+		ID:              uuid.New(),
+		RefundReference: &refRef,
+		CFRefundID:      nil, // not yet populated locally
+		RawPayload:      []byte(`{"order_id": "order_123"}`),
+		Status:          "pending",
+		AmountPaise:     50000,
+	}
+	refundRepo := &stubRefundStale{list: []domain.GatewayRefund{ref}}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_123",
+			RefundID:     refRef,
+			CFRefundID:   "cf_discovered_777",
+			RefundStatus: "PENDING", // status is unchanged ("pending" == "pending")
+			AmountPaise:  50000,
+		},
+	}
+	job := &CashfreePollJob{
+		Refunds:      refundRepo,
+		RefundClient: refundClient,
+		Now:          func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if refundRepo.updated == nil {
+		t.Fatalf("expected refund to be persisted with newly discovered cf_refund_id")
+	}
+	if refundRepo.updated.CFRefundID == nil || *refundRepo.updated.CFRefundID != "cf_discovered_777" {
+		t.Fatalf("expected cf_refund_id to be cf_discovered_777, got: %v", refundRepo.updated.CFRefundID)
 	}
 }
 

@@ -66,6 +66,22 @@ func RequireOwner(jwtSecret string, users UserLookup) gin.HandlerFunc {
 	}
 }
 
+// RequirePlatformOps validates the Bearer JWT and requires role=platform_ops.
+func RequirePlatformOps(jwtSecret string, users UserLookup) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claims, ok := authenticate(c, jwtSecret, users)
+		if !ok {
+			return
+		}
+		if claims.Role != domain.RolePlatformOps {
+			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
+			return
+		}
+		c.Set(ContextClaimsKey, claims)
+		c.Next()
+	}
+}
+
 // RequireManagerOrOwner validates the Bearer JWT and requires role=owner or role=manager.
 func RequireManagerOrOwner(jwtSecret string, users UserLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -83,12 +99,15 @@ func RequireManagerOrOwner(jwtSecret string, users UserLookup) gin.HandlerFunc {
 }
 
 // RequireOwnerOrManagerOrTenant validates the Bearer JWT and accepts any
-// authenticated role. Used for endpoints that are role-agnostic but still
-// require a valid session (e.g. /notifications, which scopes data by user_id).
+// authenticated property role (owner, manager, tenant).
 func RequireOwnerOrManagerOrTenant(jwtSecret string, users UserLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims, ok := authenticate(c, jwtSecret, users)
 		if !ok {
+			return
+		}
+		if claims.Role != domain.RoleOwner && claims.Role != domain.RoleManager && claims.Role != domain.RoleTenant {
+			apierr.Abort(c, http.StatusForbidden, "forbidden", apierr.CodeAuthForbidden)
 			return
 		}
 		c.Set(ContextClaimsKey, claims)
