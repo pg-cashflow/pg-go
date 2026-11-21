@@ -256,6 +256,17 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("TRUSTED_PROXIES must be set in production (set to the cloudflared/load-balancer IP or CIDR, e.g. '127.0.0.1')")
 		}
 	}
+	for _, proxy := range cfg.TrustedProxies {
+		trimmed := strings.TrimSpace(proxy)
+		if trimmed == "" {
+			continue
+		}
+		if net.ParseIP(trimmed) == nil {
+			if _, _, err := net.ParseCIDR(trimmed); err != nil {
+				return nil, fmt.Errorf("invalid TRUSTED_PROXIES entry %q: must be a valid IP address or CIDR block", proxy)
+			}
+		}
+	}
 	cfAppID := strings.TrimSpace(cfg.CashfreePGAppID)
 	if cfAppID == "" {
 		cfAppID = strings.TrimSpace(cfg.CashfreeAppID)

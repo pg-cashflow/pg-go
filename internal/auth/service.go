@@ -384,6 +384,9 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 	if ident.Phone != "" && s.phoneLimiter != nil && !s.phoneLimiter.Allow(ident.Phone) {
 		return "", nil, ErrRateLimited
 	}
+	if ident.Email != "" && s.phoneLimiter != nil && !s.phoneLimiter.Allow(ident.Email) {
+		return "", nil, ErrRateLimited
+	}
 
 	// 1. Matched existing user by Firebase UID?
 	user, err := s.users.GetByFirebaseUID(ctx, ident.UID)

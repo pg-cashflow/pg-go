@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -151,7 +152,9 @@ func NewRouter(d Deps) *gin.Engine {
 
 	r := gin.New()
 	if len(d.TrustedProxies) > 0 {
-		_ = r.SetTrustedProxies(d.TrustedProxies)
+		if err := r.SetTrustedProxies(d.TrustedProxies); err != nil {
+			panic(fmt.Sprintf("api: invalid trusted proxies configuration: %v", err))
+		}
 	} else {
 		_ = r.SetTrustedProxies(nil)
 	}

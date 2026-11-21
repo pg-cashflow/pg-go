@@ -176,7 +176,23 @@ func (m *memoryRefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash stri
 		if activeCount > 0 && oldRT.RevokedAt != nil && time.Since(*oldRT.RevokedAt) <= domain.RefreshGraceWindow && hasSuccessor {
 			successor, exists := m.byID[successorID]
 			if exists && !successor.Revoked {
-				return successor, domain.ErrGraceWindow
+				now := time.Now()
+				successor.Revoked = true
+				successor.RevokedAt = &now
+				m.replacedBy[successor.ID] = newRT.ID
+
+				if newRT.ID == uuid.Nil {
+					newRT.ID = uuid.New()
+				}
+				newRT.FamilyID = successor.FamilyID
+				newRT.UserID = successor.UserID
+				newRT.FamilyStartedAt = familyStarted
+				newRT.CreatedAt = now
+				newRT.LastUsedAt = now
+
+				m.tokens[newRT.TokenHash] = newRT
+				m.byID[newRT.ID] = newRT
+				return newRT, nil
 			}
 		}
 		// Grace window exceeded or family already nuked -> revoke family
@@ -411,7 +427,7 @@ func TestRefreshTokenGraceWindowRetry(t *testing.T) {
 		t.Fatalf("expected non-empty refToken2")
 	}
 
-	// Step 3: Network retransmit of refToken1 within 15s grace window
+	// Step 3: Network retransmit of refToken1 within 30s grace window heals the session by minting a child token
 	accTokenRetry, refTokenRetry, _, err := svc.RotateRefreshToken(ctx, refToken1)
 	if err != nil {
 		t.Fatalf("expected grace window to tolerate retransmit, got error: %v", err)
@@ -419,19 +435,17 @@ func TestRefreshTokenGraceWindowRetry(t *testing.T) {
 	if accTokenRetry == "" {
 		t.Fatalf("expected non-empty access token on grace window retry")
 	}
-	// refTokenRetry MUST be empty string to signal to AuthRefresh not to overwrite
-	// the browser's cookie with an orphaned token.
-	if refTokenRetry != "" {
-		t.Fatalf("expected empty refresh token string on grace window retry to prevent cookie orphan, got: %s", refTokenRetry)
+	if refTokenRetry == "" {
+		t.Fatalf("expected non-empty refresh token on grace window retry to heal cookie, got empty")
 	}
 
-	// Step 4: Verify the client's current cookie (refToken2) is still valid and can be rotated cleanly
-	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refToken2)
+	// Step 4: Verify the healed cookie (refTokenRetry) can be rotated cleanly
+	accTokenNext, refTokenNext, _, err := svc.RotateRefreshToken(ctx, refTokenRetry)
 	if err != nil {
-		t.Fatalf("expected successor token to rotate successfully, got: %v", err)
+		t.Fatalf("expected healed refresh token to rotate successfully, got: %v", err)
 	}
 	if accTokenNext == "" || refTokenNext == "" {
-		t.Fatalf("expected valid tokens after rotating successor token")
+		t.Fatalf("expected valid tokens after rotating healed token")
 	}
 }
 

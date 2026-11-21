@@ -204,8 +204,9 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 		}
 
 		// Grace window check: only applies if the family has not been nuked (active tokens exist)
-		// and this token was revoked within the last 5 seconds, and successor has not been used.
-		// Rather than minting an unconstrained new child on every replay, we return the existing successor token.
+		// and this token was revoked within the last 30 seconds, and successor has not been used.
+		// In the grace path, mint a child token from the successor and return it so the caller
+		// can set a fresh cookie, self-healing sessions where the original rotation response was lost.
 		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= domain.RefreshGraceWindow && replacedBy != nil {
 			var successor domain.RefreshToken
 			querySuccessor := `
@@ -219,16 +220,42 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 				&successor.TokenHash, &successor.ExpiresAt, &successor.Revoked,
 				&successor.RevokedAt, &successor.FamilyStartedAt, &successor.CreatedAt,
 			); err == nil && !successor.Revoked {
+				now := time.Now().UTC()
+				if newRT.ID == uuid.Nil {
+					newRT.ID = uuid.New()
+				}
+				newRT.FamilyID = successor.FamilyID
+				newRT.UserID = successor.UserID
+				newRT.FamilyStartedAt = familyStarted
+				newRT.CreatedAt = now
+				newRT.LastUsedAt = now
+				if newRT.UserAgent == nil {
+					newRT.UserAgent = current.UserAgent
+				}
+				if newRT.IPAddress == nil {
+					newRT.IPAddress = current.IPAddress
+				}
+
+				// Insert new child token to heal session
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, user_agent, ip_address, last_used_at, created_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+					newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.UserAgent, newRT.IPAddress, newRT.LastUsedAt, newRT.CreatedAt,
+				); err != nil {
+					return nil, fmt.Errorf("insert grace-window child token: %w", err)
+				}
+
+				// Revoke successor and link replaced_by to new child token
+				if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = $1, replaced_by = $2 WHERE id = $3`, now, newRT.ID, successor.ID); err != nil {
+					return nil, fmt.Errorf("revoke successor in grace window: %w", err)
+				}
+
 				if r.pool != nil {
 					if err := tx.Commit(ctx); err != nil {
 						return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
 					}
 				}
-				// Return the successor row together with ErrGraceWindow.
-				// The service layer MUST issue a new access token from successor.UserID
-				// and successor.FamilyID but MUST NOT rotate the refresh cookie — the
-				// browser's existing cookie is already the valid successor token.
-				return &successor, domain.ErrGraceWindow
+				return newRT, nil
 			}
 		}
 

@@ -28,7 +28,7 @@ var (
 const (
 	PaymentTokenTTL    = 72 * time.Hour
 	TokenByteLen       = 32
-	RefreshGraceWindow = 5 * time.Second
+	RefreshGraceWindow = 30 * time.Second
 )
 
 type PaymentToken struct {

@@ -2,7 +2,6 @@ package api
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -117,7 +116,8 @@ func (h *Handlers) verifyDualControlOrStepUp(
 				respondErr(c, clientErrWithCode(http.StatusUnauthorized, "payout approval code locked due to too many failed attempts; please request a new code", apierr.CodeAuthOtpLocked))
 				return "", false
 			}
-			respondErr(c, clientErr(http.StatusUnauthorized, fmt.Sprintf("step-up authentication failed: %v", err)))
+			slog.Error("verifyDualControlOrStepUp: step-up authentication failed", "err", err, "user_id", uid, "phone", phone)
+			respondErr(c, clientErr(http.StatusServiceUnavailable, "step-up authentication service temporarily unavailable"))
 			return "", false
 		}
 	} else if candidateFirebase != "" {

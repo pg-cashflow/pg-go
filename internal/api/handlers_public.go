@@ -382,7 +382,6 @@ func (h *Handlers) AuthRefresh(c *gin.Context) {
 			// Transient server-side failure: client must retry, session is intact.
 			c.JSON(http.StatusServiceUnavailable, apierr.ErrorEnvelope{
 				Error: "refresh temporarily unavailable, please retry",
-				Code:  apierr.CodeAuthUnauthorized,
 			})
 			return
 		}

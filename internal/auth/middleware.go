@@ -437,6 +437,14 @@ func sweepExpiredCaches(now time.Time) {
 		}
 	}
 	revokedFamilyMu.Unlock()
+
+	activeFamilyMu.Lock()
+	for k, exp := range activeFamilyCache {
+		if now.After(exp) {
+			delete(activeFamilyCache, k)
+		}
+	}
+	activeFamilyMu.Unlock()
 }
 
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
