@@ -300,14 +300,14 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	if evtType == "BULK_TRANSFER_REJECTED" {
 		rawBatchID := strings.TrimPrefix(data.BatchTransferID, "pgo_")
 		if bID, err := uuid.Parse(rawBatchID); err == nil {
-			slog.Error("CRITICAL: CASHFREE BULK TRANSFER REJECTED (setting batch failed)",
+			slog.Error("CRITICAL: CASHFREE BULK TRANSFER REJECTED (recording observation without terminating polling)",
 				"batch_id", bID,
 				"reason", data.StatusDescription,
 				"code", data.StatusCode,
 			)
-			if err := repo.SetBatchFailed(ctx, bID, fmt.Sprintf("bulk transfer rejected: %s", data.StatusDescription)); err != nil {
-				slog.Error("failed to persist rejected payout batch status", "batch_id", bID, "err", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch"})
+			if err := repo.RecordBatchRejectionObservation(ctx, bID, fmt.Sprintf("bulk transfer rejection observed: %s (code: %s)", data.StatusDescription, data.StatusCode)); err != nil {
+				slog.Error("failed to persist rejected payout batch observation", "batch_id", bID, "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch observation"})
 				return
 			}
 			if h.OutboxEvents != nil {
@@ -329,6 +329,12 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 					slog.Error("failed to persist payout batch rejection outbox", "batch_id", bID, "err", err)
 					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
 					return
+				}
+			}
+			// Trigger immediate item-level reconciliation if dispatcher is configured
+			if h.PayoutDispatcher != nil {
+				if pollErr := h.PayoutDispatcher.PollBatch(ctx, bID); pollErr != nil {
+					slog.Warn("payout batch reconcile after bulk rejection deferred to background poller", "batch_id", bID, "err", pollErr)
 				}
 			}
 		}

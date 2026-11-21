@@ -469,6 +469,18 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		itemMap[cleanID] = it
 	}
 
+	seen := make(map[string]struct{})
+
+	// Handle total bulk transfer rejection where Cashfree returns 0 transfers:
+	if len(statusResp.Transfers) == 0 && (strings.EqualFold(statusResp.Status, "FAILED") || strings.EqualFold(statusResp.Status, "REJECTED")) {
+		reason := "bulk transfer rejected at gateway"
+		for _, it := range items {
+			if it.Status == domain.PayoutProcessing || it.Status == domain.PayoutPending {
+				_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutFailed, nil, nil, nil, &reason)
+			}
+		}
+	}
+
 	// Update items from Cashfree status
 	for _, st := range statusResp.Transfers {
 		cleanTransferID := strings.TrimPrefix(st.TransferID, "pgo_")
@@ -479,80 +491,122 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		if !ok {
 			continue
 		}
-		cfID := st.CFTransferID
-		switch st.Status {
-		case "SUCCESS":
-			// Cashfree Transfers V2: Transfer is settled only when status is SUCCESS and status_code is COMPLETED.
-			if !strings.EqualFold(st.StatusCode, "COMPLETED") {
-				slog.Warn("payout batch reconcile: status is SUCCESS but status_code is not COMPLETED; keeping pending",
-					"transfer_id", st.TransferID,
-					"status", st.Status,
-					"status_code", st.StatusCode,
-				)
-				continue
-			}
-			utr := ""
-			if st.UTR != nil {
-				utr = *st.UTR
-			}
-			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
-				return fmt.Errorf("reconcile payout item succeeded status: %w", err)
-			}
-		case "FAILED":
-			reason := st.StatusDescription
-			if reason == "" {
-				reason = st.StatusCode
-			}
-			targetStatus := domain.PayoutFailed
-			if st.StatusCode == "WAIT_TIME_EXCEEDED" {
-				targetStatus = domain.PayoutRetriableFailed
-			}
-			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
-				return fmt.Errorf("update payout item failed status: %w", err)
-			}
-		case "APPROVAL_PENDING":
-			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
-				return fmt.Errorf("update payout item approval pending status: %w", err)
-			}
-			if d.alerter != nil {
-				_ = d.alerter.NotifyPayoutProtectAlert(ctx, it.ID, batch.PropertyID, it.AmountPaise, cfID)
-			}
-		case "PENDING", "RECEIVED", "PROCESSING":
-			// Cashfree Transfers V2: In-flight states. No local state mutation; await final settlement or reversal.
-			slog.Debug("payout batch reconcile: transfer in flight at gateway",
-				"transfer_id", st.TransferID,
-				"status", st.Status,
-				"status_code", st.StatusCode,
-			)
-			continue
-		case "REVERSED":
-			reason := "transfer reversed by bank"
-			if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
-				return fmt.Errorf("reconcile payout item reversed status: %w", err)
-			}
-		case "REJECTED":
-			reason := st.StatusDescription
-			if reason == "" {
-				reason = st.StatusCode
-			}
-			if reason == "" {
-				reason = "transfer rejected by gateway"
-			}
-			if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
-				return fmt.Errorf("update payout item rejected status: %w", err)
-			}
-		default:
-			slog.Warn("payout batch reconcile: unhandled transfer status from gateway",
-				"transfer_id", st.TransferID,
-				"status", st.Status,
-				"status_code", st.StatusCode,
-			)
+		seen[cleanTransferID] = struct{}{}
+		if err := d.reconcileSingleTransfer(ctx, batch, it, &st); err != nil {
+			return err
 		}
 	}
 
-	// Recalculate batch status
+	// For any item in the batch that was not included in statusResp.Transfers:
+	isBatchTerminal := strings.EqualFold(statusResp.Status, "SUCCESS") ||
+		strings.EqualFold(statusResp.Status, "PARTIALLY_FAILED") ||
+		strings.EqualFold(statusResp.Status, "FAILED") ||
+		strings.EqualFold(statusResp.Status, "REJECTED")
+
+	if isBatchTerminal {
+		for cleanID, it := range itemMap {
+			if _, ok := seen[cleanID]; ok {
+				continue
+			}
+			if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
+				continue
+			}
+			transferID := fmt.Sprintf("pgo_%s", cleanID)
+			itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
+			if err == nil && itemStatus != nil {
+				if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
+					return err
+				}
+			} else {
+				reason := "transfer missing from gateway batch results"
+				if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutFailed, nil, nil, nil, &reason); err != nil {
+					return fmt.Errorf("update missing payout item failed status: %w", err)
+				}
+			}
+		}
+	}
+
+	// Recalculate batch status from item-level results
 	_, err := d.repo.UpdateBatchStatusFromItemsTx(ctx, nil, batch.ID)
 	return err
+}
+
+func (d *PayoutDispatcher) reconcileSingleTransfer(
+	ctx context.Context,
+	batch *domain.PayoutBatch,
+	it domain.PayoutItem,
+	st *cashfree.TransferStatusItem,
+) error {
+	cfID := st.CFTransferID
+	switch st.Status {
+	case "SUCCESS":
+		// Cashfree Transfers V2: Transfer is settled only when status is SUCCESS and status_code is COMPLETED.
+		if !strings.EqualFold(st.StatusCode, "COMPLETED") {
+			slog.Warn("payout batch reconcile: status is SUCCESS but status_code is not COMPLETED; keeping pending",
+				"transfer_id", st.TransferID,
+				"status", st.Status,
+				"status_code", st.StatusCode,
+			)
+			return nil
+		}
+		utr := ""
+		if st.UTR != nil {
+			utr = *st.UTR
+		}
+		if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
+			return fmt.Errorf("reconcile payout item succeeded status: %w", err)
+		}
+	case "FAILED":
+		reason := st.StatusDescription
+		if reason == "" {
+			reason = st.StatusCode
+		}
+		targetStatus := domain.PayoutFailed
+		if st.StatusCode == "WAIT_TIME_EXCEEDED" {
+			targetStatus = domain.PayoutRetriableFailed
+		}
+		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
+			return fmt.Errorf("update payout item failed status: %w", err)
+		}
+	case "APPROVAL_PENDING":
+		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
+			return fmt.Errorf("update payout item approval pending status: %w", err)
+		}
+		if d.alerter != nil {
+			_ = d.alerter.NotifyPayoutProtectAlert(ctx, it.ID, batch.PropertyID, it.AmountPaise, cfID)
+		}
+	case "PENDING", "RECEIVED", "PROCESSING":
+		// Cashfree Transfers V2: In-flight states. No local state mutation; await final settlement or reversal.
+		slog.Debug("payout batch reconcile: transfer in flight at gateway",
+			"transfer_id", st.TransferID,
+			"status", st.Status,
+			"status_code", st.StatusCode,
+		)
+		return nil
+	case "REVERSED":
+		reason := "transfer reversed by bank"
+		if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
+			return fmt.Errorf("reconcile payout item reversed status: %w", err)
+		}
+	case "REJECTED":
+		reason := st.StatusDescription
+		if reason == "" {
+			reason = st.StatusCode
+		}
+		if reason == "" {
+			reason = "transfer rejected by gateway"
+		}
+		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
+			return fmt.Errorf("update payout item rejected status: %w", err)
+		}
+	default:
+		slog.Warn("payout batch reconcile: unhandled transfer status from gateway",
+			"transfer_id", st.TransferID,
+			"status", st.Status,
+			"status_code", st.StatusCode,
+		)
+	}
+	return nil
 }
 
 // UnmarshalPayoutBatchPayload extracts batch_id from the ledger outbox payload.

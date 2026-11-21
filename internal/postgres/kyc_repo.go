@@ -1324,9 +1324,39 @@ func (r *KYCRepo) ApproveManualReviewTx(
 			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
 		}
 
+		// Check for identity hash collision (flag-don't-block dedup check)
+		var collidingTenantIDs []uuid.UUID
+		if existing.IsDedupable && existing.IdentityHash != nil && *existing.IdentityHash != "" {
+			rows, err := tx.Query(ctx, `
+				SELECT tenant_id FROM kyc_verification
+				WHERE identity_hash = $1
+				  AND hash_key_version = $2
+				  AND status = 'verified'
+				  AND is_dedupable = TRUE
+				  AND tenant_id != $3
+			`, *existing.IdentityHash, existing.HashKeyVersion, existing.TenantID)
+			if err != nil {
+				return fmt.Errorf("kyc: check duplicate collision: %w", err)
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var tid uuid.UUID
+				if err := rows.Scan(&tid); err != nil {
+					return fmt.Errorf("kyc: scan colliding tenant: %w", err)
+				}
+				collidingTenantIDs = append(collidingTenantIDs, tid)
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("kyc: iterate colliding tenants: %w", err)
+			}
+		}
+		duplicateDetected := len(collidingTenantIDs) > 0
+
 		updated, err = r.scanKYCVerification(tx.QueryRow(ctx, `
 			UPDATE kyc_verification
 			SET status = 'verified',
+				duplicate_detected = $5,
 				reviewed_by = $2,
 				reviewed_at = $3,
 				verified_at = $3,
@@ -1339,9 +1369,33 @@ func (r *KYCRepo) ApproveManualReviewTx(
 				updated_at = $3
 			WHERE id = $1 AND status = 'pending_manual_review'
 			RETURNING `+kycVerificationCols+`
-		`, verificationID, reviewerID, now, expiresAtParam))
+		`, verificationID, reviewerID, now, expiresAtParam, duplicateDetected))
 		if err != nil {
 			return fmt.Errorf("kyc: approve manual verification: %w", err)
+		}
+
+		// Symmetric collision flagging: flag both incoming and existing colliding records
+		if duplicateDetected {
+			// 1. Audit log for the approved tenant
+			if err := r.appendAuditLogTx(ctx, tx, existing.TenantID, actor, "duplicate_detected", fmt.Sprintf("collided_identity_hash=%s", *existing.IdentityHash), now); err != nil {
+				return fmt.Errorf("kyc: append duplicate_detected audit log: %w", err)
+			}
+
+			// 2. Symmetric update and audit log on all colliding existing tenants
+			for _, tid := range collidingTenantIDs {
+				_, err = tx.Exec(ctx, `
+					UPDATE kyc_verification
+					SET duplicate_detected = TRUE, updated_at = $2
+					WHERE tenant_id = $1 AND status = 'verified'
+				`, tid, now)
+				if err != nil {
+					return fmt.Errorf("kyc: backfill duplicate_detected on colliding tenant %s: %w", tid, err)
+				}
+
+				if err := r.appendAuditLogTx(ctx, tx, tid, actor, "duplicate_detected", fmt.Sprintf("collided_with_approved_tenant=%s identity_hash=%s", existing.TenantID, *existing.IdentityHash), now); err != nil {
+					return fmt.Errorf("kyc: append duplicate_detected audit log for colliding tenant %s: %w", tid, err)
+				}
+			}
 		}
 
 		var majorityDate *time.Time

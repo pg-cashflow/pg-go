@@ -1001,7 +1001,19 @@ func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.U
 	return err
 }
 
-// SetBatchFailed sets batch status to failed on definitive rejections (e.g. BULK_TRANSFER_REJECTED).
+// RecordBatchRejectionObservation records a rejection event in payout batch notes
+// without marking the batch failed, allowing item-level polling and reconciliation to proceed.
+func (r *PayoutRepo) RecordBatchRejectionObservation(ctx context.Context, batchID uuid.UUID, reason string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE payout_batches
+		SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, reason,
+	)
+	return err
+}
+
+// SetBatchFailed sets batch status to failed on definitive rejections (e.g. manual operator intervention).
 func (r *PayoutRepo) SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error {
 	_, err := r.db.Exec(ctx, `
 		UPDATE payout_batches

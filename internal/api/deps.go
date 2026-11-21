@@ -385,6 +385,7 @@ type PayoutWebhookStore interface {
 	UpdatePayoutItemStatusTx(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
 	UpdateBatchStatusFromItemsTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
 	SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error
+	RecordBatchRejectionObservation(ctx context.Context, batchID uuid.UUID, reason string) error
 	SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error
 }
 

@@ -421,6 +421,13 @@ func (s *Service) VerifyDocument(
 	if s.cashfree != nil {
 		resp, err = s.cashfree.UploadDocument(ctx, bytes.NewReader(fileBytes), filename, normDocType)
 		if err != nil {
+			var apiErr *cashfree.APIError
+			is5xx := errors.As(err, &apiErr) && apiErr.StatusCode >= 500
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || isAmbiguousTransportError(err) || is5xx {
+				_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor)
+				pending.Status = domain.KYCStatusRequestUnknown
+				return pending, fmt.Errorf("kyc service: upload document ambiguous state: %w", err)
+			}
 			_ = s.repo.FailVerificationTx(ctx, pending.ID, "OCR_UPLOAD_FAILED", actor)
 			return nil, fmt.Errorf("kyc service: upload document: %w", err)
 		}

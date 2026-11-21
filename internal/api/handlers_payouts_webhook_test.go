@@ -634,6 +634,7 @@ type mockPayoutWebhookStore struct {
 	updateStatusFunc            func(ctx context.Context, tx pgx.Tx, itemID uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error
 	updateBatchStatusFunc       func(ctx context.Context, tx pgx.Tx, batchID uuid.UUID) (*domain.PayoutBatch, error)
 	setBatchDispatchUnknownFunc func(ctx context.Context, batchID uuid.UUID, reason string) error
+	recordRejectionFunc         func(ctx context.Context, batchID uuid.UUID, reason string) error
 	setBatchFailedFunc          func(ctx context.Context, batchID uuid.UUID, reason string) error
 }
 
@@ -675,6 +676,13 @@ func (m *mockPayoutWebhookStore) UpdateBatchStatusFromItemsTx(ctx context.Contex
 func (m *mockPayoutWebhookStore) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.UUID, reason string) error {
 	if m.setBatchDispatchUnknownFunc != nil {
 		return m.setBatchDispatchUnknownFunc(ctx, batchID, reason)
+	}
+	return nil
+}
+
+func (m *mockPayoutWebhookStore) RecordBatchRejectionObservation(ctx context.Context, batchID uuid.UUID, reason string) error {
+	if m.recordRejectionFunc != nil {
+		return m.recordRejectionFunc(ctx, batchID, reason)
 	}
 	return nil
 }
@@ -1222,14 +1230,19 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("bulk_transfer_rejected_sets_batch_failed", func(t *testing.T) {
+	t.Run("bulk_transfer_rejected_records_observation_without_setting_batch_failed", func(t *testing.T) {
 		batchID := uuid.New()
-		var failedBatchID uuid.UUID
-		var failedReason string
+		var recordedBatchID uuid.UUID
+		var recordedReason string
+		var failedBatchCalled bool
 		mock := &mockPayoutWebhookStore{
+			recordRejectionFunc: func(ctx context.Context, bID uuid.UUID, reason string) error {
+				recordedBatchID = bID
+				recordedReason = reason
+				return nil
+			},
 			setBatchFailedFunc: func(ctx context.Context, bID uuid.UUID, reason string) error {
-				failedBatchID = bID
-				failedReason = reason
+				failedBatchCalled = true
 				return nil
 			},
 		}
@@ -1260,11 +1273,14 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
 		}
-		if failedBatchID != batchID {
-			t.Fatalf("expected batch %s to be marked failed, got %s", batchID, failedBatchID)
+		if recordedBatchID != batchID {
+			t.Fatalf("expected batch %s to have rejection observation recorded, got %s", batchID, recordedBatchID)
 		}
-		if !strings.Contains(failedReason, "insufficient float balance") {
-			t.Fatalf("expected reason to contain failure message, got %q", failedReason)
+		if !strings.Contains(recordedReason, "insufficient float balance") {
+			t.Fatalf("expected reason to contain failure message, got %q", recordedReason)
+		}
+		if failedBatchCalled {
+			t.Fatal("batch must NOT be marked failed on bulk rejection; must preserve polling for individual transfers")
 		}
 	})
 
