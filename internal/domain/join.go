@@ -80,6 +80,7 @@ const (
 	IntentFailed          PaymentIntentStatus = "failed"
 	IntentSuperseded      PaymentIntentStatus = "superseded"
 	IntentDispatchUnknown PaymentIntentStatus = "dispatch_unknown"
+	IntentNeedsReview     PaymentIntentStatus = "needs_review"
 )
 
 type PaymentIntentDue struct {
@@ -103,6 +104,7 @@ type PaymentIntent struct {
 	CFPaymentID      *string             `json:"cf_payment_id,omitempty"`
 	CreatedAt        time.Time           `json:"created_at"`
 	UpdatedAt        time.Time           `json:"updated_at"`
+	IdempotencyKey   uuid.UUID           `json:"idempotency_key"`
 }
 
 type PayIntent struct {

@@ -31,7 +31,7 @@ func (s *stubIntents) LatestOpenForDue(context.Context, uuid.UUID) (*domain.Paym
 
 type stubCF struct{ n int }
 
-func (s *stubCF) CreateUPIOrder(context.Context, string, int64, string, string) (string, *time.Time, error) {
+func (s *stubCF) CreateUPIOrder(ctx context.Context, _ string, _ int64, _ string, _ string, _ ...string) (string, *time.Time, error) {
 	s.n++
 	exp := time.Now().Add(time.Hour)
 	return "sess_1", &exp, nil
@@ -257,6 +257,7 @@ func (m *recoveringIntentMgr) ClaimInitiatingIntent(ctx context.Context, tenantI
 		ProviderOrderID: orderID,
 		AmountPaise:     totalAmountPaise,
 		Status:          domain.IntentInitiating,
+		IdempotencyKey:  uuid.New(),
 	}
 	return m.claimed, false, false, nil
 }
@@ -282,10 +283,18 @@ type timingOutCF struct {
 	getOrderCalls int
 	activeOrder   *cashfree.OrderDetails
 	getOrderErr   error
+	createErr     error
+	capturedIdem  string
 }
 
-func (c *timingOutCF) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
+func (c *timingOutCF) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string, idempotencyKey ...string) (string, *time.Time, error) {
 	c.createCalls++
+	if len(idempotencyKey) > 0 {
+		c.capturedIdem = idempotencyKey[0]
+	}
+	if c.createErr != nil {
+		return "", nil, c.createErr
+	}
 	return "", nil, errors.New("gateway timeout 504")
 }
 
@@ -367,4 +376,77 @@ func TestEnsureCashfree_MarksFailedOnConfirmedExpiredOrder(t *testing.T) {
 	if !mgr.failed {
 		t.Fatal("expected intent to be transitioned to failed when Cashfree authoritatively confirmed order EXPIRED")
 	}
+}
+
+func TestEnsureCashfree_CreateOrder409ReconcilesExistingOrder(t *testing.T) {
+	exp := time.Now().Add(30 * time.Minute)
+	cf := &timingOutCF{
+		createErr: &cashfree.APIError{StatusCode: 409, Status: "409 Conflict: order_already_exists"},
+		activeOrder: &cashfree.OrderDetails{
+			OrderID:          "test-order-conflict",
+			OrderStatus:      "ACTIVE",
+			PaymentSessionID: "conflict_reconciled_session",
+			ExpiresAt:        &exp,
+		},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE409", Amount: 200000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err != nil {
+		t.Fatalf("expected successful reconciliation on 409, got err: %v", err)
+	}
+	if intent.PaymentSessionID != "conflict_reconciled_session" {
+		t.Fatalf("expected conflict_reconciled_session, got: %s", intent.PaymentSessionID)
+	}
+	if !mgr.transitioned {
+		t.Fatal("expected intent to transition to created after 409 reconciliation")
+	}
+	if mgr.failed || mgr.dispatchUnknown {
+		t.Fatalf("unexpected failure or dispatch_unknown state: failed=%v dispatch_unknown=%v", mgr.failed, mgr.dispatchUnknown)
+	}
+}
+
+func TestEnsureCashfree_CreateOrder404MarksFailed(t *testing.T) {
+	cf := &timingOutCF{
+		createErr: &cashfree.APIError{StatusCode: 404, Status: "404 Not Found: invalid_route"},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE404", Amount: 200000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err == nil {
+		t.Fatal("expected error on 404 client error")
+	}
+	if !mgr.failed {
+		t.Fatal("expected intent to be transitioned to failed on definitive 404 client error")
+	}
+	if mgr.dispatchUnknown {
+		t.Fatal("intent must not be transitioned to dispatch_unknown on definitive 404")
+	}
+}
+
+func TestEnsureCashfree_PassesPersistedIdempotencyKey(t *testing.T) {
+	cf := &timingOutCF{}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUEIDEM", Amount: 150000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	// Note: timingOutCF times out, but we check if capturedIdem matches mgr.claimed.IdempotencyKey
+	if cf.capturedIdem == "" {
+		t.Fatal("expected idempotency key to be passed to CreateUPIOrder")
+	}
+	if cf.capturedIdem != mgr.claimed.IdempotencyKey.String() {
+		t.Fatalf("expected idempotency key %s, got %s", mgr.claimed.IdempotencyKey.String(), cf.capturedIdem)
+	}
+	_ = err
 }

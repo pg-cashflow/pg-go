@@ -21,7 +21,7 @@ type IntentStore interface {
 }
 
 type CashfreeOrders interface {
-	CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (sessionID string, expiresAt *time.Time, err error)
+	CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string, idempotencyKey ...string) (sessionID string, expiresAt *time.Time, err error)
 	GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error)
 }
 
@@ -143,8 +143,37 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 			}
 		}
 
-		session, exp, err := s.cashfree.CreateUPIOrder(ctx, claimed.ProviderOrderID, due.Amount, customerPhone, domain.UPINote(due.DueCode))
+		idemKeyStr := ""
+		if claimed.IdempotencyKey != uuid.Nil {
+			idemKeyStr = claimed.IdempotencyKey.String()
+		}
+		session, exp, err := s.cashfree.CreateUPIOrder(ctx, claimed.ProviderOrderID, due.Amount, customerPhone, domain.UPINote(due.DueCode), idemKeyStr)
 		if err != nil {
+			var apiErr *cashfree.APIError
+			if errors.As(err, &apiErr) {
+				// 1. Create Order 409: order already exists at gateway - reconcile existing order
+				if apiErr.StatusCode == 409 {
+					existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
+					if gErr == nil && existingOrder != nil && existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
+						if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
+							return existingOrder.PaymentSessionID, nil
+						}
+					}
+					_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
+					return "", err
+				}
+				// 2. Create Order 404: documented client / route rejection
+				if apiErr.StatusCode == 404 {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
+				// 3. Other definitive 4xx rejections (excluding 429 rate limit)
+				if apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
+			}
+
 			existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
 			if gErr == nil && existingOrder != nil {
 				if existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
@@ -350,8 +379,37 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 			}
 		}
 
-		session, exp, err := s.cashfree.CreateUPIOrder(ctx, claimed.ProviderOrderID, totalAmountPaise, customerPhone, note)
+		idemKeyStr := ""
+		if claimed.IdempotencyKey != uuid.Nil {
+			idemKeyStr = claimed.IdempotencyKey.String()
+		}
+		session, exp, err := s.cashfree.CreateUPIOrder(ctx, claimed.ProviderOrderID, totalAmountPaise, customerPhone, note, idemKeyStr)
 		if err != nil {
+			var apiErr *cashfree.APIError
+			if errors.As(err, &apiErr) {
+				// 1. Create Order 409: order already exists at gateway - reconcile existing order
+				if apiErr.StatusCode == 409 {
+					existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
+					if gErr == nil && existingOrder != nil && existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
+						if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
+							return existingOrder.PaymentSessionID, nil
+						}
+					}
+					_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
+					return "", err
+				}
+				// 2. Create Order 404: documented client / route rejection
+				if apiErr.StatusCode == 404 {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
+				// 3. Other definitive 4xx rejections (excluding 429 rate limit)
+				if apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
+			}
+
 			existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
 			if gErr == nil && existingOrder != nil {
 				if existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {

@@ -18,17 +18,21 @@ func NewPaymentIntentRepo(db DBTX) *PaymentIntentRepo { return &PaymentIntentRep
 
 func (r *PaymentIntentRepo) WithTx(tx pgx.Tx) *PaymentIntentRepo { return &PaymentIntentRepo{db: tx} }
 
-const intentCols = `id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at`
+const intentCols = `id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key`
 
 func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 	var p domain.PaymentIntent
 	var dueID *uuid.UUID
-	err := row.Scan(&p.ID, &dueID, &p.Provider, &p.ProviderOrderID, &p.PaymentSessionID, &p.AmountPaise, &p.Status, &p.ExpiresAt, &p.CFPaymentID, &p.CreatedAt, &p.UpdatedAt)
+	var idemKey *uuid.UUID
+	err := row.Scan(&p.ID, &dueID, &p.Provider, &p.ProviderOrderID, &p.PaymentSessionID, &p.AmountPaise, &p.Status, &p.ExpiresAt, &p.CFPaymentID, &p.CreatedAt, &p.UpdatedAt, &idemKey)
 	if err != nil {
 		return nil, err
 	}
 	if dueID != nil {
 		p.DueID = *dueID
+	}
+	if idemKey != nil {
+		p.IdempotencyKey = *idemKey
 	}
 	return &p, nil
 }
@@ -40,14 +44,17 @@ func (r *PaymentIntentRepo) Create(ctx context.Context, p *domain.PaymentIntent)
 	if p.Status == "" {
 		p.Status = domain.IntentCreated
 	}
+	if p.IdempotencyKey == uuid.Nil {
+		p.IdempotencyKey = uuid.New()
+	}
 	var dueID *uuid.UUID
 	if p.DueID != uuid.Nil {
 		dueID = &p.DueID
 	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO payment_intents (due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-		dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt,
+		INSERT INTO payment_intents (due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt, p.IdempotencyKey,
 	).Scan(&p.ID)
 }
 
@@ -247,7 +254,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			existing, err = scanIntent(row)
 		} else {
 			row := txRepo.db.QueryRow(ctx, `
-				SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at
+				SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at, pi.idempotency_key
 				FROM payment_intents pi
 				JOIN (
 					SELECT payment_intent_id, array_agg(due_id ORDER BY due_id) as intent_dues
@@ -328,6 +335,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 
 		// 5. Insert new intent in 'initiating' status
 		newID := uuid.New()
+		idempotencyKey := uuid.New()
 		now := time.Now().UTC()
 		var parentDueID *uuid.UUID
 		if len(dueIDs) == 1 {
@@ -341,6 +349,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			Status:          domain.IntentInitiating,
 			CreatedAt:       now,
 			UpdatedAt:       now,
+			IdempotencyKey:  idempotencyKey,
 		}
 		if parentDueID != nil {
 			newIntent.DueID = *parentDueID
@@ -367,9 +376,9 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		}
 
 		_, err = txRepo.db.Exec(ctx, `
-			INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			newID, parentDueID, "cashfree", orderID, totalAmountPaise, domain.IntentInitiating, now, now,
+			INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, created_at, updated_at, idempotency_key)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			newID, parentDueID, "cashfree", orderID, totalAmountPaise, domain.IntentInitiating, now, now, idempotencyKey,
 		)
 		if err != nil {
 			var pgErr *pgconn.PgError
@@ -516,7 +525,7 @@ func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Conte
 		}
 
 		row := repo.db.QueryRow(ctx, `
-			SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at
+			SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at, pi.idempotency_key
 			FROM payment_intents pi
 			JOIN (
 				SELECT payment_intent_id, array_agg(due_id ORDER BY due_id) as intent_dues

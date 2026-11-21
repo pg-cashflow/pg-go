@@ -125,7 +125,7 @@ type createOrderResp struct {
 	PaymentSessionID string `json:"payment_session_id"`
 }
 
-func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string) (string, *time.Time, error) {
+func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string, idempotencyKey ...string) (string, *time.Time, error) {
 	if !c.cfg.Enabled() {
 		return "", nil, fmt.Errorf("cashfree: not configured")
 	}
@@ -164,7 +164,12 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	}
 	c.sign(req)
 	req.Header.Set("Content-Type", "application/json")
-	orderIdempotencyKey := uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:order:"+orderID)).String()
+	orderIdempotencyKey := ""
+	if len(idempotencyKey) > 0 && strings.TrimSpace(idempotencyKey[0]) != "" {
+		orderIdempotencyKey = strings.TrimSpace(idempotencyKey[0])
+	} else {
+		orderIdempotencyKey = uuid.NewSHA1(uuid.NameSpaceURL, []byte("cashfree:order:"+orderID)).String()
+	}
 	req.Header.Set("x-idempotency-key", orderIdempotencyKey)
 	resp, err := c.http.Do(req)
 	if err != nil {

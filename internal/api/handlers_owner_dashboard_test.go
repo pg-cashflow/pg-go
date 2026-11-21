@@ -1202,7 +1202,7 @@ func TestOwnerPaymentModeAndCashfreeReadiness(t *testing.T) {
 
 type fakeCashfreeOrders struct{}
 
-func (f *fakeCashfreeOrders) CreateUPIOrder(_ context.Context, _ string, _ int64, _, _ string) (string, *time.Time, error) {
+func (f *fakeCashfreeOrders) CreateUPIOrder(_ context.Context, _ string, _ int64, _, _ string, _ ...string) (string, *time.Time, error) {
 	return "sess_test", nil, nil
 }
 

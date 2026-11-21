@@ -154,7 +154,7 @@ func (r *PaymentCommandRepo) MarkCompletedTx(ctx context.Context, tx pgx.Tx, id 
 		WHERE id = $1
 		  AND fence_token = $2
 		  AND status = 'processing'
-		  AND (locked_until IS NULL OR locked_until > now())`, id, fenceToken)
+		  AND locked_until > now()`, id, fenceToken)
 	if err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func (r *PaymentCommandRepo) RenewLeaseCommandTx(ctx context.Context, tx pgx.Tx,
 		WHERE id = $1
 		  AND fence_token = $2
 		  AND status = 'processing'
-		  AND (locked_until IS NULL OR locked_until > now())`, id, fenceToken, fmt.Sprintf("%d seconds", int(extension.Seconds())))
+		  AND locked_until > now()`, id, fenceToken, fmt.Sprintf("%d seconds", int(extension.Seconds())))
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (r *PaymentCommandRepo) RecordCommandFailureTx(
 			WHERE id = $1
 			  AND fence_token = $3
 			  AND status = 'processing'
-			  AND (locked_until IS NULL OR locked_until > now())`, cmd.ID, errorMsg, cmd.FenceToken)
+			  AND locked_until > now()`, cmd.ID, errorMsg, cmd.FenceToken)
 		if err != nil {
 			return err
 		}
@@ -235,7 +235,7 @@ func (r *PaymentCommandRepo) RecordCommandFailureTx(
 		WHERE id = $1
 		  AND fence_token = $4
 		  AND status = 'processing'
-		  AND (locked_until IS NULL OR locked_until > now())`, cmd.ID, errorMsg, nextRetry, cmd.FenceToken)
+		  AND locked_until > now()`, cmd.ID, errorMsg, nextRetry, cmd.FenceToken)
 	if err != nil {
 		return err
 	}
