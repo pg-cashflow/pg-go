@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +11,9 @@ import (
 const (
 	PaymentCommandRefundDispatch = "cashfree_refund_dispatch"
 )
+
+// Standard error for worker lease ownership fencing
+var ErrPaymentCommandLeaseLost = errors.New("payment command lease lost or modified by concurrent worker")
 
 const (
 	DefaultPaymentCommandMaxAttempts = 12
@@ -44,4 +48,5 @@ type PaymentCommand struct {
 	CreatedAt      time.Time            `json:"created_at"`
 	ProcessedAt    *time.Time           `json:"processed_at,omitempty"`
 	FailedAt       *time.Time           `json:"failed_at,omitempty"`
+	FenceToken     int64                `json:"fence_token"`
 }

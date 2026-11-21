@@ -240,10 +240,11 @@ func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
 }
 
 type recoveringIntentMgr struct {
-	claimed      *domain.PaymentIntent
-	transitioned bool
-	sessionID    string
-	failed       bool
+	claimed         *domain.PaymentIntent
+	transitioned    bool
+	sessionID       string
+	failed          bool
+	dispatchUnknown bool
 }
 
 func (m *recoveringIntentMgr) Create(context.Context, *domain.PaymentIntent) error { return nil }
@@ -269,6 +270,7 @@ func (m *recoveringIntentMgr) TransitionFailed(ctx context.Context, intentID uui
 	return nil
 }
 func (m *recoveringIntentMgr) TransitionDispatchUnknown(ctx context.Context, intentID uuid.UUID) error {
+	m.dispatchUnknown = true
 	return nil
 }
 func (m *recoveringIntentMgr) GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
@@ -323,7 +325,7 @@ func TestEnsureCashfree_RecoversActiveOrderOnCreateTimeout(t *testing.T) {
 	}
 }
 
-func TestEnsureCashfree_MarksFailedOnConfirmedNotFound(t *testing.T) {
+func TestEnsureCashfree_PreservesDispatchUnknownOnUnconfirmedNotFound(t *testing.T) {
 	cf := &timingOutCF{
 		getOrderErr: &cashfree.APIError{StatusCode: 404, Status: "404 Not Found"},
 	}
@@ -337,7 +339,32 @@ func TestEnsureCashfree_MarksFailedOnConfirmedNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on failed create with 404")
 	}
+	if !mgr.dispatchUnknown {
+		t.Fatal("expected intent to be transitioned to dispatch_unknown on ambiguous 404")
+	}
+	if mgr.failed {
+		t.Fatal("intent must NOT be transitioned to failed on ambiguous 404")
+	}
+}
+
+func TestEnsureCashfree_MarksFailedOnConfirmedExpiredOrder(t *testing.T) {
+	cf := &timingOutCF{
+		activeOrder: &cashfree.OrderDetails{
+			OrderID:     "test-order-expired",
+			OrderStatus: "EXPIRED",
+		},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE777", Amount: 120000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err == nil {
+		t.Fatal("expected error on expired order")
+	}
 	if !mgr.failed {
-		t.Fatal("expected intent to be transitioned to failed when Cashfree confirmed 404")
+		t.Fatal("expected intent to be transitioned to failed when Cashfree authoritatively confirmed order EXPIRED")
 	}
 }

@@ -105,7 +105,7 @@ func (c *Client) GetOrderSettlements(ctx context.Context, orderID string) ([]Ord
 	req.Header.Set("x-client-secret", c.cfg.SecretKey)
 	version := c.cfg.APIVersion
 	if version == "" {
-		version = "2025-01-01"
+		version = "2026-01-01"
 	}
 	req.Header.Set("x-api-version", version)
 	req.Header.Set("Accept", "application/json")

@@ -163,6 +163,25 @@ func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 			continue
 		}
 		if !ok {
+			// If not paid, and intent is in initiating or dispatch_unknown, reconcile order status with gateway
+			if intent.Status == domain.IntentInitiating || intent.Status == domain.IntentDispatchUnknown {
+				if orderFetcher, fOk := j.Client.(interface {
+					GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error)
+				}); fOk {
+					if order, oErr := orderFetcher.GetOrder(ctx, intent.ProviderOrderID); oErr == nil && order != nil {
+						if trans, tOk := j.Intents.(interface {
+							TransitionCreated(ctx context.Context, intentID uuid.UUID, sessionID string, expiresAt *time.Time) error
+							TransitionFailed(ctx context.Context, intentID uuid.UUID) error
+						}); tOk {
+							if order.OrderStatus == "ACTIVE" && order.PaymentSessionID != "" {
+								_ = trans.TransitionCreated(ctx, intent.ID, order.PaymentSessionID, order.ExpiresAt)
+							} else if order.OrderStatus == "EXPIRED" || order.OrderStatus == "TERMINATED" {
+								_ = trans.TransitionFailed(ctx, intent.ID)
+							}
+						}
+					}
+				}
+			}
 			continue
 		}
 		if amount != intent.AmountPaise {

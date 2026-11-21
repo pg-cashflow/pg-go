@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -69,7 +70,9 @@ func (r *PaymentIntentRepo) LatestOpenForDue(ctx context.Context, dueID uuid.UUI
 func (r *PaymentIntentRepo) ListStaleCreated(ctx context.Context, olderThan time.Time) ([]domain.PaymentIntent, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT `+intentCols+` FROM payment_intents
-		WHERE status IN ('created', 'superseded') AND created_at < $1 AND (expires_at IS NULL OR expires_at + INTERVAL '2 hours' > NOW())
+		WHERE status IN ('created', 'superseded', 'initiating', 'dispatch_unknown')
+		  AND (updated_at < $1 OR (created_at < $1 AND updated_at IS NULL))
+		  AND (expires_at IS NULL OR expires_at + INTERVAL '2 hours' > NOW())
 		ORDER BY created_at ASC`, olderThan)
 	if err != nil {
 		return nil, err
@@ -268,12 +271,11 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			return nil, false, false, fmt.Errorf("check reusable intent: %w", err)
 		}
 
-		// 3. Check for in-flight recent initiating intent (within 30s)
+		// 3. Check for in-flight / unresolved intent (initiating or dispatch_unknown)
 		var inFlight *domain.PaymentIntent
 		row := txRepo.db.QueryRow(ctx, `
 			SELECT `+intentCols+` FROM payment_intents
-			WHERE status='initiating'
-			  AND created_at > NOW() - INTERVAL '30 seconds'
+			WHERE status IN ('initiating', 'dispatch_unknown')
 			  AND (
 				due_id = ANY($1)
 				OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
@@ -287,14 +289,39 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			return nil, false, false, fmt.Errorf("check in-flight intent: %w", err)
 		}
 
-		// 4. Supersede older open intents for these dues
+		// Also check for active 'created' intent whose expiry is in the future
+		var activeCreated *domain.PaymentIntent
+		row = txRepo.db.QueryRow(ctx, `
+			SELECT `+intentCols+` FROM payment_intents
+			WHERE status = 'created'
+			  AND (expires_at IS NULL OR expires_at > NOW())
+			  AND (
+				due_id = ANY($1)
+				OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
+			  )
+			ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, dueIDs,
+		)
+		activeCreated, err = scanIntent(row)
+		if err == nil && activeCreated != nil {
+			if activeCreated.PaymentSessionID != nil && *activeCreated.PaymentSessionID != "" {
+				return activeCreated, true, false, nil
+			}
+			return activeCreated, false, true, nil
+		} else if err != nil && !isNoRows(err) {
+			return nil, false, false, fmt.Errorf("check active created intent: %w", err)
+		}
+
+		// 4. Supersede only TRULY expired open intents for these dues
 		_, err = txRepo.db.Exec(ctx, `
 			UPDATE payment_intents
 			SET status='superseded', updated_at=NOW()
-			WHERE status IN ('initiating', 'created') AND (
+			WHERE status = 'created'
+			  AND expires_at IS NOT NULL
+			  AND expires_at <= NOW()
+			  AND (
 				due_id = ANY($1)
 				OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
-			)`, dueIDs)
+			  )`, dueIDs)
 		if err != nil {
 			return nil, false, false, fmt.Errorf("supersede open intents: %w", err)
 		}
@@ -319,12 +346,36 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			newIntent.DueID = *parentDueID
 		}
 
+		recoverActiveOnConflict := func() (*domain.PaymentIntent, bool, bool, error) {
+			r := txRepo.db.QueryRow(ctx, `
+				SELECT `+intentCols+` FROM payment_intents
+				WHERE status IN ('initiating', 'created', 'dispatch_unknown')
+				  AND (
+					due_id = ANY($1)
+					OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
+				  )
+				ORDER BY created_at DESC LIMIT 1`, dueIDs,
+			)
+			act, aErr := scanIntent(r)
+			if aErr == nil && act != nil {
+				if act.Status == domain.IntentCreated && act.PaymentSessionID != nil && (act.ExpiresAt == nil || act.ExpiresAt.After(now)) {
+					return act, true, false, nil
+				}
+				return act, false, true, nil
+			}
+			return nil, false, false, fmt.Errorf("insert conflict recovery: %w", aErr)
+		}
+
 		_, err = txRepo.db.Exec(ctx, `
 			INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			newID, parentDueID, "cashfree", orderID, totalAmountPaise, domain.IntentInitiating, now, now,
 		)
 		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return recoverActiveOnConflict()
+			}
 			return nil, false, false, fmt.Errorf("insert initiating intent: %w", err)
 		}
 
@@ -340,6 +391,10 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 				newID, did, amt, domain.IntentInitiating, now,
 			)
 			if err != nil {
+				var pgErr *pgconn.PgError
+				if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+					return recoverActiveOnConflict()
+				}
 				return nil, false, false, fmt.Errorf("insert intent due: %w", err)
 			}
 		}
@@ -368,7 +423,7 @@ func (r *PaymentIntentRepo) TransitionCreated(ctx context.Context, intentID uuid
 	_, err := r.db.Exec(ctx, `
 		UPDATE payment_intents
 		SET status='created', payment_session_id=$2, expires_at=$3, updated_at=NOW()
-		WHERE id=$1 AND status='initiating'`,
+		WHERE id=$1 AND status IN ('initiating', 'dispatch_unknown')`,
 		intentID, sessionID, expiresAt,
 	)
 	return err
@@ -378,7 +433,7 @@ func (r *PaymentIntentRepo) TransitionFailed(ctx context.Context, intentID uuid.
 	_, err := r.db.Exec(ctx, `
 		UPDATE payment_intents
 		SET status='failed', updated_at=NOW()
-		WHERE id=$1 AND status='initiating'`,
+		WHERE id=$1 AND status IN ('initiating', 'dispatch_unknown')`,
 		intentID,
 	)
 	return err

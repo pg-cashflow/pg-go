@@ -213,6 +213,7 @@ func TestCacheControlHeaders(t *testing.T) {
 		{"/terms", http.StatusOK, "no-cache, must-revalidate"},
 		{"/sw.js", http.StatusOK, "no-cache, must-revalidate"},
 		{asset, http.StatusOK, "public, max-age=31536000, immutable"},
+		{"/fonts/ibm-plex-sans-21.woff2", http.StatusOK, "public, max-age=31536000, immutable"},
 		{"/dashboard/active", http.StatusOK, "no-cache, must-revalidate"}, // SPA route fallback
 	}
 

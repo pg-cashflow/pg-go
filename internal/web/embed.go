@@ -23,6 +23,9 @@ var distFS embed.FS
 // e.g. assets/main-BHJd8sAA.js, assets/query-BJas__-u.js, assets/OtpInput-0Lmij3-_.js
 var hashedAssetRE = regexp.MustCompile(`^assets/.+-[A-Za-z0-9_-]{8}\.[a-z0-9]+$`)
 
+// fontAssetRE matches self-hosted WOFF2 font files under fonts/.
+var fontAssetRE = regexp.MustCompile(`^fonts/.+\.woff2$`)
+
 // Handler serves embedded static files and falls back to index.html for
 // unmatched client-side routes.
 func Handler() gin.HandlerFunc {
@@ -123,8 +126,8 @@ func Handler() gin.HandlerFunc {
 
 		// File exists — set appropriate cache headers before serving.
 		switch {
-		case hashedAssetRE.MatchString(reqPath):
-			// Content-hashed assets are immutable: safe to cache for 1 year.
+		case hashedAssetRE.MatchString(reqPath) || fontAssetRE.MatchString(reqPath):
+			// Content-hashed assets and self-hosted fonts are immutable: safe to cache for 1 year.
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		case reqPath == "sw.js" || reqPath == "service-worker.js":
 			// Service worker must always revalidate.

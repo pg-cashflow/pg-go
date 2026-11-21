@@ -137,13 +137,9 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
-			}
-			claimed, isReused, _, err = mgr.ClaimInitiatingIntent(ctx, due.TenantID, []uuid.UUID{due.ID}, []int64{due.Amount}, due.Amount, orderID, minRemaining)
-			if err != nil {
-				return "", err
-			}
-			if isReused && claimed != nil && claimed.PaymentSessionID != nil {
-				return *claimed.PaymentSessionID, nil
+				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+				}
 			}
 		}
 
@@ -156,16 +152,17 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
+				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
 			}
-			var apiErr *cashfree.APIError
-			if errors.As(gErr, &apiErr) && apiErr.StatusCode == 404 {
-				_ = mgr.TransitionFailed(ctx, claimed.ID)
-			} else {
-				_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
-			}
+			// Ambiguous outcome: do NOT mark failed on 404. Preserve dispatch_unknown for recovery.
+			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			return "", err
 		}
 		if err := mgr.TransitionCreated(ctx, claimed.ID, session, exp); err != nil {
+			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			return "", err
 		}
 		return session, nil
@@ -347,13 +344,9 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
-			}
-			claimed, isReused, _, err = mgr.ClaimInitiatingIntent(ctx, tenantID, dueIDs, amounts, totalAmountPaise, orderID, minRemaining)
-			if err != nil {
-				return "", err
-			}
-			if isReused && claimed != nil && claimed.PaymentSessionID != nil {
-				return *claimed.PaymentSessionID, nil
+				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+				}
 			}
 		}
 
@@ -366,16 +359,17 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
+				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
+					_ = mgr.TransitionFailed(ctx, claimed.ID)
+					return "", err
+				}
 			}
-			var apiErr *cashfree.APIError
-			if errors.As(gErr, &apiErr) && apiErr.StatusCode == 404 {
-				_ = mgr.TransitionFailed(ctx, claimed.ID)
-			} else {
-				_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
-			}
+			// Ambiguous outcome: do NOT mark failed on 404. Preserve dispatch_unknown for recovery.
+			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			return "", err
 		}
 		if err := mgr.TransitionCreated(ctx, claimed.ID, session, exp); err != nil {
+			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 			return "", err
 		}
 		return session, nil

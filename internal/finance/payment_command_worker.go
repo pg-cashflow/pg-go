@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -103,7 +104,11 @@ func (w *PaymentCommandWorker) ProcessSingleCommand(ctx context.Context, id int6
 	defer updateTx.Rollback(ctx)
 
 	if execErr == nil {
-		if err := w.repo.MarkCompletedTx(ctx, updateTx, cmd.ID); err != nil {
+		if err := w.repo.MarkCompletedTx(ctx, updateTx, cmd.ID, cmd.FenceToken); err != nil {
+			if errors.Is(err, domain.ErrPaymentCommandLeaseLost) {
+				slog.Warn("payment command lease lost; skipping completion write", "command_id", cmd.ID, "fence_token", cmd.FenceToken)
+				return domain.ErrPaymentCommandLeaseLost
+			}
 			return fmt.Errorf("mark payment command %d completed: %w", cmd.ID, err)
 		}
 		return updateTx.Commit(ctx)
@@ -112,6 +117,10 @@ func (w *PaymentCommandWorker) ProcessSingleCommand(ctx context.Context, id int6
 	retryDelay := w.computeBackoff(cmd.AttemptCount)
 	isDeadLetter := cmd.AttemptCount >= cmd.MaxAttempts || time.Since(cmd.CreatedAt) > domain.MaxPaymentCommandRetryAge
 	if err := w.repo.RecordCommandFailureTx(ctx, updateTx, cmd, execErr.Error(), retryDelay); err != nil {
+		if errors.Is(err, domain.ErrPaymentCommandLeaseLost) {
+			slog.Warn("payment command lease lost; skipping failure write", "command_id", cmd.ID, "fence_token", cmd.FenceToken)
+			return domain.ErrPaymentCommandLeaseLost
+		}
 		return fmt.Errorf("record payment command failure %d: %w", cmd.ID, err)
 	}
 

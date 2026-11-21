@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -13,14 +15,19 @@ import (
 
 type mockCommandTx struct {
 	pgx.Tx
-	lastSQL  string
-	lastArgs []any
+	lastSQL      string
+	lastArgs     []any
+	rowsAffected *int64
 }
 
 func (m *mockCommandTx) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
 	m.lastSQL = sql
 	m.lastArgs = arguments
-	return pgconn.CommandTag{}, nil
+	rows := int64(1)
+	if m.rowsAffected != nil {
+		rows = *m.rowsAffected
+	}
+	return pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", rows)), nil
 }
 
 func TestPaymentCommandRepo_RecordCommandFailureTx_DeadLetter(t *testing.T) {
@@ -96,6 +103,38 @@ func TestPaymentCommandRepo_RecordCommandFailureTx_DeadLetter(t *testing.T) {
 		}
 		if !strings.Contains(tx.lastSQL, "next_retry_at = $3") {
 			t.Fatalf("expected SQL to schedule next_retry_at, got: %s", tx.lastSQL)
+		}
+	})
+
+	t.Run("returns ErrPaymentCommandLeaseLost when zero rows updated on failure record", func(t *testing.T) {
+		zero := int64(0)
+		tx := &mockCommandTx{rowsAffected: &zero}
+		cmd := &domain.PaymentCommand{
+			ID:           104,
+			AttemptCount: 1,
+			MaxAttempts:  5,
+			FenceToken:   42,
+			CreatedAt:    time.Now().Add(-1 * time.Hour),
+		}
+
+		err := repo.RecordCommandFailureTx(ctx, tx, cmd, "transient error", 10*time.Second)
+		if !errors.Is(err, domain.ErrPaymentCommandLeaseLost) {
+			t.Fatalf("expected ErrPaymentCommandLeaseLost, got: %v", err)
+		}
+	})
+
+	t.Run("mark completed verifies fence token and returns ErrPaymentCommandLeaseLost on 0 rows", func(t *testing.T) {
+		zero := int64(0)
+		tx := &mockCommandTx{rowsAffected: &zero}
+		err := repo.MarkCompletedTx(ctx, tx, 105, 99)
+		if !errors.Is(err, domain.ErrPaymentCommandLeaseLost) {
+			t.Fatalf("expected ErrPaymentCommandLeaseLost, got: %v", err)
+		}
+		if !strings.Contains(tx.lastSQL, "fence_token = $2") {
+			t.Fatalf("expected SQL to check fence_token, got: %s", tx.lastSQL)
+		}
+		if !strings.Contains(tx.lastSQL, "status = 'processing'") {
+			t.Fatalf("expected SQL to check status processing, got: %s", tx.lastSQL)
 		}
 	})
 }

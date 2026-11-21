@@ -102,7 +102,7 @@ func (r *PaymentCommandRepo) LockAndClaimCommandTx(ctx context.Context, tx pgx.T
 	err := tx.QueryRow(ctx, `
 		SELECT id, command_type, property_id, source_id, payload, idempotency_key,
 		       status, attempt_count, max_attempts, last_error, locked_until, next_retry_at,
-		       created_at, processed_at, failed_at
+		       created_at, processed_at, failed_at, fence_token
 		FROM payment_commands
 		WHERE id = $1
 		  AND status IN ('pending', 'processing')
@@ -111,7 +111,7 @@ func (r *PaymentCommandRepo) LockAndClaimCommandTx(ctx context.Context, tx pgx.T
 	).Scan(
 		&cmd.ID, &cmd.CommandType, &cmd.PropertyID, &cmd.SourceID, &cmd.Payload, &cmd.IdempotencyKey,
 		&cmd.Status, &cmd.AttemptCount, &cmd.MaxAttempts, &lastError, &lockedUntil, &cmd.NextRetryAt,
-		&cmd.CreatedAt, &processedAt, &failedAt,
+		&cmd.CreatedAt, &processedAt, &failedAt, &cmd.FenceToken,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -122,36 +122,67 @@ func (r *PaymentCommandRepo) LockAndClaimCommandTx(ctx context.Context, tx pgx.T
 
 	cmd.AttemptCount++
 	leaseEnd := time.Now().UTC().Add(leaseDuration)
-	_, err = tx.Exec(ctx, `
+	var newFenceToken int64
+	err = tx.QueryRow(ctx, `
 		UPDATE payment_commands
 		SET status = 'processing',
 		    locked_until = $2,
-		    attempt_count = $3
-		WHERE id = $1`, cmd.ID, leaseEnd, cmd.AttemptCount)
+		    attempt_count = $3,
+		    fence_token = fence_token + 1
+		WHERE id = $1
+		RETURNING fence_token`, cmd.ID, leaseEnd, cmd.AttemptCount).Scan(&newFenceToken)
 	if err != nil {
 		return nil, fmt.Errorf("claim payment command %d: %w", cmd.ID, err)
 	}
 
 	cmd.Status = domain.PaymentCommandStatusProcessing
 	cmd.LockedUntil = &leaseEnd
+	cmd.FenceToken = newFenceToken
 	cmd.LastError = lastError
 	cmd.ProcessedAt = processedAt
 	cmd.FailedAt = failedAt
 	return &cmd, nil
 }
 
-// MarkCompletedTx marks a payment command as completed inside the transaction.
-func (r *PaymentCommandRepo) MarkCompletedTx(ctx context.Context, tx pgx.Tx, id int64) error {
-	_, err := tx.Exec(ctx, `
+// MarkCompletedTx marks a payment command as completed inside the transaction, enforcing worker lease fencing.
+func (r *PaymentCommandRepo) MarkCompletedTx(ctx context.Context, tx pgx.Tx, id int64, fenceToken int64) error {
+	tag, err := tx.Exec(ctx, `
 		UPDATE payment_commands
 		SET status = 'completed',
 		    processed_at = now(),
 		    locked_until = NULL
-		WHERE id = $1`, id)
-	return err
+		WHERE id = $1
+		  AND fence_token = $2
+		  AND status = 'processing'
+		  AND (locked_until IS NULL OR locked_until > now())`, id, fenceToken)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrPaymentCommandLeaseLost
+	}
+	return nil
 }
 
-// RecordCommandFailureTx records failure details, schedules next retry, or dead-letters on max attempts or max retry age.
+// RenewLeaseCommandTx extends the lease for long-running calls under lease fencing.
+func (r *PaymentCommandRepo) RenewLeaseCommandTx(ctx context.Context, tx pgx.Tx, id int64, fenceToken int64, extension time.Duration) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE payment_commands
+		SET locked_until = now() + $3::interval
+		WHERE id = $1
+		  AND fence_token = $2
+		  AND status = 'processing'
+		  AND (locked_until IS NULL OR locked_until > now())`, id, fenceToken, fmt.Sprintf("%d seconds", int(extension.Seconds())))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrPaymentCommandLeaseLost
+	}
+	return nil
+}
+
+// RecordCommandFailureTx records failure details, schedules next retry, or dead-letters on max attempts or max retry age, enforcing worker lease fencing.
 func (r *PaymentCommandRepo) RecordCommandFailureTx(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -174,24 +205,42 @@ func (r *PaymentCommandRepo) RecordCommandFailureTx(
 			"error", errorMsg,
 		)
 		cmd.Status = domain.PaymentCommandStatusDeadLetter
-		_, err := tx.Exec(ctx, `
+		tag, err := tx.Exec(ctx, `
 			UPDATE payment_commands
 			SET status = 'dead_letter',
 			    last_error = $2,
 			    failed_at = now(),
 			    locked_until = NULL
-			WHERE id = $1`, cmd.ID, errorMsg)
-		return err
+			WHERE id = $1
+			  AND fence_token = $3
+			  AND status = 'processing'
+			  AND (locked_until IS NULL OR locked_until > now())`, cmd.ID, errorMsg, cmd.FenceToken)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrPaymentCommandLeaseLost
+		}
+		return nil
 	}
 
 	cmd.Status = domain.PaymentCommandStatusPending
 	nextRetry := time.Now().UTC().Add(retryDelay)
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE payment_commands
 		SET status = 'pending',
 		    last_error = $2,
 		    next_retry_at = $3,
 		    locked_until = NULL
-		WHERE id = $1`, cmd.ID, errorMsg, nextRetry)
-	return err
+		WHERE id = $1
+		  AND fence_token = $4
+		  AND status = 'processing'
+		  AND (locked_until IS NULL OR locked_until > now())`, cmd.ID, errorMsg, nextRetry, cmd.FenceToken)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrPaymentCommandLeaseLost
+	}
+	return nil
 }
