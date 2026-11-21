@@ -21,6 +21,7 @@ type KYCRepo struct {
 	pool                     *pgxpool.Pool
 	cryptoKey                []byte
 	keyRing                  *crypto.KeyRing
+	identitySecrets          map[int16]string
 	verificationValidityDays int
 }
 
@@ -28,6 +29,11 @@ type KYCRepo struct {
 // A value of 0 or negative means verifications never expire.
 func (r *KYCRepo) SetVerificationValidityDays(days int) {
 	r.verificationValidityDays = days
+}
+
+// SetIdentitySecrets configures versioned HMAC-SHA256 secrets for cross-version duplicate screening.
+func (r *KYCRepo) SetIdentitySecrets(secrets map[int16]string) {
+	r.identitySecrets = secrets
 }
 
 func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
@@ -1324,17 +1330,46 @@ func (r *KYCRepo) ApproveManualReviewTx(
 			return fmt.Errorf("%w: verification %s is in status %s, expected pending_manual_review", domain.ErrVerificationNotPending, verificationID, existing.Status)
 		}
 
-		// Check for identity hash collision (flag-don't-block dedup check)
+		// Check for identity hash collision (flag-don't-block dedup check across all retained key versions)
 		var collidingTenantIDs []uuid.UUID
-		if existing.IsDedupable && existing.IdentityHash != nil && *existing.IdentityHash != "" {
-			rows, err := tx.Query(ctx, `
+		var candidatePairs [][2]any // [][hash, version]
+		if existing.OCRData != nil && *existing.OCRData != "" && len(r.identitySecrets) > 0 {
+			var ocrPayload struct {
+				Name      string `json:"name"`
+				DOB       string `json:"dob"`
+				Gender    string `json:"gender"`
+				MaskedUID string `json:"masked_uid"`
+			}
+			if err := json.Unmarshal([]byte(*existing.OCRData), &ocrPayload); err == nil && ocrPayload.Name != "" {
+				canonicalDOB, _, _ := domain.NormalizeDOB(ocrPayload.DOB)
+				for ver, sec := range r.identitySecrets {
+					ch := domain.ComputeIdentityHash(sec, ocrPayload.Name, canonicalDOB, ocrPayload.Gender, ocrPayload.MaskedUID)
+					candidatePairs = append(candidatePairs, [2]any{ch, ver})
+				}
+			}
+		}
+		if len(candidatePairs) == 0 && existing.IdentityHash != nil && *existing.IdentityHash != "" {
+			candidatePairs = append(candidatePairs, [2]any{*existing.IdentityHash, existing.HashKeyVersion})
+		}
+
+		if existing.IsDedupable && len(candidatePairs) > 0 {
+			var conds []string
+			args := []any{existing.TenantID}
+			argIdx := 2
+			for _, pair := range candidatePairs {
+				conds = append(conds, fmt.Sprintf("(identity_hash = $%d AND hash_key_version = $%d)", argIdx, argIdx+1))
+				args = append(args, pair[0], pair[1])
+				argIdx += 2
+			}
+			query := fmt.Sprintf(`
 				SELECT tenant_id FROM kyc_verification
-				WHERE identity_hash = $1
-				  AND hash_key_version = $2
+				WHERE (%s)
 				  AND status = 'verified'
 				  AND is_dedupable = TRUE
-				  AND tenant_id != $3
-			`, *existing.IdentityHash, existing.HashKeyVersion, existing.TenantID)
+				  AND tenant_id != $1
+			`, strings.Join(conds, " OR "))
+
+			rows, err := tx.Query(ctx, query, args...)
 			if err != nil {
 				return fmt.Errorf("kyc: check duplicate collision: %w", err)
 			}

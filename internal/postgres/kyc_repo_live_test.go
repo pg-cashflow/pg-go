@@ -821,3 +821,174 @@ func TestLiveKYCRepo_InFlightLock_Concurrency(t *testing.T) {
 		t.Fatalf("expected expired lease to be overwritten and acquired, got acquired=%v, err=%v", acquired, err)
 	}
 }
+
+func TestLiveKYCRepo_CrossKeyVersionDuplicateDetection_ManualReview(t *testing.T) {
+	pool, _ := setupLiveTestPool(t, 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	if err := Migrate(ctx, pool, migrationsDir); err != nil {
+		t.Fatalf("failed to apply migrations: %v", err)
+	}
+
+	repo := NewKYCRepo(pool)
+
+	secretV1 := "test_secret_v1_identity_32_bytes_ok"
+	secretV2 := "test_secret_v2_identity_32_bytes_ok"
+	repo.SetIdentitySecrets(map[int16]string{
+		1: secretV1,
+		2: secretV2,
+	})
+
+	propID := uuid.New()
+	phoneOwner := fmt.Sprintf("+9198%08d", time.Now().UnixNano()%100000000)
+	inviteCode := fmt.Sprintf("V%s", uuid.New().String()[:7])
+	_, err := pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code, payment_collection_mode)
+		VALUES ($1, 'KYC Version Prop', 'Road 1', $2, 'o@upi', 'Owner', 'o@test.com', $3, 'manual_proof')
+	`, propID, phoneOwner, inviteCode)
+	if err != nil {
+		t.Fatalf("insert property: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM properties WHERE id = $1`, propID)
+	}()
+
+	ownerID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (id, phone, role, property_id, full_name)
+		VALUES ($1, $2, 'owner', $3, 'Owner Person')
+	`, ownerID, phoneOwner, propID)
+	if err != nil {
+		t.Fatalf("insert owner user: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id = $1`, ownerID)
+	}()
+
+	// --- 1. Tenant 1 verified under Key Version 1 ---
+	tenant1ID := uuid.New()
+	phoneT1 := fmt.Sprintf("+9197%08d", time.Now().UnixNano()%100000000)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+		VALUES ($1, $2, 'Alice Doe', $3, 1000000, 5, 'active')
+	`, tenant1ID, propID, phoneT1)
+	if err != nil {
+		t.Fatalf("insert tenant 1: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_audit_log WHERE tenant_id = $1`, tenant1ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_verification WHERE tenant_id = $1`, tenant1ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_consent WHERE tenant_id = $1`, tenant1ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenant1ID)
+	}()
+
+	hashV1 := domain.ComputeIdentityHash(secretV1, "Alice Doe", "1996-05-12", "F", "4321")
+	consent1ID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO kyc_consent (id, tenant_id, ip_address, user_agent, consent_text, granted_at)
+		VALUES ($1, $2, '127.0.0.1', 'test-ua', 'I consent', NOW())
+	`, consent1ID, tenant1ID)
+	if err != nil {
+		t.Fatalf("insert consent 1: %v", err)
+	}
+
+	v1ID := uuid.New()
+	now := time.Now().UTC()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO kyc_verification (id, tenant_id, consent_id, vendor_name, vendor_reference_id, method, status, masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, verified_at, expires_at)
+		VALUES ($1, $2, $3, 'cashfree', 'cf_v1_test', 'smart_ocr', 'verified', '4321', $4, 1, TRUE, FALSE, $5, $5 + INTERVAL '365 days')
+	`, v1ID, tenant1ID, consent1ID, hashV1, now)
+	if err != nil {
+		t.Fatalf("insert verification 1: %v", err)
+	}
+
+	// --- 2. Tenant 2 submits same identity under Key Version 2 for Manual Review ---
+	tenant2ID := uuid.New()
+	phoneT2 := fmt.Sprintf("+9196%08d", time.Now().UnixNano()%100000000)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, rent_amount, due_day, status)
+		VALUES ($1, $2, 'Alice Doe', $3, 1000000, 5, 'active')
+	`, tenant2ID, propID, phoneT2)
+	if err != nil {
+		t.Fatalf("insert tenant 2: %v", err)
+	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_audit_log WHERE tenant_id = $1`, tenant2ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_verification WHERE tenant_id = $1`, tenant2ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM kyc_consent WHERE tenant_id = $1`, tenant2ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM tenants WHERE id = $1`, tenant2ID)
+	}()
+
+	consent2ID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO kyc_consent (id, tenant_id, ip_address, user_agent, consent_text, granted_at)
+		VALUES ($1, $2, '127.0.0.1', 'test-ua', 'I consent', NOW())
+	`, consent2ID, tenant2ID)
+	if err != nil {
+		t.Fatalf("insert consent 2: %v", err)
+	}
+
+	// Hash V2 is different from Hash V1 because different keys were used:
+	hashV2 := domain.ComputeIdentityHash(secretV2, "Alice Doe", "1996-05-12", "F", "4321")
+	if hashV1 == hashV2 {
+		t.Fatalf("cryptographic invariant violated: different HMAC secrets produced identical hashes")
+	}
+
+	ocrPayload := `{"name":"Alice Doe","dob":"1996-05-12","gender":"F","masked_uid":"4321","document_type":"aadhaar"}`
+	v2ID := uuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO kyc_verification (id, tenant_id, consent_id, vendor_name, vendor_reference_id, method, status, masked_uid, identity_hash, hash_key_version, is_dedupable, duplicate_detected, ocr_data, document_url)
+		VALUES ($1, $2, $3, 'cashfree', 'cf_v2_test', 'smart_ocr', 'pending_manual_review', '4321', $4, 2, TRUE, FALSE, $5, '/api/owner/kyc/test/document')
+	`, v2ID, tenant2ID, consent2ID, hashV2, ocrPayload)
+	if err != nil {
+		t.Fatalf("insert verification 2: %v", err)
+	}
+
+	// --- 3. Owner performs Manual Review Approval ---
+	approvedV2, err := repo.ApproveManualReviewTx(ctx, v2ID, ownerID, propID, "owner")
+	if err != nil {
+		t.Fatalf("ApproveManualReviewTx failed: %v", err)
+	}
+
+	// --- 4. Assert: Symmetric Duplicate Flags & Audit History ---
+	if approvedV2 == nil {
+		t.Fatal("expected approved verification for Tenant 2, got nil")
+	}
+	if approvedV2.Status != domain.KYCStatusVerified {
+		t.Fatalf("expected status verified, got %s", approvedV2.Status)
+	}
+	if !approvedV2.DuplicateDetected {
+		t.Fatalf("Tenant 2 cross-version collision NOT detected (duplicate_detected is false)")
+	}
+
+	// Verify Tenant 1 was symmetrically flagged as duplicate_detected = TRUE
+	var t1Duplicate bool
+	err = pool.QueryRow(ctx, `SELECT duplicate_detected FROM kyc_verification WHERE id = $1`, v1ID).Scan(&t1Duplicate)
+	if err != nil {
+		t.Fatalf("query tenant 1 verification: %v", err)
+	}
+	if !t1Duplicate {
+		t.Fatalf("Tenant 1 was NOT symmetrically flagged duplicate_detected=true")
+	}
+
+	// Verify Audit Logs for both tenants
+	var t2AuditCount int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM kyc_audit_log WHERE tenant_id = $1 AND action = 'duplicate_detected'`, tenant2ID).Scan(&t2AuditCount)
+	if err != nil {
+		t.Fatalf("query tenant 2 audit: %v", err)
+	}
+	if t2AuditCount == 0 {
+		t.Fatalf("expected duplicate_detected audit log for Tenant 2")
+	}
+
+	var t1AuditCount int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM kyc_audit_log WHERE tenant_id = $1 AND action = 'duplicate_detected'`, tenant1ID).Scan(&t1AuditCount)
+	if err != nil {
+		t.Fatalf("query tenant 1 audit: %v", err)
+	}
+	if t1AuditCount == 0 {
+		t.Fatalf("expected duplicate_detected audit log for Tenant 1")
+	}
+}

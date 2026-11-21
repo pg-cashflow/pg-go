@@ -313,6 +313,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 					activeHashVersion = v
 				}
 			}
+			kycRepo.SetIdentitySecrets(cfg.KYCIdentitySecrets)
+		} else if cfg.KYCIdentitySecret != "" {
+			kycRepo.SetIdentitySecrets(map[int16]string{1: cfg.KYCIdentitySecret})
 		}
 		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
 			IdentitySecret:           activeIdentitySecret,

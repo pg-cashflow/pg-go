@@ -75,16 +75,16 @@ WHERE id IN (
     SELECT id FROM duplicate_active_dues WHERE rn > 1
 );
 
--- 4. Enforce unique index for active intents
+-- 4. Enforce unique index for active intents (including needs_review to prevent duplicate checkout during quarantine)
 DROP INDEX IF EXISTS uq_active_intent_due;
 CREATE UNIQUE INDEX uq_active_intent_due 
     ON payment_intents(due_id) 
-    WHERE status IN ('initiating', 'created', 'dispatch_unknown');
+    WHERE status IN ('initiating', 'created', 'dispatch_unknown', 'needs_review');
 
 DROP INDEX IF EXISTS uq_active_intent_dues_item;
 CREATE UNIQUE INDEX uq_active_intent_dues_item 
     ON payment_intent_dues(due_id) 
-    WHERE status IN ('initiating', 'created', 'dispatch_unknown');
+    WHERE status IN ('initiating', 'created', 'dispatch_unknown', 'needs_review');
 
 -- 5. Add fence_token to payment_commands for distributed worker fencing
 ALTER TABLE payment_commands

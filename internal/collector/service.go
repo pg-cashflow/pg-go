@@ -162,13 +162,8 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 					_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 					return "", err
 				}
-				// 2. Create Order 404: documented client / route rejection
-				if apiErr.StatusCode == 404 {
-					_ = mgr.TransitionFailed(ctx, claimed.ID)
-					return "", err
-				}
-				// 3. Other definitive 4xx rejections (excluding 429 rate limit)
-				if apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+				// 2. Authoritative client request validation rejections on Create Order
+				if apiErr.StatusCode == 400 || apiErr.StatusCode == 422 {
 					_ = mgr.TransitionFailed(ctx, claimed.ID)
 					return "", err
 				}
@@ -398,13 +393,8 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 					_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
 					return "", err
 				}
-				// 2. Create Order 404: documented client / route rejection
-				if apiErr.StatusCode == 404 {
-					_ = mgr.TransitionFailed(ctx, claimed.ID)
-					return "", err
-				}
-				// 3. Other definitive 4xx rejections (excluding 429 rate limit)
-				if apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != 429 {
+				// 2. Authoritative client request validation rejections on Create Order
+				if apiErr.StatusCode == 400 || apiErr.StatusCode == 422 {
 					_ = mgr.TransitionFailed(ctx, claimed.ID)
 					return "", err
 				}

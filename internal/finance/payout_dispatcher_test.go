@@ -22,6 +22,9 @@ import (
 )
 
 func TestLivePayoutDispatcher(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in -short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 

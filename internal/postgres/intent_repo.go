@@ -278,9 +278,27 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			return nil, false, false, fmt.Errorf("check reusable intent: %w", err)
 		}
 
-		// 3. Check for in-flight / unresolved intent (initiating or dispatch_unknown)
-		var inFlight *domain.PaymentIntent
+		// 3a. Check for intent in 'needs_review' - unresolved provider order requires manual review; NO new checkout permitted
+		var underReview *domain.PaymentIntent
 		row := txRepo.db.QueryRow(ctx, `
+			SELECT `+intentCols+` FROM payment_intents
+			WHERE status = 'needs_review'
+			  AND (
+				due_id = ANY($1)
+				OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
+			  )
+			ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, dueIDs,
+		)
+		underReview, err = scanIntent(row)
+		if err == nil && underReview != nil {
+			return nil, false, false, fmt.Errorf("due has payment intent under review (%s): checkout blocked until resolved", underReview.ID)
+		} else if err != nil && !isNoRows(err) {
+			return nil, false, false, fmt.Errorf("check intent under review: %w", err)
+		}
+
+		// 3b. Check for in-flight / unresolved intent (initiating or dispatch_unknown)
+		var inFlight *domain.PaymentIntent
+		row = txRepo.db.QueryRow(ctx, `
 			SELECT `+intentCols+` FROM payment_intents
 			WHERE status IN ('initiating', 'dispatch_unknown')
 			  AND (

@@ -471,17 +471,7 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 
 	seen := make(map[string]struct{})
 
-	// Handle total bulk transfer rejection where Cashfree returns 0 transfers:
-	if len(statusResp.Transfers) == 0 && (strings.EqualFold(statusResp.Status, "FAILED") || strings.EqualFold(statusResp.Status, "REJECTED")) {
-		reason := "bulk transfer rejected at gateway"
-		for _, it := range items {
-			if it.Status == domain.PayoutProcessing || it.Status == domain.PayoutPending {
-				_ = d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutFailed, nil, nil, nil, &reason)
-			}
-		}
-	}
-
-	// Update items from Cashfree status
+	// 1. Reconcile transfers explicitly returned in batch status
 	for _, st := range statusResp.Transfers {
 		cleanTransferID := strings.TrimPrefix(st.TransferID, "pgo_")
 		if idx := strings.IndexAny(cleanTransferID, "_"); idx != -1 {
@@ -497,36 +487,35 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		}
 	}
 
-	// For any item in the batch that was not included in statusResp.Transfers:
-	isBatchTerminal := strings.EqualFold(statusResp.Status, "SUCCESS") ||
-		strings.EqualFold(statusResp.Status, "PARTIALLY_FAILED") ||
-		strings.EqualFold(statusResp.Status, "FAILED") ||
-		strings.EqualFold(statusResp.Status, "REJECTED")
-
-	if isBatchTerminal {
-		for cleanID, it := range itemMap {
-			if _, ok := seen[cleanID]; ok {
-				continue
+	// 2. Identify all locally unresolved transfers not present in batch response.
+	// Query Cashfree using individual transfer IDs.
+	// Update only items with authoritative terminal results; keep unresolved items in reconciliation.
+	for cleanID, it := range itemMap {
+		if _, ok := seen[cleanID]; ok {
+			continue
+		}
+		if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
+			continue
+		}
+		transferID := fmt.Sprintf("pgo_%s", cleanID)
+		itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
+		if err == nil && itemStatus != nil {
+			if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
+				return err
 			}
-			if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
-				continue
-			}
-			transferID := fmt.Sprintf("pgo_%s", cleanID)
-			itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
-			if err == nil && itemStatus != nil {
-				if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
-					return err
-				}
-			} else {
-				reason := "transfer missing from gateway batch results"
-				if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutFailed, nil, nil, nil, &reason); err != nil {
-					return fmt.Errorf("update missing payout item failed status: %w", err)
-				}
-			}
+		} else {
+			// Do NOT mark as failed on empty response or lookup failure.
+			// Retain in reconciliation (in-flight) so background poller continues until authoritative.
+			slog.Warn("payout batch reconcile: individual transfer status lookup inconclusive; retaining in-flight",
+				"batch_id", batch.ID,
+				"transfer_id", transferID,
+				"item_id", it.ID,
+				"err", err,
+			)
 		}
 	}
 
-	// Recalculate batch status from item-level results
+	// 3. Derive batch status after all available item-level results have been applied.
 	_, err := d.repo.UpdateBatchStatusFromItemsTx(ctx, nil, batch.ID)
 	return err
 }

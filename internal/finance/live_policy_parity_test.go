@@ -21,6 +21,9 @@ import (
 // finance.ErrPolicyExceeded via errors.Is, ensuring HTTP handlers correctly return
 // 400 Bad Request instead of falling through to 500 Internal Server Error.
 func TestLivePostgres_PolicyExceededErrorIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live test in -short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 

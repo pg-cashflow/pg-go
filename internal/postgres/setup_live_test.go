@@ -15,6 +15,10 @@ import (
 // It automatically closes the pool when the test completes via t.Cleanup.
 func setupLiveTestPool(t *testing.T, timeout time.Duration) (*pgxpool.Pool, *config.Config) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping live Postgres test in -short mode")
+		return nil, nil
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 

@@ -14,6 +14,9 @@ import (
 )
 
 func TestLivePostgreSQL_SessionTimeouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Postgres test in -short mode")
+	}
 	_ = godotenv.Load("../../.env")
 	dbURL := testutil.RequireDB(t)
 

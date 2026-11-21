@@ -18,6 +18,10 @@ import (
 
 func setupLivePool(t *testing.T, timeout time.Duration) *pgxpool.Pool {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping live test in -short mode")
+		return nil
+	}
 	_ = godotenv.Load("../../.env")
 	testutil.RequireDB(t)
 	cfg, err := config.Load()

@@ -410,25 +410,48 @@ func TestEnsureCashfree_CreateOrder409ReconcilesExistingOrder(t *testing.T) {
 	}
 }
 
-func TestEnsureCashfree_CreateOrder404MarksFailed(t *testing.T) {
+func TestEnsureCashfree_CreateOrder400MarksFailed(t *testing.T) {
 	cf := &timingOutCF{
-		createErr: &cashfree.APIError{StatusCode: 404, Status: "404 Not Found: invalid_route"},
+		createErr: &cashfree.APIError{StatusCode: 400, Status: "400 Bad Request: invalid_phone_number"},
 	}
 	mgr := &recoveringIntentMgr{}
 	svc := New(mgr, cf)
 
-	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE404", Amount: 200000, Status: domain.DueStatusPending}
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE400", Amount: 200000, Status: domain.DueStatusPending}
 	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
 
 	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
 	if err == nil {
-		t.Fatal("expected error on 404 client error")
+		t.Fatal("expected error on 400 client error")
 	}
 	if !mgr.failed {
-		t.Fatal("expected intent to be transitioned to failed on definitive 404 client error")
+		t.Fatal("expected intent to be transitioned to failed on authoritative 400 client rejection")
 	}
 	if mgr.dispatchUnknown {
-		t.Fatal("intent must not be transitioned to dispatch_unknown on definitive 404")
+		t.Fatal("intent must not be transitioned to dispatch_unknown on authoritative 400")
+	}
+}
+
+func TestEnsureCashfree_GetOrder404RetainsDispatchUnknown(t *testing.T) {
+	cf := &timingOutCF{
+		createErr:   errors.New("connection timeout"),
+		getOrderErr: &cashfree.APIError{StatusCode: 404, Status: "404 Not Found: order_not_found"},
+	}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUERECON404", Amount: 200000, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if err == nil {
+		t.Fatal("expected error on connection timeout")
+	}
+	if mgr.failed {
+		t.Fatal("GetOrder 404 during reconciliation must NOT mark intent failed (replication lag risk)")
+	}
+	if !mgr.dispatchUnknown {
+		t.Fatal("expected intent to remain in dispatch_unknown for durable poller recovery")
 	}
 }
 
