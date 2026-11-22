@@ -144,6 +144,20 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		allowedPayload = buildAllowedPaymentAuditPayload(evtType, val)
 	}
 
+	// Check x-idempotency-header (and fallback x-idempotency-key) duplicate delivery
+	idempotencyHeader := strings.TrimSpace(c.GetHeader("x-idempotency-header"))
+	if idempotencyHeader == "" {
+		idempotencyHeader = strings.TrimSpace(c.GetHeader("x-idempotency-key"))
+	}
+	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
+		alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+		if err == nil && alreadyProcessed {
+			slog.Info("cashfree payment webhook duplicate delivery suppressed by x-idempotency-header", "idempotency_header", idempotencyHeader)
+			c.Status(http.StatusOK)
+			return
+		}
+	}
+
 	// Ingest allow-listed arrival into webhook_events audit log
 	evtRecord := &domain.WebhookEvent{
 		Provider:         "cashfree",
@@ -182,7 +196,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
-		h.handlePaymentSuccessWebhook(c, succ, evtRecord)
+		h.handlePaymentSuccessWebhook(c, succ, evtRecord, idempotencyHeader)
 
 	case "PAYMENT_FAILED_WEBHOOK":
 		fail, ok := val.(cashfree.FailedWebhook)
@@ -190,7 +204,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
-		h.handlePaymentFailedWebhook(c, fail, evtRecord)
+		h.handlePaymentFailedWebhook(c, fail, evtRecord, idempotencyHeader)
 
 	case "REFUND_STATUS_WEBHOOK", "AUTO_REFUND_STATUS_WEBHOOK":
 		ref, ok := val.(cashfree.RefundWebhook)
@@ -198,7 +212,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
-		h.handleRefundWebhook(c, ref, evtRecord)
+		h.handleRefundWebhook(c, ref, evtRecord, idempotencyHeader)
 
 	case "DISPUTE_CREATED", "DISPUTE_CREATED_WEBHOOK", "PAYMENT_DISPUTE_CREATED", "PAYMENT_DISPUTE_CREATED_WEBHOOK", "DISPUTE_STATUS_UPDATE", "DISPUTE_STATUS_UPDATE_WEBHOOK":
 		disp, ok := val.(cashfree.DisputeWebhook)
@@ -206,7 +220,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
-		h.handleDisputeWebhook(c, disp, evtRecord)
+		h.handleDisputeWebhook(c, disp, evtRecord, idempotencyHeader)
 
 	default:
 		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
@@ -216,7 +230,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 	}
 }
 
-func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.SuccessWebhook, evtRecord *domain.WebhookEvent) {
+func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.SuccessWebhook, evtRecord *domain.WebhookEvent, idempotencyHeader string) {
 	ctx := c.Request.Context()
 	// R7: Fail closed with HTTP 503 when the intent store is unavailable, so the provider retries.
 	if h.IntentStore == nil {
@@ -291,6 +305,10 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		return
 	}
 
+	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
+		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+	}
+
 	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
 		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
 	}
@@ -333,7 +351,7 @@ func (h *Handlers) getOrderSettler() payment.OrderGatewaySettler {
 	})
 }
 
-func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent) {
+func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.FailedWebhook, evtRecord *domain.WebhookEvent, idempotencyHeader string) {
 	ctx := c.Request.Context()
 	if h.Pool == nil || h.GatewayPaymentRepo == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "persistence unavailable"})
@@ -353,6 +371,9 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 		txIntentRepo := postgres.NewPaymentIntentRepo(tx)
 		if err := txIntentRepo.TouchNonTerminalByOrderID(ctx, fail.OrderID); err != nil {
 			return err
+		}
+		if idempotencyHeader != "" {
+			_, _ = txPayRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 		}
 		return nil
 	}); txErr != nil {
@@ -383,7 +404,7 @@ func (h *Handlers) handlePaymentFailedWebhook(c *gin.Context, fail cashfree.Fail
 	c.Status(http.StatusOK)
 }
 
-func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhook, evtRecord *domain.WebhookEvent) {
+func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhook, evtRecord *domain.WebhookEvent, idempotencyHeader string) {
 	ctx := c.Request.Context()
 	if h.GatewayPaymentRepo == nil {
 		c.Status(http.StatusOK)
@@ -603,13 +624,17 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		}
 	}
 
+	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
+		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+	}
+
 	if evtRecord.ID != uuid.Nil {
 		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
 	}
 	c.Status(http.StatusOK)
 }
 
-func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWebhook, evtRecord *domain.WebhookEvent) {
+func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWebhook, evtRecord *domain.WebhookEvent, idempotencyHeader string) {
 	ctx := c.Request.Context()
 	slog.Default().Error("CASHFREE PAYMENT DISPUTE RECEIVED: OPERATOR ACTION REQUIRED",
 		"dispute_id", disp.DisputeID,
@@ -668,6 +693,10 @@ func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWeb
 				})
 			}
 		}
+	}
+
+	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
+		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 	}
 
 	// Fail-Safe Ledger Invariant: A dispute is a contested claim, NOT an authorized or confirmed refund.
