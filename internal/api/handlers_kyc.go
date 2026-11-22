@@ -1054,25 +1054,6 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify timestamp tolerance with fail-closed default (300s)
-	tolerance := h.WebhookToleranceSec
-	if tolerance <= 0 {
-		tolerance = 300
-	}
-	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-		return
-	}
-
-	svc := h.KYCSvc
-	if svc == nil {
-		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
-		return
-	}
-
-	eventHashBytes := sha256.Sum256([]byte(ts + ":" + string(raw)))
-	eventHash := hex.EncodeToString(eventHashBytes[:])
-
 	// Webhook payload supporting both Smart OCR and DigiLocker callbacks.
 	var payload struct {
 		Event          string `json:"event"`
@@ -1097,6 +1078,38 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		return
 	}
 
+	eventHashBytes := sha256.Sum256([]byte(ts + ":" + string(raw)))
+	eventHash := hex.EncodeToString(eventHashBytes[:])
+
+	// Pre-drift Idempotency Suppression:
+	// Acknowledge retried delivery of already-received KYC callbacks with 200 OK
+	// before timestamp drift verification to prevent gateway retry storms.
+	pool := h.getPool()
+	if pool != nil {
+		var existingID int64
+		if err := pool.QueryRow(c.Request.Context(), `
+			SELECT id FROM kyc_webhook_inbox WHERE provider = 'cashfree' AND event_hash = $1`, eventHash).Scan(&existingID); err == nil && existingID > 0 {
+			c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "duplicate_event"})
+			return
+		}
+	}
+
+	// Verify timestamp tolerance with fail-closed default (300s)
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
+	}
+
+	svc := h.KYCSvc
+	if svc == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
+		return
+	}
+
 	event := payload.Event
 	if event == "" {
 		event = payload.EventType
@@ -1116,7 +1129,6 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 		raw[i] = 0
 	}
 
-	pool := h.getPool()
 	var inboxID int64
 	if pool != nil {
 		ctx := c.Request.Context()

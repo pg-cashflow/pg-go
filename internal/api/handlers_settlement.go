@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -189,7 +190,18 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 		return
 	}
 
-	// 3. Timestamp drift / replay check
+	// 3. Attempt to parse verified payload for idempotency suppression
+	parsed, parseErr := cashfree.ParseSettlementWebhook(raw)
+	if parseErr == nil && h.GatewayPaymentRepo != nil && strings.TrimSpace(parsed.CFSettlementID) != "" {
+		alreadyProcessed, pErr := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "SETTLEMENT", strings.TrimSpace(parsed.CFSettlementID), "")
+		if pErr == nil && alreadyProcessed {
+			slog.Info("cashfree settlement webhook duplicate delivery suppressed by cf_settlement_id", "cf_settlement_id", parsed.CFSettlementID)
+			c.JSON(http.StatusOK, gin.H{"status": "received"})
+			return
+		}
+	}
+
+	// 4. Timestamp drift / replay check
 	tolerance := h.WebhookToleranceSec
 	if tolerance <= 0 {
 		tolerance = 300
@@ -199,9 +211,8 @@ func (h *Handlers) CashfreeSettlementWebhook(c *gin.Context) {
 		return
 	}
 
-	// 4. Parse verified payload before audit ingestion
-	parsed, err := cashfree.ParseSettlementWebhook(raw)
-	if err != nil {
+	// 5. Fail on invalid settlement payload after drift check
+	if parseErr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid settlement payload"})
 		return
 	}

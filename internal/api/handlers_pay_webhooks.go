@@ -191,14 +191,46 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 	}
 
 	// 3. Verify timestamp tolerance (drift check) with fail-closed default (300s).
-	// Stale unhandled events outside tolerance window are rejected with 401.
+	// Stale unhandled events outside tolerance window are rejected with 401, unless
+	// live gateway API can independently verify that the payment or refund is genuine.
 	tolerance := h.WebhookToleranceSec
 	if tolerance <= 0 {
 		tolerance = 300
 	}
 	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-		return
+		// FALLBACK GATEWAY VERIFICATION:
+		// When Cashfree retries an unhandled event beyond tolerance (e.g. Attempt 3 at +10m,
+		// Attempt 4 at +30m, or manual dashboard batch replay), verify with Cashfree's live REST API.
+		verifiedByGateway := false
+		if h.CashfreeClient != nil && parseErr == nil {
+			switch v := val.(type) {
+			case cashfree.SuccessWebhook:
+				if strings.TrimSpace(v.OrderID) != "" {
+					cfID, _, amount, ok, fErr := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), v.OrderID)
+					if fErr == nil && ok && amount == v.AmountPaise && (cfID == v.CFPaymentID || cfID != "") {
+						verifiedByGateway = true
+						slog.Info("cashfree payment webhook timestamp drift verified via live gateway API", "order_id", v.OrderID, "cf_payment_id", cfID)
+					}
+				}
+			case cashfree.RefundWebhook:
+				refID := strings.TrimSpace(v.CFRefundID)
+				if refID == "" {
+					refID = strings.TrimSpace(v.RefundID)
+				}
+				if refID != "" && strings.TrimSpace(v.OrderID) != "" {
+					details, fErr := h.CashfreeClient.FetchRefundStatus(c.Request.Context(), v.OrderID, refID)
+					if fErr == nil && details != nil && details.RefundStatus == v.RefundStatus {
+						verifiedByGateway = true
+						slog.Info("cashfree refund webhook timestamp drift verified via live gateway API", "order_id", v.OrderID, "refund_id", refID)
+					}
+				}
+			}
+		}
+
+		if !verifiedByGateway {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+			return
+		}
 	}
 
 	// Ingest allow-listed arrival into webhook_events audit log
