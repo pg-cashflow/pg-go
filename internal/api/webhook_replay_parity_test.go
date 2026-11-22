@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -127,3 +128,48 @@ func TestWebhookReplayParity_Settlement(t *testing.T) {
 		})
 	}
 }
+
+type retryMockGatewayRepo struct {
+	stubGatewayRepo
+	processed map[string]bool
+}
+
+func (m *retryMockGatewayRepo) HasProcessedEvent(_ context.Context, provider, eventType, providerRefID, _ string) (bool, error) {
+	key := fmt.Sprintf("%s:%s:%s", provider, eventType, providerRefID)
+	return m.processed[key], nil
+}
+
+// TestWebhookRetry_AlreadyProcessed_Returns200 verifies that authentic webhooks that were already
+// processed return 200 OK even if the timestamp is older than the 300s tolerance (e.g. 600s/10m retry).
+func TestWebhookRetry_AlreadyProcessed_Returns200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	// Old timestamp: 600s ago (exceeds default 300s drift window)
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_retry_1"},"payment":{"cf_payment_id":998877,"payment_status":"SUCCESS","payment_amount":100}}}`
+
+	repo := &retryMockGatewayRepo{
+		processed: map[string]bool{
+			"cashfree:PAYMENT_SETTLED:998877": true,
+		},
+	}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for already-processed retried webhook even with old timestamp, got %d", w.Code)
+	}
+}
+

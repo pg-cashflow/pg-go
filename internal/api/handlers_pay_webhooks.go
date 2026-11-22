@@ -124,17 +124,7 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify timestamp tolerance (drift check) with fail-closed default (300s)
-	tolerance := h.WebhookToleranceSec
-	if tolerance <= 0 {
-		tolerance = 300
-	}
-	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
-		return
-	}
-
-	// Parse verified payload before audit ingestion to enforce data minimization
+	// Parse verified payload before idempotency and drift verification
 	val, evtType, parseErr := cashfree.ParseWebhook(raw)
 	var allowedPayload []byte
 	if parseErr != nil {
@@ -144,7 +134,10 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		allowedPayload = buildAllowedPaymentAuditPayload(evtType, val)
 	}
 
-	// Check x-idempotency-header (and fallback x-idempotency-key) duplicate delivery
+	// 1. Check x-idempotency-header (and fallback x-idempotency-key) duplicate delivery.
+	// We check idempotency BEFORE timestamp drift verification.
+	// If this delivery is an authentic retry of an already-processed event,
+	// acknowledge with HTTP 200 OK immediately to stop gateway retry storms.
 	idempotencyHeader := strings.TrimSpace(c.GetHeader("x-idempotency-header"))
 	if idempotencyHeader == "" {
 		idempotencyHeader = strings.TrimSpace(c.GetHeader("x-idempotency-key"))
@@ -156,6 +149,56 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			c.Status(http.StatusOK)
 			return
 		}
+	}
+
+	// 2. Check natural key deduplication for already-settled payments, refunds, and disputes.
+	// If the gateway retries an event after 5+ minutes (Attempt 3: +10m, Attempt 4: +30m)
+	// that was already settled, return HTTP 200 OK to acknowledge and terminate retries.
+	if h.GatewayPaymentRepo != nil && parseErr == nil {
+		switch v := val.(type) {
+		case cashfree.SuccessWebhook:
+			if strings.TrimSpace(v.CFPaymentID) != "" {
+				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "PAYMENT_SETTLED", strings.TrimSpace(v.CFPaymentID), "")
+				if err == nil && alreadyProcessed {
+					slog.Info("cashfree payment webhook duplicate delivery suppressed by cf_payment_id", "cf_payment_id", v.CFPaymentID)
+					c.Status(http.StatusOK)
+					return
+				}
+			}
+		case cashfree.RefundWebhook:
+			refID := strings.TrimSpace(v.CFRefundID)
+			if refID == "" {
+				refID = strings.TrimSpace(v.RefundID)
+			}
+			if refID != "" {
+				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "REFUND_STATUS", refID, "")
+				if err == nil && alreadyProcessed {
+					slog.Info("cashfree refund webhook duplicate delivery suppressed by refund_id", "refund_id", refID)
+					c.Status(http.StatusOK)
+					return
+				}
+			}
+		case cashfree.DisputeWebhook:
+			if strings.TrimSpace(v.DisputeID) != "" {
+				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "DISPUTE_STATUS", strings.TrimSpace(v.DisputeID), "")
+				if err == nil && alreadyProcessed {
+					slog.Info("cashfree dispute webhook duplicate delivery suppressed by dispute_id", "dispute_id", v.DisputeID)
+					c.Status(http.StatusOK)
+					return
+				}
+			}
+		}
+	}
+
+	// 3. Verify timestamp tolerance (drift check) with fail-closed default (300s).
+	// Stale unhandled events outside tolerance window are rejected with 401.
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if err := cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "timestamp tolerance exceeded"})
+		return
 	}
 
 	// Ingest allow-listed arrival into webhook_events audit log

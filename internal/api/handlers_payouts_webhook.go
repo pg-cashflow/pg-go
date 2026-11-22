@@ -232,14 +232,6 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 
-	tolerance := h.WebhookToleranceSec
-	if tolerance <= 0 {
-		tolerance = 300
-	}
-	if ts == "" || cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()) != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or expired webhook timestamp"})
-		return
-	}
 	if usesBodySignature && evtTypePeek != "LOW_BALANCE_ALERT" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "body signatures are not valid for this event"})
 		return
@@ -257,6 +249,29 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	var unmarshalErr error
 	if len(env.Data) > 0 {
 		unmarshalErr = json.Unmarshal(env.Data, &data)
+	}
+
+	// Idempotency suppression: If Cashfree retries an already-processed payout event
+	// (e.g. at Attempt 3: +10m, Attempt 4: +30m), return 200 OK before the timestamp check
+	// to prevent Cashfree from disabling the webhook endpoint after 5 consecutive 401s.
+	auditStore := h.gatewayAuditStore()
+	if auditStore != nil && unmarshalErr == nil && strings.TrimSpace(data.TransferID) != "" {
+		refID := strings.TrimSpace(data.TransferID)
+		alreadyProcessed, err := auditStore.HasProcessedEvent(c.Request.Context(), "cashfree", evtType, refID, "")
+		if err == nil && alreadyProcessed {
+			slog.Info("cashfree payout webhook duplicate delivery suppressed by transfer_id", "transfer_id", refID, "event", evtType)
+			c.Status(http.StatusOK)
+			return
+		}
+	}
+
+	tolerance := h.WebhookToleranceSec
+	if tolerance <= 0 {
+		tolerance = 300
+	}
+	if ts == "" || cashfree.VerifyWebhookTimestamp(ts, tolerance, time.Now().UTC()) != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or expired webhook timestamp"})
+		return
 	}
 
 	// REQ-WH-001: persist the verified allow-listed payload before any payout mutation.
