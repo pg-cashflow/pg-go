@@ -8,6 +8,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  frontend:
+    name: Frontend Quality & Build Gate
+    runs-on: ubuntu-latest
+    env:
+      HAS_PAT: ${{ secrets.GH_PAT != '' }}
+    steps:
+      - name: Checkout pg-react
+        if: env.HAS_PAT == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: pg-cashflow/pg-react
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Node
+        if: env.HAS_PAT == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify and Build Frontend
+        if: env.HAS_PAT == 'true'
+        run: |
+          npm ci
+          npm run lint
+          npm run check:error-codes
+          npm run test
+          npm run build
+
   test:
     name: Unit & Integration Tests (Race Detector & Coverage)
     runs-on: ubuntu-latest

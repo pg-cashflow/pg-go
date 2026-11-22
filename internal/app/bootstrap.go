@@ -468,6 +468,13 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		logger.Warn("CF_PAYOUT_DISPATCH_ENABLED or CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
 	}
 
+	if userRepo == nil {
+		return nil, errors.New("bootstrap: user repository must not be nil")
+	}
+	if tenantRepo == nil {
+		return nil, errors.New("bootstrap: tenant repository must not be nil")
+	}
+
 	refundApprovalRepo := postgres.NewRefundApprovalRepo(appPool)
 
 	router := api.NewRouter(api.Deps{
@@ -575,8 +582,9 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		cfClient:        cfClient,
 		paymentRepo:     maintPaymentRepo,
 		referralSvc:     referralSvc,
-		kycRepo:         kycRepo,
-		kycSvc:          kycSvc,
+		kycRepo:              kycRepo,
+		kycSvc:               kycSvc,
+		featureKYCDigiLocker: cfg.FeatureKYCDigiLocker,
 	}
 
 	cleanup := func() {
@@ -615,8 +623,9 @@ type backgroundConfig struct {
 	cfClient        *cashfree.Client
 	paymentRepo     *postgres.PaymentRepo
 	referralSvc     *referral.Service
-	kycRepo         *postgres.KYCRepo
-	kycSvc          kycsvc.KYCCallbackProcessor
+	kycRepo              *postgres.KYCRepo
+	kycSvc               kycsvc.KYCCallbackProcessor
+	featureKYCDigiLocker bool
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -691,6 +700,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		kycAlerter := &kycDeadLetterEmailAlerter{mail: bg.mail, adminEmail: bg.adminEmail}
 		kycInboxRepo := postgres.NewKYCInboxRepo(bg.maintPool, bg.kycRepo)
 		kycInboxWorker := kycsvc.NewKYCInboxWorker(bg.maintPool, kycInboxRepo, bg.kycSvc, kycAlerter)
+		kycInboxWorker.SetFeatureKYCDigiLocker(bg.featureKYCDigiLocker)
 		go kycInboxWorker.Start(ctx, 5*time.Second)
 		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
 	}

@@ -385,3 +385,87 @@ func TestKYCInboxWorker_OCRNeverAutoVerifies(t *testing.T) {
 		t.Fatalf("expected inbox status processed, got %s", store.items[6].ProcessingStatus)
 	}
 }
+
+func TestSanitizeKYCError_RedactsPII(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "aadhaar continuous",
+			input:    "failed with aadhaar 987654321098 inside provider payload",
+			expected: "failed with aadhaar [REDACTED_AADHAAR] inside provider payload",
+		},
+		{
+			name:     "aadhaar spaced",
+			input:    "failed with aadhaar 9876 5432 1098 inside provider payload",
+			expected: "failed with aadhaar [REDACTED_AADHAAR] inside provider payload",
+		},
+		{
+			name:     "aadhaar hyphenated",
+			input:    "failed with aadhaar 9876-5432-1098 inside provider payload",
+			expected: "failed with aadhaar [REDACTED_AADHAAR] inside provider payload",
+		},
+		{
+			name:     "pan number",
+			input:    "invalid PAN ABCDE1234F supplied",
+			expected: "invalid PAN [REDACTED_PAN] supplied",
+		},
+		{
+			name:     "phone number",
+			input:    "otp delivery failed to 9876543210",
+			expected: "otp delivery failed to [REDACTED_PHONE]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := sanitizeKYCError(tc.input)
+			if actual != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, actual)
+			}
+		})
+	}
+}
+
+func TestKYCInboxWorker_DigiLockerDisabled_SkipsProcessing(t *testing.T) {
+	vID := "cf_dgl_dis_1"
+	refID := "ref_dis_1"
+	evtType := "DIGILOCKER_AUTHENTICATED"
+	status := "AUTHENTICATED"
+
+	store := newMockKYCInboxStore()
+	store.items[7] = &KYCInboxItem{
+		ID:               7,
+		Provider:         "cashfree",
+		VerificationID:   &vID,
+		ReferenceID:      &refID,
+		EventType:        &evtType,
+		Status:           &status,
+		ProcessingStatus: "processing",
+		Attempts:         1,
+		MaxAttempts:      5,
+	}
+	store.verifications[vID] = &domain.KYCVerification{
+		ID:     uuid.New(),
+		Method: domain.KYCMethodDigiLocker,
+		Status: domain.KYCStatusPending,
+	}
+
+	processor := &mockKYCCallbackProcessor{}
+	worker := NewKYCInboxWorker(nil, store, processor)
+	worker.SetFeatureKYCDigiLocker(false)
+
+	err := worker.ProcessSingleItem(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if processor.calledWithVID != "" {
+		t.Fatalf("expected DigiLocker processor not called when feature disabled, but got called with %s", processor.calledWithVID)
+	}
+	if store.items[7].ProcessingStatus != "processed" {
+		t.Fatalf("expected inbox status processed, got %s", store.items[7].ProcessingStatus)
+	}
+}

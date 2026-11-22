@@ -37,6 +37,7 @@ func (r *KYCInboxRepo) ListPendingInboxIDs(ctx context.Context, limit int) ([]in
  		WHERE (
 		    (processing_status = 'received' AND received_at <= NOW() - INTERVAL '10 seconds')
 		    OR (processing_status = 'failed' AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
+		    OR (processing_status = 'processing' AND lease_expires_at <= NOW())
 		)
 		  AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
 		ORDER BY id ASC
@@ -101,14 +102,17 @@ func (r *KYCInboxRepo) MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id i
 	if tx != nil {
 		runner = tx
 	}
-	_, err := runner.Exec(ctx, `
+	tag, err := runner.Exec(ctx, `
 		UPDATE kyc_webhook_inbox
 		SET processing_status = 'processed',
 		    processed_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND processing_status IN ('processing', 'received')
 	`, id)
 	if err != nil {
 		return fmt.Errorf("kyc inbox: mark processed %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("kyc inbox: mark processed %d: lease lost or row not in processing status", id)
 	}
 	return nil
 }
@@ -119,15 +123,18 @@ func (r *KYCInboxRepo) MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int6
 	if tx != nil {
 		runner = tx
 	}
-	_, err := runner.Exec(ctx, `
+	tag, err := runner.Exec(ctx, `
 		UPDATE kyc_webhook_inbox
 		SET processing_status = 'failed',
 		    error_message = $2,
 		    next_retry_at = $3
-		WHERE id = $1
+		WHERE id = $1 AND processing_status = 'processing'
 	`, id, errStr, nextRetry)
 	if err != nil {
 		return fmt.Errorf("kyc inbox: mark failed %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("kyc inbox: mark failed %d: lease lost or row not in processing status", id)
 	}
 	return nil
 }
@@ -138,15 +145,18 @@ func (r *KYCInboxRepo) MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id 
 	if tx != nil {
 		runner = tx
 	}
-	_, err := runner.Exec(ctx, `
+	tag, err := runner.Exec(ctx, `
 		UPDATE kyc_webhook_inbox
 		SET processing_status = 'dead_letter',
 		    error_message = $2,
 		    processed_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND processing_status = 'processing'
 	`, id, errStr)
 	if err != nil {
 		return fmt.Errorf("kyc inbox: mark dead letter %d: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("kyc inbox: mark dead letter %d: lease lost or row not in processing status", id)
 	}
 	return nil
 }

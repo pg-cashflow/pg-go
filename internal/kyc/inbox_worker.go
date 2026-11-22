@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand"
+	"regexp"
 	"strings"
 	"time"
 
@@ -60,10 +61,11 @@ type KYCCallbackProcessor interface {
 
 // KYCInboxWorker processes pending KYC webhook callbacks asynchronously.
 type KYCInboxWorker struct {
-	pool      *pgxpool.Pool
-	store     KYCInboxStore
-	processor KYCCallbackProcessor
-	alerter   KYCAlerter
+	pool                 *pgxpool.Pool
+	store                KYCInboxStore
+	processor            KYCCallbackProcessor
+	alerter              KYCAlerter
+	featureKYCDigiLocker bool
 }
 
 // NewKYCInboxWorker creates a new KYCInboxWorker.
@@ -73,11 +75,17 @@ func NewKYCInboxWorker(pool *pgxpool.Pool, store KYCInboxStore, processor KYCCal
 		a = alerter[0]
 	}
 	return &KYCInboxWorker{
-		pool:      pool,
-		store:     store,
-		processor: processor,
-		alerter:   a,
+		pool:                 pool,
+		store:                store,
+		processor:            processor,
+		alerter:              a,
+		featureKYCDigiLocker: true,
 	}
+}
+
+// SetFeatureKYCDigiLocker configures whether the DigiLocker provider integration is active.
+func (w *KYCInboxWorker) SetFeatureKYCDigiLocker(enabled bool) {
+	w.featureKYCDigiLocker = enabled
 }
 
 // ProcessBatch processes up to limit pending inbox items.
@@ -156,8 +164,27 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 		return nil // Already claimed or processed
 	}
 
-	// Execute processing inside a transaction with row lock on kyc_verification
-	if w.pool != nil {
+	// Execute processing: for DigiLocker callbacks, avoid an outer transaction
+	// holding kyc_verification to prevent lock order inversion with tenants.
+	vID := ""
+	if item.VerificationID != nil {
+		vID = *item.VerificationID
+	}
+	refID := ""
+	if item.ReferenceID != nil {
+		refID = *item.ReferenceID
+	}
+	eventType := ""
+	if item.EventType != nil {
+		eventType = *item.EventType
+	}
+	isDigiLocker := strings.HasPrefix(vID, "cf_dgl_") ||
+		strings.HasPrefix(refID, "cf_dgl_") ||
+		strings.HasPrefix(eventType, "DIGILOCKER_")
+
+	if isDigiLocker {
+		execErr = w.executeItem(ctx, nil, item)
+	} else if w.pool != nil {
 		execErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 			return w.executeItem(ctx, tx, item)
 		})
@@ -181,12 +208,16 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 	isExhausted := item.Attempts >= item.MaxAttempts
 
 	if isExhausted {
+		var markErr error
 		if w.pool != nil {
-			_ = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+			markErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 				return w.store.MarkInboxDeadLetterTx(ctx, tx, id, errStr)
 			})
 		} else {
-			_ = w.store.MarkInboxDeadLetterTx(ctx, nil, id, errStr)
+			markErr = w.store.MarkInboxDeadLetterTx(ctx, nil, id, errStr)
+		}
+		if markErr != nil {
+			slog.ErrorContext(ctx, "kyc inbox: mark dead letter failed", "inbox_id", id, "err", markErr)
 		}
 
 		if w.alerter != nil {
@@ -194,6 +225,9 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 		}
 		slog.ErrorContext(ctx, "kyc inbox event dead-lettered after exhausting attempts",
 			"inbox_id", id, "attempts", item.Attempts, "err", errStr)
+		if markErr != nil {
+			return fmt.Errorf("dead letter finalization failed (%w): %v", markErr, execErr)
+		}
 		return execErr
 	}
 
@@ -201,12 +235,17 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 	backoff := calculateBackoff(item.Attempts)
 	nextRetry := now.Add(backoff)
 
+	var markErr error
 	if w.pool != nil {
-		_ = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		markErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 			return w.store.MarkInboxFailedTx(ctx, tx, id, errStr, nextRetry)
 		})
 	} else {
-		_ = w.store.MarkInboxFailedTx(ctx, nil, id, errStr, nextRetry)
+		markErr = w.store.MarkInboxFailedTx(ctx, nil, id, errStr, nextRetry)
+	}
+	if markErr != nil {
+		slog.ErrorContext(ctx, "kyc inbox: mark failed retry scheduling failed", "inbox_id", id, "err", markErr)
+		return fmt.Errorf("failed retry finalization failed (%w): %v", markErr, execErr)
 	}
 
 	slog.WarnContext(ctx, "kyc inbox event retry scheduled",
@@ -260,14 +299,21 @@ func (w *KYCInboxWorker) executeItem(ctx context.Context, tx pgx.Tx, item *KYCIn
 		strings.HasPrefix(eventType, "DIGILOCKER_") ||
 		verification.Method == domain.KYCMethodDigiLocker
 
-	if isDigiLocker && w.processor != nil {
-		// Demultiplex: Delegate to domain DigiLocker callback processor.
-		// This fetches the attested Aadhaar document from Cashfree, checks name matching,
-		// computes identity hash, routes to manual review on mismatch, or completes
-		// verification with full cryptographic credentials (satisfying chk_kyc_verified_fields).
-		_, err := w.processor.ProcessDigiLockerCallback(ctx, vID, refID, eventType, webhookStatus, "cashfree:inbox_worker")
-		if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
-			return fmt.Errorf("process digilocker callback: %w", err)
+	if isDigiLocker {
+		if !w.featureKYCDigiLocker {
+			slog.InfoContext(ctx, "skipping kyc webhook mutation: digilocker disabled", "inbox_id", item.ID)
+			return nil
+		}
+		if w.processor != nil {
+			// Demultiplex: Delegate to domain DigiLocker callback processor.
+			// This fetches the attested Aadhaar document from Cashfree, checks name matching,
+			// computes identity hash, routes to manual review on mismatch, or completes
+			// verification with full cryptographic credentials (satisfying chk_kyc_verified_fields).
+			_, err := w.processor.ProcessDigiLockerCallback(ctx, vID, refID, eventType, webhookStatus, "cashfree:inbox_worker")
+			if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+				return fmt.Errorf("process digilocker callback: %w", err)
+			}
+			return nil
 		}
 		return nil
 	}
@@ -311,8 +357,18 @@ func calculateBackoff(attempt int) time.Duration {
 	return delay + jitter
 }
 
+var (
+	aadhaarRe = regexp.MustCompile(`\b\d{4}[ -]?\d{4}[ -]?\d{4}\b`)
+	panRe     = regexp.MustCompile(`\b[A-Za-z]{5}\d{4}[A-Za-z]\b`)
+	phoneRe   = regexp.MustCompile(`\b(?:\+91|0)?[6-9]\d{9}\b`)
+	accountRe = regexp.MustCompile(`\b\d{9,18}\b`)
+)
+
 func sanitizeKYCError(errStr string) string {
-	// Redact 12-digit numbers (Aadhaar) to prevent accidental leakage into operational logs
+	errStr = aadhaarRe.ReplaceAllString(errStr, "[REDACTED_AADHAAR]")
+	errStr = panRe.ReplaceAllString(errStr, "[REDACTED_PAN]")
+	errStr = phoneRe.ReplaceAllString(errStr, "[REDACTED_PHONE]")
+	errStr = accountRe.ReplaceAllString(errStr, "[REDACTED_ACCOUNT]")
 	if len(errStr) > 500 {
 		errStr = errStr[:500]
 	}

@@ -159,11 +159,11 @@ func NormalizeRefundStatus(raw string) string {
 	switch s {
 	case "success", "succeeded":
 		return RefundStatusSucceeded
-	case "onhold", "on_hold":
+	case "onhold", "on_hold", "flagged":
 		return RefundStatusOnHold
 	case "needs_review", "needsreview":
 		return RefundStatusNeedsReview
-	case "pending", "pending_approval":
+	case "pending", "pending_approval", "approval_pending":
 		return RefundStatusPending
 	case "failed", "rejected":
 		return RefundStatusFailed

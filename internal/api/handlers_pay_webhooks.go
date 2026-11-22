@@ -152,10 +152,18 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 		}
 	}
 	defer func() {
-		if idempotencyRecorded && c.Writer.Status() >= 400 {
-			// Roll back idempotency reservation on transient error so gateway retry can be processed.
-			if h.GatewayPaymentRepo != nil {
-				_ = h.GatewayPaymentRepo.DeleteProcessedEvent(context.Background(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader)
+		if idempotencyRecorded {
+			if r := recover(); r != nil {
+				if h.GatewayPaymentRepo != nil {
+					_ = h.GatewayPaymentRepo.DeleteProcessedEvent(context.Background(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader)
+				}
+				panic(r)
+			}
+			if c.Writer.Status() != http.StatusOK || c.IsAborted() {
+				// Roll back idempotency reservation on transient error, abortion, or failure so gateway retry can be processed.
+				if h.GatewayPaymentRepo != nil {
+					_ = h.GatewayPaymentRepo.DeleteProcessedEvent(context.Background(), "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader)
+				}
 			}
 		}
 	}()

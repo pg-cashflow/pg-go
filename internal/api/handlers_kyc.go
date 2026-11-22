@@ -1166,6 +1166,9 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 				"verification_id", payload.VerificationID,
 				"event", event,
 			)
+			if pool != nil && inboxID > 0 {
+				_, _ = pool.Exec(c.Request.Context(), `UPDATE kyc_webhook_inbox SET processing_status = 'processed', error_message = 'digilocker disabled', processed_at = NOW() WHERE id = $1`, inboxID)
+			}
 			c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "digilocker disabled"})
 			return
 		}

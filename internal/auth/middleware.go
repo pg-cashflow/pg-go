@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -226,6 +227,12 @@ var (
 // switch), InvalidateTokenVersionCache already exists for an immediate,
 // call-site-triggered eviction — shrinking the TTL is the wrong lever since
 // it just trades latency back in for every request, not only revoked ones.
+//
+// In multi-instance deployments, process-local memory caches do not broadcast
+// invalidations. The maximum revocation propagation latency SLA across instances
+// is strictly bounded by tokenVersionCacheTTL (30s) and tenantCacheTTL (30s),
+// and activeFamilyCacheTTL (10s). Sub-second cluster-wide revocation requires
+// single-instance routing or a distributed pub/sub bus (AUTH-01).
 const tokenVersionCacheTTL = 30 * time.Second
 
 // InvalidateTokenVersionCache evicts the cached token version for a user so
@@ -483,7 +490,12 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 	}
 
 	if users == nil {
-		return true
+		if gin.Mode() == gin.TestMode {
+			return true
+		}
+		slog.Error("ALERT: sessionStillValid invoked with nil UserRepository in non-test mode")
+		apierr.Abort(c, http.StatusInternalServerError, "authentication service unavailable", apierr.CodeAuthForbidden)
+		return false
 	}
 
 	claimTV := claims.TokenVersion

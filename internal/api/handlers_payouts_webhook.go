@@ -254,8 +254,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	}
 
 	var data PayoutWebhookData
+	var unmarshalErr error
 	if len(env.Data) > 0 {
-		_ = json.Unmarshal(env.Data, &data)
+		unmarshalErr = json.Unmarshal(env.Data, &data)
 	}
 
 	// REQ-WH-001: persist the verified allow-listed payload before any payout mutation.
@@ -277,6 +278,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	if err := audit.CreateWebhookEvent(c.Request.Context(), evtRecord); err != nil {
 		slog.Error("payout webhook forensic audit persistence failed", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "audit log persistence failed"})
+		return
+	}
+
+	if unmarshalErr != nil {
+		errMsg := unmarshalErr.Error()
+		if evtRecord.ID != uuid.Nil {
+			_ = audit.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "dead_letter", &errMsg)
+		}
+		slog.Error("payout webhook dead-letter: malformed data payload", "err", unmarshalErr, "event_type", evtType)
+		c.Status(http.StatusOK)
 		return
 	}
 

@@ -1092,25 +1092,37 @@ func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDS
 	// Handle link expiration / user consent failure events
 	switch eventType {
 	case domain.WebhookEventDigiLockerLinkExpired:
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on link expired: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	case domain.WebhookEventDigiLockerConsentDenied:
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on consent denied: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	case domain.WebhookEventDigiLockerConsentExpired:
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_EXPIRED", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_EXPIRED", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on consent expired: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	case domain.WebhookEventDigiLockerFailure:
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "VERIFICATION_FAILURE", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "VERIFICATION_FAILURE", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on verification failure: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	}
 
 	if status == string(cashfree.DigiLockerExpired) {
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "LINK_EXPIRED", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on expired status: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	}
 	if status == string(cashfree.DigiLockerConsentDenied) {
-		_ = s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor)
+		if err := s.repo.FailVerificationTx(ctx, v.ID, "CONSENT_DENIED", actor); err != nil {
+			return nil, fmt.Errorf("kyc service: fail verification on consent denied status: %w", err)
+		}
 		return s.repo.GetVerificationByID(ctx, v.ID)
 	}
 
@@ -1128,7 +1140,9 @@ func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDS
 		}
 
 		if doc.Status == cashfree.DigiLockerAadhaarNotLinked {
-			_ = s.repo.FailVerificationTx(ctx, v.ID, "AADHAAR_NOT_LINKED", actor)
+			if err := s.repo.FailVerificationTx(ctx, v.ID, "AADHAAR_NOT_LINKED", actor); err != nil {
+				return nil, fmt.Errorf("kyc service: fail verification on aadhaar not linked: %w", err)
+			}
 			return s.repo.GetVerificationByID(ctx, v.ID)
 		}
 

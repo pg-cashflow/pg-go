@@ -312,12 +312,16 @@ func prepareRefundTx(ctx context.Context, tx pgx.Tx, pid uuid.UUID, p *domain.Pa
 				"amount_paise": rfRow.AmountPaise,
 				"reason":       rfRow.Reason,
 			})
-			if mErr == nil {
-				_, _ = tx.Exec(ctx, `
-					INSERT INTO outbox_events (event_type, property_id, tenant_id, actor_role, payload, created_at)
-					VALUES ($1, $2, $3, $4, $5, NOW())`,
-					string(domain.EvtPaymentRefundPending), pid, p.TenantID, string(rfRow.Source), notifPayload,
-				)
+			if mErr != nil {
+				return fmt.Errorf("marshal refund pending notification: %w", mErr)
+			}
+			_, err = tx.Exec(ctx, `
+				INSERT INTO outbox_events (event_type, property_id, tenant_id, actor_role, payload, created_at)
+				VALUES ($1, $2, $3, $4, $5, NOW())`,
+				string(domain.EvtPaymentRefundPending), pid, p.TenantID, string(rfRow.Source), notifPayload,
+			)
+			if err != nil {
+				return fmt.Errorf("enqueue refund pending notification outbox: %w", err)
 			}
 		}
 

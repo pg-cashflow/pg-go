@@ -255,10 +255,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		beneID := cashfree.DeriveBeneficiaryID(it.PayeeID, accountHash)
 		remarks := SanitizePayoutRemarks(it.Purpose, it.ReferenceNumber)
 
-		transferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(it.ID.String(), "-", ""))
-		if it.RetryOf != nil {
-			transferID = fmt.Sprintf("pgo_%s_a2", strings.ReplaceAll(it.ID.String(), "-", ""))
-		}
+		transferID := DerivePayoutTransferID(it)
 
 		transferEntries = append(transferEntries, cashfree.BatchTransferEntry{
 			TransferID:      transferID,
@@ -497,7 +494,7 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
 			continue
 		}
-		transferID := fmt.Sprintf("pgo_%s", cleanID)
+		transferID := DerivePayoutTransferID(it)
 		itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
 		if err == nil && itemStatus != nil {
 			if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
@@ -537,6 +534,21 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 				"status_code", st.StatusCode,
 			)
 			return nil
+		}
+		expectedTransferID := DerivePayoutTransferID(it)
+		if st.TransferID != "" && st.TransferID != expectedTransferID {
+			slog.Error("payout batch reconcile: transfer ID mismatch; refusing settlement",
+				"expected", expectedTransferID, "got", st.TransferID, "item_id", it.ID)
+			return nil
+		}
+		if st.TransferAmount != "" {
+			providerAmountPaise, err := cashfree.ParseRupeesToPaise(st.TransferAmount.String())
+			if err != nil || providerAmountPaise != it.AmountPaise {
+				slog.Error("payout batch reconcile: amount mismatch; refusing settlement",
+					"item_id", it.ID, "expected_paise", it.AmountPaise,
+					"provider_amount", st.TransferAmount.String(), "err", err)
+				return nil
+			}
 		}
 		utr := ""
 		if st.UTR != nil {
@@ -663,4 +675,13 @@ func CleanBeneficiaryPhone(p string) string {
 		return d
 	}
 	return ""
+}
+
+// DerivePayoutTransferID generates the canonical merchant transfer ID for a payout item.
+func DerivePayoutTransferID(it domain.PayoutItem) string {
+	cleanID := strings.ReplaceAll(it.ID.String(), "-", "")
+	if it.RetryOf != nil {
+		return fmt.Sprintf("pgo_%s_a2", cleanID)
+	}
+	return fmt.Sprintf("pgo_%s", cleanID)
 }
