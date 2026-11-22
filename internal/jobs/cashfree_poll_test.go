@@ -613,6 +613,27 @@ func TestCashfreePollInitiated404WithinGraceWindowDoesNotReconcile(t *testing.T)
 	}
 }
 
+type stubRefundAlerter struct {
+	calls []struct {
+		refundID    string
+		orderID     string
+		amountPaise int64
+		reason      string
+		age         time.Duration
+	}
+}
+
+func (s *stubRefundAlerter) NotifyRefundStuck(ctx context.Context, refundID, orderID string, amountPaise int64, reason string, age time.Duration) error {
+	s.calls = append(s.calls, struct {
+		refundID    string
+		orderID     string
+		amountPaise int64
+		reason      string
+		age         time.Duration
+	}{refundID: refundID, orderID: orderID, amountPaise: amountPaise, reason: reason, age: age})
+	return nil
+}
+
 func TestCashfreePollInitiated404BeyondGracePeriodReconcilesToNeedsReview(t *testing.T) {
 	refRef := "rf_resubmit_2"
 	refID := uuid.New()
@@ -633,10 +654,12 @@ func TestCashfreePollInitiated404BeyondGracePeriodReconcilesToNeedsReview(t *tes
 		fetchErr: &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found", Body: "refund not found"},
 	}
 
+	alerter := &stubRefundAlerter{}
 	job := &CashfreePollJob{
-		Refunds:      refundRepo,
-		RefundClient: resubmitClient,
-		Now:          func() time.Time { return time.Now().UTC() },
+		Refunds:       refundRepo,
+		RefundClient:  resubmitClient,
+		RefundAlerter: alerter,
+		Now:           func() time.Time { return time.Now().UTC() },
 	}
 
 	if err := job.Run(context.Background()); err != nil {
@@ -649,6 +672,9 @@ func TestCashfreePollInitiated404BeyondGracePeriodReconcilesToNeedsReview(t *tes
 	if refundRepo.reconciledID != refID || refundRepo.reconciledStatus != domain.RefundStatusNeedsReview {
 		t.Fatalf("expected refund beyond 15m grace window to reconcile to needs_review, got id=%s status=%s",
 			refundRepo.reconciledID, refundRepo.reconciledStatus)
+	}
+	if len(alerter.calls) != 1 || alerter.calls[0].refundID != refRef {
+		t.Fatalf("expected 1 stuck alert for %s, got %d calls", refRef, len(alerter.calls))
 	}
 }
 
@@ -912,6 +938,44 @@ func TestCashfreePoll_PersistsDiscoveredCFRefundIDWhenStatusUnchanged(t *testing
 	}
 	if refundRepo.updated.CFRefundID == nil || *refundRepo.updated.CFRefundID != "cf_discovered_777" {
 		t.Fatalf("expected cf_refund_id to be cf_discovered_777, got: %v", refundRepo.updated.CFRefundID)
+	}
+}
+
+func TestCashfreePollStuckBeyond72HoursAlertsOperator(t *testing.T) {
+	refRef := "rf_stuck_72h"
+	refID := uuid.New()
+	staleCreatedAt := time.Now().UTC().Add(-75 * time.Hour)
+	staleRef := domain.GatewayRefund{
+		ID:              refID,
+		RefundReference: &refRef,
+		RawPayload:      []byte(`{"order_id": "order_stuck_72h"}`),
+		Status:          "pending",
+		AmountPaise:     200000,
+		Reason:          "Deposit return",
+		CreatedAt:       staleCreatedAt,
+	}
+	refundRepo := &stubRefundStale{list: []domain.GatewayRefund{staleRef}}
+	refundClient := stubRefundFetch{
+		details: &cashfree.RefundDetails{
+			OrderID:      "order_stuck_72h",
+			RefundID:     refRef,
+			CFRefundID:   "cf_stuck_72h",
+			RefundStatus: "PENDING",
+			AmountPaise:  200000,
+		},
+	}
+	alerter := &stubRefundAlerter{}
+	job := &CashfreePollJob{
+		Refunds:       refundRepo,
+		RefundClient:  refundClient,
+		RefundAlerter: alerter,
+		Now:           func() time.Time { return time.Now().UTC() },
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(alerter.calls) != 1 || alerter.calls[0].refundID != refRef {
+		t.Fatalf("expected 1 critical alert for stuck refund, got %d", len(alerter.calls))
 	}
 }
 

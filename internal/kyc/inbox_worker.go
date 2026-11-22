@@ -3,10 +3,12 @@ package kyc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -51,23 +53,30 @@ type KYCInboxStore interface {
 	ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx, v *domain.KYCVerification, webhookStatus string) error
 }
 
+// KYCCallbackProcessor defines domain processing for KYC verification callbacks.
+type KYCCallbackProcessor interface {
+	ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
+}
+
 // KYCInboxWorker processes pending KYC webhook callbacks asynchronously.
 type KYCInboxWorker struct {
-	pool    *pgxpool.Pool
-	store   KYCInboxStore
-	alerter KYCAlerter
+	pool      *pgxpool.Pool
+	store     KYCInboxStore
+	processor KYCCallbackProcessor
+	alerter   KYCAlerter
 }
 
 // NewKYCInboxWorker creates a new KYCInboxWorker.
-func NewKYCInboxWorker(pool *pgxpool.Pool, store KYCInboxStore, alerter ...KYCAlerter) *KYCInboxWorker {
+func NewKYCInboxWorker(pool *pgxpool.Pool, store KYCInboxStore, processor KYCCallbackProcessor, alerter ...KYCAlerter) *KYCInboxWorker {
 	var a KYCAlerter
 	if len(alerter) > 0 {
 		a = alerter[0]
 	}
 	return &KYCInboxWorker{
-		pool:    pool,
-		store:   store,
-		alerter: a,
+		pool:      pool,
+		store:     store,
+		processor: processor,
+		alerter:   a,
 	}
 }
 
@@ -240,6 +249,50 @@ func (w *KYCInboxWorker) executeItem(ctx context.Context, tx pgx.Tx, item *KYCIn
 	webhookStatus := ""
 	if item.Status != nil {
 		webhookStatus = *item.Status
+	}
+	eventType := ""
+	if item.EventType != nil {
+		eventType = *item.EventType
+	}
+
+	isDigiLocker := strings.HasPrefix(vID, "cf_dgl_") ||
+		strings.HasPrefix(refID, "cf_dgl_") ||
+		strings.HasPrefix(eventType, "DIGILOCKER_") ||
+		verification.Method == domain.KYCMethodDigiLocker
+
+	if isDigiLocker && w.processor != nil {
+		// Demultiplex: Delegate to domain DigiLocker callback processor.
+		// This fetches the attested Aadhaar document from Cashfree, checks name matching,
+		// computes identity hash, routes to manual review on mismatch, or completes
+		// verification with full cryptographic credentials (satisfying chk_kyc_verified_fields).
+		_, err := w.processor.ProcessDigiLockerCallback(ctx, vID, refID, eventType, webhookStatus, "cashfree:inbox_worker")
+		if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+			return fmt.Errorf("process digilocker callback: %w", err)
+		}
+		return nil
+	}
+
+	// Smart OCR Webhook: OCR alone must NEVER auto-verify!
+	// Document upload verifications must remain in pending_manual_review for owner approval.
+	if verification.Method == domain.KYCMethodOCR || strings.HasPrefix(refID, "cf_ocr_") {
+		var fraudPayload struct {
+			FraudChecks struct {
+				IsForged        bool `json:"is_forged"`
+				IsScreenshot    bool `json:"is_screenshot"`
+				IsPhotoOfScreen bool `json:"is_photo_of_screen"`
+			} `json:"fraud_checks"`
+		}
+		if len(item.Payload) > 0 {
+			_ = json.Unmarshal(item.Payload, &fraudPayload)
+			if fraudPayload.FraudChecks.IsForged || fraudPayload.FraudChecks.IsScreenshot || fraudPayload.FraudChecks.IsPhotoOfScreen {
+				slog.WarnContext(ctx, "kyc inbox: document fraud detected in OCR callback",
+					"verification_id", verification.ID,
+					"is_forged", fraudPayload.FraudChecks.IsForged,
+				)
+			}
+		}
+		// Acknowledged and finalized in inbox; stays in pending_manual_review
+		return nil
 	}
 
 	return w.store.ApplyVerificationWebhookTx(ctx, tx, verification, webhookStatus)

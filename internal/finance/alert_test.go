@@ -175,3 +175,33 @@ func TestNotifyPayoutProtectAlert(t *testing.T) {
 		t.Errorf("expected sms to contain transfer ID and amount, got %q", ms.message)
 	}
 }
+
+func TestNotifyRefundStuckAlert(t *testing.T) {
+	ctx := context.Background()
+	mm := &mockMailer{}
+	ms := &mockSMSGateway{}
+
+	notifier := NewEmailDeadLetterNotifier(mm, "ops-admin@pgcashflow.com").
+		WithSMSBackstop(ms, "+919876543210")
+
+	err := notifier.NotifyRefundStuck(ctx, "rf_12345", "order_67890", 150000, "refund not found at gateway after 15m grace window", 20*time.Minute)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if mm.to != "ops-admin@pgcashflow.com" {
+		t.Errorf("expected email to 'ops-admin@pgcashflow.com', got %q", mm.to)
+	}
+	if !strings.Contains(mm.subject, "rf_12345") || !strings.Contains(mm.subject, "ACTION REQUIRED") {
+		t.Errorf("expected subject to contain refund ID and warning, got %q", mm.subject)
+	}
+	if !strings.Contains(mm.body, "order_67890") || !strings.Contains(mm.body, "1500.00") {
+		t.Errorf("expected body to contain order ID and amount, got %q", mm.body)
+	}
+	if ms.phone != "+919876543210" {
+		t.Errorf("expected sms to '+919876543210', got %q", ms.phone)
+	}
+	if !strings.Contains(ms.message, "rf_12345") || !strings.Contains(ms.message, "1500.00") {
+		t.Errorf("expected sms to contain refund ID and amount, got %q", ms.message)
+	}
+}

@@ -23,6 +23,11 @@ type PayoutProtectAlerter interface {
 	NotifyPayoutProtectAlert(ctx context.Context, itemID, propertyID uuid.UUID, amountPaise int64, cfTransferID string) error
 }
 
+// RefundStuckAlerter alerts operators when a gateway refund is stuck or requires manual review.
+type RefundStuckAlerter interface {
+	NotifyRefundStuck(ctx context.Context, refundID, orderID string, amountPaise int64, reason string, age time.Duration) error
+}
+
 // SMSGateway defines the interface required to dispatch SMS alerts.
 type SMSGateway interface {
 	Send(ctx context.Context, phone, message string) error
@@ -177,6 +182,39 @@ func (n *EmailDeadLetterNotifier) NotifyPayoutProtectAlert(ctx context.Context, 
 	_ = n.mailer.Send(ctx, n.adminEmail, subject, body)
 	if n.smsGateway != nil && n.adminPhone != "" {
 		smsMsg := fmt.Sprintf("⚠️ ACTION REQUIRED: Payout transfer for ₹%.2f requires manual approval in Cashfree dashboard (transfer: %s).", float64(amountPaise)/100.0, cfTransferID)
+		_ = n.smsGateway.Send(ctx, n.adminPhone, smsMsg)
+	}
+	return nil
+}
+
+// NotifyRefundStuck dispatches an alert when a refund transitions to needs_review or exceeds stuck threshold.
+func (n *EmailDeadLetterNotifier) NotifyRefundStuck(ctx context.Context, refundID, orderID string, amountPaise int64, reason string, age time.Duration) error {
+	if n == nil || n.mailer == nil || n.adminEmail == "" {
+		return nil
+	}
+
+	subject := fmt.Sprintf("🚨 ACTION REQUIRED: Refund %s Stuck / Needs Review", refundID)
+	body := fmt.Sprintf(
+		"<h2>🚨 Cashfree Refund Reconciliation Alert</h2>"+
+			"<p>A gateway refund requires operational intervention or has exceeded normal processing limits.</p>"+
+			"<table>"+
+			"<tr><td><b>Refund ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Order ID:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Amount:</b></td><td>₹%.2f</td></tr>"+
+			"<tr><td><b>Age:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Reason:</b></td><td><code>%s</code></td></tr>"+
+			"</table>"+
+			"<br/>"+
+			"<p><b>Action Required:</b> Inspect the Cashfree Merchant Dashboard and reconcile the refund state in <code>gateway_refunds</code>.</p>",
+		refundID,
+		orderID,
+		float64(amountPaise)/100.0,
+		age.Round(time.Second).String(),
+		reason,
+	)
+	_ = n.mailer.Send(ctx, n.adminEmail, subject, body)
+	if n.smsGateway != nil && n.adminPhone != "" {
+		smsMsg := fmt.Sprintf("🚨 ACTION REQUIRED: Refund %s for ₹%.2f stuck/needs review (%s). Reconcile in gateway.", refundID, float64(amountPaise)/100.0, reason)
 		_ = n.smsGateway.Send(ctx, n.adminPhone, smsMsg)
 	}
 	return nil

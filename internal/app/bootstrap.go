@@ -576,6 +576,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		paymentRepo:     maintPaymentRepo,
 		referralSvc:     referralSvc,
 		kycRepo:         kycRepo,
+		kycSvc:          kycSvc,
 	}
 
 	cleanup := func() {
@@ -615,6 +616,7 @@ type backgroundConfig struct {
 	paymentRepo     *postgres.PaymentRepo
 	referralSvc     *referral.Service
 	kycRepo         *postgres.KYCRepo
+	kycSvc          kycsvc.KYCCallbackProcessor
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -688,7 +690,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	if bg.kycRepo != nil && bg.maintPool != nil {
 		kycAlerter := &kycDeadLetterEmailAlerter{mail: bg.mail, adminEmail: bg.adminEmail}
 		kycInboxRepo := postgres.NewKYCInboxRepo(bg.maintPool, bg.kycRepo)
-		kycInboxWorker := kycsvc.NewKYCInboxWorker(bg.maintPool, kycInboxRepo, kycAlerter)
+		kycInboxWorker := kycsvc.NewKYCInboxWorker(bg.maintPool, kycInboxRepo, bg.kycSvc, kycAlerter)
 		go kycInboxWorker.Start(ctx, 5*time.Second)
 		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
 	}
@@ -764,11 +766,12 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 						continue
 					}
 					job := &jobs.CashfreePollJob{
-						Refunds:      bg.paymentRepo,
-						RefundClient: bg.cfClient,
-						RefundLocker: postgres.NewRefundOperationLock(bg.maintPool),
-						Referrals:    bg.referralSvc,
-						Log:          bg.logger,
+						Refunds:       bg.paymentRepo,
+						RefundClient:  bg.cfClient,
+						RefundLocker:  postgres.NewRefundOperationLock(bg.maintPool),
+						Referrals:     bg.referralSvc,
+						RefundAlerter: deadLetterAlerter,
+						Log:           bg.logger,
 					}
 					if err := job.RunRefundsOnly(ctx); err != nil && !errors.Is(err, context.Canceled) {
 						bg.logger.Error("cashfree refund poller finished with error", "err", err)

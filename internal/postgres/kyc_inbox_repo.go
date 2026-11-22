@@ -34,8 +34,10 @@ func (r *KYCInboxRepo) ListPendingInboxIDs(ctx context.Context, limit int) ([]in
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id FROM kyc_webhook_inbox
-		WHERE processing_status IN ('received', 'failed')
-		  AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+ 		WHERE (
+		    (processing_status = 'received' AND received_at <= NOW() - INTERVAL '10 seconds')
+		    OR (processing_status = 'failed' AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
+		)
 		  AND (lease_expires_at IS NULL OR lease_expires_at <= NOW())
 		ORDER BY id ASC
 		LIMIT $1
@@ -185,11 +187,35 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 	status := strings.ToUpper(strings.TrimSpace(webhookStatus))
 
 	apply := func(targetTx pgx.Tx) error {
+		// Invariant: OCR alone must NEVER auto-verify!
+		if v.Method == domain.KYCMethodOCR {
+			return nil
+		}
+
 		if status == "SUCCESS" || status == "AUTHENTICATED" || status == "VERIFIED" {
+			// To satisfy chk_kyc_verified_fields, status='verified' requires:
+			// verified_at, expires_at, identity_hash, and masked_uid to NOT be NULL.
+			if v.IdentityHash == nil || v.MaskedUID == nil || *v.IdentityHash == "" || *v.MaskedUID == "" {
+				tag, err := targetTx.Exec(ctx, `
+					UPDATE kyc_verification
+					SET status = 'pending_manual_review',
+					    updated_at = $2
+					WHERE id = $1 AND status NOT IN ('verified', 'rejected', 'revoked', 'expired')
+				`, v.ID, now)
+				if err != nil {
+					return fmt.Errorf("kyc inbox: update verification pending_manual_review: %w", err)
+				}
+				if tag.RowsAffected() > 0 {
+					_ = r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_manual_review", "missing credentials routed to manual review", now)
+				}
+				return nil
+			}
+
 			tag, err := targetTx.Exec(ctx, `
 				UPDATE kyc_verification
 				SET status = 'verified',
 				    verified_at = COALESCE(verified_at, $2),
+				    expires_at = COALESCE(expires_at, $2 + INTERVAL '365 days'),
 				    updated_at = $2
 				WHERE id = $1 AND status NOT IN ('verified', 'rejected', 'revoked', 'expired')
 			`, v.ID, now)

@@ -1191,6 +1191,30 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		t.Fatalf("expected minor with guardian consent to be payable")
 	}
 
+	// Minor with DigiLocker verified guardian consent: ALLOWED
+	dglMethod := "digilocker_verified"
+	minorWithDGLConsent := &domain.Tenant{
+		Status:                    domain.TenantStatusActive,
+		MajorityDate:              &futureMajority,
+		GuardianConsentVerifiedAt: &now,
+		GuardianConsentMethod:     &dglMethod,
+	}
+	if !h.tenantPayable(context.Background(), minorWithDGLConsent) {
+		t.Fatalf("expected minor with DigiLocker guardian consent to be payable")
+	}
+
+	// Minor with database-restored reference ID (no method column): ALLOWED
+	dglRef := "guard_dgl_123456"
+	minorWithRefID := &domain.Tenant{
+		Status:                    domain.TenantStatusActive,
+		MajorityDate:              &futureMajority,
+		GuardianConsentVerifiedAt: &now,
+		GuardianKYCReferenceID:    &dglRef,
+	}
+	if !h.tenantPayable(context.Background(), minorWithRefID) {
+		t.Fatalf("expected minor with DigiLocker reference ID to be payable")
+	}
+
 	// Minor with manual attested consent: NOT sufficient for payment by default
 	manualMethod := "manual_attested"
 	minorWithManualConsent := &domain.Tenant{
@@ -1200,7 +1224,7 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		GuardianConsentMethod:     &manualMethod,
 	}
 	if h.tenantPayable(context.Background(), minorWithManualConsent) {
-		t.Fatalf("expected minor with manual attested consent to not be payable without OTP")
+		t.Fatalf("expected minor with manual attested consent to not be payable without OTP/DigiLocker")
 	}
 
 	// Adult: ALLOWED without guardian consent

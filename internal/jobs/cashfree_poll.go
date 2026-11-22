@@ -90,6 +90,11 @@ type RefundOperationLocker interface {
 	TryLockRefundOperation(ctx context.Context, refundID uuid.UUID) (acquired bool, unlock func(), err error)
 }
 
+// RefundStuckAlerter notifies operators when a refund is stuck or transitions to needs_review.
+type RefundStuckAlerter interface {
+	NotifyRefundStuck(ctx context.Context, refundID, orderID string, amountPaise int64, reason string, age time.Duration) error
+}
+
 // CashfreePollJob settles created intents whose webhook was missed, and reconciles stuck refunds.
 type CashfreePollJob struct {
 	Intents          IntentStaleLister
@@ -101,6 +106,7 @@ type CashfreePollJob struct {
 	RefundClient     RefundStatusFetcher
 	RefundLocker     RefundOperationLocker
 	Referrals        ReferralClawback
+	RefundAlerter    RefundStuckAlerter
 	StaleAfter       time.Duration
 	RefundStaleAfter time.Duration
 	Now              func() time.Time
@@ -291,6 +297,9 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 	if now.Sub(ref.CreatedAt) > CashfreeRefundStuckAfter {
 		log.Error("CRITICAL: refund non-terminal beyond stuck threshold; dues remain reserved, investigate at gateway",
 			"refund_id", refundID, "payment_id", ref.PaymentID, "status", ref.Status, "age_hours", int(now.Sub(ref.CreatedAt).Hours()))
+		if j.RefundAlerter != nil {
+			_ = j.RefundAlerter.NotifyRefundStuck(ctx, refundID, orderID, ref.AmountPaise, fmt.Sprintf("non-terminal status %s beyond 72h stuck threshold", ref.Status), now.Sub(ref.CreatedAt))
+		}
 	}
 	details, err := j.RefundClient.FetchRefundStatus(ctx, orderID, refundID)
 	if err != nil {
@@ -313,6 +322,9 @@ func (j *CashfreePollJob) pollSingleRefund(ctx context.Context, now time.Time, r
 					if recErr := reconciler.ReconcileRefundTransition(ctx, &ref, domain.RefundStatusNeedsReview); recErr != nil {
 						log.Error("cashfree poll reconcile needs_review refund error", "refund_id", refundID, "err", recErr)
 					}
+				}
+				if j.RefundAlerter != nil {
+					_ = j.RefundAlerter.NotifyRefundStuck(ctx, refundID, orderID, ref.AmountPaise, "refund not found at gateway after 15m grace window; transitioned to needs_review", refundAge)
 				}
 				return nil
 			}
