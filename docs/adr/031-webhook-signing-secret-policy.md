@@ -35,7 +35,7 @@
 
 - Easier: a correct config starts silently; warnings regain meaning.
 - Harder: nothing.
-- Revisit: if Cashfree introduces a separate PG webhook secret (re-read the docs at each API version bump; `CASHFREE_API_VERSION` is `2025-01-01`).
+- Revisit: if Cashfree introduces a separate PG webhook secret (re-read the docs at each API version bump; `CASHFREE_API_VERSION` defaults to `2026-01-01`; the settlement parser accepts both the 2025-01-01 flat and 2026-01-01 nested schemas).
 
 ## Action Items
 

@@ -39,11 +39,9 @@ import (
 // When capacity is reached, expired entries are purged; if still full, the oldest
 // entry is evicted. This matches the bounding strategy of ipRateLimitBounded.
 //
-// NOTE: Single-process in-memory limitation:
-// This rate limiter maintains an in-memory map per process instance. In a
-// multi-replica deployment each instance enforces its own limit independently,
-// allowing a tenant up to N Ã— burst across N replicas. For true distributed
-// enforcement, replace with a Redis sliding window or Postgres advisory store.
+// NOTE: This in-memory limiter is only the fallback when no database pool exists (unit tests,
+// local runs). Production routes use Handlers.TenantIDRateLimit, which is PostgreSQL-backed
+// (ratelimit_pg.go), is shared by all replicas, and fails closed on a database error.
 func tenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 	const (
 		maxEntries = 5000
@@ -285,6 +283,13 @@ func (h *Handlers) TenantKYCStatus(c *gin.Context) {
 	resp := gin.H{
 		"has_consent":      consent != nil,
 		"has_verification": v != nil,
+		// methods tells the client which verification routes the server will accept, so the
+		// UI never shows a button that the server rejects (for example, a disabled DigiLocker).
+		"methods": gin.H{
+			"digilocker": h.FeatureKYCDigiLocker,
+			"upload":     true,
+			"qr":         true,
+		},
 	}
 	if consent != nil {
 		resp["consent_version"] = consent.ConsentVersion

@@ -361,6 +361,47 @@ func TestTenantKYCStatus_NoRecords(t *testing.T) {
 	}
 }
 
+// TestTenantKYCStatus_ReportsMethods checks that the status response tells the client which
+// verification routes the server accepts, so the UI never offers a method the server rejects.
+func TestTenantKYCStatus_ReportsMethods(t *testing.T) {
+	cases := []struct {
+		name    string
+		enabled bool
+	}{
+		{"digilocker enabled", true},
+		{"digilocker disabled", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(auth.ContextTenantKey, &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()})
+				c.Next()
+			})
+			h := &Handlers{Deps: Deps{KYCSvc: &fakeKYCSvc{}, FeatureKYCDigiLocker: tc.enabled}}
+			r.GET("/api/tenant/kyc/status", h.TenantKYCStatus)
+
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/tenant/kyc/status", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			var resp struct {
+				Methods map[string]bool `json:"methods"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got := resp.Methods["digilocker"]; got != tc.enabled {
+				t.Errorf("methods.digilocker = %v, want %v", got, tc.enabled)
+			}
+			if !resp.Methods["upload"] || !resp.Methods["qr"] {
+				t.Errorf("methods.upload and methods.qr must stay true, got %v", resp.Methods)
+			}
+		})
+	}
+}
+
 // ---- TenantKYCSecureQRVerify ------------------------------------------------
 
 func TestTenantKYCSecureQRVerify_OK(t *testing.T) {
