@@ -27,6 +27,7 @@ Every requirement, schema change, service implementation, database constraint, a
 | **INV-015** | Non-Zero Failure Transparency | HTTP Handler Contracts | Owner & Manager Dashboards | `internal/api/handlers_owner_dashboard.go:457-461, 467-471, 481-485, 499-503` |
 | **INV-016** | KYC Identity Document Encryption & Caching | Crypto Service + HTTP Header | Identity Photos & Documents | `internal/postgres/kyc_repo.go:40-94`<br>`internal/app/bootstrap.go:214-234`<br>`cmd/kyc-expiry/main.go:58-62`<br>`internal/api/handlers_owner_tenants.go:583, 621` |
 | **INV-017** | Complete Refund Allocation Conservation | DB Trigger + Application | `gateway_refunds`, `refund_allocations` | `internal/api/handlers_pay_refunds.go:184-235`<br>`migrations/097_refund_allocation_sum_matches_refund_trigger.sql` |
+| **INV-018** | Durable Non-PII KYC Ingestion & Worker | DB Inbox + Background Worker | `kyc_webhook_inbox` | `internal/postgres/kyc_inbox_repo.go`<br>`internal/kyc/inbox_worker.go`<br>`internal/api/handlers_kyc.go:1115-1135`<br>`internal/app/bootstrap.go:688-695` |
 
 ---
 

@@ -1115,17 +1115,26 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 	var inboxID int64
 	if pool != nil {
 		ctx := c.Request.Context()
+		operationalPayload := map[string]any{
+			"verification_id": payload.VerificationID,
+			"reference_id":    refIDStr,
+			"event":           event,
+			"status":          payload.Status,
+			"fraud_checks":    payload.FraudChecks,
+		}
+		inboxPayloadBytes, _ := json.Marshal(operationalPayload)
+
 		err := pool.QueryRow(ctx, `
 			INSERT INTO kyc_webhook_inbox (
 				provider, event_hash, event_timestamp, verification_id, reference_id,
 				event_type, status, payload, processing_status, received_at
 			) VALUES (
-				'cashfree', $1, $2, $3, $4, $5, $6, '{}'::jsonb, 'received', NOW()
+				'cashfree', $1, $2, $3, $4, $5, $6, $7, 'received', NOW()
 			)
 			ON CONFLICT (provider, event_hash) DO NOTHING
 			RETURNING id`,
 			eventHash, ts, nullIfEmptyStr(payload.VerificationID), nullIfEmptyStr(refIDStr),
-			nullIfEmptyStr(event), nullIfEmptyStr(payload.Status),
+			nullIfEmptyStr(event), nullIfEmptyStr(payload.Status), inboxPayloadBytes,
 		).Scan(&inboxID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			slog.ErrorContext(ctx, "kyc webhook: failed to persist to inbox", "err", err, "hash", eventHash)

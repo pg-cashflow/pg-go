@@ -685,6 +685,14 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		}
 	}()
 
+	if bg.kycRepo != nil && bg.maintPool != nil {
+		kycAlerter := &kycDeadLetterEmailAlerter{mail: bg.mail, adminEmail: bg.adminEmail}
+		kycInboxRepo := postgres.NewKYCInboxRepo(bg.maintPool, bg.kycRepo)
+		kycInboxWorker := kycsvc.NewKYCInboxWorker(bg.maintPool, kycInboxRepo, kycAlerter)
+		go kycInboxWorker.Start(ctx, 5*time.Second)
+		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
+	}
+
 	if !bg.financeEnabled {
 		return
 	}
@@ -799,4 +807,27 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 			}
 		}
 	}()
+}
+
+type kycDeadLetterEmailAlerter struct {
+	mail       mailer.Mailer
+	adminEmail string
+}
+
+func (a *kycDeadLetterEmailAlerter) NotifyKYCDeadLetter(ctx context.Context, item *kycsvc.KYCInboxItem, failureErr string) error {
+	if a == nil || a.mail == nil || a.adminEmail == "" {
+		return nil
+	}
+	subject := fmt.Sprintf("🚨 CRITICAL: KYC Webhook Event #%d Dead-Lettered", item.ID)
+	body := fmt.Sprintf(
+		"<h2>🚨 CRITICAL: KYC Webhook Processing Failed</h2>"+
+			"<p>A KYC webhook event exceeded maximum retries (<b>%d attempts</b>).</p>"+
+			"<table>"+
+			"<tr><td><b>Inbox ID:</b></td><td>%d</td></tr>"+
+			"<tr><td><b>Provider:</b></td><td>%s</td></tr>"+
+			"<tr><td><b>Failure:</b></td><td>%s</td></tr>"+
+			"</table>",
+		item.Attempts, item.ID, item.Provider, failureErr,
+	)
+	return a.mail.Send(ctx, a.adminEmail, subject, body)
 }

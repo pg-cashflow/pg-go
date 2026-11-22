@@ -42,6 +42,7 @@ This document operationalizes the **Evidence-Driven Engineering and Acceptance F
 | **REQ-SEC-009** | `P2-30` | P2 | Medium Robustness | Centralized Error Mapping (Zero Raw DB Error Leaks)| `internal/api/handlers_owner.go:1439` | Error response payload sanitization test | `PASS` |
 | **REQ-TIME-001**| `P2-31` | P2 | Medium Correctness | Business Timezone (IST) for Billing Period Calculation| `internal/api/handlers_finance.go:Now()` | Month-boundary rollover unit tests | `PASS` |
 | **REQ-FIN-004** | `P2-32` | P2 | Medium Correctness | Canonical Due Status Derivation & Cache Reconciliation| `internal/domain/due.go`, `dues.status` | Reconciliation discrepancy check | `PASS` |
+| **REQ-KYC-001** | `P1-35` | P1 | High Reliability | Durable KYC Webhook Ingress & Worker | `internal/postgres/kyc_inbox_repo.go`, `internal/kyc/inbox_worker.go`, `internal/api/handlers_kyc.go`, `internal/app/bootstrap.go` | Non-PII payload & worker interface test | `PASS` |
 
 ---
 

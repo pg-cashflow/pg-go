@@ -95,6 +95,26 @@ func (w *KYCInboxWorker) ProcessBatch(ctx context.Context, limit int) (int, erro
 	return processedCount, nil
 }
 
+// Start runs the periodic inbox processing loop until ctx is canceled.
+func (w *KYCInboxWorker) Start(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := w.ProcessBatch(ctx, 25); err != nil {
+				slog.ErrorContext(ctx, "kyc inbox worker error", "err", err)
+			}
+		}
+	}
+}
+
 // ProcessSingleItem claims, executes, and finalizes a single KYC webhook event.
 func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error {
 	leaseDuration := 2 * time.Minute
