@@ -1154,6 +1154,16 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 				return
 			}
 		}
+
+		// Asynchronous durable worker pattern (KYC-OWN-02):
+		// The HTTP handler strictly verifies HMAC & timestamp and records to inbox.
+		// The background KYCInboxWorker is the single owner of callback execution,
+		// preventing lock inversion, race conditions, and timeout cascades.
+		c.JSON(http.StatusOK, gin.H{
+			"status": "received",
+			"hash":   eventHash,
+		})
+		return
 	}
 
 	isDigiLocker := strings.HasPrefix(payload.VerificationID, "cf_dgl_") ||

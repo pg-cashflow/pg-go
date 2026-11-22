@@ -3,6 +3,11 @@ name: Deploy pg-app
 on:
   # Restore 'push: branches: [main]' once the pg-app-server self-hosted runner is provisioned and registered.
   workflow_dispatch:
+    inputs:
+      react_ref:
+        description: 'Explicit commit SHA or git ref for pg-react paired release'
+        required: true
+        default: 'main'
 
 jobs:
   build-and-verify:
@@ -35,6 +40,7 @@ jobs:
         with:
           repository: pg-cashflow/pg-react
           path: pg-react
+          ref: ${{ inputs.react_ref || 'main' }}
           token: ${{ secrets.GH_PAT }}
 
       - name: Setup Node
@@ -48,6 +54,7 @@ jobs:
         working-directory: pg-react
         env:
           VITE_API_BASE_URL: /api
+          PG_GO_ERROR_CODES: ${{ github.workspace }}/pg-go/internal/apierr/error-codes.json
         run: |
           npm ci
           npm run lint
@@ -160,6 +167,24 @@ jobs:
           echo "Artifact SHA-256:"
           cat server.sha256
 
+      - name: Generate Release Provenance Manifest
+        working-directory: pg-go
+        run: |
+          GO_SHA=$(git rev-parse HEAD)
+          REACT_SHA=$(cd ../pg-react && git rev-parse HEAD)
+          BINARY_SHA=$(awk '{print $1}' server.sha256)
+          cat <<EOF > release-manifest.json
+          {
+            "release_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "go_sha": "$GO_SHA",
+            "react_ref": "${{ inputs.react_ref || 'main' }}",
+            "react_sha": "$REACT_SHA",
+            "binary_sha256": "$BINARY_SHA"
+          }
+          EOF
+          echo "Release Manifest:"
+          cat release-manifest.json
+
       - name: Archive Verified Release Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -167,6 +192,7 @@ jobs:
           path: |
             pg-go/server
             pg-go/server.sha256
+            pg-go/release-manifest.json
           retention-days: 14
 
   migrate:

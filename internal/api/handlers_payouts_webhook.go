@@ -283,9 +283,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 
 	if unmarshalErr != nil {
 		errMsg := unmarshalErr.Error()
-		if evtRecord.ID != uuid.Nil {
-			_ = audit.UpdateWebhookEventStatus(c.Request.Context(), evtRecord.ID, "dead_letter", &errMsg)
-		}
+		updateWebhookAuditStatus(c.Request.Context(), audit, evtRecord, "dead_letter", &errMsg)
 		slog.Error("payout webhook dead-letter: malformed data payload", "err", unmarshalErr, "event_type", evtType)
 		c.Status(http.StatusOK)
 		return
@@ -349,6 +347,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				}
 			}
 		}
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "processed", nil)
 		c.Status(http.StatusOK)
 		return
 	}
@@ -381,6 +380,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				return
 			}
 		}
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "processed", nil)
 		c.Status(http.StatusOK)
 		return
 	}
@@ -392,7 +392,10 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	}
 	itemID, err := uuid.Parse(rawTransferID)
 	if err != nil {
-		// Not an item-level event or non-UUID reference; acknowledge safely
+		// PAYOUT-WH-02: Missing or invalid transfer ID on item-level event must be moved to dead_letter.
+		errMsg := fmt.Sprintf("invalid or missing transfer_id %q for event %s: %v", data.TransferID, evtType, err)
+		slog.Error("payout webhook dead-letter: missing or invalid transfer_id", "transfer_id", data.TransferID, "event_type", evtType, "err", err)
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "dead_letter", &errMsg)
 		c.Status(http.StatusOK)
 		return
 	}
@@ -474,9 +477,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				"status_code", data.StatusCode,
 				"acknowledged", data.Acknowledged,
 			)
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "ignored_unconfirmed", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "ignored_unconfirmed", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -485,17 +486,13 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			// operator-facing reconciler must resolve this contradictory history.
 			slog.Error("payout webhook success conflicts with terminal local status; reconciliation required",
 				"item_id", item.ID, "event", evtType, "local_status", item.Status)
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "terminal_status_conflict", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "terminal_status_conflict", nil)
 			c.Status(http.StatusOK)
 			return
 		}
 		if strings.TrimSpace(data.TransferAmount.String()) == "" {
 			slog.Error("payout webhook settlement missing transfer_amount", "item_id", item.ID, "event", evtType)
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "missing_transfer_amount", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "missing_transfer_amount", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -504,18 +501,14 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			slog.Error("payout webhook settlement amount mismatch; refusing ledger/status mutation",
 				"item_id", item.ID, "expected_paise", item.AmountPaise,
 				"provider_amount", data.TransferAmount.String(), "parse_error", amountErr)
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "amount_mismatch", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "amount_mismatch", nil)
 			c.Status(http.StatusOK)
 			return
 		}
 
 		// Idempotency: If already succeeded, return 200 without duplicate ledger mirror
 		if item.Status == domain.PayoutSucceeded {
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "duplicate", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -577,9 +570,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	case "TRANSFER_REVERSED":
 		// Idempotency: If already reversed, return 200 without duplicate ledger mirror
 		if item.Status == domain.PayoutReversed {
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "duplicate", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -589,9 +580,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			// Contradictory event history requires operator reconciliation.
 			slog.Error("payout webhook reversal conflicts with terminal local status; reconciliation required",
 				"item_id", item.ID, "event", evtType, "local_status", item.Status)
-			if evtRecord.ID != uuid.Nil {
-				_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "terminal_status_conflict", nil)
-			}
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "terminal_status_conflict", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -690,10 +679,16 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 
 	}
 
-	if evtRecord.ID != uuid.Nil {
-		_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
-	}
+	updateWebhookAuditStatus(ctx, audit, evtRecord, "processed", nil)
 	c.Status(http.StatusOK)
+}
+
+func updateWebhookAuditStatus(ctx context.Context, audit GatewayPaymentRepo, evtRecord *domain.WebhookEvent, status string, errMsg *string) {
+	if evtRecord != nil && evtRecord.ID != uuid.Nil && audit != nil {
+		if err := audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, status, errMsg); err != nil {
+			slog.Error("payout webhook: failed updating audit status", "event_id", evtRecord.ID, "status", status, "err", err)
+		}
+	}
 }
 
 var errPayoutEventDuplicate = errors.New("payout webhook duplicate")
@@ -791,9 +786,7 @@ func (h *Handlers) commitPayoutItem(
 		err = run(nil)
 	}
 	if errors.Is(err, errPayoutEventDuplicate) {
-		if evtRecord != nil && evtRecord.ID != uuid.Nil && audit != nil {
-			_ = audit.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
-		}
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "duplicate", nil)
 		c.Status(http.StatusOK)
 		return false
 	}

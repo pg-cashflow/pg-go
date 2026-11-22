@@ -46,41 +46,52 @@ func (m *mockKYCInboxStore) LockAndClaimInboxTx(ctx context.Context, tx pgx.Tx, 
 	}
 	item.Attempts++
 	item.ProcessingStatus = "processing"
+	tok := uuid.New().String()
+	item.ClaimToken = &tok
 	leaseExp := time.Now().Add(lease)
 	item.LeaseExpiresAt = &leaseExp
 	return item, nil
 }
 
-func (m *mockKYCInboxStore) MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id int64) error {
+func (m *mockKYCInboxStore) MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string) error {
 	item, ok := m.items[id]
-	if ok {
-		item.ProcessingStatus = "processed"
-		now := time.Now().UTC()
-		item.ProcessedAt = &now
+	if !ok || item.ProcessingStatus != "processing" || item.ClaimToken == nil || *item.ClaimToken != claimToken {
+		return ErrLeaseLost
 	}
+	item.ProcessingStatus = "processed"
+	item.ClaimToken = nil
+	item.LeaseExpiresAt = nil
+	now := time.Now().UTC()
+	item.ProcessedAt = &now
 	m.processedIDs = append(m.processedIDs, id)
 	return nil
 }
 
-func (m *mockKYCInboxStore) MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int64, errStr string, nextRetry time.Time) error {
+func (m *mockKYCInboxStore) MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string, errStr string, nextRetry time.Time) error {
 	item, ok := m.items[id]
-	if ok {
-		item.ProcessingStatus = "failed"
-		item.ErrorMessage = &errStr
-		item.NextRetryAt = &nextRetry
+	if !ok || item.ProcessingStatus != "processing" || item.ClaimToken == nil || *item.ClaimToken != claimToken {
+		return ErrLeaseLost
 	}
+	item.ProcessingStatus = "failed"
+	item.ErrorMessage = &errStr
+	item.NextRetryAt = &nextRetry
+	item.ClaimToken = nil
+	item.LeaseExpiresAt = nil
 	m.failedIDs[id] = errStr
 	return nil
 }
 
-func (m *mockKYCInboxStore) MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id int64, errStr string) error {
+func (m *mockKYCInboxStore) MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string, errStr string) error {
 	item, ok := m.items[id]
-	if ok {
-		item.ProcessingStatus = "dead_letter"
-		item.ErrorMessage = &errStr
-		now := time.Now().UTC()
-		item.ProcessedAt = &now
+	if !ok || item.ProcessingStatus != "processing" || item.ClaimToken == nil || *item.ClaimToken != claimToken {
+		return ErrLeaseLost
 	}
+	item.ProcessingStatus = "dead_letter"
+	item.ErrorMessage = &errStr
+	item.ClaimToken = nil
+	item.LeaseExpiresAt = nil
+	now := time.Now().UTC()
+	item.ProcessedAt = &now
 	m.deadLetterIDs[id] = errStr
 	return nil
 }
@@ -429,7 +440,7 @@ func TestSanitizeKYCError_RedactsPII(t *testing.T) {
 	}
 }
 
-func TestKYCInboxWorker_DigiLockerDisabled_SkipsProcessing(t *testing.T) {
+func TestKYCInboxWorker_DigiLockerDisabled_DefersProcessing(t *testing.T) {
 	vID := "cf_dgl_dis_1"
 	refID := "ref_dis_1"
 	evtType := "DIGILOCKER_AUTHENTICATED"
@@ -443,8 +454,8 @@ func TestKYCInboxWorker_DigiLockerDisabled_SkipsProcessing(t *testing.T) {
 		ReferenceID:      &refID,
 		EventType:        &evtType,
 		Status:           &status,
-		ProcessingStatus: "processing",
-		Attempts:         1,
+		ProcessingStatus: "received",
+		Attempts:         0,
 		MaxAttempts:      5,
 	}
 	store.verifications[vID] = &domain.KYCVerification{
@@ -465,7 +476,70 @@ func TestKYCInboxWorker_DigiLockerDisabled_SkipsProcessing(t *testing.T) {
 	if processor.calledWithVID != "" {
 		t.Fatalf("expected DigiLocker processor not called when feature disabled, but got called with %s", processor.calledWithVID)
 	}
-	if store.items[7].ProcessingStatus != "processed" {
-		t.Fatalf("expected inbox status processed, got %s", store.items[7].ProcessingStatus)
+	// KYC-FLAG-04: Must NOT mark processed; must be deferred as failed with future next_retry_at
+	if store.items[7].ProcessingStatus == "processed" {
+		t.Fatalf("expected inbox status NOT to be processed when disabled, got processed")
+	}
+	if store.items[7].ProcessingStatus != "failed" {
+		t.Fatalf("expected inbox status deferred (failed), got %s", store.items[7].ProcessingStatus)
+	}
+	if store.items[7].NextRetryAt == nil || store.items[7].NextRetryAt.Before(time.Now()) {
+		t.Fatalf("expected future retry time for deferred item, got %v", store.items[7].NextRetryAt)
+	}
+}
+
+func TestKYCInboxWorker_LeaseFencing_WorkerSuperseededReturnsErrLeaseLost(t *testing.T) {
+	store := newMockKYCInboxStore()
+	vID := "cf_verif_fence_1"
+	statusSuccess := "SUCCESS"
+
+	store.items[8] = &KYCInboxItem{
+		ID:               8,
+		VerificationID:   &vID,
+		Status:           &statusSuccess,
+		ProcessingStatus: "received",
+		Attempts:         0,
+		MaxAttempts:      5,
+	}
+	store.verifications[vID] = &domain.KYCVerification{
+		ID:     uuid.New(),
+		Status: domain.KYCStatusPending,
+	}
+
+	// Worker 1 claims item 8
+	item1, err := store.LockAndClaimInboxTx(context.Background(), nil, 8, 10*time.Millisecond)
+	if err != nil || item1 == nil {
+		t.Fatalf("worker 1 claim failed: %v", err)
+	}
+	token1 := *item1.ClaimToken
+
+	// Simulate lease expiration
+	past := time.Now().Add(-1 * time.Minute)
+	store.items[8].LeaseExpiresAt = &past
+
+	// Worker 2 reclaims item 8 after lease expiration
+	item2, err := store.LockAndClaimInboxTx(context.Background(), nil, 8, 10*time.Minute)
+	if err != nil || item2 == nil {
+		t.Fatalf("worker 2 claim failed: %v", err)
+	}
+	token2 := *item2.ClaimToken
+
+	if token1 == token2 {
+		t.Fatalf("expected different claim tokens across workers")
+	}
+
+	// Worker 1 attempts to finalize with stale token1 -> should return ErrLeaseLost
+	err1 := store.MarkInboxProcessedTx(context.Background(), nil, 8, token1)
+	if !errors.Is(err1, ErrLeaseLost) {
+		t.Fatalf("expected ErrLeaseLost for stale worker 1, got %v", err1)
+	}
+
+	// Worker 2 finalizes with valid token2 -> succeeds
+	err2 := store.MarkInboxProcessedTx(context.Background(), nil, 8, token2)
+	if err2 != nil {
+		t.Fatalf("expected worker 2 to finalize successfully, got %v", err2)
+	}
+	if store.items[8].ProcessingStatus != "processed" {
+		t.Fatalf("expected status processed, got %s", store.items[8].ProcessingStatus)
 	}
 }

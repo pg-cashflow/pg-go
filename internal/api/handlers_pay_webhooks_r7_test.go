@@ -34,7 +34,7 @@ func TestPaymentSuccessWebhook_NilIntentStore_Returns503(t *testing.T) {
 	}
 	evtRecord := &domain.WebhookEvent{ID: uuid.New()}
 
-	h.handlePaymentSuccessWebhook(c, succ, evtRecord, "")
+	h.handlePaymentSuccessWebhook(c, succ, evtRecord)
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("R7: expected 503 Service Unavailable when IntentStore is nil, got %d", w.Code)

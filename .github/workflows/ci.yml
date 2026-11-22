@@ -11,25 +11,37 @@ jobs:
   frontend:
     name: Frontend Quality & Build Gate
     runs-on: ubuntu-latest
-    env:
-      HAS_PAT: ${{ secrets.GH_PAT != '' }}
     steps:
+      - name: Assert PAT Configured
+        run: |
+          if [ -z "${{ secrets.GH_PAT }}" ]; then
+            echo "ERROR: GH_PAT secret is required to run the frontend quality and release gate."
+            exit 1
+          fi
+
+      - name: Checkout pg-go
+        uses: actions/checkout@v4
+        with:
+          path: pg-go
+
       - name: Checkout pg-react
-        if: env.HAS_PAT == 'true'
         uses: actions/checkout@v4
         with:
           repository: pg-cashflow/pg-react
+          path: pg-react
           token: ${{ secrets.GH_PAT }}
 
       - name: Setup Node
-        if: env.HAS_PAT == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
+          cache-dependency-path: pg-react/package-lock.json
 
       - name: Verify and Build Frontend
-        if: env.HAS_PAT == 'true'
+        working-directory: pg-react
+        env:
+          PG_GO_ERROR_CODES: ${{ github.workspace }}/pg-go/internal/apierr/error-codes.json
         run: |
           npm ci
           npm run lint

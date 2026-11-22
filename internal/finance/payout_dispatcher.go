@@ -536,19 +536,22 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 			return nil
 		}
 		expectedTransferID := DerivePayoutTransferID(it)
-		if st.TransferID != "" && st.TransferID != expectedTransferID {
-			slog.Error("payout batch reconcile: transfer ID mismatch; refusing settlement",
+		if strings.TrimSpace(st.TransferID) == "" || st.TransferID != expectedTransferID {
+			slog.Error("payout batch reconcile: missing or mismatched transfer ID; refusing settlement",
 				"expected", expectedTransferID, "got", st.TransferID, "item_id", it.ID)
 			return nil
 		}
-		if st.TransferAmount != "" {
-			providerAmountPaise, err := cashfree.ParseRupeesToPaise(st.TransferAmount.String())
-			if err != nil || providerAmountPaise != it.AmountPaise {
-				slog.Error("payout batch reconcile: amount mismatch; refusing settlement",
-					"item_id", it.ID, "expected_paise", it.AmountPaise,
-					"provider_amount", st.TransferAmount.String(), "err", err)
-				return nil
-			}
+		if strings.TrimSpace(st.TransferAmount.String()) == "" {
+			slog.Error("payout batch reconcile: missing transfer amount; refusing settlement",
+				"item_id", it.ID, "expected_paise", it.AmountPaise)
+			return nil
+		}
+		providerAmountPaise, err := cashfree.ParseRupeesToPaise(st.TransferAmount.String())
+		if err != nil || providerAmountPaise != it.AmountPaise {
+			slog.Error("payout batch reconcile: amount mismatch; refusing settlement",
+				"item_id", it.ID, "expected_paise", it.AmountPaise,
+				"provider_amount", st.TransferAmount.String(), "err", err)
+			return nil
 		}
 		utr := ""
 		if st.UTR != nil {

@@ -22,6 +22,13 @@ type KYCAlerter interface {
 	NotifyKYCDeadLetter(ctx context.Context, item *KYCInboxItem, failureErr string) error
 }
 
+var (
+	// ErrLeaseLost indicates that the worker's processing lease expired or was superseded.
+	ErrLeaseLost = errors.New("kyc inbox: lease lost or superseded")
+	// ErrDigiLockerDisabled indicates DigiLocker integration is disabled and event must be deferred.
+	ErrDigiLockerDisabled = errors.New("kyc inbox: digilocker disabled; deferred")
+)
+
 // KYCInboxItem represents a record in kyc_webhook_inbox.
 type KYCInboxItem struct {
 	ID               int64
@@ -36,6 +43,7 @@ type KYCInboxItem struct {
 	ProcessingStatus string
 	Attempts         int
 	MaxAttempts      int
+	ClaimToken       *string
 	LeaseExpiresAt   *time.Time
 	NextRetryAt      *time.Time
 	ErrorMessage     *string
@@ -47,9 +55,9 @@ type KYCInboxItem struct {
 type KYCInboxStore interface {
 	ListPendingInboxIDs(ctx context.Context, limit int) ([]int64, error)
 	LockAndClaimInboxTx(ctx context.Context, tx pgx.Tx, id int64, lease time.Duration) (*KYCInboxItem, error)
-	MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id int64) error
-	MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int64, errStr string, nextRetry time.Time) error
-	MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id int64, errStr string) error
+	MarkInboxProcessedTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string) error
+	MarkInboxFailedTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string, errStr string, nextRetry time.Time) error
+	MarkInboxDeadLetterTx(ctx context.Context, tx pgx.Tx, id int64, claimToken string, errStr string) error
 	GetVerificationForUpdate(ctx context.Context, tx pgx.Tx, verificationID, refID string) (*domain.KYCVerification, error)
 	ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx, v *domain.KYCVerification, webhookStatus string) error
 }
@@ -163,6 +171,13 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 	if item == nil {
 		return nil // Already claimed or processed
 	}
+	claimToken := ""
+	if item.ClaimToken != nil {
+		claimToken = *item.ClaimToken
+	}
+	if claimToken == "" {
+		return fmt.Errorf("kyc inbox item %d claimed without valid lease claim_token", id)
+	}
 
 	// Execute processing: for DigiLocker callbacks, avoid an outer transaction
 	// holding kyc_verification to prevent lock order inversion with tenants.
@@ -192,15 +207,35 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 		execErr = w.executeItem(ctx, nil, item)
 	}
 
-	// Finalize status: processed or failed/dead_letter
+	// Finalize status: processed, deferred, failed, or dead_letter
 	now := time.Now().UTC()
 	if execErr == nil {
 		if w.pool != nil {
 			return pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-				return w.store.MarkInboxProcessedTx(ctx, tx, id)
+				return w.store.MarkInboxProcessedTx(ctx, tx, id, claimToken)
 			})
 		}
-		return w.store.MarkInboxProcessedTx(ctx, nil, id)
+		return w.store.MarkInboxProcessedTx(ctx, nil, id, claimToken)
+	}
+
+	if errors.Is(execErr, ErrDigiLockerDisabled) {
+		// KYC-FLAG-04: Preserve in-flight callbacks when DigiLocker integration is disabled.
+		// Reschedule retry without advancing failure toward dead_letter exhaustion.
+		nextRetry := now.Add(5 * time.Minute)
+		var markErr error
+		if w.pool != nil {
+			markErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+				return w.store.MarkInboxFailedTx(ctx, tx, id, claimToken, "digilocker disabled; deferred", nextRetry)
+			})
+		} else {
+			markErr = w.store.MarkInboxFailedTx(ctx, nil, id, claimToken, "digilocker disabled; deferred", nextRetry)
+		}
+		if markErr != nil {
+			slog.ErrorContext(ctx, "kyc inbox: mark deferred failed", "inbox_id", id, "err", markErr)
+			return fmt.Errorf("deferral finalization failed (%w): %v", markErr, execErr)
+		}
+		slog.InfoContext(ctx, "kyc inbox event deferred: digilocker disabled", "inbox_id", id, "next_retry", nextRetry)
+		return nil
 	}
 
 	// Failure branch: evaluate max attempts
@@ -211,10 +246,10 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 		var markErr error
 		if w.pool != nil {
 			markErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-				return w.store.MarkInboxDeadLetterTx(ctx, tx, id, errStr)
+				return w.store.MarkInboxDeadLetterTx(ctx, tx, id, claimToken, errStr)
 			})
 		} else {
-			markErr = w.store.MarkInboxDeadLetterTx(ctx, nil, id, errStr)
+			markErr = w.store.MarkInboxDeadLetterTx(ctx, nil, id, claimToken, errStr)
 		}
 		if markErr != nil {
 			slog.ErrorContext(ctx, "kyc inbox: mark dead letter failed", "inbox_id", id, "err", markErr)
@@ -238,10 +273,10 @@ func (w *KYCInboxWorker) ProcessSingleItem(ctx context.Context, id int64) error 
 	var markErr error
 	if w.pool != nil {
 		markErr = pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
-			return w.store.MarkInboxFailedTx(ctx, tx, id, errStr, nextRetry)
+			return w.store.MarkInboxFailedTx(ctx, tx, id, claimToken, errStr, nextRetry)
 		})
 	} else {
-		markErr = w.store.MarkInboxFailedTx(ctx, nil, id, errStr, nextRetry)
+		markErr = w.store.MarkInboxFailedTx(ctx, nil, id, claimToken, errStr, nextRetry)
 	}
 	if markErr != nil {
 		slog.ErrorContext(ctx, "kyc inbox: mark failed retry scheduling failed", "inbox_id", id, "err", markErr)
@@ -301,8 +336,8 @@ func (w *KYCInboxWorker) executeItem(ctx context.Context, tx pgx.Tx, item *KYCIn
 
 	if isDigiLocker {
 		if !w.featureKYCDigiLocker {
-			slog.InfoContext(ctx, "skipping kyc webhook mutation: digilocker disabled", "inbox_id", item.ID)
-			return nil
+			slog.InfoContext(ctx, "deferring kyc webhook mutation: digilocker disabled", "inbox_id", item.ID)
+			return ErrDigiLockerDisabled
 		}
 		if w.processor != nil {
 			// Demultiplex: Delegate to domain DigiLocker callback processor.
