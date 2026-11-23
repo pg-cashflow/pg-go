@@ -584,9 +584,10 @@ func TestLoad_PublicAppURL(t *testing.T) {
 
 func TestParseVersionedSecrets16(t *testing.T) {
 	cases := []struct {
-		name  string
-		input string
-		want  map[int16]string
+		name    string
+		input   string
+		want    map[int16]string
+		wantErr bool
 	}{
 		{
 			name:  "empty string produces empty map",
@@ -607,28 +608,24 @@ func TestParseVersionedSecrets16(t *testing.T) {
 			},
 		},
 		{
-			name: "whitespace around the outer pair is trimmed; interior whitespace in version field causes skip",
-			// TrimSpace("  1 : secret-v1 ") → "1 : secret-v1 "
-			// SplitN("1 : secret-v1 ", ":", 2) → ["1 ", " secret-v1 "]
-			// Atoi("1 ") fails (trailing space) → pair skipped.
-			// Only pairs with no whitespace between version digits and colon are parsed.
-			input: "  1 : secret-v1 , 2 : secret-v2 ",
-			want:  map[int16]string{}, // all three pairs skipped due to interior whitespace
+			name:    "whitespace around the outer pair is trimmed; interior whitespace in version field causes error",
+			input:   "  1 : secret-v1 , 2 : secret-v2 ",
+			wantErr: true,
 		},
 		{
-			name:  "version 0 is rejected (reserved)",
-			input: "0:secret-v0,1:secret-v1",
-			want:  map[int16]string{1: "secret-v1"},
+			name:    "version 0 is rejected (reserved)",
+			input:   "0:secret-v0,1:secret-v1",
+			wantErr: true,
 		},
 		{
-			name:  "negative version is rejected",
-			input: "-1:secret-v-neg,1:secret-v1",
-			want:  map[int16]string{1: "secret-v1"},
+			name:    "negative version is rejected",
+			input:   "-1:secret-v-neg,1:secret-v1",
+			wantErr: true,
 		},
 		{
-			name:  "version above int16 max (32767) is rejected",
-			input: "32768:secret-too-big,1:secret-v1",
-			want:  map[int16]string{1: "secret-v1"},
+			name:    "version above int16 max (32767) is rejected",
+			input:   "32768:secret-too-big,1:secret-v1",
+			wantErr: true,
 		},
 		{
 			name:  "version at int16 max boundary (32767) is accepted",
@@ -636,14 +633,19 @@ func TestParseVersionedSecrets16(t *testing.T) {
 			want:  map[int16]string{32767: "secret-at-max"},
 		},
 		{
-			name:  "malformed pair (no colon) is skipped",
-			input: "1secret-v1,2:secret-v2",
-			want:  map[int16]string{2: "secret-v2"},
+			name:    "malformed pair (no colon) returns error",
+			input:   "1secret-v1,2:secret-v2",
+			wantErr: true,
 		},
 		{
-			name:  "non-numeric version is skipped",
-			input: "abc:secret-v-abc,1:secret-v1",
-			want:  map[int16]string{1: "secret-v1"},
+			name:    "non-numeric version returns error",
+			input:   "abc:secret-v-abc,1:secret-v1",
+			wantErr: true,
+		},
+		{
+			name:    "duplicate version returns error",
+			input:   "1:secret-v1,1:duplicate-v1",
+			wantErr: true,
 		},
 		{
 			name:  "empty value is accepted (validation catches it, not parser)",
@@ -659,7 +661,16 @@ func TestParseVersionedSecrets16(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseVersionedSecrets16(tc.input)
+			got, err := parseVersionedSecrets16(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q, got nil", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("len mismatch: got %d entries %v, want %d entries %v", len(got), got, len(tc.want), tc.want)
 			}
@@ -669,6 +680,82 @@ func TestParseVersionedSecrets16(t *testing.T) {
 				} else if gotSec != wantSec {
 					t.Errorf("version %d: got %q, want %q", ver, gotSec, wantSec)
 				}
+			}
+		})
+	}
+}
+
+func TestParseVersionedHexKeys(t *testing.T) {
+	validHex1 := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	validHex2 := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+
+	cases := []struct {
+		name    string
+		input   string
+		wantLen int
+		wantErr bool
+	}{
+		{
+			name:    "empty string produces empty map",
+			input:   "",
+			wantLen: 0,
+		},
+		{
+			name:    "single valid entry",
+			input:   "1:" + validHex1,
+			wantLen: 1,
+		},
+		{
+			name:    "two valid entries",
+			input:   "1:" + validHex1 + ",2:" + validHex2,
+			wantLen: 2,
+		},
+		{
+			name:    "malformed entry without colon returns error",
+			input:   "1" + validHex1,
+			wantErr: true,
+		},
+		{
+			name:    "version 0 returns error",
+			input:   "0:" + validHex1,
+			wantErr: true,
+		},
+		{
+			name:    "version 256 returns error",
+			input:   "256:" + validHex1,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate version returns error",
+			input:   "1:" + validHex1 + ",1:" + validHex2,
+			wantErr: true,
+		},
+		{
+			name:    "invalid hex returns error",
+			input:   "1:not-a-hex-string-at-all!!",
+			wantErr: true,
+		},
+		{
+			name:    "short hex returns error (less than 32 bytes)",
+			input:   "1:0123456789abcdef",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseVersionedHexKeys(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q, got nil", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tc.wantLen {
+				t.Fatalf("len mismatch: got %d, want %d", len(got), tc.wantLen)
 			}
 		})
 	}

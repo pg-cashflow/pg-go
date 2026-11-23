@@ -271,7 +271,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			for v, k := range cfg.KYCDocCryptoKeys {
 				if v != crypto.CurrentKeyVersion {
 					if addErr := kycKeyRing.AddKey(v, k); addErr != nil {
-						logger.Warn("kyc: failed adding historical doc key to keyring", "version", v, "err", addErr)
+						return nil, fmt.Errorf("kyc: failed adding historical doc key (version %d) to keyring: %w", v, addErr)
 					}
 				}
 			}

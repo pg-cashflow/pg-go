@@ -2261,3 +2261,512 @@ func (r *PayoutRepo) ReconcilePayoutItemManual(
 	freshRow := r.pool.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id = $1`, itemID)
 	return scanPayoutItem(freshRow)
 }
+
+// CreatePayoutReconciliationCase creates a pending maker-checker reconciliation case for platform operations.
+// It verifies the payout item exists, captures an immutable JSON snapshot, validates proposed status and evidence,
+// and inserts a row into platform_payout_reconciliation_cases in 'pending' status without changing the payout item state.
+func (r *PayoutRepo) CreatePayoutReconciliationCase(
+	ctx context.Context,
+	params domain.CreatePayoutReconciliationCaseParams,
+) (*domain.PlatformPayoutReconciliationCase, error) {
+	if params.MakerID == uuid.Nil {
+		return nil, errors.New("maker_id is required")
+	}
+	if strings.TrimSpace(params.Notes) == "" {
+		return nil, errors.New("reconciliation notes are required")
+	}
+	if strings.TrimSpace(params.EvidenceRef) == "" {
+		return nil, errors.New("evidence_ref is required")
+	}
+	if strings.TrimSpace(params.EvidenceHash) == "" {
+		return nil, errors.New("evidence_hash is required")
+	}
+
+	switch params.ProposedStatus {
+	case domain.PayoutSucceeded:
+		if params.UTR == nil || strings.TrimSpace(*params.UTR) == "" {
+			return nil, errors.New("utr is required when proposed status is succeeded")
+		}
+		if params.SettledAt == nil || params.SettledAt.IsZero() {
+			now := time.Now().UTC()
+			params.SettledAt = &now
+		}
+	case domain.PayoutFailed, domain.PayoutRejected:
+		if params.FailureReason == nil || strings.TrimSpace(*params.FailureReason) == "" {
+			return nil, errors.New("failure_reason is required when proposed status is failed or rejected")
+		}
+	case domain.PayoutReversed:
+		// Reversal permitted
+	default:
+		return nil, fmt.Errorf("invalid proposed reconciliation status: %s", params.ProposedStatus)
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin create reconciliation case tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	var (
+		item       domain.PayoutItem
+		propertyID uuid.UUID
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
+		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at,
+		       pp.property_id
+		FROM payout_items pi
+		JOIN payout_payees pp ON pp.id = pi.payee_id
+		WHERE pi.id = $1
+		FOR UPDATE OF pi`, params.PayoutItemID,
+	).Scan(
+		&item.ID, &item.BatchID, &item.PayeeID, &item.DepartureID, &item.ReferenceNumber,
+		&item.AmountPaise, &item.Purpose, &item.PeriodLabel, &item.Status, &item.UTR, &item.SettledAt,
+		&item.FailureReason, &item.CFTransferID, &item.RetryOf, &item.CreatedAt, &item.UpdatedAt,
+		&propertyID,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("lock payout item %s: %w", params.PayoutItemID, err)
+	}
+
+	// State transition guard
+	if item.Status == domain.PayoutSucceeded && params.ProposedStatus != domain.PayoutReversed {
+		return nil, fmt.Errorf("cannot transition payout item in terminal succeeded status to %s", params.ProposedStatus)
+	}
+	if item.Status == domain.PayoutReversed {
+		return nil, errors.New("cannot transition payout item in terminal reversed status")
+	}
+
+	// Check if pending case already exists for this item
+	var existingCaseID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT id FROM platform_payout_reconciliation_cases
+		WHERE payout_item_id = $1 AND status = 'pending'
+		LIMIT 1`, params.PayoutItemID,
+	).Scan(&existingCaseID)
+	if err == nil {
+		return nil, fmt.Errorf("pending reconciliation case %s already exists for payout item %s", existingCaseID, params.PayoutItemID)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("check existing reconciliation case: %w", err)
+	}
+
+	snapshotBytes, err := json.Marshal(item)
+	if err != nil {
+		return nil, fmt.Errorf("marshal item snapshot: %w", err)
+	}
+
+	var reconCase domain.PlatformPayoutReconciliationCase
+	err = tx.QueryRow(ctx, `
+		INSERT INTO platform_payout_reconciliation_cases (
+			payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+			failure_reason, notes, evidence_ref, evidence_hash, maker_id,
+			status, item_snapshot, created_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending', $11, NOW(), NOW())
+		RETURNING id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		          failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		          status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at`,
+		params.PayoutItemID, string(params.ProposedStatus), params.UTR, params.CFTransferID, params.SettledAt,
+		params.FailureReason, params.Notes, params.EvidenceRef, params.EvidenceHash, params.MakerID,
+		snapshotBytes,
+	).Scan(
+		&reconCase.ID, &reconCase.PayoutItemID, &reconCase.ProposedStatus, &reconCase.UTR, &reconCase.CFTransferID,
+		&reconCase.SettledAt, &reconCase.FailureReason, &reconCase.Notes, &reconCase.EvidenceRef, &reconCase.EvidenceHash,
+		&reconCase.MakerID, &reconCase.CheckerID, &reconCase.Status, &reconCase.ItemSnapshot, &reconCase.RejectionReason,
+		&reconCase.CreatedAt, &reconCase.ReviewedAt, &reconCase.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert reconciliation case: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit create reconciliation case tx: %w", err)
+	}
+
+	return &reconCase, nil
+}
+
+// GetPayoutReconciliationCase retrieves a single reconciliation case by ID.
+func (r *PayoutRepo) GetPayoutReconciliationCase(ctx context.Context, caseID uuid.UUID) (*domain.PlatformPayoutReconciliationCase, error) {
+	var c domain.PlatformPayoutReconciliationCase
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		       status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at
+		FROM platform_payout_reconciliation_cases
+		WHERE id = $1`, caseID,
+	).Scan(
+		&c.ID, &c.PayoutItemID, &c.ProposedStatus, &c.UTR, &c.CFTransferID,
+		&c.SettledAt, &c.FailureReason, &c.Notes, &c.EvidenceRef, &c.EvidenceHash,
+		&c.MakerID, &c.CheckerID, &c.Status, &c.ItemSnapshot, &c.RejectionReason,
+		&c.CreatedAt, &c.ReviewedAt, &c.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("get reconciliation case %s: %w", caseID, err)
+	}
+	return &c, nil
+}
+
+// ListPayoutReconciliationCases returns platform payout reconciliation cases with optional status filter.
+func (r *PayoutRepo) ListPayoutReconciliationCases(ctx context.Context, status *domain.PayoutReconciliationCaseStatus, limit, offset int) ([]domain.PlatformPayoutReconciliationCase, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		       status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at
+		FROM platform_payout_reconciliation_cases
+		WHERE ($1::text IS NULL OR status = $1)
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3`
+	var statusStr *string
+	if status != nil {
+		s := string(*status)
+		statusStr = &s
+	}
+	rows, err := r.pool.Query(ctx, query, statusStr, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list reconciliation cases: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.PlatformPayoutReconciliationCase
+	for rows.Next() {
+		var c domain.PlatformPayoutReconciliationCase
+		if err := rows.Scan(
+			&c.ID, &c.PayoutItemID, &c.ProposedStatus, &c.UTR, &c.CFTransferID,
+			&c.SettledAt, &c.FailureReason, &c.Notes, &c.EvidenceRef, &c.EvidenceHash,
+			&c.MakerID, &c.CheckerID, &c.Status, &c.ItemSnapshot, &c.RejectionReason,
+			&c.CreatedAt, &c.ReviewedAt, &c.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan reconciliation case: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ApprovePayoutReconciliationCase approves a pending reconciliation case as an independent checker.
+// It executes the status transition, enqueues ledger outbox events, updates the parent batch,
+// records an audit event capturing both Maker and Checker identities, and marks the case approved.
+func (r *PayoutRepo) ApprovePayoutReconciliationCase(
+	ctx context.Context,
+	caseID uuid.UUID,
+	checkerID uuid.UUID,
+	checkerNotes string,
+) (*domain.PayoutItem, error) {
+	if checkerID == uuid.Nil {
+		return nil, errors.New("checker_id is required")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin approve reconciliation case tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	var reconCase domain.PlatformPayoutReconciliationCase
+	err = tx.QueryRow(ctx, `
+		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		       status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at
+		FROM platform_payout_reconciliation_cases
+		WHERE id = $1
+		FOR UPDATE`, caseID,
+	).Scan(
+		&reconCase.ID, &reconCase.PayoutItemID, &reconCase.ProposedStatus, &reconCase.UTR, &reconCase.CFTransferID,
+		&reconCase.SettledAt, &reconCase.FailureReason, &reconCase.Notes, &reconCase.EvidenceRef, &reconCase.EvidenceHash,
+		&reconCase.MakerID, &reconCase.CheckerID, &reconCase.Status, &reconCase.ItemSnapshot, &reconCase.RejectionReason,
+		&reconCase.CreatedAt, &reconCase.ReviewedAt, &reconCase.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("lock reconciliation case %s: %w", caseID, err)
+	}
+
+	// Idempotent return if already approved
+	if reconCase.Status == domain.ReconciliationCaseApproved {
+		freshRow := tx.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id = $1`, reconCase.PayoutItemID)
+		return scanPayoutItem(freshRow)
+	}
+
+	if reconCase.Status != domain.ReconciliationCasePending {
+		return nil, fmt.Errorf("cannot approve reconciliation case in %s status", reconCase.Status)
+	}
+
+	// Maker-checker separation: Checker cannot be Maker!
+	if checkerID == reconCase.MakerID {
+		return nil, errors.New("maker cannot approve own reconciliation case; independent checker required")
+	}
+
+	var (
+		item       domain.PayoutItem
+		propertyID uuid.UUID
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
+		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
+		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at,
+		       pp.property_id
+		FROM payout_items pi
+		JOIN payout_payees pp ON pp.id = pi.payee_id
+		WHERE pi.id = $1
+		FOR UPDATE OF pi`, reconCase.PayoutItemID,
+	).Scan(
+		&item.ID, &item.BatchID, &item.PayeeID, &item.DepartureID, &item.ReferenceNumber,
+		&item.AmountPaise, &item.Purpose, &item.PeriodLabel, &item.Status, &item.UTR, &item.SettledAt,
+		&item.FailureReason, &item.CFTransferID, &item.RetryOf, &item.CreatedAt, &item.UpdatedAt,
+		&propertyID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("lock payout item %s: %w", reconCase.PayoutItemID, err)
+	}
+
+	newStatus := reconCase.ProposedStatus
+
+	// State transition guard
+	if item.Status == domain.PayoutSucceeded && newStatus != domain.PayoutReversed {
+		return nil, fmt.Errorf("cannot transition payout item in terminal succeeded status to %s", newStatus)
+	}
+	if item.Status == domain.PayoutReversed {
+		return nil, errors.New("cannot transition payout item in terminal reversed status")
+	}
+
+	if err := r.UpdatePayoutItemStatusTx(ctx, tx, reconCase.PayoutItemID, newStatus, reconCase.CFTransferID, reconCase.UTR, reconCase.SettledAt, reconCase.FailureReason); err != nil {
+		return nil, fmt.Errorf("update payout item status: %w", err)
+	}
+
+	// Enqueue ledger outbox if transitioning to succeeded or reversed
+	if r.outbox != nil && propertyID != uuid.Nil && item.AmountPaise > 0 {
+		occurredAt := time.Now().UTC()
+		if reconCase.SettledAt != nil && !reconCase.SettledAt.IsZero() {
+			occurredAt = *reconCase.SettledAt
+		}
+		switch newStatus {
+		case domain.PayoutSucceeded:
+			if item.Status != domain.PayoutSucceeded {
+				payload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+					PropertyID:   propertyID,
+					PayoutItemID: reconCase.PayoutItemID,
+					AmountPaise:  item.AmountPaise,
+					OccurredAt:   occurredAt,
+				})
+				if mErr != nil {
+					return nil, fmt.Errorf("marshal payout settlement payload: %w", mErr)
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      domain.LedgerOutboxPayoutSettlement,
+					PropertyID:     propertyID,
+					SourceID:       reconCase.PayoutItemID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payout_settled:%s", reconCase.PayoutItemID),
+					MaxAttempts:    5,
+				}
+				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+					return nil, fmt.Errorf("insert payout settlement outbox event: %w", err)
+				}
+			}
+		case domain.PayoutReversed:
+			if item.Status != domain.PayoutReversed {
+				if item.Status != domain.PayoutSucceeded {
+					sPayload, smErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+						PropertyID:   propertyID,
+						PayoutItemID: reconCase.PayoutItemID,
+						AmountPaise:  item.AmountPaise,
+						OccurredAt:   occurredAt,
+					})
+					if smErr != nil {
+						return nil, fmt.Errorf("marshal payout settlement payload before reversal: %w", smErr)
+					}
+					sOutboxEvt := &domain.LedgerOutboxEvent{
+						EventType:      domain.LedgerOutboxPayoutSettlement,
+						PropertyID:     propertyID,
+						SourceID:       reconCase.PayoutItemID,
+						Payload:        sPayload,
+						IdempotencyKey: fmt.Sprintf("payout_settled:%s", reconCase.PayoutItemID),
+						MaxAttempts:    5,
+					}
+					if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, sOutboxEvt); err != nil {
+						return nil, fmt.Errorf("insert payout settlement outbox event before reversal: %w", err)
+					}
+				}
+				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+					PropertyID:   propertyID,
+					PayoutItemID: reconCase.PayoutItemID,
+					AmountPaise:  item.AmountPaise,
+					OccurredAt:   occurredAt,
+				})
+				if mErr != nil {
+					return nil, fmt.Errorf("marshal payout reversal payload: %w", mErr)
+				}
+				outboxEvt := &domain.LedgerOutboxEvent{
+					EventType:      domain.LedgerOutboxPayoutReversal,
+					PropertyID:     propertyID,
+					SourceID:       reconCase.PayoutItemID,
+					Payload:        payload,
+					IdempotencyKey: fmt.Sprintf("payout_reversed:%s", reconCase.PayoutItemID),
+					MaxAttempts:    5,
+				}
+				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+					return nil, fmt.Errorf("insert payout reversal outbox event: %w", err)
+				}
+			}
+		}
+	}
+
+	// Update reconciliation case to approved
+	now := time.Now().UTC()
+	_, err = tx.Exec(ctx, `
+		UPDATE platform_payout_reconciliation_cases
+		SET status = 'approved',
+		    checker_id = $1,
+		    reviewed_at = $2,
+		    updated_at = $2
+		WHERE id = $3`,
+		checkerID, now, caseID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update reconciliation case approved: %w", err)
+	}
+
+	// Insert platform reconciliation audit event recording BOTH Maker and Checker!
+	evtPayload, err := json.Marshal(map[string]any{
+		"case_id":        caseID.String(),
+		"payout_item_id": reconCase.PayoutItemID.String(),
+		"old_status":     string(item.Status),
+		"new_status":     string(newStatus),
+		"utr":            reconCase.UTR,
+		"cf_transfer_id": reconCase.CFTransferID,
+		"settled_at":     reconCase.SettledAt,
+		"failure_reason": reconCase.FailureReason,
+		"maker_id":       reconCase.MakerID.String(),
+		"checker_id":     checkerID.String(),
+		"maker_notes":    reconCase.Notes,
+		"checker_notes":  checkerNotes,
+		"evidence_ref":   reconCase.EvidenceRef,
+		"evidence_hash":  reconCase.EvidenceHash,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal platform reconciliation event: %w", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO events (property_id, event_type, occurred_at, payload, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		propertyID, domain.EvtPlatformPayoutReconciled, now, evtPayload, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("insert platform payout reconciled event: %w", err)
+	}
+
+	// Recalculate parent batch status if item belongs to a batch
+	if item.BatchID != nil {
+		if _, err := r.UpdateBatchStatusFromItemsTx(ctx, tx, *item.BatchID); err != nil {
+			return nil, fmt.Errorf("update batch status from items: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit approve reconciliation case tx: %w", err)
+	}
+
+	freshRow := r.pool.QueryRow(ctx, `SELECT `+itemCols+` FROM payout_items WHERE id = $1`, reconCase.PayoutItemID)
+	return scanPayoutItem(freshRow)
+}
+
+// RejectPayoutReconciliationCase marks a pending reconciliation case as rejected by an independent checker.
+// The payout item remains in its original status.
+func (r *PayoutRepo) RejectPayoutReconciliationCase(
+	ctx context.Context,
+	caseID uuid.UUID,
+	checkerID uuid.UUID,
+	rejectionReason string,
+) (*domain.PlatformPayoutReconciliationCase, error) {
+	if checkerID == uuid.Nil {
+		return nil, errors.New("checker_id is required")
+	}
+	trimmedReason := strings.TrimSpace(rejectionReason)
+	if trimmedReason == "" {
+		return nil, errors.New("rejection_reason is required")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin reject reconciliation case tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+
+	var reconCase domain.PlatformPayoutReconciliationCase
+	err = tx.QueryRow(ctx, `
+		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		       status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at
+		FROM platform_payout_reconciliation_cases
+		WHERE id = $1
+		FOR UPDATE`, caseID,
+	).Scan(
+		&reconCase.ID, &reconCase.PayoutItemID, &reconCase.ProposedStatus, &reconCase.UTR, &reconCase.CFTransferID,
+		&reconCase.SettledAt, &reconCase.FailureReason, &reconCase.Notes, &reconCase.EvidenceRef, &reconCase.EvidenceHash,
+		&reconCase.MakerID, &reconCase.CheckerID, &reconCase.Status, &reconCase.ItemSnapshot, &reconCase.RejectionReason,
+		&reconCase.CreatedAt, &reconCase.ReviewedAt, &reconCase.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("lock reconciliation case %s: %w", caseID, err)
+	}
+
+	if reconCase.Status != domain.ReconciliationCasePending {
+		return nil, fmt.Errorf("cannot reject reconciliation case in %s status", reconCase.Status)
+	}
+
+	// Maker-checker separation: Maker cannot reject their own case pretending to be checker
+	if checkerID == reconCase.MakerID {
+		return nil, errors.New("maker cannot reject own reconciliation case; independent checker required")
+	}
+
+	now := time.Now().UTC()
+	err = tx.QueryRow(ctx, `
+		UPDATE platform_payout_reconciliation_cases
+		SET status = 'rejected',
+		    checker_id = $1,
+		    rejection_reason = $2,
+		    reviewed_at = $3,
+		    updated_at = $3
+		WHERE id = $4
+		RETURNING id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
+		          failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
+		          status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at`,
+		checkerID, trimmedReason, now, caseID,
+	).Scan(
+		&reconCase.ID, &reconCase.PayoutItemID, &reconCase.ProposedStatus, &reconCase.UTR, &reconCase.CFTransferID,
+		&reconCase.SettledAt, &reconCase.FailureReason, &reconCase.Notes, &reconCase.EvidenceRef, &reconCase.EvidenceHash,
+		&reconCase.MakerID, &reconCase.CheckerID, &reconCase.Status, &reconCase.ItemSnapshot, &reconCase.RejectionReason,
+		&reconCase.CreatedAt, &reconCase.ReviewedAt, &reconCase.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("update reconciliation case rejected: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit reject reconciliation case tx: %w", err)
+	}
+
+	return &reconCase, nil
+}

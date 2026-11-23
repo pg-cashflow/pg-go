@@ -209,6 +209,30 @@ func (c *Client) GetDigiLockerStatus(ctx context.Context, verificationID string)
 	}, nil
 }
 
+// isMaskedAadhaar verifies that an Aadhaar number is properly masked (e.g. XXXXXXXX1234,
+// XXXX-XXXX-1234, or ********1234). It strictly rejects unmasked 12-digit Aadhaar numbers
+// to comply with UIDAI guidelines and DPDP Section 8(5).
+func isMaskedAadhaar(s string) bool {
+	s = strings.TrimSpace(s)
+	clean := strings.ReplaceAll(strings.ReplaceAll(s, "-", ""), " ", "")
+	if len(clean) != 12 {
+		return false
+	}
+	for i := 0; i < 8; i++ {
+		c := clean[i]
+		if c != 'x' && c != 'X' && c != '*' {
+			return false
+		}
+	}
+	for i := 8; i < 12; i++ {
+		c := clean[i]
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // GetDigiLockerAadhaar fetches the Aadhaar details after the session is AUTHENTICATED.
 //
 // It returns ErrDigiLockerPending for HTTP 202. A successful call with
@@ -234,6 +258,7 @@ func (c *Client) GetDigiLockerAadhaar(ctx context.Context, verificationID string
 		ReferenceID    ProviderID `json:"reference_id"`
 		Status         string     `json:"status"`
 		UID            string     `json:"uid"`
+		AadhaarNumber  string     `json:"aadhaar_number"`
 		Name           string     `json:"name"`
 		DOB            string     `json:"dob"`
 		Gender         string     `json:"gender"`
@@ -255,12 +280,21 @@ func (c *Client) GetDigiLockerAadhaar(ctx context.Context, verificationID string
 	default:
 		return nil, &CorruptDocumentError{Reason: "digilocker aadhaar: unexpected status " + out.Status}
 	}
+
+	rawUID := strings.TrimSpace(out.UID)
+	if rawUID == "" {
+		rawUID = strings.TrimSpace(out.AadhaarNumber)
+	}
+
 	// A "SUCCESS" without identity fields must never reach the verification pipeline.
-	if strings.TrimSpace(out.Name) == "" || strings.TrimSpace(out.UID) == "" ||
+	if strings.TrimSpace(out.Name) == "" || rawUID == "" ||
 		(strings.TrimSpace(out.DOB) == "" && out.YearOfBirth == 0) {
 		return nil, &CorruptDocumentError{Reason: "digilocker aadhaar: success response is missing identity fields"}
 	}
-	res.MaskedUID = strings.TrimSpace(out.UID)
+	if !isMaskedAadhaar(rawUID) {
+		return nil, &CorruptDocumentError{Reason: "digilocker aadhaar: UID/aadhaar_number is not properly masked"}
+	}
+	res.MaskedUID = rawUID
 	res.Name = strings.TrimSpace(out.Name)
 	res.DOB = strings.TrimSpace(out.DOB)
 	res.Gender = strings.TrimSpace(out.Gender)

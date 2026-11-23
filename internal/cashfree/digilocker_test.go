@@ -234,11 +234,15 @@ func TestGetDigiLockerAadhaar_PendingIs202(t *testing.T) {
 
 func TestGetDigiLockerAadhaar_IncompleteSuccessIsCorrupt(t *testing.T) {
 	bodies := map[string]string{
-		"no name":  `{"status":"SUCCESS","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
-		"no uid":   `{"status":"SUCCESS","name":"A B","dob":"02-02-1995"}`,
-		"no dob":   `{"status":"SUCCESS","name":"A B","uid":"xxxxxxxx5647"}`,
-		"unknown":  `{"status":"WHATEVER","name":"A B","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
-		"bad json": `not json`,
+		"no name":                      `{"status":"SUCCESS","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
+		"no uid":                       `{"status":"SUCCESS","name":"A B","dob":"02-02-1995"}`,
+		"no dob":                       `{"status":"SUCCESS","name":"A B","uid":"xxxxxxxx5647"}`,
+		"unknown":                      `{"status":"WHATEVER","name":"A B","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
+		"bad json":                     `not json`,
+		"unmasked 12 digit uid":        `{"status":"SUCCESS","name":"A B","uid":"123456789012","dob":"02-02-1995"}`,
+		"unmasked hyphenated aadhaar":  `{"status":"SUCCESS","name":"A B","aadhaar_number":"1234-5678-9012","dob":"02-02-1995"}`,
+		"short mask":                   `{"status":"SUCCESS","name":"A B","uid":"XXXX1234","dob":"02-02-1995"}`,
+		"all mask without digits":      `{"status":"SUCCESS","name":"A B","uid":"XXXXXXXXXXXX","dob":"02-02-1995"}`,
 	}
 	for name, body := range bodies {
 		c, _ := newDigiLockerServer(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) })
@@ -247,6 +251,49 @@ func TestGetDigiLockerAadhaar_IncompleteSuccessIsCorrupt(t *testing.T) {
 		if !errors.As(err, &corrupt) {
 			t.Errorf("%s: expected CorruptDocumentError, got %v", name, err)
 		}
+	}
+}
+
+func TestGetDigiLockerAadhaar_AadhaarNumberFallbackAndMasking(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantUID string
+	}{
+		{
+			name:    "aadhaar_number used when uid missing",
+			body:    `{"status":"SUCCESS","name":"John Doe","aadhaar_number":"XXXXXXXX5647","dob":"01-01-1990"}`,
+			wantUID: "XXXXXXXX5647",
+		},
+		{
+			name:    "hyphenated masked aadhaar accepted",
+			body:    `{"status":"SUCCESS","name":"John Doe","aadhaar_number":"XXXX-XXXX-5647","dob":"01-01-1990"}`,
+			wantUID: "XXXX-XXXX-5647",
+		},
+		{
+			name:    "space-separated masked aadhaar accepted",
+			body:    `{"status":"SUCCESS","name":"John Doe","uid":"XXXX XXXX 5647","dob":"01-01-1990"}`,
+			wantUID: "XXXX XXXX 5647",
+		},
+		{
+			name:    "asterisk-masked aadhaar accepted",
+			body:    `{"status":"SUCCESS","name":"John Doe","uid":"********5647","dob":"01-01-1990"}`,
+			wantUID: "********5647",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newDigiLockerServer(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			})
+			got, err := c.GetDigiLockerAadhaar(context.Background(), "v1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.MaskedUID != tc.wantUID {
+				t.Errorf("got MaskedUID %q, want %q", got.MaskedUID, tc.wantUID)
+			}
+		})
 	}
 }
 

@@ -192,6 +192,48 @@ type PayoutExceptionItem struct {
 	BatchNumber  *string   `json:"batch_number,omitempty"`
 }
 
+type PayoutReconciliationCaseStatus string
+
+const (
+	ReconciliationCasePending  PayoutReconciliationCaseStatus = "pending"
+	ReconciliationCaseApproved PayoutReconciliationCaseStatus = "approved"
+	ReconciliationCaseRejected PayoutReconciliationCaseStatus = "rejected"
+)
+
+type PlatformPayoutReconciliationCase struct {
+	ID              uuid.UUID                      `json:"id"`
+	PayoutItemID    uuid.UUID                      `json:"payout_item_id"`
+	ProposedStatus  PayoutItemStatus               `json:"proposed_status"`
+	UTR             *string                        `json:"utr,omitempty"`
+	CFTransferID    *string                        `json:"cf_transfer_id,omitempty"`
+	SettledAt       *time.Time                     `json:"settled_at,omitempty"`
+	FailureReason   *string                        `json:"failure_reason,omitempty"`
+	Notes           string                         `json:"notes"`
+	EvidenceRef     string                         `json:"evidence_ref"`
+	EvidenceHash    string                         `json:"evidence_hash"`
+	MakerID         uuid.UUID                      `json:"maker_id"`
+	CheckerID       *uuid.UUID                     `json:"checker_id,omitempty"`
+	Status          PayoutReconciliationCaseStatus `json:"status"`
+	ItemSnapshot    string                         `json:"item_snapshot"`
+	RejectionReason *string                        `json:"rejection_reason,omitempty"`
+	CreatedAt       time.Time                      `json:"created_at"`
+	ReviewedAt      *time.Time                     `json:"reviewed_at,omitempty"`
+	UpdatedAt       time.Time                      `json:"updated_at"`
+}
+
+type CreatePayoutReconciliationCaseParams struct {
+	PayoutItemID   uuid.UUID
+	ProposedStatus PayoutItemStatus
+	UTR            *string
+	CFTransferID   *string
+	SettledAt      *time.Time
+	FailureReason  *string
+	Notes          string
+	EvidenceRef    string
+	EvidenceHash   string
+	MakerID        uuid.UUID
+}
+
 // ComputeBatchChecksum computes HMAC-SHA256 over deterministic concatenation of payout items.
 func ComputeBatchChecksum(secret []byte, items []PayoutItem) string {
 	h := hmac.New(sha256.New, secret)

@@ -100,6 +100,21 @@ type BatchTransferStatusResponse struct {
 	Transfers         []TransferStatusItem `json:"transfers"`
 }
 
+func parseProviderErrorCode(body []byte) string {
+	var s struct {
+		Code    string `json:"code"`
+		Subcode string `json:"subcode"`
+	}
+	_ = json.Unmarshal(body, &s)
+	if s.Code != "" {
+		return strings.TrimSpace(s.Code)
+	}
+	if s.Subcode != "" {
+		return strings.TrimSpace(s.Subcode)
+	}
+	return ""
+}
+
 // RequestBatchTransfer dispatches a batch of payouts via POST /payout/transfers/batch.
 //
 // Invariant (5xx / Timeout Ambiguity):
@@ -152,26 +167,37 @@ func (c *PayoutClient) RequestBatchTransfer(ctx context.Context, req BatchTransf
 		return nil, fmt.Errorf("%w: failed reading response body: %v", ErrDispatchUnknown, err)
 	}
 
+	errCode := parseProviderErrorCode(bodyBytes)
+
 	// 5xx response from Cashfree -> Ambiguous!
 	if resp.StatusCode >= 500 {
-		return nil, fmt.Errorf("%w: Cashfree server returned HTTP %d: %s", ErrDispatchUnknown, resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: Cashfree server returned HTTP %d (code: %s)", ErrDispatchUnknown, resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("%w: Cashfree server returned HTTP %d", ErrDispatchUnknown, resp.StatusCode)
 	}
 
 	if resp.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(string(bodyBytes)), "beneficiary") {
-		return nil, fmt.Errorf("%w: %s", ErrBeneficiaryNotFound, string(bodyBytes))
+		return nil, fmt.Errorf("%w: beneficiary not found", ErrBeneficiaryNotFound)
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
 			"status", resp.StatusCode,
 			"path", resp.Request.URL.Path,
-			"body", string(bodyBytes),
+			"code", errCode,
 		)
-		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("%w: HTTP %d", ErrPayoutAuthRejected, resp.StatusCode)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree payout: batch transfer failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("cashfree payout: batch transfer failed (HTTP %d, code: %s)", resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("cashfree payout: batch transfer failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var out BatchTransferResponse
@@ -217,21 +243,32 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 		return nil, fmt.Errorf("cashfree payout: read batch status response: %w", err)
 	}
 
+	errCode := parseProviderErrorCode(bodyBytes)
+
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: HTTP 404: %s", ErrBatchNotFound, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: HTTP 404 (code: %s)", ErrBatchNotFound, errCode)
+		}
+		return nil, fmt.Errorf("%w: HTTP 404", ErrBatchNotFound)
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
 			"status", resp.StatusCode,
 			"path", resp.Request.URL.Path,
-			"body", string(bodyBytes),
+			"code", errCode,
 		)
-		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("%w: HTTP %d", ErrPayoutAuthRejected, resp.StatusCode)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree payout: get batch status failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("cashfree payout: get batch status failed (HTTP %d, code: %s)", resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("cashfree payout: get batch status failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var out BatchTransferStatusResponse
@@ -277,17 +314,32 @@ func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string)
 		return nil, fmt.Errorf("cashfree payout: read transfer status response: %w", err)
 	}
 
+	errCode := parseProviderErrorCode(bodyBytes)
+
+	if resp.StatusCode == http.StatusNotFound {
+		if errCode != "" {
+			return nil, fmt.Errorf("cashfree payout: transfer not found: HTTP 404 (code: %s)", errCode)
+		}
+		return nil, fmt.Errorf("cashfree payout: transfer not found: HTTP 404")
+	}
+
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
 			"status", resp.StatusCode,
 			"path", resp.Request.URL.Path,
-			"body", string(bodyBytes),
+			"code", errCode,
 		)
-		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("%w: HTTP %d", ErrPayoutAuthRejected, resp.StatusCode)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cashfree payout: get transfer status failed (HTTP %d): %s", resp.StatusCode, string(bodyBytes))
+		if errCode != "" {
+			return nil, fmt.Errorf("cashfree payout: get transfer status failed (HTTP %d, code: %s)", resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("cashfree payout: get transfer status failed (HTTP %d)", resp.StatusCode)
 	}
 
 	var out TransferStatusItem

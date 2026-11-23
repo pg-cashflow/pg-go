@@ -74,5 +74,10 @@ func registerPlatformRoutes(platform *gin.RouterGroup, h *Handlers) {
 		payouts.GET("/batches", h.PlatformListPayoutBatches)
 		payouts.GET("/batches/:id", h.PlatformGetPayoutBatch)
 		payouts.POST("/items/:id/reconcile", h.PlatformReconcilePayoutItem)
+		payouts.POST("/items/:id/reconcile-case", h.PlatformCreatePayoutReconciliationCase)
+		payouts.GET("/reconcile-cases", h.PlatformListPayoutReconciliationCases)
+		payouts.GET("/reconcile-cases/:id", h.PlatformGetPayoutReconciliationCase)
+		payouts.POST("/reconcile-cases/:id/approve", h.PlatformApprovePayoutReconciliationCase)
+		payouts.POST("/reconcile-cases/:id/reject", h.PlatformRejectPayoutReconciliationCase)
 	}
 }

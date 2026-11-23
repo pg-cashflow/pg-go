@@ -196,10 +196,18 @@ func Load() (*Config, error) {
 		cfg.CashfreeWebhookSecrets = cfg.CashfreePGWebhookSecrets
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
-		cfg.KYCIdentitySecrets = parseVersionedSecrets16(keysStr)
+		parsed, err := parseVersionedSecrets16(keysStr)
+		if err != nil {
+			return nil, fmt.Errorf("KYC_IDENTITY_SECRETS: %w", err)
+		}
+		cfg.KYCIdentitySecrets = parsed
 	}
 	if keysStr := os.Getenv("KYC_DOC_CRYPTO_KEYS"); keysStr != "" {
-		cfg.KYCDocCryptoKeys = parseVersionedHexKeys(keysStr)
+		parsed, err := parseVersionedHexKeys(keysStr)
+		if err != nil {
+			return nil, fmt.Errorf("KYC_DOC_CRYPTO_KEYS: %w", err)
+		}
+		cfg.KYCDocCryptoKeys = parsed
 	}
 	cfg.CashfreeAppID = cfg.CashfreePGAppID
 	cfg.CashfreeSecretKey = cfg.CashfreePGSecretKey
@@ -326,42 +334,67 @@ func parseVersionedKeys(s string) map[byte]string {
 // map[int16]string. The key type is int16 to match the hash_key_version column in
 // kyc_verification and the hashKeyVersion parameters throughout the KYC repo and
 // service layers. Valid version range: 1-32767 (int16 max; version 0 is reserved).
-// Malformed pairs and out-of-range version numbers are silently skipped -- the
-// caller (validate.go) reports them after Load() returns.
-func parseVersionedSecrets16(s string) map[int16]string {
+// Returns an error on malformed entries, out-of-range versions, or duplicate versions.
+func parseVersionedSecrets16(s string) (map[int16]string, error) {
 	out := make(map[int16]string)
+	if strings.TrimSpace(s) == "" {
+		return out, nil
+	}
 	for _, p := range strings.Split(s, ",") {
-		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
-		if len(parts) != 2 {
+		p = strings.TrimSpace(p)
+		if p == "" {
 			continue
+		}
+		parts := strings.SplitN(p, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("malformed entry %q: expected 'version:secret'", p)
 		}
 		ver, err := strconv.Atoi(parts[0])
 		if err != nil || ver < 1 || ver > 32767 {
-			continue
+			return nil, fmt.Errorf("invalid version %q in %q: must be between 1 and 32767", parts[0], p)
 		}
-		out[int16(ver)] = parts[1]
+		ver16 := int16(ver)
+		if _, exists := out[ver16]; exists {
+			return nil, fmt.Errorf("duplicate secret version %d", ver)
+		}
+		out[ver16] = parts[1]
 	}
-	return out
+	return out, nil
 }
 
-func parseVersionedHexKeys(s string) map[byte][]byte {
+func parseVersionedHexKeys(s string) (map[byte][]byte, error) {
 	out := make(map[byte][]byte)
+	if strings.TrimSpace(s) == "" {
+		return out, nil
+	}
 	for _, p := range strings.Split(s, ",") {
-		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
-		if len(parts) != 2 {
+		p = strings.TrimSpace(p)
+		if p == "" {
 			continue
+		}
+		parts := strings.SplitN(p, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("malformed entry %q: expected 'version:hexkey'", p)
 		}
 		ver, err := strconv.Atoi(parts[0])
 		if err != nil || ver < 1 || ver > 255 {
-			continue
+			return nil, fmt.Errorf("invalid version %q in %q: must be between 1 and 255", parts[0], p)
 		}
-		decoded, decErr := hex.DecodeString(strings.TrimSpace(parts[1]))
-		if decErr != nil || len(decoded) != 32 {
-			continue
+		keyByte := byte(ver)
+		if _, exists := out[keyByte]; exists {
+			return nil, fmt.Errorf("duplicate key version %d", ver)
 		}
-		out[byte(ver)] = decoded
+		hexStr := strings.TrimSpace(parts[1])
+		decoded, decErr := hex.DecodeString(hexStr)
+		if decErr != nil {
+			return nil, fmt.Errorf("invalid hex in %q: %w", p, decErr)
+		}
+		if len(decoded) != 32 {
+			return nil, fmt.Errorf("invalid key length in %q: got %d bytes, want 32", p, len(decoded))
+		}
+		out[keyByte] = decoded
 	}
-	return out
+	return out, nil
 }
 
 func parseVersionedApprovalKeys(s string) map[string]string {

@@ -36,6 +36,12 @@ type mockPlatformPayoutStore struct {
 		operatorID    uuid.UUID
 		notes         string
 	}
+	casesByID        map[uuid.UUID]*domain.PlatformPayoutReconciliationCase
+	casesList        []domain.PlatformPayoutReconciliationCase
+	createCaseErr    error
+	approveCaseErr   error
+	rejectCaseErr    error
+	lastCreateCaseIn domain.CreatePayoutReconciliationCaseParams
 }
 
 func (m *mockPlatformPayoutStore) ListPayoutExceptions(ctx context.Context, limit, offset int) ([]domain.PayoutExceptionItem, error) {
@@ -99,6 +105,87 @@ func (m *mockPlatformPayoutStore) ReconcilePayoutItemManual(
 		FailureReason: failureReason,
 		UpdatedAt:     time.Now().UTC(),
 	}, nil
+}
+
+func (m *mockPlatformPayoutStore) CreatePayoutReconciliationCase(ctx context.Context, params domain.CreatePayoutReconciliationCaseParams) (*domain.PlatformPayoutReconciliationCase, error) {
+	m.lastCreateCaseIn = params
+	if m.createCaseErr != nil {
+		return nil, m.createCaseErr
+	}
+	c := &domain.PlatformPayoutReconciliationCase{
+		ID:             uuid.New(),
+		PayoutItemID:   params.PayoutItemID,
+		ProposedStatus: params.ProposedStatus,
+		UTR:            params.UTR,
+		CFTransferID:   params.CFTransferID,
+		SettledAt:      params.SettledAt,
+		FailureReason:  params.FailureReason,
+		Notes:          params.Notes,
+		EvidenceRef:    params.EvidenceRef,
+		EvidenceHash:   params.EvidenceHash,
+		MakerID:        params.MakerID,
+		Status:         domain.ReconciliationCasePending,
+		ItemSnapshot:   `{"id":"` + params.PayoutItemID.String() + `","status":"processing"}`,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if m.casesByID == nil {
+		m.casesByID = make(map[uuid.UUID]*domain.PlatformPayoutReconciliationCase)
+	}
+	m.casesByID[c.ID] = c
+	return c, nil
+}
+
+func (m *mockPlatformPayoutStore) GetPayoutReconciliationCase(ctx context.Context, caseID uuid.UUID) (*domain.PlatformPayoutReconciliationCase, error) {
+	if c, ok := m.casesByID[caseID]; ok {
+		return c, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
+func (m *mockPlatformPayoutStore) ListPayoutReconciliationCases(ctx context.Context, status *domain.PayoutReconciliationCaseStatus, limit, offset int) ([]domain.PlatformPayoutReconciliationCase, error) {
+	return m.casesList, nil
+}
+
+func (m *mockPlatformPayoutStore) ApprovePayoutReconciliationCase(ctx context.Context, caseID uuid.UUID, checkerID uuid.UUID, checkerNotes string) (*domain.PayoutItem, error) {
+	if m.approveCaseErr != nil {
+		return nil, m.approveCaseErr
+	}
+	c, ok := m.casesByID[caseID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if checkerID == c.MakerID {
+		return nil, errors.New("maker cannot approve own reconciliation case; independent checker required")
+	}
+	c.Status = domain.ReconciliationCaseApproved
+	c.CheckerID = &checkerID
+	return &domain.PayoutItem{
+		ID:            c.PayoutItemID,
+		Status:        c.ProposedStatus,
+		UTR:           c.UTR,
+		CFTransferID:  c.CFTransferID,
+		SettledAt:     c.SettledAt,
+		FailureReason: c.FailureReason,
+		UpdatedAt:     time.Now().UTC(),
+	}, nil
+}
+
+func (m *mockPlatformPayoutStore) RejectPayoutReconciliationCase(ctx context.Context, caseID uuid.UUID, checkerID uuid.UUID, rejectionReason string) (*domain.PlatformPayoutReconciliationCase, error) {
+	if m.rejectCaseErr != nil {
+		return nil, m.rejectCaseErr
+	}
+	c, ok := m.casesByID[caseID]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	if checkerID == c.MakerID {
+		return nil, errors.New("maker cannot reject own reconciliation case; independent checker required")
+	}
+	c.Status = domain.ReconciliationCaseRejected
+	c.CheckerID = &checkerID
+	c.RejectionReason = &rejectionReason
+	return c, nil
 }
 
 func setupPlatformPayoutTest(t *testing.T, store *mockPlatformPayoutStore) (*gin.Engine, string, *domain.User) {
@@ -405,19 +492,15 @@ func TestPlatformReconcilePayoutItem_Validations(t *testing.T) {
 	}
 }
 
-func TestPlatformReconcilePayoutItem_Execution(t *testing.T) {
+func TestPlatformReconcilePayoutItem_DirectReconciliationForbidden(t *testing.T) {
 	store := &mockPlatformPayoutStore{}
-	r, token, opsUser := setupPlatformPayoutTest(t, store)
+	r, token, _ := setupPlatformPayoutTest(t, store)
 	itemID := uuid.New()
 
-	// 1. Success transition
-	nowStr := time.Now().UTC().Format(time.RFC3339)
 	body := map[string]any{
-		"status":         "succeeded",
-		"utr":            "UTR-BANK-123456",
-		"cf_transfer_id": "cf_tr_9999",
-		"settled_at":     nowStr,
-		"notes":          "Reconciled against HDFC bank statement #20261101",
+		"status": "succeeded",
+		"utr":    "UTR-BANK-123456",
+		"notes":  "Single operator direct reconciliation attempt",
 	}
 	b, _ := json.Marshal(body)
 	w := httptest.NewRecorder()
@@ -426,44 +509,260 @@ func TestPlatformReconcilePayoutItem_Execution(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for direct reconciliation, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("maker-checker two-person control is required")) {
+		t.Errorf("expected body to mention maker-checker requirement, got %s", w.Body.String())
+	}
+}
+
+func TestPlatformPayoutReconciliationCase_MakerCheckerLifecycle(t *testing.T) {
+	store := &mockPlatformPayoutStore{}
+	r, makerToken, makerUser := setupPlatformPayoutTest(t, store)
+	itemID := uuid.New()
+
+	// 1. Maker submits reconciliation case -> 201 Created, pending status
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	createBody := map[string]any{
+		"proposed_status": "succeeded",
+		"utr":             "UTR-BANK-778899",
+		"cf_transfer_id":  "cf_tr_7788",
+		"settled_at":      nowStr,
+		"notes":           "Reconciled from bank statement statement_nov.pdf",
+		"evidence_ref":    "storage://ops-audit/evidence/statement_nov.pdf",
+		"evidence_hash":   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+	b, _ := json.Marshal(createBody)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/payouts/items/"+itemID.String()+"/reconcile-case", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer "+makerToken)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for maker case submission, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var createResp struct {
+		Case domain.PlatformPayoutReconciliationCase `json:"case"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("unmarshal create case response: %v", err)
+	}
+	caseID := createResp.Case.ID
+	if caseID == uuid.Nil {
+		t.Fatalf("expected non-nil case ID")
+	}
+	if createResp.Case.Status != domain.ReconciliationCasePending {
+		t.Fatalf("expected pending status, got %s", createResp.Case.Status)
+	}
+	if createResp.Case.MakerID != makerUser.ID {
+		t.Fatalf("expected maker ID %s, got %s", makerUser.ID, createResp.Case.MakerID)
+	}
+
+	// 2. Maker attempts self-approval -> 403 Forbidden!
+	approveBody := map[string]any{
+		"notes": "Self approval attempt by maker",
+	}
+	ab, _ := json.Marshal(approveBody)
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/reconcile-cases/"+caseID.String()+"/approve", bytes.NewReader(ab))
+	req.Header.Set("Authorization", "Bearer "+makerToken) // Same maker token!
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for maker self-approval, got %d: %s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("maker cannot approve own reconciliation case")) {
+		t.Errorf("expected body to mention maker self-approval forbidden, got %s", w.Body.String())
+	}
+
+	// 3. Independent checker approves -> 200 OK
+	checkerUser := &domain.User{
+		ID:    uuid.New(),
+		Role:  domain.RolePlatformOps,
+		Phone: "+919876500000",
+	}
+	checkerToken, err := auth.IssueAccessToken("platform-ops-test-secret-32-chars-ok", checkerUser)
+	if err != nil {
+		t.Fatalf("issue checker token: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/reconcile-cases/"+caseID.String()+"/approve", bytes.NewReader(ab))
+	req.Header.Set("Authorization", "Bearer "+checkerToken) // Different checker token!
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
 	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	if store.lastReconcileIn.itemID != itemID {
-		t.Errorf("expected itemID %s, got %s", itemID, store.lastReconcileIn.itemID)
-	}
-	if store.lastReconcileIn.newStatus != domain.PayoutSucceeded {
-		t.Errorf("expected newStatus succeeded, got %s", store.lastReconcileIn.newStatus)
-	}
-	if store.lastReconcileIn.utr == nil || *store.lastReconcileIn.utr != "UTR-BANK-123456" {
-		t.Errorf("unexpected utr: %v", store.lastReconcileIn.utr)
-	}
-	if store.lastReconcileIn.operatorID != opsUser.ID {
-		t.Errorf("expected operatorID %s, got %s", opsUser.ID, store.lastReconcileIn.operatorID)
-	}
-	if store.lastReconcileIn.notes != "Reconciled against HDFC bank statement #20261101" {
-		t.Errorf("unexpected notes: %s", store.lastReconcileIn.notes)
+		t.Fatalf("expected 200 OK for independent checker approval, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 2. Not found
-	store.reconcileErr = domain.ErrNotFound
-	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/items/"+uuid.New().String()+"/reconcile", bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer "+token)
+	var approveResp struct {
+		Item domain.PayoutItem `json:"item"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &approveResp); err != nil {
+		t.Fatalf("unmarshal approve response: %v", err)
+	}
+	if approveResp.Item.Status != domain.PayoutSucceeded {
+		t.Fatalf("expected item status succeeded, got %s", approveResp.Item.Status)
+	}
+	if approveResp.Item.UTR == nil || *approveResp.Item.UTR != "UTR-BANK-778899" {
+		t.Fatalf("expected UTR UTR-BANK-778899, got %v", approveResp.Item.UTR)
+	}
+}
+
+func TestPlatformPayoutReconciliationCase_RejectionFlow(t *testing.T) {
+	store := &mockPlatformPayoutStore{}
+	r, makerToken, _ := setupPlatformPayoutTest(t, store)
+	itemID := uuid.New()
+
+	createBody := map[string]any{
+		"proposed_status": "failed",
+		"failure_reason":  "UTR not found on bank ledger",
+		"notes":           "Check with bank manager",
+		"evidence_ref":    "storage://ops-audit/evidence/bank_inquiry.pdf",
+		"evidence_hash":   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+	}
+	b, _ := json.Marshal(createBody)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/payouts/items/"+itemID.String()+"/reconcile-case", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer "+makerToken)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404 on ErrNotFound, got %d", w.Code)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 3. Transition error
-	store.reconcileErr = errors.New("cannot transition payout item in terminal succeeded status to failed")
+	var createResp struct {
+		Case domain.PlatformPayoutReconciliationCase `json:"case"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &createResp)
+	caseID := createResp.Case.ID
+
+	// Maker attempts self-rejection -> 403 Forbidden
+	rejectBody := map[string]any{
+		"reason": "Rejected by maker self",
+	}
+	rb, _ := json.Marshal(rejectBody)
 	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/items/"+itemID.String()+"/reconcile", bytes.NewReader(b))
-	req.Header.Set("Authorization", "Bearer "+token)
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/reconcile-cases/"+caseID.String()+"/reject", bytes.NewReader(rb))
+	req.Header.Set("Authorization", "Bearer "+makerToken)
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 on invalid transition, got %d", w.Code)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for maker self-rejection, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Independent checker rejects -> 200 OK
+	checkerUser := &domain.User{
+		ID:    uuid.New(),
+		Role:  domain.RolePlatformOps,
+		Phone: "+919876500000",
+	}
+	checkerToken, _ := auth.IssueAccessToken("platform-ops-test-secret-32-chars-ok", checkerUser)
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/platform/payouts/reconcile-cases/"+caseID.String()+"/reject", bytes.NewReader(rb))
+	req.Header.Set("Authorization", "Bearer "+checkerToken)
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for checker rejection, got %d: %s", w.Code, w.Body.String())
+	}
+	var rejectResp struct {
+		Case domain.PlatformPayoutReconciliationCase `json:"case"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &rejectResp)
+	if rejectResp.Case.Status != domain.ReconciliationCaseRejected {
+		t.Fatalf("expected rejected status, got %s", rejectResp.Case.Status)
+	}
+	if rejectResp.Case.CheckerID == nil || *rejectResp.Case.CheckerID != checkerUser.ID {
+		t.Fatalf("expected checker ID %s, got %v", checkerUser.ID, rejectResp.Case.CheckerID)
+	}
+}
+
+func TestPlatformPayoutReconciliationCase_Validations(t *testing.T) {
+	store := &mockPlatformPayoutStore{}
+	r, token, _ := setupPlatformPayoutTest(t, store)
+	itemID := uuid.New()
+
+	cases := []struct {
+		name    string
+		payload map[string]any
+		wantSub string
+	}{
+		{
+			name: "missing evidence_ref",
+			payload: map[string]any{
+				"proposed_status": "succeeded",
+				"utr":             "UTR123",
+				"notes":           "Some notes",
+				"evidence_hash":   "hash123",
+			},
+			wantSub: "evidence_ref",
+		},
+		{
+			name: "missing evidence_hash",
+			payload: map[string]any{
+				"proposed_status": "succeeded",
+				"utr":             "UTR123",
+				"notes":           "Some notes",
+				"evidence_ref":    "ref123",
+			},
+			wantSub: "evidence_hash",
+		},
+		{
+			name: "succeeded missing utr",
+			payload: map[string]any{
+				"proposed_status": "succeeded",
+				"notes":           "Some notes",
+				"evidence_ref":    "ref123",
+				"evidence_hash":   "hash123",
+			},
+			wantSub: "utr is required",
+		},
+		{
+			name: "failed missing failure_reason",
+			payload: map[string]any{
+				"proposed_status": "failed",
+				"notes":           "Some notes",
+				"evidence_ref":    "ref123",
+				"evidence_hash":   "hash123",
+			},
+			wantSub: "failure_reason is required",
+		},
+		{
+			name: "invalid proposed status",
+			payload: map[string]any{
+				"proposed_status": "pending",
+				"notes":           "Some notes",
+				"evidence_ref":    "ref123",
+				"evidence_hash":   "hash123",
+			},
+			wantSub: "invalid proposed reconciliation status",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, _ := json.Marshal(tc.payload)
+			w := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/platform/payouts/items/"+itemID.String()+"/reconcile-case", bytes.NewReader(b))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request, got %d: %s", w.Code, w.Body.String())
+			}
+			if !bytes.Contains(w.Body.Bytes(), []byte(tc.wantSub)) {
+				t.Errorf("expected body to contain %q, got %s", tc.wantSub, w.Body.String())
+			}
+		})
 	}
 }
