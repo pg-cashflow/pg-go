@@ -86,31 +86,31 @@ func (r *PaymentIntentQuarantineRepo) RecordAttempt(
 	default:
 		return fmt.Errorf("payment intent quarantine: invalid retry status %q", status)
 	}
-	var provider any
-	if strings.TrimSpace(providerStatus) != "" {
-		provider = strings.TrimSpace(providerStatus)
+	var provider *string
+	if s := strings.TrimSpace(providerStatus); s != "" {
+		provider = &s
 	}
-	var lastErr any
+	var lastErr *string
 	if cause != nil {
 		// Keep provider error text bounded. It must not contain request headers or secrets.
 		message := cause.Error()
 		if len(message) > 1000 {
 			message = message[:1000]
 		}
-		lastErr = message
+		lastErr = &message
 	}
 	_, err := r.pool.Exec(ctx, `
 		UPDATE payment_intent_quarantine
 		SET status = $2,
 		    terminal_confirmation_count = CASE
-		        WHEN $3 IS NULL THEN terminal_confirmation_count
-		        WHEN UPPER(BTRIM($3)) IN ('PAID', 'EXPIRED', 'TERMINATED') AND UPPER(BTRIM($3)) = last_provider_status
+		        WHEN ($3::TEXT) IS NULL THEN terminal_confirmation_count
+		        WHEN UPPER(BTRIM($3::TEXT)) IN ('PAID', 'EXPIRED', 'TERMINATED') AND UPPER(BTRIM($3::TEXT)) = last_provider_status
 		            THEN LEAST(terminal_confirmation_count + 1, 2)
-		        WHEN UPPER(BTRIM($3)) IN ('PAID', 'EXPIRED', 'TERMINATED') THEN 1
+		        WHEN UPPER(BTRIM($3::TEXT)) IN ('PAID', 'EXPIRED', 'TERMINATED') THEN 1
 		        ELSE 0
 		    END,
-		    last_provider_status = COALESCE(UPPER(BTRIM($3)), last_provider_status),
-		    last_error = $4,
+		    last_provider_status = COALESCE(UPPER(BTRIM($3::TEXT)), last_provider_status),
+		    last_error = $4::TEXT,
 		    attempt_count = attempt_count + 1,
 		    last_attempt_at = NOW(),
 		    next_check_at = $5,

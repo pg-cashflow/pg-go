@@ -40,7 +40,7 @@ func setupLiveTestPool(t *testing.T, timeout time.Duration) (*pgxpool.Pool, *con
 	_, _ = pool.Exec(ctx, `DO $$ BEGIN
 		IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'pgapp_app') THEN
 			BEGIN
-				EXECUTE format('GRANT pgapp_app, pgapp_maint TO %I', CURRENT_USER);
+				EXECUTE format('GRANT pgapp_app, pgapp_maint, pgapp_worker TO %I', CURRENT_USER);
 			EXCEPTION WHEN OTHERS THEN NULL;
 			END;
 		END IF;
