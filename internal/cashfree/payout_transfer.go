@@ -96,7 +96,7 @@ func (t *TransferStatusItem) AmountPaise() (int64, error) {
 type BatchTransferStatusResponse struct {
 	BatchTransferID   string               `json:"batch_transfer_id"`
 	CFBatchTransferID string               `json:"cf_batch_transfer_id"`
-	Status            string               `json:"status"` // "RECEIVED", "SUCCESS", "PARTIALLY_FAILED", "FAILED"
+	Status            string               `json:"status"` // "RECEIVED", "PENDING", "PROCESSED", "SUCCESS", "PARTIALLY_FAILED", "FAILED"
 	Transfers         []TransferStatusItem `json:"transfers"`
 }
 

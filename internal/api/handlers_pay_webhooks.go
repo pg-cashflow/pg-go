@@ -207,9 +207,19 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			case cashfree.SuccessWebhook:
 				if strings.TrimSpace(v.OrderID) != "" {
 					cfID, _, amount, ok, fErr := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), v.OrderID)
-					if fErr == nil && ok && amount == v.AmountPaise && (cfID == v.CFPaymentID || cfID != "") {
+					cleanCFID := strings.TrimSpace(cfID)
+					cleanWebhookID := strings.TrimSpace(v.CFPaymentID)
+					if fErr == nil && ok && cleanCFID != "" && cleanWebhookID != "" && cleanCFID == cleanWebhookID && amount == v.AmountPaise {
 						verifiedByGateway = true
-						slog.Info("cashfree payment webhook timestamp drift verified via live gateway API", "order_id", v.OrderID, "cf_payment_id", cfID)
+						slog.Info("cashfree payment webhook timestamp drift verified via live gateway API", "order_id", v.OrderID, "cf_payment_id", cleanCFID)
+					} else if fErr == nil && ok {
+						slog.Warn("cashfree payment webhook fallback rejected: gateway payment does not match webhook",
+							"order_id", v.OrderID,
+							"webhook_cf_payment_id", cleanWebhookID,
+							"gateway_cf_payment_id", cleanCFID,
+							"webhook_amount", v.AmountPaise,
+							"gateway_amount", amount,
+						)
 					}
 				}
 			case cashfree.RefundWebhook:

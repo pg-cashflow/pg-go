@@ -485,31 +485,44 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 	}
 
 	// 2. Identify all locally unresolved transfers not present in batch response.
-	// Query Cashfree using individual transfer IDs.
-	// Update only items with authoritative terminal results; keep unresolved items in reconciliation.
-	for cleanID, it := range itemMap {
-		if _, ok := seen[cleanID]; ok {
-			continue
-		}
-		if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
-			continue
-		}
-		transferID := DerivePayoutTransferID(it)
-		itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
-		if err == nil && itemStatus != nil {
-			if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
-				return err
+	// Query Cashfree using individual transfer IDs ONLY if batch status is explicitly PROCESSED.
+	// Per Cashfree Payouts V2 contract, individual transfers in a batch must only be queried
+	// after the batch status reaches PROCESSED (or terminal completion).
+	// If the batch status is RECEIVED, PENDING, or unrecognised, keep unresolved items in-flight
+	// and poll the batch endpoint again on subsequent intervals.
+	batchStatus := strings.ToUpper(strings.TrimSpace(statusResp.Status))
+	isBatchProcessed := batchStatus == "PROCESSED" || batchStatus == "SUCCESS" || batchStatus == "PARTIALLY_FAILED" || batchStatus == "FAILED"
+
+	if isBatchProcessed {
+		for cleanID, it := range itemMap {
+			if _, ok := seen[cleanID]; ok {
+				continue
 			}
-		} else {
-			// Do NOT mark as failed on empty response or lookup failure.
-			// Retain in reconciliation (in-flight) so background poller continues until authoritative.
-			slog.Warn("payout batch reconcile: individual transfer status lookup inconclusive; retaining in-flight",
-				"batch_id", batch.ID,
-				"transfer_id", transferID,
-				"item_id", it.ID,
-				"err", err,
-			)
+			if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
+				continue
+			}
+			transferID := DerivePayoutTransferID(it)
+			itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
+			if err == nil && itemStatus != nil {
+				if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
+					return err
+				}
+			} else {
+				// Do NOT mark as failed on empty response or lookup failure.
+				// Retain in reconciliation (in-flight) so background poller continues until authoritative.
+				slog.Warn("payout batch reconcile: individual transfer status lookup inconclusive; retaining in-flight",
+					"batch_id", batch.ID,
+					"transfer_id", transferID,
+					"item_id", it.ID,
+					"err", err,
+				)
+			}
 		}
+	} else {
+		slog.Info("payout batch reconcile: batch not yet processed; deferring individual transfer queries",
+			"batch_id", batch.ID,
+			"batch_status", statusResp.Status,
+		)
 	}
 
 	// 3. Derive batch status after all available item-level results have been applied.

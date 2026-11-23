@@ -361,11 +361,13 @@ func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow 
 			WHERE resolution_refund_id = $1 AND status = 'resolving'`, rfRow.ID); err != nil {
 			return fmt.Errorf("cleanup failed refund receipt update: %w", err)
 		}
-		_, _ = tx.Exec(ctx, `
+		if _, err := tx.Exec(ctx, `
 			UPDATE payment_commands
 			SET status = 'completed',
 			    processed_at = NOW()
-			WHERE source_id = $1 AND status = 'pending'`, rfRow.ID)
+			WHERE source_id = $1 AND status = 'pending'`, rfRow.ID); err != nil {
+			return fmt.Errorf("cleanup failed refund payment command update: %w", err)
+		}
 		return nil
 	})
 }

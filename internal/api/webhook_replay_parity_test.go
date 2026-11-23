@@ -276,4 +276,241 @@ func TestWebhookRetry_TimestampDrift_VerifiedByGatewayAPI_Success(t *testing.T) 
 	}
 }
 
+// TestWebhookRetry_TimestampDrift_PaymentIDMismatch_FailsClosed verifies that when a stale webhook
+// arrives with a payment ID that does NOT match the successful payment ID returned by Cashfree API,
+// the fallback rejects the webhook with HTTP 401 rather than settling an unverified payment ID.
+func TestWebhookRetry_TimestampDrift_PaymentIDMismatch_FailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	// Webhook claims cf_payment_id: 112233
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_mismatch"},"payment":{"cf_payment_id":112233,"payment_status":"SUCCESS","payment_amount":100,"payment_currency":"INR"}}}`
+
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "ord_mismatch",
+		AmountPaise:     10000,
+	}
+	// Gateway reports a DIFFERENT payment ID: 998877
+	cfClient := &mockCFVerifierClient{
+		cfID:    "998877",
+		bankRef: "UPI_BANK_REF_DIFF",
+		amount:  10000,
+		ok:      true,
+	}
+	settler := &mockParitySettler{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+		IntentStore:         &mockParityIntentStore{intent: intent},
+		CashfreeClient:      cfClient,
+		OrderSettler:        settler,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for payment ID mismatch in stale webhook fallback, got %d", w.Code)
+	}
+	if settler.settled {
+		t.Fatalf("invariant violated: mismatched payment must not be settled")
+	}
+}
+
+// TestWebhookRetry_TimestampDrift_AmountMismatch_FailsClosed verifies that when amount does not match
+// between webhook and gateway live confirmation, the fallback fails closed.
+func TestWebhookRetry_TimestampDrift_AmountMismatch_FailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_amount_mismatch"},"payment":{"cf_payment_id":554433,"payment_status":"SUCCESS","payment_amount":100,"payment_currency":"INR"}}}`
+
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "ord_amount_mismatch",
+		AmountPaise:     10000,
+	}
+	// Gateway reports same ID but DIFFERENT amount (20000 paise vs 10000 paise)
+	cfClient := &mockCFVerifierClient{
+		cfID:    "554433",
+		bankRef: "UPI_BANK_REF_99",
+		amount:  20000,
+		ok:      true,
+	}
+	settler := &mockParitySettler{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+		IntentStore:         &mockParityIntentStore{intent: intent},
+		CashfreeClient:      cfClient,
+		OrderSettler:        settler,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for amount mismatch in stale webhook fallback, got %d", w.Code)
+	}
+	if settler.settled {
+		t.Fatalf("invariant violated: mismatched amount must not be settled")
+	}
+}
+
+// TestWebhookRetry_TimestampDrift_BlankPaymentID_FailsClosed verifies that blank payment IDs fail closed.
+func TestWebhookRetry_TimestampDrift_BlankPaymentID_FailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_blank_id"},"payment":{"cf_payment_id":"","payment_status":"SUCCESS","payment_amount":100,"payment_currency":"INR"}}}`
+
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "ord_blank_id",
+		AmountPaise:     10000,
+	}
+	cfClient := &mockCFVerifierClient{
+		cfID:   "",
+		amount: 10000,
+		ok:     true,
+	}
+	settler := &mockParitySettler{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+		IntentStore:         &mockParityIntentStore{intent: intent},
+		CashfreeClient:      cfClient,
+		OrderSettler:        settler,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for blank payment ID, got %d", w.Code)
+	}
+	if settler.settled {
+		t.Fatalf("invariant violated: blank payment ID must not be settled")
+	}
+}
+
+// TestWebhookRetry_TimestampDrift_MultipleSuccessfulPayments_FailsClosed verifies that if Cashfree returns
+// ambiguous captures (multiple distinct successful payments), the fallback rejects with 401.
+func TestWebhookRetry_TimestampDrift_MultipleSuccessfulPayments_FailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_ambiguous"},"payment":{"cf_payment_id":554433,"payment_status":"SUCCESS","payment_amount":100,"payment_currency":"INR"}}}`
+
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "ord_ambiguous",
+		AmountPaise:     10000,
+	}
+	cfClient := &mockCFVerifierClient{
+		cfID:   "",
+		amount: 0,
+		ok:     false,
+		err:    fmt.Errorf("multiple distinct successful payments"),
+	}
+	settler := &mockParitySettler{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+		IntentStore:         &mockParityIntentStore{intent: intent},
+		CashfreeClient:      cfClient,
+		OrderSettler:        settler,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for ambiguous captures, got %d", w.Code)
+	}
+	if settler.settled {
+		t.Fatalf("invariant violated: ambiguous captures must not be settled")
+	}
+}
+
+// TestWebhookRetry_TimestampDrift_GatewayError_FailsClosed verifies that if Cashfree returns an error or timeout,
+// the fallback fails closed with 401.
+func TestWebhookRetry_TimestampDrift_GatewayError_FailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-pay-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+	body := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{"order":{"order_id":"ord_timeout"},"payment":{"cf_payment_id":554433,"payment_status":"SUCCESS","payment_amount":100,"payment_currency":"INR"}}}`
+
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	intent := &domain.PaymentIntent{
+		ID:              uuid.New(),
+		ProviderOrderID: "ord_timeout",
+		AmountPaise:     10000,
+	}
+	cfClient := &mockCFVerifierClient{
+		cfID:   "",
+		amount: 0,
+		ok:     false,
+		err:    context.DeadlineExceeded,
+	}
+	settler := &mockParitySettler{}
+
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret:      secret,
+		WebhookToleranceSec: 300,
+		GatewayPaymentRepo:  repo,
+		IntentStore:         &mockParityIntentStore{intent: intent},
+		CashfreeClient:      cfClient,
+		OrderSettler:        settler,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+	req.Header.Set("x-webhook-timestamp", oldTS)
+	req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on gateway error, got %d", w.Code)
+	}
+	if settler.settled {
+		t.Fatalf("invariant violated: gateway error must not be settled")
+	}
+}
+
 
