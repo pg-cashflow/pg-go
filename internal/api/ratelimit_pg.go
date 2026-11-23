@@ -70,7 +70,11 @@ func (h *Handlers) TenantIDRateLimit(rps float64, burst int) gin.HandlerFunc {
 			}
 			key := "tenant:" + t.ID.String() + ":" + c.FullPath()
 			allowed, err := pgLimiter.Allow(c.Request.Context(), key, rps, float64(burst))
-			if err != nil || !allowed {
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+				return
+			}
+			if !allowed {
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
 				return
 			}
@@ -88,7 +92,11 @@ func (h *Handlers) IPRateLimit(rps float64, burst int) gin.HandlerFunc {
 		return func(c *gin.Context) {
 			key := "ip:" + c.ClientIP() + ":" + c.FullPath()
 			allowed, err := pgLimiter.Allow(c.Request.Context(), key, rps, float64(burst))
-			if err != nil || !allowed {
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "service unavailable"})
+				return
+			}
+			if !allowed {
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "too many requests"})
 				return
 			}

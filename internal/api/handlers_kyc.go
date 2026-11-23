@@ -493,10 +493,6 @@ func (h *Handlers) TenantKYCDigiLockerStatus(c *gin.Context) {
 	})
 }
 
-type aadhaarOTPRequestBody struct {
-	AadhaarNumber string `json:"aadhaar_number" binding:"required"`
-}
-
 // TenantKYCAadhaarOTPRequest handles POST /api/tenant/kyc/aadhaar/otp/request.
 // Aadhaar OTP is intentionally disabled by PG Cashflow product policy. The selected
 // low-friction flow is document OCR, UIDAI Secure QR where available, and manual review.

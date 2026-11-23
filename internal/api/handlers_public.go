@@ -65,15 +65,74 @@ func (h *Handlers) clearRefreshCookie(c *gin.Context) {
 	c.SetCookie(RefreshCookieName, "", -1, RefreshCookiePath, "", h.refreshCookieSecure(c), true)
 }
 
+type paymentPageI18n struct {
+	Lang         string
+	Title        string
+	MetaDesc     string
+	PayText      string
+	DueCodeLabel string
+	ExpiresLabel string
+	KYCPolicy    string
+	PayButton    string
+	AlreadyPaid  string
+}
+
+var paymentPageLocales = map[string]paymentPageI18n{
+	"en-IN": {
+		Lang:         "en",
+		Title:        "Pay rent",
+		MetaDesc:     "Rent payment due for",
+		PayText:      "Pay",
+		DueCodeLabel: "Due code",
+		ExpiresLabel: "expires",
+		KYCPolicy:    "Mandatory KYC Policy: In compliance with RBI regulations and platform security standards, tenant identity verification is required before making payments. Please log in to complete verification and pay securely via UPI, Card, or Netbanking.",
+		PayButton:    "Log in to Pay Due",
+		AlreadyPaid:  "This due is already paid or waived.",
+	},
+	"te-IN": {
+		Lang:         "te",
+		Title:        "అద్దె చెల్లించండి",
+		MetaDesc:     "అద్దె చెల్లింపు బాకీ",
+		PayText:      "చెల్లించాల్సిన వారు:",
+		DueCodeLabel: "బాకీ కోడ్",
+		ExpiresLabel: "గడువు",
+		KYCPolicy:    "తప్పనిసరి KYC విధానం: RBI నిబంధనలు మరియు ప్లాట్‌ఫారమ్ భద్రతా ప్రమాణాలకు అనుగుణంగా, చెల్లింపులు చేయడానికి ముందు అద్దెదారు గుర్తింపు ధృవీకరణ అవసరం. దయచేసి ధృవీకరణను పూర్తి చేయడానికి మరియు UPI, కార్డ్ లేదా నెట్‌బ్యాంకింగ్ ద్వారా సురక్షితంగా చెల్లించడానికి లాగిన్ అవ్వండి.",
+		PayButton:    "బాకీ చెల్లించడానికి లాగిన్ అవ్వండి",
+		AlreadyPaid:  "ఈ బాకీ ఇప్పటికే చెల్లించబడింది లేదా మినహాయించబడింది.",
+	},
+	"ta-IN": {
+		Lang:         "ta",
+		Title:        "வாடகை செலுத்தவும்",
+		MetaDesc:     "வாடகை நிலுவைத்தொகை",
+		PayText:      "செலுத்த வேண்டியவர்:",
+		DueCodeLabel: "நிலுவைக் குறியீடு",
+		ExpiresLabel: "காலாவதி",
+		KYCPolicy:    "கட்டாய KYC கொள்கை: RBI விதிமுறைகள் மற்றும் தள பாதுகாப்பு தரநிலைகளின்படி, பணம் செலுத்துவதற்கு முன் வாடகைதாரர் அடையாள சரிபார்ப்பு அவசியம். சரிபார்ப்பை முடித்து UPI, கார்டு அல்லது நெட்பேங்கிங் மூலம் பாதுகாப்பாக செலுத்த உள்நுழையவும்.",
+		PayButton:    "நிலுவையைச் செலுத்த உள்நுழையவும்",
+		AlreadyPaid:  "இந்த நிலுவைத்தொகை ஏற்கனவே செலுத்தப்பட்டது அல்லது தள்ளுபடி செய்யப்பட்டது.",
+	},
+	"kn-IN": {
+		Lang:         "kn",
+		Title:        "ಬಾಡಿಗೆ ಪಾವತಿಸಿ",
+		MetaDesc:     "ಬಾಡಿಗೆ ಬಾಕಿ",
+		PayText:      "ಪಾವತಿಸಬೇಕಾದವರು:",
+		DueCodeLabel: "ಬಾಕಿ ಕೋಡ್",
+		ExpiresLabel: "ಮುಕ್ತಾಯ",
+		KYCPolicy:    "ಕಡ್ಡಾಯ KYC ನೀತಿ: RBI ನಿಯಮಗಳು ಮತ್ತು ಪ್ಲಾಟ್‌ಫಾರ್ಮ್ ಭದ್ರತಾ ಮಾನದಂಡಗಳ ಅನುಸಾರವಾಗಿ, ಪಾವತಿ ಮಾಡುವ ಮೊದಲು ಬಾಡಿಗೆದಾರರ ಗುರುತಿನ ಪರಿಶೀಲನೆ ಅಗತ್ಯವಿದೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲನೆ ಪೂರ್ಣಗೊಳಿಸಲು ಮತ್ತು UPI, ಕಾರ್ಡ್ ಅಥವಾ ನೆಟ್‌ಬ್ಯಾಂಕಿಂಗ್ ಮೂಲಕ ಸುರಕ್ಷಿತವಾಗಿ ಪಾವತಿಸಲು ಲಾಗಿನ್ ಆಗಿ.",
+		PayButton:    "ಬಾಕಿ ಪಾವತಿಸಲು ಲಾಗಿನ್ ಆಗಿ",
+		AlreadyPaid:  "ಈ ಬಾಕಿಯನ್ನು ಈಗಾಗಲೇ ಪಾವತಿಸಲಾಗಿದೆ ಅಥವಾ ಮನ್ನಾ ಮಾಡಲಾಗಿದೆ.",
+	},
+}
+
 var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
-<html lang="en">
+<html lang="{{.Lang}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pay rent — {{.PropertyName}}</title>
+  <title>{{.Title}} — {{.PropertyName}}</title>
   <meta property="og:type" content="website">
   <meta property="og:title" content="Pay ₹{{.AmountRupees}} — {{.PropertyName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}">
-  <meta property="og:description" content="Rent payment due for {{.PropertyName}}.">
+  <meta property="og:description" content="{{.MetaDesc}} {{.PropertyName}}.">
   <style>
     body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:1.5rem;background:#f7f7f5;color:#1a1a1a}
     main{max-width:28rem;margin:2rem auto;background:#fff;padding:2rem;border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
@@ -90,24 +149,34 @@ var paymentPageTmpl = template.Must(template.New("pay").Parse(`<!DOCTYPE html>
 <body>
 <main>
   <h1>{{.PropertyName}}</h1>
-  <p class="meta">Pay {{.OwnerName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}</p>
+  <p class="meta">{{.PayText}} {{.OwnerName}}{{if .RoomNumber}} · Room {{.RoomNumber}}{{end}}</p>
   <p class="amt">₹{{.AmountRupees}}</p>
-  <p class="meta">Due code: {{.DueCode}} · expires {{.ExpiresAt}}</p>
+  <p class="meta">{{.DueCodeLabel}}: {{.DueCode}} · {{.ExpiresLabel}} {{.ExpiresAt}}</p>
   {{if .Payable}}
   <div class="info">
-    <strong>Mandatory KYC Policy:</strong> In compliance with RBI regulations and platform security standards, tenant identity verification is required before making payments. Please log in to complete verification and pay securely via UPI, Card, or Netbanking.
+    <strong>{{.KYCPolicy}}</strong>
   </div>
   <div class="row">
-    <a class="btn" href="/tenant/dues">Log in to Pay Due</a>
+    <a class="btn" href="/tenant/dues">{{.PayButton}}</a>
   </div>
   {{else}}
-  <p class="done">This due is already paid or waived.</p>
+  <p class="done">{{.AlreadyPaid}}</p>
   {{end}}
 </main>
 </body>
 </html>`))
 
 type paymentPageData struct {
+	Lang         string
+	Title        string
+	MetaDesc     string
+	PayText      string
+	DueCodeLabel string
+	ExpiresLabel string
+	KYCPolicy    string
+	PayButton    string
+	AlreadyPaid  string
+
 	PropertyName string
 	OwnerName    string
 	RoomNumber   *string
@@ -139,6 +208,33 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 		return
 	}
 
+	rawLang := strings.TrimSpace(c.Query("lang"))
+	var queryLang *string
+	if rawLang != "" {
+		lower := strings.ToLower(rawLang)
+		switch {
+		case strings.HasPrefix(lower, "te"):
+			norm := "te-IN"
+			queryLang = &norm
+		case strings.HasPrefix(lower, "ta"):
+			norm := "ta-IN"
+			queryLang = &norm
+		case strings.HasPrefix(lower, "kn"):
+			norm := "kn-IN"
+			queryLang = &norm
+		case strings.HasPrefix(lower, "en"):
+			norm := "en-IN"
+			queryLang = &norm
+		default:
+			queryLang = &rawLang
+		}
+	}
+	locale := localization.ResolveLocale(queryLang, c.Request)
+	i18n, ok := paymentPageLocales[locale]
+	if !ok {
+		i18n = paymentPageLocales["en-IN"]
+	}
+
 	payable := view.Due.Status == domain.DueStatusPending || view.Due.Status == domain.DueStatusPartial
 	accept := c.GetHeader("Accept")
 	if strings.Contains(accept, "application/json") {
@@ -150,11 +246,22 @@ func (h *Handlers) PaymentPage(c *gin.Context) {
 			"due_code":      view.Due.DueCode,
 			"payable":       payable,
 			"redirect_url":  "/tenant/dues",
+			"locale":        locale,
 		})
 		return
 	}
 
 	data := paymentPageData{
+		Lang:         i18n.Lang,
+		Title:        i18n.Title,
+		MetaDesc:     i18n.MetaDesc,
+		PayText:      i18n.PayText,
+		DueCodeLabel: i18n.DueCodeLabel,
+		ExpiresLabel: i18n.ExpiresLabel,
+		KYCPolicy:    i18n.KYCPolicy,
+		PayButton:    i18n.PayButton,
+		AlreadyPaid:  i18n.AlreadyPaid,
+
 		PropertyName: view.PropertyName,
 		OwnerName:    view.OwnerName,
 		RoomNumber:   view.RoomNumber,

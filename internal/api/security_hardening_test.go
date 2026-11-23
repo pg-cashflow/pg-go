@@ -50,8 +50,34 @@ func TestSecurityHeaders(t *testing.T) {
 	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "fonts.gstatic.com") {
 		t.Errorf("expected CSP to omit fonts.gstatic.com (fonts are self-hosted), got %q", got)
 	}
+	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "sandbox.cashfree.com") {
+		t.Errorf("expected production CSP to omit sandbox.cashfree.com, got %q", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); strings.Contains(got, "payments-test.cashfree.com") {
+		t.Errorf("expected production CSP to omit payments-test.cashfree.com, got %q", got)
+	}
 	if got := w.Header().Get("Strict-Transport-Security"); !strings.Contains(got, "max-age=31536000") {
 		t.Errorf("expected HSTS header in production, got %q", got)
+	}
+}
+
+func TestSecurityHeaders_Development(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(SecurityHeaders("development"))
+	r.GET("/test", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "sandbox.cashfree.com") {
+		t.Errorf("expected development CSP to contain sandbox.cashfree.com, got %q", got)
+	}
+	if got := w.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("expected development to omit HSTS, got %q", got)
 	}
 }
 
