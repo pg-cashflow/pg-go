@@ -24,7 +24,7 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.GET("/kyc/digilocker/status", h.TenantIDRateLimit(20.0/60, 5), h.TenantKYCDigiLockerStatus)
 	tenant.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
 	tenant.POST("/kyc/qr/verify", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCSecureQRVerify)
-	// Deprecated: Aadhaar OTP verification is discontinued upstream by Cashfree/UIDAI. Both endpoints return 410 Gone; use /kyc/upload or /kyc/qr/verify.
+	// Disabled by PG Cashflow product policy. Both endpoints return 410 Gone; use /kyc/upload or /kyc/qr/verify.
 	tenant.POST("/kyc/aadhaar/otp/request", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
 	tenant.POST("/kyc/aadhaar/otp/verify", h.TenantIDRateLimit(10.0/60, domain.AadhaarOTPMaxAttempts), h.TenantKYCAadhaarOTPVerify)
 	tenant.POST("/kyc/revoke", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCRevoke)

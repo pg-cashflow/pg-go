@@ -194,8 +194,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 
 			at := time.Now().UTC()
 
-			if allClosed {
-				// UNAPPLIED / RACE LOSER BRANCH (e.g. cash paid offline or duplicate payment)
+			if allClosed || lockedIntent.Status == domain.IntentSuperseded {
+				// UNAPPLIED / RACE LOSER BRANCH. A capture from a superseded order
+				// must never be allocated to live dues, even when those dues remain open.
 				var existingCount int
 				if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
 					return nil
@@ -214,6 +215,8 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				note := "unapplied duplicate: dues already closed, pending owner refund or manual allocation"
 				if lockedIntent.Status == domain.IntentPaid {
 					note = "unapplied duplicate capture: order was already paid, held for owner review/refund"
+				} else if lockedIntent.Status == domain.IntentSuperseded {
+					note = "late capture from a superseded Cashfree order: held for owner review, credit or refund"
 				}
 				p := &domain.Payment{
 					DueID:             snapshot[0].DueID,
@@ -231,6 +234,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 					if errors.Is(err, domain.ErrDuplicateTxn) {
 						return nil
 					}
+					return err
+				}
+				if err := txPayRepo.LinkUnmatchedReceiptPaymentByProvider(ctx, orderID, cfPaymentID, p.ID); err != nil {
 					return err
 				}
 
@@ -396,6 +402,12 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 		if existing, err := s.intentStore.GetByCFPaymentID(ctx, cfPaymentID); err == nil && existing != nil && existing.Status == domain.IntentPaid {
 			return nil
 		}
+	}
+	if intent.Status == domain.IntentSuperseded {
+		if s.gatewayPaymentRepo == nil {
+			return errors.New("superseded Cashfree capture requires unmatched-receipt persistence")
+		}
+		return s.gatewayPaymentRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, &intent.ID, amountPaise, "session_superseded", rawPayload)
 	}
 	if s.payments != nil {
 		var duesToSettle []domain.PaymentIntentDue

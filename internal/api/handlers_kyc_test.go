@@ -1322,6 +1322,24 @@ func TestCashfreeKYCWebhook_SignatureAndTimestampValidation(t *testing.T) {
 	}
 }
 
+func TestCashfreeKYCWebhook_DoesNotAcknowledgeWhenServiceIsUnavailable(t *testing.T) {
+	secret := "test_webhook_secret_key_12345"
+	r := kycTestTenantRouter(nil, secret)
+	body := `{"reference_id":888999,"status":"SUCCESS","document_type":"aadhaar"}`
+	ts := fmt.Sprintf("%d", time.Now().Unix())
+
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/kyc", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-webhook-timestamp", ts)
+	req.Header.Set("x-webhook-signature", signTestHMAC(secret, ts+body))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when KYC service is unavailable, got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
 func TestCashfreeKYCWebhook_DuplicateCallbacksDoNotDuplicateDecisions(t *testing.T) {
 	secret := "test_webhook_secret_key_12345"
 	verifID := uuid.New()

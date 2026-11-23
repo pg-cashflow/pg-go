@@ -354,7 +354,7 @@ type AadhaarOTPVerifyResult struct {
 }
 
 // RequestAadhaarOTP initiates an Aadhaar OTP verification session via Cashfree.
-// Deprecated: Cashfree and UIDAI have discontinued direct offline-aadhaar OTP verification.
+// Deprecated in PG Cashflow: the product does not expose the OTP verification flow.
 // All new integrations must transition to DigiLocker or Smart OCR document upload.
 func (c *Client) RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*AadhaarOTPInitResult, error) {
 	if !c.cfg.Enabled() {
@@ -435,7 +435,7 @@ func parseRefID(val any) string {
 }
 
 // VerifyAadhaarOTP completes the Aadhaar OTP verification via Cashfree.
-// Deprecated: Cashfree and UIDAI have discontinued direct offline-aadhaar OTP verification.
+// Deprecated in PG Cashflow: the product does not expose the OTP verification flow.
 // All new integrations must transition to DigiLocker or Smart OCR document upload.
 func (c *Client) VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*AadhaarOTPVerifyResult, error) {
 	if !c.cfg.Enabled() {

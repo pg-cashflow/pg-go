@@ -624,11 +624,22 @@ func (s *Service) Vacate(ctx context.Context, tenantID uuid.UUID) error {
 			}
 
 			// 2. Lock tenant dues FOR UPDATE
-			rows, err := tx.Query(ctx, `SELECT id FROM dues WHERE tenant_id=$1 FOR UPDATE`, tenantID)
+			rows, err := tx.Query(ctx, `SELECT id FROM dues WHERE tenant_id=$1 ORDER BY due_date ASC, id ASC FOR UPDATE`, tenantID)
 			if err != nil {
 				return fmt.Errorf("lock dues: %w", err)
 			}
+			for rows.Next() {
+				var lockedDueID uuid.UUID
+				if scanErr := rows.Scan(&lockedDueID); scanErr != nil {
+					rows.Close()
+					return fmt.Errorf("scan locked tenant due: %w", scanErr)
+				}
+			}
+			rowsErr := rows.Err()
 			rows.Close()
+			if rowsErr != nil {
+				return fmt.Errorf("iterate locked tenant dues: %w", rowsErr)
+			}
 
 			// 3. Supersede all open payment intents for this tenant
 			_, err = tx.Exec(ctx, `

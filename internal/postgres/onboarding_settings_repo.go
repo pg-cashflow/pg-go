@@ -25,7 +25,8 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 			slot_invite_default_ttl_days, waitlist_enabled, waitlist_offer_ttl_hours, profile_schema_version,
 			join_pending_ttl_days,
 			referral_enabled, joiner_discount_bps, referrer_reward_bps,
-			COALESCE(allow_manager_refunds, false), manager_refund_limit_paise
+			COALESCE(allow_manager_refunds, false), manager_refund_limit_paise,
+			single_owner_refund_threshold_paise
 		FROM property_onboarding_settings WHERE property_id=$1`, propertyID,
 	).Scan(
 		&s.PropertyID, &s.DefaultRentPaise, &s.DefaultDepositPaise, &s.DefaultDueDay,
@@ -34,6 +35,7 @@ func (r *OnboardingSettingsRepo) Get(ctx context.Context, propertyID uuid.UUID) 
 		&s.JoinPendingTTLDays,
 		&s.ReferralEnabled, &s.JoinerDiscountBps, &s.ReferrerRewardBps,
 		&s.AllowManagerRefunds, &s.ManagerRefundLimitPaise,
+		&s.SingleOwnerRefundThresholdPaise,
 	)
 	if err != nil {
 		return nil, err
@@ -117,6 +119,9 @@ func (r *OnboardingSettingsRepo) Update(ctx context.Context, propertyID uuid.UUI
 	}
 	if patch.ManagerRefundLimitPaise.Set {
 		add("manager_refund_limit_paise", patch.ManagerRefundLimitPaise.Value)
+	}
+	if patch.SingleOwnerRefundThresholdPaise.Set {
+		add("single_owner_refund_threshold_paise", patch.SingleOwnerRefundThresholdPaise.Value)
 	}
 
 	if len(setClauses) > 0 {

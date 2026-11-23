@@ -228,7 +228,7 @@ func (h *Handlers) serveDueQR(c *gin.Context, ownerScoped bool) {
 	if h.Collector != nil {
 		intent, png, err := h.Collector.PayIntent(c.Request.Context(), due, prop, room, collector.PNGURL(role, due.ID), phone)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "qr"})
+			respondErr(c, checkoutClientErr(err))
 			return
 		}
 		if intent.Mode == domain.PaymentModeCashfree {

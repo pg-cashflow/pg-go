@@ -498,17 +498,17 @@ type aadhaarOTPRequestBody struct {
 }
 
 // TenantKYCAadhaarOTPRequest handles POST /api/tenant/kyc/aadhaar/otp/request.
-// Discontinued upstream: Aadhaar OTP verification is no longer supported by Cashfree.
-// Responds with 410 Gone; tenants must use Smart OCR document upload or Secure QR.
+// Aadhaar OTP is intentionally disabled by PG Cashflow product policy. The selected
+// low-friction flow is document OCR, UIDAI Secure QR where available, and manual review.
 func (h *Handlers) TenantKYCAadhaarOTPRequest(c *gin.Context) {
-	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP verification is discontinued; please upload your ID document.", apierr.Code("kyc.method_discontinued"))
+	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP is not enabled. Use document upload or Secure QR instead.", apierr.Code("kyc.method_discontinued"))
 }
 
 // TenantKYCAadhaarOTPVerify handles POST /api/tenant/kyc/aadhaar/otp/verify.
-// Discontinued upstream: Aadhaar OTP verification is no longer supported by Cashfree.
-// Responds with 410 Gone; tenants must use Smart OCR document upload or Secure QR.
+// Aadhaar OTP is intentionally disabled by PG Cashflow product policy. The selected
+// low-friction flow is document OCR, UIDAI Secure QR where available, and manual review.
 func (h *Handlers) TenantKYCAadhaarOTPVerify(c *gin.Context) {
-	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP verification is discontinued; please upload your ID document.", apierr.Code("kyc.method_discontinued"))
+	apierr.RespondClientErr(c, http.StatusGone, "Aadhaar OTP is not enabled. Use document upload or Secure QR instead.", apierr.Code("kyc.method_discontinued"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,7 +1106,9 @@ func (h *Handlers) CashfreeKYCWebhook(c *gin.Context) {
 
 	svc := h.KYCSvc
 	if svc == nil {
-		c.JSON(http.StatusOK, gin.H{"status": "ignored", "reason": "kyc service unconfigured"})
+		// Do not acknowledge a valid event that cannot be processed. A 5xx response
+		// lets the provider's configured delivery policy retry after service recovery.
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kyc webhook processing is temporarily unavailable"})
 		return
 	}
 

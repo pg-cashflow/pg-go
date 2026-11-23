@@ -398,6 +398,15 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	settlementBalancerRepo := postgres.NewSettlementBalancerRepo(maintPool)
 	settlementBalancer := finance.NewSettlementBalancer(settlementBalancerRepo)
 	ledgerOutboxRepo := postgres.NewLedgerOutboxRepo(maintPool)
+	quarantineRepo := postgres.NewPaymentIntentQuarantineRepo(maintPool)
+	orderSettler := payment.NewOrderSettlementService(payment.OrderSettlementConfig{
+		Pool:               maintPool,
+		GatewayPaymentRepo: maintPaymentRepo,
+		IntentStore:        postgres.NewPaymentIntentRepo(maintPool),
+		LedgerOutboxRepo:   ledgerOutboxRepo,
+		FinanceEnabled:     cfg.FinanceEnabled,
+		Payments:           paySvc,
+	})
 
 	payoutSecret := cfg.PayoutEncryptionSecret
 	if payoutSecret == "" {
@@ -478,110 +487,113 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	refundApprovalRepo := postgres.NewRefundApprovalRepo(appPool)
 
 	router := api.NewRouter(api.Deps{
-		JWTSecret:                    cfg.JWTSecret,
-		Auth:                         authSvc,
-		MagicLink:                    magicSvc,
-		Push:                         pushSvc,
-		Tenants:                      tenantSvc,
-		Billing:                      billingSvc,
-		Payments:                     paySvc,
-		Gamification:                 gamificationSvc,
-		GamificationStore:            gamificationRepo,
-		UserStore:                    userRepo,
-		PreferencesStore:             preferencesRepo,
-		PropertyStore:                propertyRepo,
-		TenantStore:                  tenantRepo,
-		DueStore:                     dueRepo,
-		PaymentStore:                 paymentRepo,
-		EventStore:                   eventRepo,
-		ImportStore:                  importRepo,
-		Joins:                        joinSvc,
-		InviteResolver:               inviteResolver,
-		SlotInvites:                  slotInviteSvc,
-		Referrals:                    referralSvc,
-		Waitlist:                     waitlistSvc,
-		OnboardingSettings:           onboardingSettingsRepo,
-		JoinIdempotency:              joinIdempotencyRepo,
-		ReportStore:                  reportRepo,
-		IntentStore:                  intentRepo,
-		IntentLifecycle:              intentLifecycle,
-		FeatureKYCDigiLocker:         cfg.FeatureKYCDigiLocker,
-		PaymentLookup:                maintPaymentRepo,
-		GatewayPaymentRepo:           maintPaymentRepo,
-		WebhookToleranceSec:          cfg.WebhookTimestampToleranceSec,
-		WebhookAPIVersion:            cfg.WebhookAPIVersion,
+		JWTSecret:                       cfg.JWTSecret,
+		Auth:                            authSvc,
+		MagicLink:                       magicSvc,
+		Push:                            pushSvc,
+		Tenants:                         tenantSvc,
+		Billing:                         billingSvc,
+		Payments:                        paySvc,
+		Gamification:                    gamificationSvc,
+		GamificationStore:               gamificationRepo,
+		UserStore:                       userRepo,
+		PreferencesStore:                preferencesRepo,
+		PropertyStore:                   propertyRepo,
+		TenantStore:                     tenantRepo,
+		DueStore:                        dueRepo,
+		PaymentStore:                    paymentRepo,
+		EventStore:                      eventRepo,
+		ImportStore:                     importRepo,
+		Joins:                           joinSvc,
+		InviteResolver:                  inviteResolver,
+		SlotInvites:                     slotInviteSvc,
+		Referrals:                       referralSvc,
+		Waitlist:                        waitlistSvc,
+		OnboardingSettings:              onboardingSettingsRepo,
+		JoinIdempotency:                 joinIdempotencyRepo,
+		ReportStore:                     reportRepo,
+		IntentStore:                     intentRepo,
+		IntentLifecycle:                 intentLifecycle,
+		OrderSettler:                    orderSettler,
+		FeatureKYCDigiLocker:            cfg.FeatureKYCDigiLocker,
+		PaymentLookup:                   maintPaymentRepo,
+		GatewayPaymentRepo:              maintPaymentRepo,
+		WebhookToleranceSec:             cfg.WebhookTimestampToleranceSec,
+		WebhookAPIVersion:               cfg.WebhookAPIVersion,
 		RefundWindowDays:                cfg.RefundWindowDays,
 		RefundApprovalRepo:              refundApprovalRepo,
 		SingleOwnerRefundThresholdPaise: cfg.SingleOwnerRefundThresholdPaise,
 		Pool:                            maintPool,
-		AppPool:                      appPool,
-		Collector:                    collectorSvc,
-		KYCSvc:                       kycSvc,
-		CashfreeKYCWebhookSecret:     cfg.CashfreeKYCWebhookSecret,
-		CashfreeKYCWebhookSecrets:    cfg.CashfreeKYCWebhookSecrets,
-		CashfreeSecret:               cfg.CashfreeWebhookSecret,
-		CashfreeSecrets:              cfg.CashfreeWebhookSecrets,
-		CashfreeEnv:                  cfg.CashfreeEnv,
-		CashfreeClient:               cfClient,
-		BankVerifier:                 cfClient,
-		AuthTenantRepo:               tenantRepo,
-		AuthUserRepo:                 userRepo,
-		OutboxEvents:                 outboxRepo,
-		NotificationSvc:              notifSvc,
-		Events:                       pub,
-		MagicLinkBaseURL:             cfg.MagicLinkBaseURL,
-		VAPIDPublicKey:               cfg.VAPIDPublicKey,
-		CORSAllowedOrigins:           cfg.CORSAllowedOrigins,
-		TrustedProxies:               cfg.TrustedProxies,
-		FrontendURL:                  cfg.FrontendURL,
-		AppEnv:                       cfg.AppEnv,
-		SearchSvc:                    searchSvc,
-		Finance:                      financeSvc,
-		ROI:                          roiSvc,
-		Intelligence:                 intelSvc,
-		FinanceEnabled:               cfg.FinanceEnabled,
-		IntelligenceEnabled:          cfg.IntelligenceEnabled,
-		PayoutRepo:                   payoutRepo,
-		PayoutDispatcher:             payoutDispatcher,
-		PayoutChecksumSecret:         cfg.PayoutExportChecksumSecret,
-		PayoutApprovalSigningKey:     payoutApprovalSigningKey,
-		PayoutApprovalKeys:           approvalSigningKeys,
-		PayoutEncryptionKey:          payoutEncryptionKey,
-		PayoutKeyRing:                payoutKeyRing,
-		CashfreePayoutWebhookSecret:  cfg.CashfreePayoutWebhookSecret,
-		CashfreePayoutWebhookSecrets: cfg.CashfreePayoutWebhookSecrets,
-		AttendanceRepo:               attendanceRepo,
-		AttendanceSvc:                attendanceSvc,
-		BankTxnRepo:                  bankTxnRepo,
-		BankAccountRepo:              bankAccountRepo,
-		SettlementRepo:               settlementRepo,
-		SettlementReconciler:         settlementReconciler,
-		SettlementBalancerRepo:       settlementBalancerRepo,
-		SettlementBalancer:           settlementBalancer,
-		LedgerOutboxRepo:             ledgerOutboxRepo,
-		MetricsSecret:                cfg.MetricsSecret,
-		CapabilityStore:              postgres.NewCapabilityRepo(maintPool),
-		CalendarTokenStore:           calendarTokenRepo,
+		AppPool:                         appPool,
+		Collector:                       collectorSvc,
+		KYCSvc:                          kycSvc,
+		CashfreeKYCWebhookSecret:        cfg.CashfreeKYCWebhookSecret,
+		CashfreeKYCWebhookSecrets:       cfg.CashfreeKYCWebhookSecrets,
+		CashfreeSecret:                  cfg.CashfreeWebhookSecret,
+		CashfreeSecrets:                 cfg.CashfreeWebhookSecrets,
+		CashfreeEnv:                     cfg.CashfreeEnv,
+		CashfreeClient:                  cfClient,
+		BankVerifier:                    cfClient,
+		AuthTenantRepo:                  tenantRepo,
+		AuthUserRepo:                    userRepo,
+		OutboxEvents:                    outboxRepo,
+		NotificationSvc:                 notifSvc,
+		Events:                          pub,
+		MagicLinkBaseURL:                cfg.MagicLinkBaseURL,
+		VAPIDPublicKey:                  cfg.VAPIDPublicKey,
+		CORSAllowedOrigins:              cfg.CORSAllowedOrigins,
+		TrustedProxies:                  cfg.TrustedProxies,
+		FrontendURL:                     cfg.FrontendURL,
+		AppEnv:                          cfg.AppEnv,
+		SearchSvc:                       searchSvc,
+		Finance:                         financeSvc,
+		ROI:                             roiSvc,
+		Intelligence:                    intelSvc,
+		FinanceEnabled:                  cfg.FinanceEnabled,
+		IntelligenceEnabled:             cfg.IntelligenceEnabled,
+		PayoutRepo:                      payoutRepo,
+		PayoutDispatcher:                payoutDispatcher,
+		PayoutChecksumSecret:            cfg.PayoutExportChecksumSecret,
+		PayoutApprovalSigningKey:        payoutApprovalSigningKey,
+		PayoutApprovalKeys:              approvalSigningKeys,
+		PayoutEncryptionKey:             payoutEncryptionKey,
+		PayoutKeyRing:                   payoutKeyRing,
+		CashfreePayoutWebhookSecret:     cfg.CashfreePayoutWebhookSecret,
+		CashfreePayoutWebhookSecrets:    cfg.CashfreePayoutWebhookSecrets,
+		AttendanceRepo:                  attendanceRepo,
+		AttendanceSvc:                   attendanceSvc,
+		BankTxnRepo:                     bankTxnRepo,
+		BankAccountRepo:                 bankAccountRepo,
+		SettlementRepo:                  settlementRepo,
+		SettlementReconciler:            settlementReconciler,
+		SettlementBalancerRepo:          settlementBalancerRepo,
+		SettlementBalancer:              settlementBalancer,
+		LedgerOutboxRepo:                ledgerOutboxRepo,
+		MetricsSecret:                   cfg.MetricsSecret,
+		CapabilityStore:                 postgres.NewCapabilityRepo(maintPool),
+		CalendarTokenStore:              calendarTokenRepo,
 	})
 
 	bg := backgroundConfig{
-		logger:          logger,
-		maintPool:       maintPool,
-		outboxRepo:      outboxRepo,
-		refreshRepo:     refreshRepo,
-		maintReportRepo: maintReportRepo,
-		dispatcher:      dispatcher,
-		financeEnabled:  cfg.FinanceEnabled,
-		ledgerOutbox:    ledgerOutboxRepo,
-		financeSvc:      financeSvc,
-		payoutDispatch:  payoutDispatcher,
-		mail:            mail,
-		adminEmail:      cfg.AdminEmail,
-		adminPhone:      cfg.AdminPhone,
-		smsGateway:      gateway,
-		cfClient:        cfClient,
-		paymentRepo:     maintPaymentRepo,
-		referralSvc:     referralSvc,
+		logger:               logger,
+		maintPool:            maintPool,
+		outboxRepo:           outboxRepo,
+		refreshRepo:          refreshRepo,
+		maintReportRepo:      maintReportRepo,
+		dispatcher:           dispatcher,
+		financeEnabled:       cfg.FinanceEnabled,
+		ledgerOutbox:         ledgerOutboxRepo,
+		quarantineRepo:       quarantineRepo,
+		orderSettler:         orderSettler,
+		financeSvc:           financeSvc,
+		payoutDispatch:       payoutDispatcher,
+		mail:                 mail,
+		adminEmail:           cfg.AdminEmail,
+		adminPhone:           cfg.AdminPhone,
+		smsGateway:           gateway,
+		cfClient:             cfClient,
+		paymentRepo:          maintPaymentRepo,
+		referralSvc:          referralSvc,
 		kycRepo:              kycRepo,
 		kycSvc:               kycSvc,
 		featureKYCDigiLocker: cfg.FeatureKYCDigiLocker,
@@ -606,23 +618,25 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 }
 
 type backgroundConfig struct {
-	logger          *slog.Logger
-	maintPool       *pgxpool.Pool
-	outboxRepo      *postgres.OutboxRepo
-	refreshRepo     *postgres.RefreshTokenRepo
-	maintReportRepo *postgres.PaymentReportRepo
-	dispatcher      *notificationsvc.Dispatcher
-	financeEnabled  bool
-	ledgerOutbox    *postgres.LedgerOutboxRepo
-	financeSvc      *finance.Service
-	payoutDispatch  *finance.PayoutDispatcher
-	mail            mailer.Mailer
-	adminEmail      string
-	adminPhone      string
-	smsGateway      sms.SMSGateway
-	cfClient        *cashfree.Client
-	paymentRepo     *postgres.PaymentRepo
-	referralSvc     *referral.Service
+	logger               *slog.Logger
+	maintPool            *pgxpool.Pool
+	outboxRepo           *postgres.OutboxRepo
+	refreshRepo          *postgres.RefreshTokenRepo
+	maintReportRepo      *postgres.PaymentReportRepo
+	dispatcher           *notificationsvc.Dispatcher
+	financeEnabled       bool
+	ledgerOutbox         *postgres.LedgerOutboxRepo
+	quarantineRepo       *postgres.PaymentIntentQuarantineRepo
+	orderSettler         payment.OrderGatewaySettler
+	financeSvc           *finance.Service
+	payoutDispatch       *finance.PayoutDispatcher
+	mail                 mailer.Mailer
+	adminEmail           string
+	adminPhone           string
+	smsGateway           sms.SMSGateway
+	cfClient             *cashfree.Client
+	paymentRepo          *postgres.PaymentRepo
+	referralSvc          *referral.Service
 	kycRepo              *postgres.KYCRepo
 	kycSvc               kycsvc.KYCCallbackProcessor
 	featureKYCDigiLocker bool
@@ -703,6 +717,53 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		kycInboxWorker.SetFeatureKYCDigiLocker(bg.featureKYCDigiLocker)
 		go kycInboxWorker.Start(ctx, 5*time.Second)
 		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
+	}
+
+	// Cashfree order quarantine is a payment-integrity control, not a ledger
+	// feature. Run it even when optional finance mirroring is disabled.
+	if bg.cfClient != nil && bg.quarantineRepo != nil && bg.orderSettler != nil && bg.maintPool != nil {
+		worker := &jobs.PaymentIntentQuarantineJob{
+			Store:   bg.quarantineRepo,
+			Gateway: bg.cfClient,
+			Settler: bg.orderSettler,
+			Log:     bg.logger,
+		}
+		runQuarantine := func() {
+			release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, jobs.PaymentIntentQuarantineLockName)
+			if err != nil {
+				bg.logger.Error("payment intent quarantine lock failed", "err", err)
+				return
+			}
+			if !acquired {
+				return
+			}
+			// The distributed lease lasts 10 minutes. A five-order batch bounds
+			// worst-case Cashfree HTTP time below the lease without renewal.
+			defer func() {
+				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if releaseErr := release(releaseCtx); releaseErr != nil {
+					bg.logger.Warn("payment intent quarantine lease release failed", "err", releaseErr)
+				}
+			}()
+			if err := worker.Run(ctx, 5); err != nil && !errors.Is(err, context.Canceled) {
+				bg.logger.Error("payment intent quarantine worker completed with errors", "err", err)
+			}
+		}
+		runQuarantine()
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					runQuarantine()
+				}
+			}
+		}()
+		bg.logger.Info("cashfree payment intent quarantine worker started", "interval", "30s")
 	}
 
 	if !bg.financeEnabled {

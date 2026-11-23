@@ -19,7 +19,7 @@ type OnboardingSettingsPatch struct {
 	SlotInviteDefaultTTLDays  *int
 	WaitlistEnabled           *bool
 	WaitlistOfferTTLHours     *int
-	JoinPendingTTLDays         *int
+	JoinPendingTTLDays        *int
 	ReferralEnabled           *bool
 	JoinerDiscountBps         *int
 	ReferrerRewardBps         *int
@@ -27,6 +27,8 @@ type OnboardingSettingsPatch struct {
 	// ManagerRefundLimitPaise distinguishes "field absent" (Set=false), "clear the limit"
 	// (Set=true, Value=nil) and "set a limit" (Set=true, Value!=nil).
 	ManagerRefundLimitPaise NullableInt64Patch
+	// SingleOwnerRefundThresholdPaise sets the property-level threshold. Null uses the account default.
+	SingleOwnerRefundThresholdPaise NullableInt64Patch
 }
 
 // NullableInt64Patch is a tri-state PATCH value. JSON null clears, a number sets, absence leaves as is.
@@ -73,6 +75,9 @@ func (p OnboardingSettingsPatch) Validate() error {
 	}
 	if p.ManagerRefundLimitPaise.Set && p.ManagerRefundLimitPaise.Value != nil && *p.ManagerRefundLimitPaise.Value < 0 {
 		return fmt.Errorf("%w: manager_refund_limit_paise", ErrOnboardingSettingsInvalid)
+	}
+	if p.SingleOwnerRefundThresholdPaise.Set && p.SingleOwnerRefundThresholdPaise.Value != nil && *p.SingleOwnerRefundThresholdPaise.Value < 0 {
+		return fmt.Errorf("%w: single_owner_refund_threshold_paise", ErrOnboardingSettingsInvalid)
 	}
 	if p.MaxExtraBedsPerRoom != nil && *p.MaxExtraBedsPerRoom < 0 {
 		return fmt.Errorf("%w: max_extra_beds_per_room", ErrOnboardingSettingsInvalid)

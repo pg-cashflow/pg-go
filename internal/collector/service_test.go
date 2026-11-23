@@ -29,6 +29,60 @@ func (s *stubIntents) LatestOpenForDue(context.Context, uuid.UUID) (*domain.Paym
 	return nil, pgx.ErrNoRows
 }
 
+func (s *stubIntents) ClaimInitiatingIntent(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ []int64, amount int64, orderID string, minRemaining time.Duration) (*domain.PaymentIntent, bool, bool, error) {
+	if s.existing != nil {
+		if s.existing.AmountPaise != amount {
+			return nil, false, false, errors.New("existing provider order requires quarantine reconciliation")
+		}
+		if s.existing.Status == domain.IntentCreated && s.existing.PaymentSessionID != nil && (s.existing.ExpiresAt == nil || s.existing.ExpiresAt.After(time.Now().Add(minRemaining))) {
+			return s.existing, true, false, nil
+		}
+		if s.existing.Status == domain.IntentInitiating || s.existing.Status == domain.IntentDispatchUnknown {
+			return s.existing, false, true, nil
+		}
+		if s.existing.Status == domain.IntentCreated || s.existing.Status == domain.IntentSuperseded || s.existing.Status == domain.IntentNeedsReview {
+			return nil, false, false, errors.New("existing provider order requires quarantine reconciliation")
+		}
+	}
+	intent := &domain.PaymentIntent{ID: uuid.New(), Provider: "cashfree", ProviderOrderID: orderID, AmountPaise: amount, Status: domain.IntentInitiating, IdempotencyKey: uuid.New()}
+	s.created = intent
+	return intent, false, false, nil
+}
+func (s *stubIntents) TransitionCreated(_ context.Context, id uuid.UUID, session string, expires *time.Time) error {
+	if s.created != nil && s.created.ID == id {
+		s.created.Status = domain.IntentCreated
+		s.created.PaymentSessionID = &session
+		s.created.ExpiresAt = expires
+	}
+	if s.existing != nil && s.existing.ID == id {
+		s.existing.Status = domain.IntentCreated
+		s.existing.PaymentSessionID = &session
+		s.existing.ExpiresAt = expires
+	}
+	return nil
+}
+func (s *stubIntents) TransitionFailed(_ context.Context, id uuid.UUID) error {
+	if s.created != nil && s.created.ID == id {
+		s.created.Status = domain.IntentFailed
+	}
+	return nil
+}
+func (s *stubIntents) TransitionDispatchUnknown(_ context.Context, id uuid.UUID) error {
+	if s.created != nil && s.created.ID == id {
+		s.created.Status = domain.IntentDispatchUnknown
+	}
+	return nil
+}
+func (s *stubIntents) GetByID(_ context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
+	if s.created != nil && s.created.ID == id {
+		return s.created, nil
+	}
+	if s.existing != nil && s.existing.ID == id {
+		return s.existing, nil
+	}
+	return nil, pgx.ErrNoRows
+}
+
 type stubCF struct{ n int }
 
 func (s *stubCF) CreateUPIOrder(ctx context.Context, _ string, _ int64, _ string, _ string, _ ...string) (string, *time.Time, error) {
@@ -118,7 +172,7 @@ func TestPayIntentCashfreeNoPhoneFallsBackToManual(t *testing.T) {
 	}
 }
 
-func TestEnsureCashfreeRejectsStaleAmount(t *testing.T) {
+func TestEnsureCashfreeBlocksStaleAmountUntilOldOrderIsReconciled(t *testing.T) {
 	sess := "old_sess"
 	existing := &domain.PaymentIntent{AmountPaise: 100, PaymentSessionID: &sess, Status: domain.IntentCreated}
 	intents := &stubIntents{existing: existing}
@@ -126,12 +180,12 @@ func TestEnsureCashfreeRejectsStaleAmount(t *testing.T) {
 	svc := New(intents, cf)
 	due := &domain.Due{ID: uuid.New(), DueCode: "ABC123", Amount: 200, Status: domain.DueStatusPending}
 	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
-	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "/x", "9999999999")
-	if err != nil {
-		t.Fatal(err)
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "/x", "9999999999")
+	if err == nil {
+		t.Fatal("expected stale provider order to block replacement checkout")
 	}
-	if cf.n != 1 || intent.PaymentSessionID != "sess_1" {
-		t.Fatalf("stale amount must create a new order: n=%d session=%s", cf.n, intent.PaymentSessionID)
+	if cf.n != 0 {
+		t.Fatalf("must not create a second provider order while old order is unresolved; got %d", cf.n)
 	}
 }
 
@@ -162,80 +216,40 @@ func TestPNGURL(t *testing.T) {
 	}
 }
 
-type lockingIntentStore struct {
-	reusable        *domain.PaymentIntent
-	superseded      bool
-	createdWithDues bool
-}
+type lockingIntentStore struct{}
 
 func (s *lockingIntentStore) Create(context.Context, *domain.PaymentIntent) error { return nil }
 func (s *lockingIntentStore) LatestOpenForDue(context.Context, uuid.UUID) (*domain.PaymentIntent, error) {
 	return nil, pgx.ErrNoRows
 }
-func (s *lockingIntentStore) GetReusableIntentUnderLock(_ context.Context, _, _ uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error) {
-	if s.reusable != nil {
-		if s.reusable.ExpiresAt != nil && s.reusable.ExpiresAt.Before(time.Now().Add(minRemaining)) {
-			return nil, pgx.ErrNoRows
-		}
-		return s.reusable, nil
-	}
-	return nil, pgx.ErrNoRows
-}
-func (s *lockingIntentStore) SupersedeOpenIntentsForDue(context.Context, uuid.UUID) error {
-	s.superseded = true
-	return nil
-}
-func (s *lockingIntentStore) CreateWithDues(_ context.Context, _ *domain.PaymentIntent, _ []uuid.UUID, _ []int64) error {
-	s.createdWithDues = true
-	return nil
-}
 
-func TestEnsureCashfreeUnderLockReuse(t *testing.T) {
-	sess := "reused_sess"
-	exp := time.Now().Add(25 * time.Minute)
-	store := &lockingIntentStore{
-		reusable: &domain.PaymentIntent{AmountPaise: 500000, PaymentSessionID: &sess, Status: domain.IntentCreated, ExpiresAt: &exp},
-	}
+func TestEnsureCashfreeLegacyStoreFailsClosed(t *testing.T) {
+	store := &lockingIntentStore{}
 	cf := &stubCF{}
 	svc := New(store, cf)
 	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "ABC123", Amount: 500000, Status: domain.DueStatusPending}
 	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
-
-	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
-	if err != nil {
-		t.Fatal(err)
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if !errors.Is(err, ErrAtomicPaymentIntentManagerRequired) {
+		t.Fatalf("expected fail-closed atomic manager error, got %v", err)
 	}
-	if cf.n != 0 || intent.PaymentSessionID != "reused_sess" {
-		t.Fatalf("expected reuse under lock: cf.n=%d session=%s", cf.n, intent.PaymentSessionID)
-	}
-	if store.superseded {
-		t.Fatal("should not supersede when intent is reusable")
+	if cf.n != 0 {
+		t.Fatalf("legacy adapter must not create provider orders; got %d", cf.n)
 	}
 }
 
-func TestEnsureCashfreeNearExpiryCreatesNewOrder(t *testing.T) {
-	sess := "expiring_soon_sess"
-	exp := time.Now().Add(5 * time.Minute) // < 10m remaining!
-	store := &lockingIntentStore{
-		reusable: &domain.PaymentIntent{AmountPaise: 500000, PaymentSessionID: &sess, Status: domain.IntentCreated, ExpiresAt: &exp},
-	}
+func TestEnsureCashfreeLegacyNearExpiryStoreFailsClosed(t *testing.T) {
+	store := &lockingIntentStore{}
 	cf := &stubCF{}
 	svc := New(store, cf)
 	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "ABC123", Amount: 500000, Status: domain.DueStatusPending}
 	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
-
-	intent, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
-	if err != nil {
-		t.Fatal(err)
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+	if !errors.Is(err, ErrAtomicPaymentIntentManagerRequired) {
+		t.Fatalf("expected fail-closed error, got %v", err)
 	}
-	if cf.n != 1 || intent.PaymentSessionID != "sess_1" {
-		t.Fatalf("expected new order created when < 10m remaining: cf.n=%d session=%s", cf.n, intent.PaymentSessionID)
-	}
-	if !store.superseded {
-		t.Fatal("expected older intent to be superseded under lock")
-	}
-	if !store.createdWithDues {
-		t.Fatal("expected CreateWithDues to be called")
+	if cf.n != 0 {
+		t.Fatalf("must not issue replacement provider order; got %d", cf.n)
 	}
 }
 
@@ -245,6 +259,8 @@ type recoveringIntentMgr struct {
 	sessionID       string
 	failed          bool
 	dispatchUnknown bool
+	inFlight        bool
+	pollStatus      domain.PaymentIntentStatus
 }
 
 func (m *recoveringIntentMgr) Create(context.Context, *domain.PaymentIntent) error { return nil }
@@ -259,7 +275,7 @@ func (m *recoveringIntentMgr) ClaimInitiatingIntent(ctx context.Context, tenantI
 		Status:          domain.IntentInitiating,
 		IdempotencyKey:  uuid.New(),
 	}
-	return m.claimed, false, false, nil
+	return m.claimed, false, m.inFlight, nil
 }
 func (m *recoveringIntentMgr) TransitionCreated(ctx context.Context, intentID uuid.UUID, sessionID string, expiresAt *time.Time) error {
 	m.transitioned = true
@@ -275,7 +291,14 @@ func (m *recoveringIntentMgr) TransitionDispatchUnknown(ctx context.Context, int
 	return nil
 }
 func (m *recoveringIntentMgr) GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
-	return m.claimed, nil
+	if m.claimed == nil {
+		return nil, nil
+	}
+	copy := *m.claimed
+	if m.pollStatus != "" {
+		copy.Status = m.pollStatus
+	}
+	return &copy, nil
 }
 
 type timingOutCF struct {
@@ -375,6 +398,42 @@ func TestEnsureCashfree_MarksFailedOnConfirmedExpiredOrder(t *testing.T) {
 	}
 	if !mgr.failed {
 		t.Fatal("expected intent to be transitioned to failed when Cashfree authoritatively confirmed order EXPIRED")
+	}
+}
+
+func TestEnsureCashfree_InFlightOrderNeverCreatesAnotherProviderOrder(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerState string
+		wantErr       error
+		wantFailed    bool
+	}{
+		{name: "paid awaits payment reconciliation", providerState: "PAID", wantErr: ErrCashfreeOrderPending},
+		{name: "user dropped is not terminal", providerState: "USER_DROPPED", wantErr: ErrCashfreeOrderPending},
+		{name: "unknown state fails closed", providerState: "NEW_PROVIDER_STATE", wantErr: ErrCashfreeOrderPending},
+		{name: "active without session remains pending", providerState: "ACTIVE", wantErr: ErrCashfreeOrderPending},
+		{name: "expired allows a fresh request", providerState: "EXPIRED", wantErr: ErrCashfreeOrderExpired, wantFailed: true},
+		{name: "terminated allows a fresh request", providerState: "TERMINATED", wantErr: ErrCashfreeOrderExpired, wantFailed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cf := &timingOutCF{activeOrder: &cashfree.OrderDetails{OrderID: "existing-order", OrderStatus: tt.providerState}}
+			mgr := &recoveringIntentMgr{inFlight: true, pollStatus: domain.IntentFailed}
+			svc := New(mgr, cf)
+			due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUE-INFLIGHT", Amount: 120000, Status: domain.DueStatusPending}
+			prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+			_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "9876543210")
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if cf.createCalls != 0 {
+				t.Fatalf("issued %d replacement create requests for an in-flight order", cf.createCalls)
+			}
+			if mgr.failed != tt.wantFailed {
+				t.Fatalf("failed transition = %v, want %v", mgr.failed, tt.wantFailed)
+			}
+		})
 	}
 }
 

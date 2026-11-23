@@ -464,3 +464,69 @@ func TestFetchSuccessfulPayment_AmbiguousCaptures(t *testing.T) {
 		}
 	})
 }
+
+func TestTerminateOrderRequiresReadAfterWriteAndReturnsRequestedState(t *testing.T) {
+	patchCalls := 0
+	getCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/orders/order-terminate-1" {
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
+		}
+		if r.Header.Get("x-client-id") != "test-id" || r.Header.Get("x-client-secret") != "test-secret" {
+			t.Fatal("Cashfree credentials were not attached to the request")
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			patchCalls++
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body["order_status"] != "TERMINATED" {
+				t.Fatalf("termination body = %#v", body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"order_status":"TERMINATION_REQUESTED"}`))
+		case http.MethodGet:
+			getCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"order_id":"order-terminate-1","order_status":"TERMINATION_REQUESTED","order_amount":100.00,"payment_session_id":"sess_x"}`))
+		default:
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{AppID: "test-id", SecretKey: "test-secret", Env: "sandbox"}).WithBaseURL(server.URL)
+	order, err := client.TerminateOrder(context.Background(), "order-terminate-1")
+	if err != nil {
+		t.Fatalf("TerminateOrder returned error: %v", err)
+	}
+	if patchCalls != 1 || getCalls != 1 {
+		t.Fatalf("PATCH calls=%d GET calls=%d; want one each", patchCalls, getCalls)
+	}
+	if order == nil || order.OrderStatus != "TERMINATION_REQUESTED" {
+		t.Fatalf("order status = %#v; must preserve non-terminal requested state", order)
+	}
+}
+
+func TestTerminateOrderReturnsProviderConfirmedTerminalState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"order_id":"order-terminate-2","order_status":"TERMINATED","order_amount":100.00}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{AppID: "id", SecretKey: "secret", Env: "sandbox"}).WithBaseURL(server.URL)
+	order, err := client.TerminateOrder(context.Background(), "order-terminate-2")
+	if err != nil {
+		t.Fatalf("TerminateOrder returned error: %v", err)
+	}
+	if order == nil || order.OrderStatus != "TERMINATED" {
+		t.Fatalf("expected provider-confirmed TERMINATED state, got %#v", order)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -22,6 +23,20 @@ type ClientError struct {
 	HTTPStatus int
 	Message    string
 	Code       apierr.Code
+}
+
+// checkoutClientErr maps only known, user-safe checkout state conflicts to a
+// stable API contract. All other errors remain internal and are logged by
+// respondErr without exposing provider or database details.
+func checkoutClientErr(err error) error {
+	switch {
+	case errors.Is(err, postgres.ErrPaymentIntentQuarantinePending), errors.Is(err, collector.ErrCashfreeOrderPending):
+		return clientErrWithCode(http.StatusConflict, "A previous payment attempt is being checked. Please try again shortly.", apierr.CodePaymentCheckoutPending)
+	case errors.Is(err, collector.ErrCashfreeOrderExpired):
+		return clientErrWithCode(http.StatusConflict, "The previous payment session has ended. Retry to start a new payment.", apierr.CodePaymentCheckoutExpired)
+	default:
+		return err
+	}
 }
 
 func (e *ClientError) Error() string { return e.Message }

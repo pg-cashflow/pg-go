@@ -38,21 +38,22 @@ func (h *Handlers) getOnboardingSettings(c *gin.Context) {
 }
 
 type patchOnboardingSettingsBody struct {
-	DefaultRentPaise          *int64                      `json:"default_rent_paise"`
-	DefaultDepositPaise       *int64                      `json:"default_deposit_paise"`
-	DefaultDueDay             *int16                      `json:"default_due_day"`
-	AutoActivate              *bool                       `json:"auto_activate"`
-	ReserveBedsForOpenInvites *bool                       `json:"reserve_beds_for_open_invites"`
-	MaxExtraBedsPerRoom       *int                        `json:"max_extra_beds_per_room"`
-	SlotInviteDefaultTTLDays  *int                        `json:"slot_invite_default_ttl_days"`
-	WaitlistEnabled           *bool                       `json:"waitlist_enabled"`
-	WaitlistOfferTTLHours     *int                        `json:"waitlist_offer_ttl_hours"`
-	JoinPendingTTLDays        *int                        `json:"join_pending_ttl_days"`
-	ReferralEnabled           *bool                       `json:"referral_enabled"`
-	JoinerDiscountBps         *int                        `json:"joiner_discount_bps"`
-	ReferrerRewardBps         *int                        `json:"referrer_reward_bps"`
-	AllowManagerRefunds       *bool                       `json:"allow_manager_refunds"`
-	ManagerRefundLimitPaise   postgres.NullableInt64Patch `json:"manager_refund_limit_paise"`
+	DefaultRentPaise                *int64                      `json:"default_rent_paise"`
+	DefaultDepositPaise             *int64                      `json:"default_deposit_paise"`
+	DefaultDueDay                   *int16                      `json:"default_due_day"`
+	AutoActivate                    *bool                       `json:"auto_activate"`
+	ReserveBedsForOpenInvites       *bool                       `json:"reserve_beds_for_open_invites"`
+	MaxExtraBedsPerRoom             *int                        `json:"max_extra_beds_per_room"`
+	SlotInviteDefaultTTLDays        *int                        `json:"slot_invite_default_ttl_days"`
+	WaitlistEnabled                 *bool                       `json:"waitlist_enabled"`
+	WaitlistOfferTTLHours           *int                        `json:"waitlist_offer_ttl_hours"`
+	JoinPendingTTLDays              *int                        `json:"join_pending_ttl_days"`
+	ReferralEnabled                 *bool                       `json:"referral_enabled"`
+	JoinerDiscountBps               *int                        `json:"joiner_discount_bps"`
+	ReferrerRewardBps               *int                        `json:"referrer_reward_bps"`
+	AllowManagerRefunds             *bool                       `json:"allow_manager_refunds"`
+	ManagerRefundLimitPaise         postgres.NullableInt64Patch `json:"manager_refund_limit_paise"`
+	SingleOwnerRefundThresholdPaise postgres.NullableInt64Patch `json:"single_owner_refund_threshold_paise"`
 }
 
 func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
@@ -70,21 +71,22 @@ func (h *Handlers) OwnerPatchOnboardingSettings(c *gin.Context) {
 		return
 	}
 	patch := postgres.OnboardingSettingsPatch{
-		DefaultRentPaise:          body.DefaultRentPaise,
-		DefaultDepositPaise:       body.DefaultDepositPaise,
-		DefaultDueDay:             body.DefaultDueDay,
-		AutoActivate:              body.AutoActivate,
-		ReserveBedsForOpenInvites: body.ReserveBedsForOpenInvites,
-		MaxExtraBedsPerRoom:       body.MaxExtraBedsPerRoom,
-		SlotInviteDefaultTTLDays:  body.SlotInviteDefaultTTLDays,
-		WaitlistEnabled:           body.WaitlistEnabled,
-		WaitlistOfferTTLHours:     body.WaitlistOfferTTLHours,
-		JoinPendingTTLDays:        body.JoinPendingTTLDays,
-		ReferralEnabled:           body.ReferralEnabled,
-		JoinerDiscountBps:         body.JoinerDiscountBps,
-		ReferrerRewardBps:         body.ReferrerRewardBps,
-		AllowManagerRefunds:       body.AllowManagerRefunds,
-		ManagerRefundLimitPaise:   body.ManagerRefundLimitPaise,
+		DefaultRentPaise:                body.DefaultRentPaise,
+		DefaultDepositPaise:             body.DefaultDepositPaise,
+		DefaultDueDay:                   body.DefaultDueDay,
+		AutoActivate:                    body.AutoActivate,
+		ReserveBedsForOpenInvites:       body.ReserveBedsForOpenInvites,
+		MaxExtraBedsPerRoom:             body.MaxExtraBedsPerRoom,
+		SlotInviteDefaultTTLDays:        body.SlotInviteDefaultTTLDays,
+		WaitlistEnabled:                 body.WaitlistEnabled,
+		WaitlistOfferTTLHours:           body.WaitlistOfferTTLHours,
+		JoinPendingTTLDays:              body.JoinPendingTTLDays,
+		ReferralEnabled:                 body.ReferralEnabled,
+		JoinerDiscountBps:               body.JoinerDiscountBps,
+		ReferrerRewardBps:               body.ReferrerRewardBps,
+		AllowManagerRefunds:             body.AllowManagerRefunds,
+		ManagerRefundLimitPaise:         body.ManagerRefundLimitPaise,
+		SingleOwnerRefundThresholdPaise: body.SingleOwnerRefundThresholdPaise,
 	}
 	s, err := h.OnboardingSettings.Update(c.Request.Context(), pid, patch)
 	if err != nil {
