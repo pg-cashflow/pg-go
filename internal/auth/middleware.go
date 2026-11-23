@@ -454,7 +454,51 @@ func sweepExpiredCaches(now time.Time) {
 	activeFamilyMu.Unlock()
 }
 
+// isFinancialMutation returns true if the incoming HTTP request executes a money-moving
+// or security-critical state mutation (payments, refunds, payouts, expenses, capital,
+// tie-outs, tenant departure/vacation).
+func isFinancialMutation(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	m := c.Request.Method
+	if m != http.MethodPost && m != http.MethodPut && m != http.MethodPatch && m != http.MethodDelete {
+		return false
+	}
+	p := c.Request.URL.Path
+	return strings.Contains(p, "/finance/") ||
+		strings.Contains(p, "/pay") ||
+		strings.Contains(p, "/payouts/") ||
+		strings.Contains(p, "/refund") ||
+		strings.Contains(p, "/vacate") ||
+		strings.Contains(p, "/capital") ||
+		strings.Contains(p, "/expenses") ||
+		strings.Contains(p, "/budgets")
+}
+
+// SetAuthoritativeAuth forces the authentication middleware to perform a live, authoritative
+// database lookup for the token version and session family, bypassing in-memory caches.
+func SetAuthoritativeAuth(c *gin.Context) {
+	if c != nil {
+		c.Set("auth.authoritative", true)
+	}
+}
+
+// RequireAuthoritativeAuth is a middleware that marks the request as requiring real-time
+// authoritative database authentication validation.
+func RequireAuthoritativeAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		SetAuthoritativeAuth(c)
+		c.Next()
+	}
+}
+
 func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
+	forceAuthoritative := false
+	if c != nil {
+		forceAuthoritative = c.GetBool("auth.authoritative") || isFinancialMutation(c)
+	}
+
 	if claims.FamilyID != nil && *claims.FamilyID != uuid.Nil {
 		// Fast path in-memory check
 		if IsFamilyRevoked(*claims.FamilyID) {
@@ -462,8 +506,8 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 			return false
 		}
 
-		// Positive in-memory cache check (10s TTL to eliminate remote DB latency on every request)
-		if !IsFamilyCachedActive(*claims.FamilyID) {
+		// Positive in-memory cache check (bypassed on authoritative requests)
+		if forceAuthoritative || !IsFamilyCachedActive(*claims.FamilyID) {
 			// Durable database session-family lookup if configured
 			if users != nil {
 				checker, ok := users.(SessionFamilyChecker)
@@ -503,12 +547,15 @@ func sessionStillValid(c *gin.Context, users UserLookup, claims *Claims) bool {
 		claimTV = DefaultTokenVersion
 	}
 
-	if live, ok := getCachedTokenVersion(claims.UserID); ok {
-		if claimTV < live {
-			apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
-			return false
+	// Bypass in-memory token version cache on authoritative or financial mutating requests
+	if !forceAuthoritative {
+		if live, ok := getCachedTokenVersion(claims.UserID); ok {
+			if claimTV < live {
+				apierr.Abort(c, http.StatusForbidden, "access revoked", apierr.CodeAuthAccessRevoked)
+				return false
+			}
+			return true
 		}
-		return true
 	}
 
 	u, err := users.GetByID(c.Request.Context(), claims.UserID)

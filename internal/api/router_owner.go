@@ -63,6 +63,7 @@ func registerOwnerRoutes(owner *gin.RouterGroup, h *Handlers) {
 	owner.POST("/bank-accounts", h.CreateBankAccount)
 	owner.DELETE("/bank-accounts/:id", h.DeactivateBankAccount)
 	owner.GET("/payments", h.ListPayments)
+	owner.GET("/payments/quarantine", h.OwnerListQuarantinedIntents)
 	owner.GET("/payments/unapplied-receipts", h.OwnerListUnappliedReceipts)
 	owner.GET("/payments/unapplied-receipts/:id", h.OwnerGetUnappliedReceipt)
 	owner.POST("/payments/unapplied-receipts/:id/credit", h.OwnerApplyUnappliedReceiptCredit)

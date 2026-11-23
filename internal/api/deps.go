@@ -397,3 +397,10 @@ type PayoutPlatformStore interface {
 	ListPayoutItemsByBatchCrossProperty(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error)
 	ReconcilePayoutItemManual(ctx context.Context, itemID uuid.UUID, newStatus domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string, operatorID uuid.UUID, notes string) (*domain.PayoutItem, error)
 }
+
+// PaymentIntentQuarantineStore defines store operations for reading quarantined payment orders.
+type PaymentIntentQuarantineStore interface {
+	CountNeedsReviewByProperty(ctx context.Context, propertyID uuid.UUID) (int, error)
+	ListByProperty(ctx context.Context, propertyID uuid.UUID, status string, limit int) ([]domain.PaymentIntentQuarantine, error)
+}
+

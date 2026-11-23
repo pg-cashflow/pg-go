@@ -110,6 +110,8 @@ type OwnerDashboardSummaryResponse struct {
 	// PayoutCashfreeApprovalsPendingCount is the count of transfers waiting for manual approval
 	// in Cashfree Merchant Dashboard under Payout Protect.
 	PayoutCashfreeApprovalsPendingCount int `json:"payout_cashfree_approvals_pending_count"`
+	// PaymentQuarantineNeedsReviewCount is the count of superseded Cashfree orders requiring owner manual review.
+	PaymentQuarantineNeedsReviewCount int `json:"payment_quarantine_needs_review_count"`
 }
 
 func (h *Handlers) computeOccupancyMetrics(c *gin.Context, pid uuid.UUID) (OccupancyMetrics, error) {
@@ -518,6 +520,13 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		}
 	}
 
+	quarantineNeedsReviewCount := 0
+	if h.PaymentIntentQuarantine != nil {
+		if cnt, err := h.PaymentIntentQuarantine.CountNeedsReviewByProperty(ctx, pid); err == nil {
+			quarantineNeedsReviewCount = cnt
+		}
+	}
+
 	c.JSON(http.StatusOK, OwnerDashboardSummaryResponse{
 		PropertyID: pid,
 		Period:     period,
@@ -542,6 +551,47 @@ func (h *Handlers) OwnerDashboardSummary(c *gin.Context) {
 		AsOf:                                time.Now().UTC(),
 		PayoutEmailMissing:                  payoutEmailMissing,
 		PayoutCashfreeApprovalsPendingCount: payoutApprovalsPending,
+		PaymentQuarantineNeedsReviewCount:   quarantineNeedsReviewCount,
+	})
+}
+
+// OwnerListQuarantinedIntents handles GET /owner/payments/quarantine.
+func (h *Handlers) OwnerListQuarantinedIntents(c *gin.Context) {
+	pid, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	if h.PaymentIntentQuarantine == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"items":               []domain.PaymentIntentQuarantine{},
+			"quarantined_intents": []domain.PaymentIntentQuarantine{},
+			"count":               0,
+		})
+		return
+	}
+
+	statusFilter := strings.TrimSpace(c.Query("status"))
+	limit := 50
+	if l := strings.TrimSpace(c.Query("limit")); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	list, err := h.PaymentIntentQuarantine.ListByProperty(c.Request.Context(), pid, statusFilter, limit)
+	if err != nil {
+		slog.Error("failed to list quarantined payment intents", "property_id", pid, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list quarantined payment intents"})
+		return
+	}
+	if list == nil {
+		list = []domain.PaymentIntentQuarantine{}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items":               list,
+		"quarantined_intents": list,
+		"count":               len(list),
 	})
 }
 

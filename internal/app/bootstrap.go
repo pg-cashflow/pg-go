@@ -518,6 +518,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		FeatureKYCDigiLocker:            cfg.FeatureKYCDigiLocker,
 		PaymentLookup:                   maintPaymentRepo,
 		GatewayPaymentRepo:              maintPaymentRepo,
+		PaymentIntentQuarantine:         quarantineRepo,
 		WebhookToleranceSec:             cfg.WebhookTimestampToleranceSec,
 		WebhookAPIVersion:               cfg.WebhookAPIVersion,
 		RefundWindowDays:                cfg.RefundWindowDays,

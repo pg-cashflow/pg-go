@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -70,6 +72,91 @@ func (r *PaymentIntentQuarantineRepo) ListReady(ctx context.Context, limit int) 
 	return items, nil
 }
 
+// CountNeedsReviewByProperty returns the number of quarantined orders in 'needs_review' status
+// for an individual property.
+func (r *PaymentIntentQuarantineRepo) CountNeedsReviewByProperty(ctx context.Context, propertyID uuid.UUID) (int, error) {
+	if r == nil || r.pool == nil {
+		return 0, errors.New("payment intent quarantine: database pool unavailable")
+	}
+	var count int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM payment_intent_quarantine
+		WHERE property_id = $1 AND status = 'needs_review'`,
+		propertyID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count needs_review payment intent quarantine: %w", err)
+	}
+	return count, nil
+}
+
+// ListByProperty returns quarantined orders for a property, optionally filtered by status.
+func (r *PaymentIntentQuarantineRepo) ListByProperty(ctx context.Context, propertyID uuid.UUID, status string, limit int) ([]domain.PaymentIntentQuarantine, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("payment intent quarantine: database pool unavailable")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	var rows pgx.Rows
+	var err error
+	status = strings.TrimSpace(status)
+	if status != "" {
+		rows, err = r.pool.Query(ctx, `
+			SELECT id, payment_intent_id, COALESCE(due_id, '00000000-0000-0000-0000-000000000000'::uuid),
+			       COALESCE(property_id, '00000000-0000-0000-0000-000000000000'::uuid), due_ids,
+			       provider_order_id, amount_paise, original_status, quarantine_reason,
+			       status, next_check_at, attempt_count, last_provider_status, last_error,
+			       created_at, updated_at
+			FROM payment_intent_quarantine
+			WHERE property_id = $1 AND status = $2
+			ORDER BY created_at DESC
+			LIMIT $3`, propertyID, status, limit)
+	} else {
+		rows, err = r.pool.Query(ctx, `
+			SELECT id, payment_intent_id, COALESCE(due_id, '00000000-0000-0000-0000-000000000000'::uuid),
+			       COALESCE(property_id, '00000000-0000-0000-0000-000000000000'::uuid), due_ids,
+			       provider_order_id, amount_paise, original_status, quarantine_reason,
+			       status, next_check_at, attempt_count, last_provider_status, last_error,
+			       created_at, updated_at
+			FROM payment_intent_quarantine
+			WHERE property_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2`, propertyID, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list payment intent quarantine by property: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]domain.PaymentIntentQuarantine, 0)
+	for rows.Next() {
+		var item domain.PaymentIntentQuarantine
+		if err := rows.Scan(
+			&item.ID, &item.PaymentIntentID, &item.DueID, &item.PropertyID, &item.DueIDs,
+			&item.ProviderOrderID, &item.AmountPaise, &item.OriginalStatus, &item.QuarantineReason,
+			&item.Status, &item.NextCheckAt, &item.AttemptCount, &item.LastProviderStatus,
+			&item.LastError, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan payment intent quarantine: %w", err)
+		}
+		item.Intent = domain.PaymentIntent{
+			ID:              item.PaymentIntentID,
+			DueID:           item.DueID,
+			Provider:        "cashfree",
+			ProviderOrderID: item.ProviderOrderID,
+			AmountPaise:     item.AmountPaise,
+			Status:          domain.IntentSuperseded,
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate payment intent quarantine: %w", err)
+	}
+	return items, nil
+}
+
 func (r *PaymentIntentQuarantineRepo) RecordAttempt(
 	ctx context.Context,
 	id int64,
@@ -86,31 +173,31 @@ func (r *PaymentIntentQuarantineRepo) RecordAttempt(
 	default:
 		return fmt.Errorf("payment intent quarantine: invalid retry status %q", status)
 	}
-	var provider any
-	if strings.TrimSpace(providerStatus) != "" {
-		provider = strings.TrimSpace(providerStatus)
+	var provider *string
+	if s := strings.TrimSpace(providerStatus); s != "" {
+		provider = &s
 	}
-	var lastErr any
+	var lastErr *string
 	if cause != nil {
 		// Keep provider error text bounded. It must not contain request headers or secrets.
 		message := cause.Error()
 		if len(message) > 1000 {
 			message = message[:1000]
 		}
-		lastErr = message
+		lastErr = &message
 	}
 	_, err := r.pool.Exec(ctx, `
 		UPDATE payment_intent_quarantine
 		SET status = $2,
 		    terminal_confirmation_count = CASE
-		        WHEN $3 IS NULL THEN terminal_confirmation_count
-		        WHEN UPPER(BTRIM($3)) IN ('PAID', 'EXPIRED', 'TERMINATED') AND UPPER(BTRIM($3)) = last_provider_status
+		        WHEN ($3::TEXT) IS NULL THEN terminal_confirmation_count
+		        WHEN UPPER(BTRIM($3::TEXT)) IN ('PAID', 'EXPIRED', 'TERMINATED') AND UPPER(BTRIM($3::TEXT)) = last_provider_status
 		            THEN LEAST(terminal_confirmation_count + 1, 2)
-		        WHEN UPPER(BTRIM($3)) IN ('PAID', 'EXPIRED', 'TERMINATED') THEN 1
+		        WHEN UPPER(BTRIM($3::TEXT)) IN ('PAID', 'EXPIRED', 'TERMINATED') THEN 1
 		        ELSE 0
 		    END,
-		    last_provider_status = COALESCE(UPPER(BTRIM($3)), last_provider_status),
-		    last_error = $4,
+		    last_provider_status = COALESCE(UPPER(BTRIM($3::TEXT)), last_provider_status),
+		    last_error = $4::TEXT,
 		    attempt_count = attempt_count + 1,
 		    last_attempt_at = NOW(),
 		    next_check_at = $5,
