@@ -493,6 +493,68 @@ func TestTokenVersionCache_RevocationAfterInvalidation(t *testing.T) {
 	}
 }
 
+func TestFinancialMutations_BypassTokenVersionCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ResetTokenVersionCache()
+	defer ResetTokenVersionCache()
+
+	const secret = "middleware-financial-test-secret"
+	propID := uuid.New()
+	user := &domain.User{
+		ID:           uuid.New(),
+		Role:         domain.RoleOwner,
+		PropertyID:   &propID,
+		TokenVersion: 1,
+	}
+	token, err := IssueAccessToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	lookupUser := *user
+	lookup := &countingUserLookup{user: &lookupUser}
+	r := gin.New()
+	r.POST("/api/owner/finance/expenses", RequireOwner(secret, lookup), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	r.GET("/api/owner/dashboard", RequireOwner(secret, lookup), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	// 1. GET /api/owner/dashboard populates the cache
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard", nil)
+	reqGet.Header.Set("Authorization", "Bearer "+token)
+	wGet := httptest.NewRecorder()
+	r.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusOK || lookup.calls != 1 {
+		t.Fatalf("expected GET 200 with 1 lookup call, got code %d calls %d", wGet.Code, lookup.calls)
+	}
+
+	// 2. Token version bumped in DB (simulating revocation on another instance without local cache eviction)
+	lookupUser.TokenVersion = 2
+
+	// 3. GET /api/owner/dashboard still succeeds because read route uses cache
+	reqGet2 := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard", nil)
+	reqGet2.Header.Set("Authorization", "Bearer "+token)
+	wGet2 := httptest.NewRecorder()
+	r.ServeHTTP(wGet2, reqGet2)
+	if wGet2.Code != http.StatusOK || lookup.calls != 1 {
+		t.Fatalf("expected GET 200 from cache with 1 lookup call, got code %d calls %d", wGet2.Code, lookup.calls)
+	}
+
+	// 4. POST /api/owner/finance/expenses MUST bypass cache and immediately reject with 403
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/owner/finance/expenses", nil)
+	reqPost.Header.Set("Authorization", "Bearer "+token)
+	wPost := httptest.NewRecorder()
+	r.ServeHTTP(wPost, reqPost)
+	if wPost.Code != http.StatusForbidden {
+		t.Fatalf("expected financial mutation to return 403 Forbidden on revoked token version, got %d", wPost.Code)
+	}
+	if lookup.calls != 2 {
+		t.Fatalf("expected lookup call count to increment to 2 (bypassing cache), got %d", lookup.calls)
+	}
+}
+
 type mockFamilyUserLookup struct {
 	user         *domain.User
 	familyActive bool

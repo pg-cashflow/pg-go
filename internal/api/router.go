@@ -64,10 +64,11 @@ type Deps struct {
 	CashfreeClient     CashfreeClient
 	BankVerifier       BankAccountVerifier
 
-	GatewayPaymentRepo  GatewayPaymentRepo
-	OrderSettler        payment.OrderGatewaySettler
-	UnmatchedReceipts   UnmatchedReceiptStore
-	WebhookToleranceSec int
+	GatewayPaymentRepo      GatewayPaymentRepo
+	OrderSettler            payment.OrderGatewaySettler
+	UnmatchedReceipts       UnmatchedReceiptStore
+	PaymentIntentQuarantine PaymentIntentQuarantineStore
+	WebhookToleranceSec     int
 	WebhookAPIVersion   string
 	Pool                *pgxpool.Pool
 	AppPool             *pgxpool.Pool

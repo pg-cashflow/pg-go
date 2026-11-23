@@ -1374,3 +1374,170 @@ func TestOwnerDashboard_InternalErrorsAreNotEchoed(t *testing.T) {
 		}
 	})
 }
+
+type stubQuarantineStore struct {
+	needsReviewCount int
+	items            []domain.PaymentIntentQuarantine
+	listErr          error
+	countErr         error
+}
+
+func (s *stubQuarantineStore) CountNeedsReviewByProperty(_ context.Context, _ uuid.UUID) (int, error) {
+	if s.countErr != nil {
+		return 0, s.countErr
+	}
+	return s.needsReviewCount, nil
+}
+
+func (s *stubQuarantineStore) ListByProperty(_ context.Context, _ uuid.UUID, status string, limit int) ([]domain.PaymentIntentQuarantine, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var res []domain.PaymentIntentQuarantine
+	for _, it := range s.items {
+		if status == "" || it.Status == status {
+			res = append(res, it)
+		}
+	}
+	if limit > 0 && len(res) > limit {
+		res = res[:limit]
+	}
+	return res, nil
+}
+
+func TestOwnerDashboard_PaymentQuarantineVisibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	jwtSecret := "test_secret_for_quarantine_visibility"
+	propID := uuid.New()
+	userID := uuid.New()
+
+	ownerUser := &domain.User{
+		ID:         userID,
+		PropertyID: &propID,
+		Role:       domain.RoleOwner,
+	}
+	token, err := auth.IssueToken(jwtSecret, ownerUser)
+	if err != nil {
+		t.Fatalf("IssueToken failed: %v", err)
+	}
+
+	propStore := &dashboardPropStore{
+		props: map[uuid.UUID]*domain.Property{
+			propID: {
+				ID:         propID,
+				OwnerEmail: "owner@test.com",
+				OwnerPhone: "+919876543210",
+			},
+		},
+	}
+	tenantStore := &dashboardTenantStore{
+		tenants: map[uuid.UUID]*domain.Tenant{
+			uuid.New(): {ID: uuid.New(), PropertyID: propID, Status: domain.TenantStatusActive},
+		},
+	}
+
+	quarantine := &stubQuarantineStore{
+		needsReviewCount: 3,
+		items: []domain.PaymentIntentQuarantine{
+			{
+				ID:               1,
+				PaymentIntentID:  uuid.New(),
+				PropertyID:       propID,
+				ProviderOrderID:  "order_1",
+				AmountPaise:      100000,
+				Status:           "needs_review",
+				QuarantineReason: "superseded_replacement_order",
+			},
+			{
+				ID:               2,
+				PaymentIntentID:  uuid.New(),
+				PropertyID:       propID,
+				ProviderOrderID:  "order_2",
+				AmountPaise:      150000,
+				Status:           "pending",
+				QuarantineReason: "gateway_timeout_quarantine",
+			},
+		},
+	}
+
+	d := Deps{
+		PropertyStore:           propStore,
+		TenantStore:             tenantStore,
+		PaymentIntentQuarantine: quarantine,
+		JWTSecret:               jwtSecret,
+	}
+	r := NewRouter(d)
+
+	t.Run("GET /api/owner/dashboard/summary populates payment_quarantine_needs_review_count", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/dashboard/summary", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		var resp OwnerDashboardSummaryResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.PaymentQuarantineNeedsReviewCount != 3 {
+			t.Fatalf("expected payment_quarantine_needs_review_count=3, got %d", resp.PaymentQuarantineNeedsReviewCount)
+		}
+	})
+
+	t.Run("GET /api/owner/payments/quarantine lists quarantined items", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/payments/quarantine", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Items []domain.PaymentIntentQuarantine `json:"items"`
+			Count int                              `json:"count"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("failed to unmarshal list: %v", err)
+		}
+		if body.Count != 2 || len(body.Items) != 2 {
+			t.Fatalf("expected 2 items, got count=%d len=%d", body.Count, len(body.Items))
+		}
+	})
+
+	t.Run("GET /api/owner/payments/quarantine filters by status and limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/payments/quarantine?status=needs_review&limit=1", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Items []domain.PaymentIntentQuarantine `json:"items"`
+			Count int                              `json:"count"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("failed to unmarshal list: %v", err)
+		}
+		if body.Count != 1 || len(body.Items) != 1 {
+			t.Fatalf("expected 1 item, got count=%d len=%d", body.Count, len(body.Items))
+		}
+		if body.Items[0].Status != "needs_review" {
+			t.Fatalf("expected status=needs_review, got %s", body.Items[0].Status)
+		}
+	})
+
+	t.Run("GET /api/owner/payments/quarantine anonymous returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/payments/quarantine", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401 Unauthorized, got %d", w.Code)
+		}
+	})
+}
