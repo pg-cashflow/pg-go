@@ -7,7 +7,7 @@ import (
 )
 
 func TestLoadRequiresSecrets(t *testing.T) {
-	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "KYC_IDENTITY_SECRET"}
+	keys := []string{"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET", "KYC_IDENTITY_SECRET", "FEATURE_KYC_DIGILOCKER"}
 	prev := map[string]string{}
 	for _, k := range keys {
 		prev[k] = os.Getenv(k)
@@ -46,6 +46,9 @@ func TestLoadRequiresSecrets(t *testing.T) {
 	// Crucial: KYCIdentitySecret must NOT fall back to JWTSecret; it must stay empty so KYC degrades gracefully
 	if cfg.KYCIdentitySecret != "" {
 		t.Fatalf("expected empty KYCIdentitySecret when unset, got %q", cfg.KYCIdentitySecret)
+	}
+	if cfg.FeatureKYCDigiLocker {
+		t.Fatal("expected DigiLocker to be disabled by default")
 	}
 
 	// When set, it should be loaded faithfully

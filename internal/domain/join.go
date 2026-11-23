@@ -107,6 +107,28 @@ type PaymentIntent struct {
 	IdempotencyKey   uuid.UUID           `json:"idempotency_key"`
 }
 
+// PaymentIntentQuarantine is a durable provider-order recovery record. One row
+// represents one Cashfree order and lists every due that remains reserved.
+type PaymentIntentQuarantine struct {
+	ID                 int64         `json:"id"`
+	PaymentIntentID    uuid.UUID     `json:"payment_intent_id"`
+	DueID              uuid.UUID     `json:"due_id"`
+	PropertyID         uuid.UUID     `json:"property_id"`
+	DueIDs             []uuid.UUID   `json:"due_ids"`
+	ProviderOrderID    string        `json:"provider_order_id"`
+	AmountPaise        int64         `json:"amount_paise"`
+	OriginalStatus     string        `json:"original_status"`
+	QuarantineReason   string        `json:"quarantine_reason"`
+	Status             string        `json:"status"`
+	NextCheckAt        time.Time     `json:"next_check_at"`
+	AttemptCount       int           `json:"attempt_count"`
+	LastProviderStatus *string       `json:"last_provider_status,omitempty"`
+	LastError          *string       `json:"last_error,omitempty"`
+	CreatedAt          time.Time     `json:"created_at"`
+	UpdatedAt          time.Time     `json:"updated_at"`
+	Intent             PaymentIntent `json:"-"`
+}
+
 type PayIntent struct {
 	Mode             string      `json:"mode"` // manual | cashfree
 	VPA              string      `json:"vpa,omitempty"`

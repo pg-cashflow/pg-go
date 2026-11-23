@@ -187,6 +187,46 @@ func TestOrderSettlementService_AmountMismatch(t *testing.T) {
 	}
 }
 
+func TestOrderSettlementService_SupersededIntentIsHeldAsUnmatchedReceipt(t *testing.T) {
+	gwRepo := newMockGatewayPaymentRepo()
+	intentID := uuid.New()
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	intentRepo := &mockPaymentIntentRepo{
+		intent: &domain.PaymentIntent{
+			ID:              intentID,
+			DueID:           dueID,
+			ProviderOrderID: "order-superseded",
+			AmountPaise:     10000,
+			Status:          domain.IntentSuperseded,
+		},
+		snapshot: []domain.PaymentIntentDue{{DueID: dueID, AmountPaise: 10000}},
+	}
+	due := &domain.Due{ID: dueID, TenantID: tenantID, Amount: 10000, Status: domain.DueStatusPending}
+	dueRepo := &stubDueRepo{dues: map[uuid.UUID]*domain.Due{dueID: due}}
+	payRepo := &stubPaymentRepo{payments: make(map[string]*domain.Payment)}
+	tenantRepo := &stubTenantRepo{tenants: map[uuid.UUID]*domain.Tenant{tenantID: {ID: tenantID}}}
+	paySvc := NewService(dueRepo, payRepo, tenantRepo, nil, stubPublisher{})
+	svc := NewOrderSettlementService(OrderSettlementConfig{
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        intentRepo,
+		Payments:           paySvc,
+	})
+
+	if err := svc.SettleGatewayOrder(context.Background(), "order-superseded", "cf_late", "utr-late", 10000, nil, nil); err != nil {
+		t.Fatalf("settlement returned error: %v", err)
+	}
+	if gwRepo.unmatchedCount != 1 {
+		t.Fatalf("unmatched receipt count = %d, want 1", gwRepo.unmatchedCount)
+	}
+	if due.Status != domain.DueStatusPending {
+		t.Fatalf("superseded capture changed due status to %q; it must remain pending for owner resolution", due.Status)
+	}
+	if len(payRepo.payments) != 0 {
+		t.Fatalf("superseded capture was allocated to a due: %+v", payRepo.payments)
+	}
+}
+
 func TestOrderSettlementService_MultiDueSnapshot(t *testing.T) {
 	dueID1 := uuid.New()
 	dueID2 := uuid.New()

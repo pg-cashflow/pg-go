@@ -62,6 +62,8 @@ const (
 	CodePaymentRefundExceedsBalance  Code = "payment.refundExceedsBalance"
 	CodePaymentRefundInFlight        Code = "payment.refundInFlight"
 	CodePaymentRefundNotEligible     Code = "payment.refundNotEligible"
+	CodePaymentCheckoutPending       Code = "payment.checkoutPending"
+	CodePaymentCheckoutExpired       Code = "payment.checkoutExpired"
 
 	// Finance
 	CodeFinanceDuplicateRequest    Code = "finance.duplicateRequest"
@@ -170,6 +172,8 @@ var AllCodes = []Code{
 	CodePaymentRefundExceedsBalance,
 	CodePaymentRefundInFlight,
 	CodePaymentRefundNotEligible,
+	CodePaymentCheckoutPending,
+	CodePaymentCheckoutExpired,
 
 	CodeFinanceDuplicateRequest,
 	CodeFinanceIdempotencyRequired,

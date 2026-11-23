@@ -31,6 +31,17 @@ type Service struct {
 	sf       singleflight.Group
 }
 
+var ErrAtomicPaymentIntentManagerRequired = errors.New("cashfree checkout requires the transactional payment intent manager")
+
+// ErrCashfreeOrderPending means an earlier provider order exists, but the
+// application cannot prove that it is safe to create another order yet.
+var ErrCashfreeOrderPending = errors.New("the previous Cashfree order is still being reconciled")
+
+// ErrCashfreeOrderExpired means Cashfree confirmed that the previous order is
+// terminal. The caller must retry the checkout request to claim a fresh order
+// ID; it must not reuse the terminal merchant order ID.
+var ErrCashfreeOrderExpired = errors.New("the previous Cashfree payment session has ended; retry checkout")
+
 func New(intents IntentStore, cashfree CashfreeOrders) *Service {
 	return &Service{intents: intents, cashfree: cashfree}
 }
@@ -131,15 +142,30 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 					}
 				}
 			}
-			if existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID); gErr == nil && existingOrder != nil {
+			existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
+			if gErr != nil || existingOrder == nil {
+				// This is an already-issued provider command. A failed status read
+				// is not evidence that the order does not exist or cannot be paid.
+				return "", ErrCashfreeOrderPending
+			}
+			switch existingOrder.OrderStatus {
+			case "ACTIVE":
 				if existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
 					if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
-				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
-					_ = mgr.TransitionFailed(ctx, claimed.ID)
-				}
+				return "", ErrCashfreeOrderPending
+			case "EXPIRED", "TERMINATED":
+				_ = mgr.TransitionFailed(ctx, claimed.ID)
+				return "", ErrCashfreeOrderExpired
+			case "PAID":
+				return "", ErrCashfreeOrderPending
+			default:
+				// Includes USER_DROPPED and unknown future provider states. Do not
+				// issue a second create request for an order whose finality is not
+				// established by the documented terminal states.
+				return "", ErrCashfreeOrderPending
 			}
 		}
 
@@ -192,69 +218,9 @@ func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, custome
 		return session, nil
 	}
 
-	if reusableLocker, ok := s.intents.(interface {
-		GetReusableIntentUnderLock(ctx context.Context, tenantID, dueID uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error)
-		SupersedeOpenIntentsForDue(ctx context.Context, dueID uuid.UUID) error
-		CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error
-	}); ok {
-		// Under-lock inspection: acquires tenants -> dues -> payment_intents locks in order
-		existing, err := reusableLocker.GetReusableIntentUnderLock(ctx, due.TenantID, due.ID, minRemaining)
-		if err == nil && existing != nil && existing.PaymentSessionID != nil && existing.AmountPaise == due.Amount {
-			return *existing.PaymentSessionID, nil
-		} else if err != nil && !isNoRows(err) {
-			return "", err
-		}
-
-		// Re-check under lock confirmed no reusable active intent with >=10m remaining.
-		// Supersede older open intents for this due.
-		_ = reusableLocker.SupersedeOpenIntentsForDue(ctx, due.ID)
-
-		orderID := fmt.Sprintf("pg-%s-%d", due.DueCode, time.Now().Unix())
-		session, exp, err := s.cashfree.CreateUPIOrder(ctx, orderID, due.Amount, customerPhone, domain.UPINote(due.DueCode))
-		if err != nil {
-			return "", err
-		}
-		intent := &domain.PaymentIntent{
-			DueID:            due.ID,
-			Provider:         "cashfree",
-			ProviderOrderID:  orderID,
-			PaymentSessionID: &session,
-			AmountPaise:      due.Amount,
-			Status:           domain.IntentCreated,
-			ExpiresAt:        exp,
-		}
-		if err := reusableLocker.CreateWithDues(ctx, intent, []uuid.UUID{due.ID}, []int64{int64(due.Amount)}); err != nil {
-			return "", err
-		}
-		return session, nil
-	}
-
-	// Fallback path when store is not a full SQL repository
-	if existing, err := s.intents.LatestOpenForDue(ctx, due.ID); err == nil && existing.PaymentSessionID != nil && existing.AmountPaise == due.Amount {
-		if existing.ExpiresAt == nil || existing.ExpiresAt.After(time.Now().Add(minRemaining)) {
-			return *existing.PaymentSessionID, nil
-		}
-	} else if err != nil && !isNoRows(err) {
-		return "", err
-	}
-	orderID := fmt.Sprintf("pg-%s-%d", due.DueCode, time.Now().Unix())
-	session, exp, err := s.cashfree.CreateUPIOrder(ctx, orderID, due.Amount, customerPhone, domain.UPINote(due.DueCode))
-	if err != nil {
-		return "", err
-	}
-	intent := &domain.PaymentIntent{
-		DueID:            due.ID,
-		Provider:         "cashfree",
-		ProviderOrderID:  orderID,
-		PaymentSessionID: &session,
-		AmountPaise:      due.Amount,
-		Status:           domain.IntentCreated,
-		ExpiresAt:        exp,
-	}
-	if err := s.intents.Create(ctx, intent); err != nil {
-		return "", err
-	}
-	return session, nil
+	// A generic IntentStore cannot atomically reserve dues, persist the provider
+	// command and create the intent. Do not create an untracked Cashfree order.
+	return "", ErrAtomicPaymentIntentManagerRequired
 }
 
 func isNoRows(err error) bool {
@@ -362,15 +328,25 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 					}
 				}
 			}
-			if existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID); gErr == nil && existingOrder != nil {
-				if existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
+			existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
+			if gErr != nil || existingOrder == nil {
+				return "", ErrCashfreeOrderPending
+			}
+			switch existingOrder.OrderStatus {
+			case "ACTIVE":
+				if existingOrder.PaymentSessionID != "" {
 					if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
 						return existingOrder.PaymentSessionID, nil
 					}
 				}
-				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
-					_ = mgr.TransitionFailed(ctx, claimed.ID)
-				}
+				return "", ErrCashfreeOrderPending
+			case "EXPIRED", "TERMINATED":
+				_ = mgr.TransitionFailed(ctx, claimed.ID)
+				return "", ErrCashfreeOrderExpired
+			case "PAID":
+				return "", ErrCashfreeOrderPending
+			default:
+				return "", ErrCashfreeOrderPending
 			}
 		}
 
@@ -423,60 +399,8 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 		return session, nil
 	}
 
-	if multiLocker, ok := s.intents.(interface {
-		GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int64, minRemaining time.Duration) (*domain.PaymentIntent, error)
-		SupersedeOpenIntentsForDues(ctx context.Context, dueIDs []uuid.UUID) error
-		CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error
-	}); ok {
-		existing, err := multiLocker.GetReusableMultiDueIntentUnderLock(ctx, tenantID, dueIDs, totalAmountPaise, minRemaining)
-		if err == nil && existing != nil && existing.PaymentSessionID != nil && existing.AmountPaise == totalAmountPaise {
-			return *existing.PaymentSessionID, nil
-		} else if err != nil && !isNoRows(err) {
-			return "", err
-		}
-
-		_ = multiLocker.SupersedeOpenIntentsForDues(ctx, dueIDs)
-
-		orderID := fmt.Sprintf("pg-m-%s-%d", dues[0].DueCode, time.Now().Unix())
-		note := fmt.Sprintf("PG-%s-BATCH-%d", dues[0].DueCode, len(dues))
-		session, exp, err := s.cashfree.CreateUPIOrder(ctx, orderID, totalAmountPaise, customerPhone, note)
-		if err != nil {
-			return "", err
-		}
-		intent := &domain.PaymentIntent{
-			DueID:            dues[0].ID,
-			Provider:         "cashfree",
-			ProviderOrderID:  orderID,
-			PaymentSessionID: &session,
-			AmountPaise:      totalAmountPaise,
-			Status:           domain.IntentCreated,
-			ExpiresAt:        exp,
-		}
-		if err := multiLocker.CreateWithDues(ctx, intent, dueIDs, amounts); err != nil {
-			return "", err
-		}
-		return session, nil
-	}
-
-	orderID := fmt.Sprintf("pg-m-%s-%d", dues[0].DueCode, time.Now().Unix())
-	note := fmt.Sprintf("PG-%s-BATCH-%d", dues[0].DueCode, len(dues))
-	session, exp, err := s.cashfree.CreateUPIOrder(ctx, orderID, totalAmountPaise, customerPhone, note)
-	if err != nil {
-		return "", err
-	}
-	intent := &domain.PaymentIntent{
-		DueID:            dues[0].ID,
-		Provider:         "cashfree",
-		ProviderOrderID:  orderID,
-		PaymentSessionID: &session,
-		AmountPaise:      totalAmountPaise,
-		Status:           domain.IntentCreated,
-		ExpiresAt:        exp,
-	}
-	if err := s.intents.Create(ctx, intent); err != nil {
-		return "", err
-	}
-	return session, nil
+	// The same atomic claim contract is mandatory for multi-due checkout.
+	return "", ErrAtomicPaymentIntentManagerRequired
 }
 
 func PNGURL(role string, dueID uuid.UUID) string {

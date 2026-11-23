@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 func TestLivePostgresMigration020AndRepository(t *testing.T) {
@@ -430,6 +431,7 @@ func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
 	}()
 
 	intentRepo := NewPaymentIntentRepo(pool)
+	claimCtx := requestscope.WithPropertyID(ctx, propID)
 
 	// 2. Concurrency test: 10 concurrent requests attempting ClaimInitiatingIntent
 	const goroutines = 10
@@ -447,7 +449,7 @@ func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
 		go func(idx int) {
 			<-startCh
 			orderID := fmt.Sprintf("order-%s-%d", dueCode, idx)
-			intent, reused, inFlight, cErr := intentRepo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, orderID, 10*time.Minute)
+			intent, reused, inFlight, cErr := intentRepo.ClaimInitiatingIntent(claimCtx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, orderID, 10*time.Minute)
 			results[idx] = claimResult{intent: intent, reused: reused, inFlight: inFlight, err: cErr}
 			doneCh <- idx
 		}(i)
@@ -503,7 +505,7 @@ func TestLivePostgresPaymentIntent_AtomicClaimAndLifecycle(t *testing.T) {
 	}
 
 	// 4. Subsequent ClaimInitiatingIntent MUST reuse the created intent
-	reusedIntent, isReused, isInFlight, err := intentRepo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, "new-order", 10*time.Minute)
+	reusedIntent, isReused, isInFlight, err := intentRepo.ClaimInitiatingIntent(claimCtx, tenantID, []uuid.UUID{dueID}, []int64{1500000}, 1500000, "new-order", 10*time.Minute)
 	if err != nil {
 		t.Fatalf("ClaimInitiatingIntent reuse failed: %v", err)
 	}

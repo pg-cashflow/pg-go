@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +16,6 @@ import (
 type threadSafeLockIntentStore struct {
 	mu          sync.Mutex
 	reusable    *domain.PaymentIntent
-	superseded  int32
 	createCalls int32
 }
 
@@ -33,26 +33,55 @@ func (s *threadSafeLockIntentStore) LatestOpenForDue(ctx context.Context, dueID 
 	return s.reusable, nil
 }
 
-func (s *threadSafeLockIntentStore) GetReusableIntentUnderLock(ctx context.Context, tenantID, dueID uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error) {
+func (s *threadSafeLockIntentStore) ClaimInitiatingIntent(_ context.Context, _ uuid.UUID, _ []uuid.UUID, _ []int64, amount int64, orderID string, minRemaining time.Duration) (*domain.PaymentIntent, bool, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.reusable != nil && s.reusable.ExpiresAt != nil && s.reusable.ExpiresAt.After(time.Now().Add(minRemaining)) {
+	if s.reusable != nil {
+		if s.reusable.Status == domain.IntentCreated && s.reusable.AmountPaise == amount && s.reusable.PaymentSessionID != nil && (s.reusable.ExpiresAt == nil || s.reusable.ExpiresAt.After(time.Now().Add(minRemaining))) {
+			return s.reusable, true, false, nil
+		}
+		if s.reusable.Status == domain.IntentInitiating || s.reusable.Status == domain.IntentDispatchUnknown {
+			return s.reusable, false, true, nil
+		}
+		return nil, false, false, errors.New("unresolved prior provider order")
+	}
+	s.reusable = &domain.PaymentIntent{ID: uuid.New(), Provider: "cashfree", ProviderOrderID: orderID, AmountPaise: amount, Status: domain.IntentInitiating, IdempotencyKey: uuid.New()}
+	return s.reusable, false, false, nil
+}
+func (s *threadSafeLockIntentStore) TransitionCreated(_ context.Context, id uuid.UUID, session string, exp *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reusable == nil || s.reusable.ID != id {
+		return errors.New("intent not found")
+	}
+	s.reusable.Status = domain.IntentCreated
+	s.reusable.PaymentSessionID = &session
+	s.reusable.ExpiresAt = exp
+	return nil
+}
+func (s *threadSafeLockIntentStore) TransitionFailed(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reusable != nil && s.reusable.ID == id {
+		s.reusable.Status = domain.IntentFailed
+	}
+	return nil
+}
+func (s *threadSafeLockIntentStore) TransitionDispatchUnknown(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reusable != nil && s.reusable.ID == id {
+		s.reusable.Status = domain.IntentDispatchUnknown
+	}
+	return nil
+}
+func (s *threadSafeLockIntentStore) GetByID(_ context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reusable != nil && s.reusable.ID == id {
 		return s.reusable, nil
 	}
-	return nil, nil
-}
-
-func (s *threadSafeLockIntentStore) SupersedeOpenIntentsForDue(ctx context.Context, dueID uuid.UUID) error {
-	atomic.AddInt32(&s.superseded, 1)
-	return nil
-}
-
-func (s *threadSafeLockIntentStore) CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	atomic.AddInt32(&s.createCalls, 1)
-	s.reusable = p
-	return nil
+	return nil, errors.New("intent not found")
 }
 
 type countingOrderCreator struct {
@@ -241,6 +270,30 @@ func (m *mockMultiDueIntentManager) GetByID(ctx context.Context, id uuid.UUID) (
 		return it, nil
 	}
 	return nil, nil
+}
+
+func TestMultiDueInFlightPaidOrderDoesNotCreateReplacement(t *testing.T) {
+	mgr := newMockMultiDueIntentManager()
+	tenantID := uuid.New()
+	due1 := &domain.Due{ID: uuid.New(), TenantID: tenantID, DueCode: "BATCH-A", Amount: 50000, Status: domain.DueStatusPending}
+	due2 := &domain.Due{ID: uuid.New(), TenantID: tenantID, DueCode: "BATCH-B", Amount: 70000, Status: domain.DueStatusPending}
+	intentID := uuid.New()
+	mgr.intents[intentID] = &domain.PaymentIntent{
+		ID: intentID, ProviderOrderID: "old-batch-order", AmountPaise: 120000,
+		Status: domain.IntentFailed, IdempotencyKey: uuid.New(),
+	}
+	mgr.activeDues[due1.ID] = intentID
+	mgr.activeDues[due2.ID] = intentID
+	cf := &timingOutCF{activeOrder: &cashfree.OrderDetails{OrderID: "old-batch-order", OrderStatus: "PAID"}}
+	svc := New(mgr, cf)
+
+	_, err := svc.MultiDuePayIntent(context.Background(), []*domain.Due{due1, due2}, &domain.Property{PaymentMode: domain.PaymentModeCashfree}, "101", "+919876543210")
+	if !errors.Is(err, ErrCashfreeOrderPending) {
+		t.Fatalf("error = %v, want ErrCashfreeOrderPending", err)
+	}
+	if cf.createCalls != 0 {
+		t.Fatalf("created %d replacement provider orders while previous multi-due order is PAID", cf.createCalls)
+	}
 }
 
 // TestConcurrency_MultiDueOverlappingRequestBlocked verifies that two multi-due checkout requests

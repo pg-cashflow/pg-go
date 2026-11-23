@@ -1,8 +1,9 @@
-# ADR 004: Tenant Identity Onboarding via Cashfree Secure ID (DigiLocker Direct API) & Smart OCR Manual Review Fallback
+# ADR 004: Historical Tenant Identity Onboarding via DigiLocker
 
 ## Status
-Accepted & Active (Reactivated, Hardened, and Upgraded via Migration 114)
-*Note: Direct Offline Aadhaar OTP has been discontinued upstream by Cashfree and UIDAI. DigiLocker is restored and active as the primary automated verification mechanism. Smart OCR document upload with property-owner manual review serves as the fallback mechanism (Migration 114).*
+Superseded by ADR-005 (2026-11-22). This document is retained as a historical record only.
+
+The statements below describe the earlier DigiLocker-first design. They are not the current product policy. In particular, this ADR does not establish that Cashfree or UIDAI discontinued Aadhaar OTP.
 
 ## Context
 Tenants must verify identity (Aadhaar or alternate ID) during onboarding before room allocation. Calling UIDAI directly as an AUA/KUA is legally closed to a startup.

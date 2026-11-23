@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -400,7 +401,7 @@ func (r *PaymentRepo) RecordUnmatchedReceipt(ctx context.Context, orderID, payme
 		)
 		SELECT
 			'cashfree', $1, $2, $2,
-			pi.id, d.id, d.property_id, d.tenant_id,
+			pi.id, linked.due_id, linked.property_id, linked.tenant_id,
 			$4, $5, $6, 'held', NOW(), NOW()
 		FROM (SELECT 1) AS dummy
 		LEFT JOIN LATERAL (
@@ -408,10 +409,56 @@ func (r *PaymentRepo) RecordUnmatchedReceipt(ctx context.Context, orderID, payme
 			WHERE (id = $3 OR ($3 IS NULL AND provider_order_id = $1))
 			ORDER BY created_at DESC LIMIT 1
 		) pi ON true
-		LEFT JOIN dues d ON d.id = pi.due_id
+		LEFT JOIN LATERAL (
+			SELECT d.id AS due_id, d.property_id, d.tenant_id
+			FROM (
+				SELECT pi.due_id AS due_id WHERE pi.due_id IS NOT NULL
+				UNION
+				SELECT pid.due_id FROM payment_intent_dues pid WHERE pid.payment_intent_id = pi.id
+			) intent_due
+			JOIN dues d ON d.id = intent_due.due_id
+			ORDER BY d.due_date ASC, d.id ASC
+			LIMIT 1
+		) linked ON true
 		ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
 		orderID, paymentID, intentID, amountPaise, failureReason, payload)
 	return err
+}
+
+// LinkUnmatchedReceiptPayment links the unapplied payment row to the held receipt.
+// This is required so owner resolution updates the existing capture rather than
+// attempting to create a second payment with the same provider payment ID.
+func (r *PaymentRepo) LinkUnmatchedReceiptPaymentByProvider(ctx context.Context, orderID, providerPaymentID string, paymentID uuid.UUID) error {
+	if paymentID == uuid.Nil || strings.TrimSpace(orderID) == "" || strings.TrimSpace(providerPaymentID) == "" {
+		return errors.New("link unmatched receipt: order ID, provider payment ID and payment ID are required")
+	}
+	result, err := r.db.Exec(ctx, `
+		UPDATE unmatched_gateway_receipts
+		SET payment_id = $1, updated_at = NOW()
+		WHERE provider = 'cashfree'
+		  AND provider_order_id = $2
+		  AND provider_payment_id = $3
+		  AND status <> 'resolved'
+		  AND (payment_id IS NULL OR payment_id = $1)`, paymentID, orderID, providerPaymentID)
+	if err != nil {
+		return fmt.Errorf("link unmatched receipt payment: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+	var existingPaymentID *uuid.UUID
+	lookupErr := r.db.QueryRow(ctx, `
+		SELECT payment_id FROM unmatched_gateway_receipts
+		WHERE provider = 'cashfree' AND provider_order_id = $1 AND provider_payment_id = $2`,
+		orderID, providerPaymentID,
+	).Scan(&existingPaymentID)
+	if lookupErr != nil {
+		return fmt.Errorf("link unmatched receipt payment affected no row: %w", lookupErr)
+	}
+	if existingPaymentID != nil && *existingPaymentID == paymentID {
+		return nil
+	}
+	return errors.New("unmatched receipt is missing, resolved, or linked to a different payment")
 }
 
 const unmatchedReceiptCols = `id, property_id, payment_intent_id, due_id, tenant_id, payment_id, provider, provider_order_id, provider_payment_id, cf_payment_id, amount_paise, currency, payment_method, failure_reason, raw_payload, status, resolved_at, resolved_by, resolution_action, resolution_refund_id, resolution_idempotency_key, resolution_notes, held_notified_at, resolution_notified_at, created_at, updated_at`
@@ -551,6 +598,35 @@ func (r *PaymentRepo) MarkUnmatchedReceiptResolutionNotified(ctx context.Context
 	return err
 }
 
+// resolveQuarantineIfReceiptsAreClosed releases a payment-intent quarantine only
+// after every unmatched receipt for that provider order has a completed owner action.
+// It runs in the same transaction that resolves the receipt.
+func resolveQuarantineIfReceiptsAreClosed(ctx context.Context, tx pgx.Tx, paymentIntentID *uuid.UUID, providerOrderID string) error {
+	if (paymentIntentID == nil || *paymentIntentID == uuid.Nil) && strings.TrimSpace(providerOrderID) == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE payment_intent_quarantine q
+		SET status = 'resolved',
+		    last_error = NULL,
+		    resolved_at = COALESCE(resolved_at, NOW()),
+		    updated_at = NOW()
+		WHERE (($1::uuid IS NOT NULL AND q.payment_intent_id = $1) OR ($2 <> '' AND q.provider_order_id = $2))
+		  AND q.status <> 'resolved'
+		  AND q.last_provider_status IN ('PAID', 'EXPIRED', 'TERMINATED')
+		  AND q.terminal_confirmation_count >= 2
+		  AND NOT EXISTS (
+		      SELECT 1
+		      FROM unmatched_gateway_receipts r
+		      WHERE (r.payment_intent_id = q.payment_intent_id OR r.provider_order_id = q.provider_order_id)
+		        AND r.status <> 'resolved'
+		  )`, paymentIntentID, strings.TrimSpace(providerOrderID))
+	if err != nil {
+		return fmt.Errorf("resolve payment intent quarantine after receipt resolution: %w", err)
+	}
+	return nil
+}
+
 func (r *PaymentRepo) ResolveUnmatchedReceiptAsCredit(ctx context.Context, receiptID uuid.UUID, resolvedBy uuid.UUID, idempotencyKey string, notes string) (*domain.Payment, error) {
 	pool, isPool := r.db.(*pgxpool.Pool)
 	if isPool {
@@ -673,6 +749,9 @@ func (r *PaymentRepo) ResolveUnmatchedReceiptAsCredit(ctx context.Context, recei
 		domain.ReceiptStatusResolved, now, resolvedBy, action, idempotencyKey, notes, paymentID, receiptID)
 	if err != nil {
 		return nil, fmt.Errorf("update receipt resolved: %w", err)
+	}
+	if err := resolveQuarantineIfReceiptsAreClosed(ctx, tx, receipt.PaymentIntentID, receipt.ProviderOrderID); err != nil {
+		return nil, err
 	}
 
 	if receipt.PropertyID != nil {
@@ -1218,6 +1297,28 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 				    updated_at = NOW()
 				WHERE resolution_refund_id = $1 AND status <> 'resolved'`, ref.ID); err != nil {
 				return fmt.Errorf("reconcile update unmatched receipt resolved: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE payment_intent_quarantine q
+				SET status = 'resolved',
+				    last_error = NULL,
+				    resolved_at = COALESCE(q.resolved_at, NOW()),
+				    updated_at = NOW()
+				WHERE q.status <> 'resolved'
+				  AND q.last_provider_status IN ('PAID', 'EXPIRED', 'TERMINATED')
+				  AND q.terminal_confirmation_count >= 2
+				  AND EXISTS (
+				      SELECT 1 FROM unmatched_gateway_receipts r
+				      WHERE r.resolution_refund_id = $1
+				        AND r.status = 'resolved'
+				        AND (r.payment_intent_id = q.payment_intent_id OR r.provider_order_id = q.provider_order_id)
+				  )
+				  AND NOT EXISTS (
+				      SELECT 1 FROM unmatched_gateway_receipts pending
+				      WHERE (pending.payment_intent_id = q.payment_intent_id OR pending.provider_order_id = q.provider_order_id)
+				        AND pending.status <> 'resolved'
+				  )`, ref.ID); err != nil {
+				return fmt.Errorf("resolve payment intent quarantine after refund reconciliation: %w", err)
 			}
 
 		case "failed", "cancelled":

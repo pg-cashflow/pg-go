@@ -8,10 +8,52 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pg-cashflow/pg-go/internal/apierr"
+	"github.com/pg-cashflow/pg-go/internal/collector"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+func TestCheckoutClientErrUsesStableRetryContracts(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      error
+		wantStatus int
+		wantCode   apierr.Code
+	}{
+		{
+			name:       "quarantined previous order",
+			input:      postgres.ErrPaymentIntentQuarantinePending,
+			wantStatus: http.StatusConflict,
+			wantCode:   apierr.CodePaymentCheckoutPending,
+		},
+		{
+			name:       "provider order remains unresolved",
+			input:      collector.ErrCashfreeOrderPending,
+			wantStatus: http.StatusConflict,
+			wantCode:   apierr.CodePaymentCheckoutPending,
+		},
+		{
+			name:       "provider order is terminal",
+			input:      collector.ErrCashfreeOrderExpired,
+			wantStatus: http.StatusConflict,
+			wantCode:   apierr.CodePaymentCheckoutExpired,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mapped, ok := checkoutClientErr(tt.input).(*ClientError)
+			if !ok {
+				t.Fatalf("mapped error type = %T, want *ClientError", checkoutClientErr(tt.input))
+			}
+			if mapped.HTTPStatus != tt.wantStatus || mapped.Code != tt.wantCode {
+				t.Fatalf("mapped error = status %d code %q, want status %d code %q", mapped.HTTPStatus, mapped.Code, tt.wantStatus, tt.wantCode)
+			}
+		})
+	}
 }
 
 func TestRespondErr(t *testing.T) {

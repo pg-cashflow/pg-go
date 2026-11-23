@@ -3,12 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 type mockIntentRow struct {
@@ -97,15 +99,40 @@ func (m *mockStatusRow) Scan(dest ...any) error {
 	return nil
 }
 
-func TestPaymentIntentRepo_ClaimInitiatingIntent_VacatedTenantBlocked(t *testing.T) {
+func TestPaymentIntentRepo_ClaimInitiatingIntent_RequiresPropertyScope(t *testing.T) {
 	mockDB := &mockVacatedTenantDBTX{}
 	repo := NewPaymentIntentRepo(mockDB)
-
 	tenantID := uuid.New()
 	dueID := uuid.New()
-
 	_, _, _, err := repo.ClaimInitiatingIntent(context.Background(), tenantID, []uuid.UUID{dueID}, []int64{1000}, 1000, "ord-1", 10)
-	if err == nil {
-		t.Fatal("expected error claiming intent for vacated tenant, got nil")
+	if err == nil || err.Error() != "payment intent claim requires a property-scoped request context" {
+		t.Fatalf("expected property-scope error, got %v", err)
+	}
+}
+
+func TestPaymentIntentRepo_ClaimInitiatingIntent_RequiresOwnedTransaction(t *testing.T) {
+	mockDB := &mockVacatedTenantDBTX{}
+	repo := NewPaymentIntentRepo(mockDB)
+	tenantID := uuid.New()
+	dueID := uuid.New()
+	ctx := requestscope.WithPropertyID(context.Background(), uuid.New())
+	_, _, _, err := repo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1000}, 1000, "ord-1", 10)
+	if err == nil || err.Error() != "payment intent claim requires a pool-backed database handle" {
+		t.Fatalf("expected transaction-capability error, got %v", err)
+	}
+}
+
+func TestPaymentIntentRepo_ClaimInitiatingIntent_RejectsInvalidAmountSnapshot(t *testing.T) {
+	repo := NewPaymentIntentRepo(&mockVacatedTenantDBTX{})
+	ctx := requestscope.WithPropertyID(context.Background(), uuid.New())
+	tenantID := uuid.New()
+	dueID := uuid.New()
+	_, _, _, err := repo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID}, []int64{1000}, 999, "ord-1", 10)
+	if err == nil || err.Error() != "payment intent claim total mismatch: amounts sum to 1000 paise, total is 999 paise" {
+		t.Fatalf("expected total mismatch error, got %v", err)
+	}
+	_, _, _, err = repo.ClaimInitiatingIntent(ctx, tenantID, []uuid.UUID{dueID, dueID}, []int64{500, 500}, 1000, "ord-2", 10)
+	if err == nil || !strings.Contains(err.Error(), "duplicate due") {
+		t.Fatalf("expected duplicate due error, got %v", err)
 	}
 }

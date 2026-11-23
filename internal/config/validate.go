@@ -259,9 +259,9 @@ func (c *Config) ValidateWarnings() []string {
 		warns = append(warns, "Cashfree is in sandbox mode (CASHFREE_ENV != production) - payments are not real")
 	}
 
-	// KYC enabled without Cashfree (Aadhaar OTP unavailable)
+	// OCR and hosted verification methods require Cashfree credentials; Secure QR is local
 	if strings.TrimSpace(c.KYCIdentitySecret) != "" && !cashfreeEnabled {
-		warns = append(warns, "KYC_IDENTITY_SECRET is set but Cashfree is not configured - Aadhaar OTP verification will return 503")
+		warns = append(warns, "KYC identity processing is configured but Cashfree credentials are missing - document OCR and hosted verification methods will be unavailable")
 	}
 
 	// Admin email unset warning in non-production

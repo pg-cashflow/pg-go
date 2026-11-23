@@ -102,7 +102,7 @@ func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 
 	intent, _, err := h.Collector.PayIntent(c.Request.Context(), due, prop, room, collector.PNGURL(role, due.ID), phone)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "pay intent failed"})
+		respondErr(c, checkoutClientErr(err))
 		return
 	}
 	c.JSON(http.StatusOK, intent)
@@ -475,7 +475,7 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 
 	intent, err := h.Collector.MultiDuePayIntent(c.Request.Context(), chosenDues, prop, room, phone)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "multi pay intent failed"})
+		respondErr(c, checkoutClientErr(err))
 		return
 	}
 	c.JSON(http.StatusOK, intent)

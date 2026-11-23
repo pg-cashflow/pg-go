@@ -168,6 +168,14 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 
 	if h.RefundApprovalRepo != nil {
 		if err := h.RefundApprovalRepo.CreateRequest(ctx, req); err != nil {
+			if errors.Is(err, postgres.ErrManagerRefundsDisabled) {
+				apierr.RespondClientErr(c, http.StatusForbidden, "manager refunds are disabled by the property owner", apierr.CodeFinanceForbidden)
+				return
+			}
+			if errors.Is(err, postgres.ErrManagerRefundLimitExceeded) {
+				apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
+				return
+			}
 			if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
 				apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
 				return

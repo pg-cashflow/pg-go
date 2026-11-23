@@ -8,7 +8,8 @@ import (
 
 func TestNullableInt64Patch_UnmarshalJSON(t *testing.T) {
 	type body struct {
-		Limit NullableInt64Patch `json:"manager_refund_limit_paise"`
+		Limit     NullableInt64Patch `json:"manager_refund_limit_paise"`
+		Threshold NullableInt64Patch `json:"single_owner_refund_threshold_paise"`
 	}
 	i64 := func(v int64) *int64 { return &v }
 	tests := []struct {
@@ -61,5 +62,19 @@ func TestOnboardingSettingsPatch_ValidateManagerRefundLimit(t *testing.T) {
 	}
 	if err := (OnboardingSettingsPatch{ManagerRefundLimitPaise: NullableInt64Patch{Set: true}}).Validate(); err != nil {
 		t.Fatalf("clearing the limit must be valid: %v", err)
+	}
+}
+
+func TestOnboardingSettingsPatch_ValidateSingleOwnerRefundThreshold(t *testing.T) {
+	negative := int64(-1)
+	zero := int64(0)
+	if err := (OnboardingSettingsPatch{SingleOwnerRefundThresholdPaise: NullableInt64Patch{Set: true, Value: &negative}}).Validate(); !errors.Is(err, ErrOnboardingSettingsInvalid) {
+		t.Fatalf("negative threshold: err = %v, want ErrOnboardingSettingsInvalid", err)
+	}
+	if err := (OnboardingSettingsPatch{SingleOwnerRefundThresholdPaise: NullableInt64Patch{Set: true, Value: &zero}}).Validate(); err != nil {
+		t.Fatalf("zero threshold must be valid: %v", err)
+	}
+	if err := (OnboardingSettingsPatch{SingleOwnerRefundThresholdPaise: NullableInt64Patch{Set: true}}).Validate(); err != nil {
+		t.Fatalf("clearing threshold must be valid: %v", err)
 	}
 }

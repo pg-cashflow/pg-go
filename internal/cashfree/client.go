@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -269,6 +270,53 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 	return s.cfPaymentID, s.bankRef, s.amountPaise, true, nil
 }
 
+// TerminateOrder asks Cashfree to terminate an order, then reads the order
+// again. A successful PATCH response may only mean TERMINATION_REQUESTED; the
+// returned state is always taken from the subsequent GET.
+func (c *Client) TerminateOrder(ctx context.Context, orderID string) (*OrderDetails, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	if strings.TrimSpace(orderID) == "" {
+		return nil, errors.New("cashfree: order_id is required for termination")
+	}
+	body, err := json.Marshal(map[string]string{"order_status": "TERMINATED"})
+	if err != nil {
+		return nil, fmt.Errorf("cashfree terminate order marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.endpoint()+"/orders/"+url.PathEscape(orderID), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.sign(req)
+	resp, patchErr := c.http.Do(req)
+	if patchErr == nil {
+		defer resp.Body.Close()
+		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode >= 300 {
+			patchErr = &APIError{StatusCode: resp.StatusCode, Status: resp.Status, Body: string(responseBody)}
+		}
+	}
+
+	// The GET is authoritative even when the PATCH response is ambiguous. If
+	// Cashfree confirms PAID/EXPIRED/TERMINATED, callers can act on that state.
+	order, getErr := c.GetOrder(ctx, orderID)
+	if getErr != nil {
+		if patchErr != nil {
+			return nil, errors.Join(fmt.Errorf("cashfree terminate order: %w", patchErr), fmt.Errorf("cashfree verify termination: %w", getErr))
+		}
+		return nil, fmt.Errorf("cashfree verify termination: %w", getErr)
+	}
+	if order != nil && (order.OrderStatus == "PAID" || order.OrderStatus == "EXPIRED" || order.OrderStatus == "TERMINATED") {
+		return order, nil
+	}
+	if patchErr != nil {
+		return order, fmt.Errorf("cashfree terminate order request: %w", patchErr)
+	}
+	return order, nil
+}
+
 type OrderDetails struct {
 	CFOrderID        string
 	OrderID          string
@@ -283,7 +331,7 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*OrderDetails, e
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/orders/"+orderID, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/orders/"+url.PathEscape(orderID), nil)
 	if err != nil {
 		return nil, err
 	}

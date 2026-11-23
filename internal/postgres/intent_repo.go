@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 type PaymentIntentRepo struct{ db DBTX }
@@ -181,31 +182,11 @@ func (r *PaymentIntentRepo) GetDuesSnapshot(ctx context.Context, intentID uuid.U
 	return out, rows.Err()
 }
 
-func (r *PaymentIntentRepo) SupersedeOpenIntentsForDue(ctx context.Context, dueID uuid.UUID) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE payment_intents
-		SET status='superseded', updated_at=NOW()
-		WHERE due_id=$1 AND status='created'`, dueID)
-	return err
-}
-
-func (r *PaymentIntentRepo) SupersedeOpenIntentsForDues(ctx context.Context, dueIDs []uuid.UUID) error {
-	if len(dueIDs) == 0 {
-		return nil
-	}
-	_, err := r.db.Exec(ctx, `
-		UPDATE payment_intents
-		SET status='superseded', updated_at=NOW()
-		WHERE status IN ('initiating', 'created') AND (
-			due_id = ANY($1)
-			OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
-		)`, dueIDs)
-	return err
-}
-
 func (r *PaymentIntentRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.PaymentIntent, error) {
 	return scanIntent(r.db.QueryRow(ctx, `SELECT `+intentCols+` FROM payment_intents WHERE id=$1`, id))
 }
+
+var ErrPaymentIntentQuarantinePending = errors.New("payment checkout blocked: an earlier Cashfree order is still being reconciled")
 
 func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 	ctx context.Context,
@@ -219,11 +200,45 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 	if len(dueIDs) == 0 {
 		return nil, false, false, errors.New("dueIDs required")
 	}
+	if len(amounts) != len(dueIDs) {
+		return nil, false, false, errors.New("payment intent claim requires one amount per due")
+	}
+	if tenantID == uuid.Nil || totalAmountPaise <= 0 {
+		return nil, false, false, errors.New("payment intent claim requires a tenant and positive total amount")
+	}
+	scopedPropertyID, scoped := requestscope.PropertyIDFromContext(ctx)
+	if !scoped || scopedPropertyID == uuid.Nil {
+		return nil, false, false, errors.New("payment intent claim requires a property-scoped request context")
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	seenDueIDs := make(map[uuid.UUID]struct{}, len(dueIDs))
+	var validatedTotal int64
+	for i, dueID := range dueIDs {
+		if dueID == uuid.Nil {
+			return nil, false, false, fmt.Errorf("payment intent claim contains an empty due ID at index %d", i)
+		}
+		if _, duplicate := seenDueIDs[dueID]; duplicate {
+			return nil, false, false, fmt.Errorf("payment intent claim contains duplicate due %s", dueID)
+		}
+		seenDueIDs[dueID] = struct{}{}
+		if amounts[i] <= 0 || validatedTotal > maxInt64-amounts[i] {
+			return nil, false, false, errors.New("payment intent claim contains an invalid or overflowing due amount")
+		}
+		validatedTotal += amounts[i]
+	}
+	if validatedTotal != totalAmountPaise {
+		return nil, false, false, fmt.Errorf("payment intent claim total mismatch: amounts sum to %d paise, total is %d paise", validatedTotal, totalAmountPaise)
+	}
 
+	var quarantineBlockedAfterCommit error
 	execClaim := func(txRepo *PaymentIntentRepo) (*domain.PaymentIntent, bool, bool, error) {
-		// 1. Universal lock order: tenants -> dues -> payment_intents
+		// 1. Universal lock order: tenants -> dues -> payment_intents.
+		// Validate the complete due set while holding the locks. This also proves
+		// that every requested due belongs to this tenant and property and that
+		// the provider order amount matches the current database payable amounts.
 		var tenantStatus domain.TenantStatus
-		if err := txRepo.db.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&tenantStatus); err != nil {
+		var tenantPropertyID uuid.UUID
+		if err := txRepo.db.QueryRow(ctx, `SELECT status, property_id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&tenantStatus, &tenantPropertyID); err != nil {
 			if isNoRows(err) {
 				return nil, false, false, errors.New("tenant not found")
 			}
@@ -232,11 +247,68 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		if tenantStatus != domain.TenantStatusActive {
 			return nil, false, false, fmt.Errorf("cannot claim payment intent: tenant status is %q", tenantStatus)
 		}
-		rows, err := txRepo.db.Query(ctx, `SELECT id FROM dues WHERE id = ANY($1) ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
+		if tenantPropertyID != scopedPropertyID {
+			return nil, false, false, errors.New("payment intent claim tenant does not belong to the scoped property")
+		}
+		rows, err := txRepo.db.Query(ctx, `
+			SELECT id, tenant_id, property_id, amount, status
+			FROM dues
+			WHERE id = ANY($1)
+			ORDER BY due_date ASC, id ASC
+			FOR UPDATE`, dueIDs)
 		if err != nil {
 			return nil, false, false, fmt.Errorf("lock dues: %w", err)
 		}
+		lockedDueAmounts := make(map[uuid.UUID]int64, len(dueIDs))
+		for rows.Next() {
+			var lockedDueID, lockedTenantID, lockedPropertyID uuid.UUID
+			var dueAmount int64
+			var dueStatus domain.DueStatus
+			if scanErr := rows.Scan(&lockedDueID, &lockedTenantID, &lockedPropertyID, &dueAmount, &dueStatus); scanErr != nil {
+				rows.Close()
+				return nil, false, false, fmt.Errorf("scan locked due: %w", scanErr)
+			}
+			if lockedTenantID != tenantID || lockedPropertyID != scopedPropertyID {
+				rows.Close()
+				return nil, false, false, errors.New("payment intent claim includes a due outside the tenant or property scope")
+			}
+			if dueStatus != domain.DueStatusPending && dueStatus != domain.DueStatusPartial {
+				rows.Close()
+				return nil, false, false, fmt.Errorf("payment intent claim due %s is not payable (status %q)", lockedDueID, dueStatus)
+			}
+			lockedDueAmounts[lockedDueID] = dueAmount
+		}
+		rowsErr := rows.Err()
 		rows.Close()
+		if rowsErr != nil {
+			return nil, false, false, fmt.Errorf("iterate locked dues: %w", rowsErr)
+		}
+		if len(lockedDueAmounts) != len(dueIDs) {
+			return nil, false, false, errors.New("payment intent claim contains a due that does not exist or is not visible in the scoped property")
+		}
+		for i, dueID := range dueIDs {
+			if lockedDueAmounts[dueID] != amounts[i] {
+				return nil, false, false, fmt.Errorf("payment intent claim amount mismatch for due %s: database has %d paise, request has %d paise", dueID, lockedDueAmounts[dueID], amounts[i])
+			}
+		}
+
+		// A superseded Cashfree order can remain payable at the provider. Do not
+		// reuse or create a checkout while any affected due has an unresolved
+		// quarantine record. Lock the queue row after tenant and due locks.
+		var quarantinedOrderID string
+		qErr := txRepo.db.QueryRow(ctx, `
+			SELECT provider_order_id
+			FROM payment_intent_quarantine
+			WHERE status <> 'resolved' AND due_ids && $1::uuid[]
+			ORDER BY created_at ASC
+			LIMIT 1 FOR UPDATE`, dueIDs,
+		).Scan(&quarantinedOrderID)
+		if qErr == nil {
+			return nil, false, false, fmt.Errorf("%w: provider order %s", ErrPaymentIntentQuarantinePending, quarantinedOrderID)
+		}
+		if !isNoRows(qErr) {
+			return nil, false, false, fmt.Errorf("check payment intent quarantine: %w", qErr)
+		}
 
 		// 2. Check for active reusable intent (status='created' with valid session and > minRemaining)
 		var existing *domain.PaymentIntent
@@ -328,27 +400,53 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		)
 		activeCreated, err = scanIntent(row)
 		if err == nil && activeCreated != nil {
-			if activeCreated.PaymentSessionID != nil && *activeCreated.PaymentSessionID != "" {
+			if activeCreated.PaymentSessionID == nil || *activeCreated.PaymentSessionID == "" {
+				// A created order without a session can still be payable at the
+				// provider. Keep the current intent in flight; never create another.
+				return activeCreated, false, true, nil
+			}
+			if activeCreated.ExpiresAt == nil || activeCreated.ExpiresAt.After(time.Now().Add(minRemaining)) {
 				return activeCreated, true, false, nil
 			}
-			return activeCreated, false, true, nil
+			// The session exists but has insufficient remaining lifetime. Fall
+			// through and supersede it; the DB trigger quarantines the provider order.
 		} else if err != nil && !isNoRows(err) {
 			return nil, false, false, fmt.Errorf("check active created intent: %w", err)
 		}
 
-		// 4. Supersede only TRULY expired open intents for these dues
+		// 4. Supersede provider orders that are expired or do not have the
+		// required session lifetime. The trigger writes durable quarantine state.
 		_, err = txRepo.db.Exec(ctx, `
 			UPDATE payment_intents
 			SET status='superseded', updated_at=NOW()
 			WHERE status = 'created'
 			  AND expires_at IS NOT NULL
-			  AND expires_at <= NOW()
+			  AND expires_at <= NOW() + $2::interval
 			  AND (
 				due_id = ANY($1)
 				OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id = ANY($1))
-			  )`, dueIDs)
+			  )`, dueIDs, fmt.Sprintf("%d seconds", maxInt(0, int(minRemaining.Seconds()))))
 		if err != nil {
-			return nil, false, false, fmt.Errorf("supersede open intents: %w", err)
+			return nil, false, false, fmt.Errorf("supersede expiring intents: %w", err)
+		}
+
+		// The database trigger writes quarantine rows in this same transaction.
+		// Commit those rows, then return a pending-checkout error. Returning an
+		// error from this callback would roll back the quarantine record.
+		var newlyQuarantinedOrderID string
+		qErr = txRepo.db.QueryRow(ctx, `
+			SELECT provider_order_id
+			FROM payment_intent_quarantine
+			WHERE status <> 'resolved' AND due_ids && $1::uuid[]
+			ORDER BY created_at ASC
+			LIMIT 1 FOR UPDATE`, dueIDs,
+		).Scan(&newlyQuarantinedOrderID)
+		if qErr == nil {
+			quarantineBlockedAfterCommit = fmt.Errorf("%w: provider order %s", ErrPaymentIntentQuarantinePending, newlyQuarantinedOrderID)
+			return nil, false, false, nil
+		}
+		if !isNoRows(qErr) {
+			return nil, false, false, fmt.Errorf("verify payment intent quarantine: %w", qErr)
 		}
 
 		// 5. Insert new intent in 'initiating' status
@@ -429,21 +527,29 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		return newIntent, false, false, nil
 	}
 
-	if pool := PoolFromDB(r.db); pool != nil {
-		var intent *domain.PaymentIntent
-		var reused, inFlight bool
-		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
-			var txErr error
-			intent, reused, inFlight, txErr = execClaim(r.WithTx(tx))
-			return txErr
-		})
-		if err != nil {
-			return nil, false, false, err
-		}
-		return intent, reused, inFlight, nil
+	// ClaimInitiatingIntent owns its transaction. An outer transaction cannot
+	// commit the quarantine row and then return the blocked-checkout result.
+	if _, nested := TxFromContext(ctx); nested {
+		return nil, false, false, errors.New("payment intent claim must own its transaction")
 	}
-
-	return execClaim(r)
+	pool := PoolFromDB(r.db)
+	if pool == nil {
+		return nil, false, false, errors.New("payment intent claim requires a pool-backed database handle")
+	}
+	var intent *domain.PaymentIntent
+	var reused, inFlight bool
+	err = WithinTx(ctx, pool, func(tx pgx.Tx) error {
+		var txErr error
+		intent, reused, inFlight, txErr = execClaim(r.WithTx(tx))
+		return txErr
+	})
+	if err != nil {
+		return nil, false, false, err
+	}
+	if quarantineBlockedAfterCommit != nil {
+		return nil, false, false, quarantineBlockedAfterCommit
+	}
+	return intent, reused, inFlight, nil
 }
 
 func (r *PaymentIntentRepo) TransitionCreated(ctx context.Context, intentID uuid.UUID, sessionID string, expiresAt *time.Time) error {
@@ -476,101 +582,11 @@ func (r *PaymentIntentRepo) TransitionDispatchUnknown(ctx context.Context, inten
 	return err
 }
 
-func (r *PaymentIntentRepo) GetReusableIntentUnderLock(ctx context.Context, tenantID, dueID uuid.UUID, minRemaining time.Duration) (*domain.PaymentIntent, error) {
-	query := func(repo *PaymentIntentRepo) (*domain.PaymentIntent, error) {
-		// Top-down lock order: tenants -> dues -> payment_intents
-		var dummy uuid.UUID
-		if err := repo.db.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&dummy); err != nil && !isNoRows(err) {
-			return nil, err
-		}
-		if err := repo.db.QueryRow(ctx, `SELECT id FROM dues WHERE id=$1 FOR UPDATE`, dueID).Scan(&dummy); err != nil && !isNoRows(err) {
-			return nil, err
-		}
-		// Under-lock inspection for active unexpired intent with >= minRemaining
-		row := repo.db.QueryRow(ctx, `
-			SELECT `+intentCols+` FROM payment_intents
-			WHERE due_id=$1 AND status='created' AND (expires_at IS NULL OR expires_at > NOW() + $2::interval)
-			ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, dueID, fmt.Sprintf("%d seconds", int(minRemaining.Seconds())))
-		return scanIntent(row)
+func maxInt(a, b int) int {
+	if a > b {
+		return a
 	}
-
-	if pool := PoolFromDB(r.db); pool != nil {
-		var out *domain.PaymentIntent
-		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
-			var qErr error
-			out, qErr = query(r.WithTx(tx))
-			return qErr
-		})
-		return out, err
-	}
-	return query(r)
-}
-
-func (r *PaymentIntentRepo) GetReusableMultiDueIntentUnderLock(ctx context.Context, tenantID uuid.UUID, dueIDs []uuid.UUID, totalAmountPaise int64, minRemaining time.Duration) (*domain.PaymentIntent, error) {
-	if len(dueIDs) == 0 {
-		return nil, errors.New("dueIDs required")
-	}
-
-	query := func(repo *PaymentIntentRepo) (*domain.PaymentIntent, error) {
-		// Universal lock order: tenants -> dues -> payment_intents
-		var tenantStatus domain.TenantStatus
-		if err := repo.db.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&tenantStatus); err != nil {
-			if isNoRows(err) {
-				return nil, errors.New("tenant not found")
-			}
-			return nil, err
-		}
-		if tenantStatus != domain.TenantStatusActive {
-			return nil, fmt.Errorf("cannot reuse payment intent: tenant status is %q", tenantStatus)
-		}
-		rows, err := repo.db.Query(ctx, `SELECT id FROM dues WHERE id = ANY($1) ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
-		if err != nil {
-			return nil, err
-		}
-		rows.Close()
-
-		if len(dueIDs) == 1 {
-			row := repo.db.QueryRow(ctx, `
-				SELECT `+intentCols+` FROM payment_intents
-				WHERE (due_id=$1 OR id IN (SELECT payment_intent_id FROM payment_intent_dues WHERE due_id=$1))
-				  AND status='created'
-				  AND amount_paise=$2
-				  AND (expires_at IS NULL OR expires_at > NOW() + $3::interval)
-				ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-				dueIDs[0], totalAmountPaise, fmt.Sprintf("%d seconds", int(minRemaining.Seconds())),
-			)
-			return scanIntent(row)
-		}
-
-		row := repo.db.QueryRow(ctx, `
-			SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at, pi.idempotency_key
-			FROM payment_intents pi
-			JOIN (
-				SELECT payment_intent_id, array_agg(due_id ORDER BY due_id) as intent_dues
-				FROM payment_intent_dues
-				GROUP BY payment_intent_id
-			) pid ON pid.payment_intent_id = pi.id
-			WHERE pi.status='created'
-			  AND pi.amount_paise = $1
-			  AND (pi.expires_at IS NULL OR pi.expires_at > NOW() + $2::interval)
-			  AND pid.intent_dues = (SELECT array_agg(u ORDER BY u) FROM unnest($3::uuid[]) u)
-			ORDER BY pi.created_at DESC
-			LIMIT 1 FOR UPDATE OF pi`,
-			totalAmountPaise, fmt.Sprintf("%d seconds", int(minRemaining.Seconds())), dueIDs,
-		)
-		return scanIntent(row)
-	}
-
-	if pool := PoolFromDB(r.db); pool != nil {
-		var out *domain.PaymentIntent
-		err := WithinTx(ctx, pool, func(tx pgx.Tx) error {
-			var qErr error
-			out, qErr = query(r.WithTx(tx))
-			return qErr
-		})
-		return out, err
-	}
-	return query(r)
+	return b
 }
 
 func isNoRows(err error) bool {
