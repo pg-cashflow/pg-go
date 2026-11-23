@@ -236,7 +236,7 @@ func TestValidateWarnings_KYCWithoutCashfree(t *testing.T) {
 	warns := cfg.ValidateWarnings()
 	found := false
 	for _, w := range warns {
-		if strings.Contains(w, "KYC_IDENTITY_SECRET is set but Cashfree is not configured") {
+		if strings.Contains(w, "KYC identity processing is configured but Cashfree credentials are missing") {
 			found = true
 			break
 		}

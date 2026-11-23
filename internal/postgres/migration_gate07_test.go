@@ -134,6 +134,7 @@ func TestGate07_LockSafetyStaticLinter(t *testing.T) {
 	legacyAlterColumnExceptions := map[string]string{
 		"046_remediate_p0_invariants.sql":                   "P0 remediation expanded integer IDs to bigint before gate enforcement",
 		"067_widen_phone_and_calendar_token_revocation.sql": "Metadata-only VARCHAR width expansion to 16 for international E.164 phone numbers",
+		"123_payment_intent_quarantine_worker.sql":          "Paise domain alignment to BIGINT for payment_intent_quarantine and payment_intents",
 	}
 
 	for _, e := range entries {
