@@ -135,6 +135,7 @@ type Deps struct {
 	BankAccountRepo BankAccountStore
 
 	KYCSvc                    KYCService // nil-safe: KYC routes 503 gracefully if unset
+	KYCUploadConcurrencyLimit int        // bounds aggregate in-flight document uploads (default: 8)
 	CashfreeKYCWebhookSecret  string
 	CashfreeKYCWebhookSecrets map[string]string
 
@@ -222,4 +223,17 @@ func NewRouter(d Deps) *gin.Engine {
 // Handlers holds Deps for thin HTTP adapters.
 type Handlers struct {
 	Deps
+	uploadSem     chan struct{}
+	uploadSemOnce sync.Once
+}
+
+func (h *Handlers) getUploadSem() chan struct{} {
+	h.uploadSemOnce.Do(func() {
+		capacity := h.KYCUploadConcurrencyLimit
+		if capacity <= 0 {
+			capacity = 8
+		}
+		h.uploadSem = make(chan struct{}, capacity)
+	})
+	return h.uploadSem
 }

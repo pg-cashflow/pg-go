@@ -316,6 +316,41 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 6*1024*1024)
 
+	// Acquire concurrency semaphore BEFORE parsing multipart form or allocating heap buffers
+	sem := h.getUploadSem()
+	select {
+	case sem <- struct{}{}:
+		defer func() { <-sem }()
+	case <-c.Request.Context().Done():
+		c.JSON(http.StatusRequestTimeout, gin.H{"error": "upload request cancelled or timed out"})
+		return
+	default:
+		c.Header("Retry-After", "5")
+		apierr.RespondServerErr(c, http.StatusServiceUnavailable, "system is processing high upload volume; please retry in a few seconds", apierr.CodeInternalError)
+		return
+	}
+
+	// Parse multipart form with bounded 2MB in-memory buffer (remainder spills to disk)
+	if err := c.Request.ParseMultipartForm(2 * 1024 * 1024); err != nil {
+		apierr.RespondClientErr(c, http.StatusBadRequest, "invalid multipart form: "+err.Error(), apierr.CodeRequestInvalidBody)
+		return
+	}
+	if c.Request.MultipartForm != nil {
+		defer c.Request.MultipartForm.RemoveAll()
+	}
+
+	// Enforce maximum 1 document file per upload
+	totalFiles := 0
+	if c.Request.MultipartForm != nil && c.Request.MultipartForm.File != nil {
+		for _, headers := range c.Request.MultipartForm.File {
+			totalFiles += len(headers)
+		}
+	}
+	if totalFiles > 1 {
+		apierr.RespondClientErr(c, http.StatusBadRequest, "only a single document file is permitted per upload", apierr.CodeRequestInvalidBody)
+		return
+	}
+
 	fileHeader, err := c.FormFile("file")
 	if err != nil {
 		fileHeader, err = c.FormFile("document")

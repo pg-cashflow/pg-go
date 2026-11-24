@@ -18,13 +18,15 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
 type mockPhase4ApprovalStore struct {
-	mu            sync.Mutex
-	requests      map[uuid.UUID]*domain.RefundApprovalRequest
-	dispatchCalls int
-	failDispatch  bool
+	mu               sync.Mutex
+	requests         map[uuid.UUID]*domain.RefundApprovalRequest
+	dispatchCalls    int
+	failDispatch     bool
+	conflictOnCreate bool
 }
 
 func newMockPhase4ApprovalStore() *mockPhase4ApprovalStore {
@@ -36,6 +38,9 @@ func newMockPhase4ApprovalStore() *mockPhase4ApprovalStore {
 func (m *mockPhase4ApprovalStore) CreateRequest(_ context.Context, req *domain.RefundApprovalRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.conflictOnCreate {
+		return postgres.ErrRefundApprovalConflict
+	}
 	if req.ID == uuid.Nil {
 		req.ID = uuid.New()
 	}
@@ -928,3 +933,109 @@ func TestPhase4_ApprovalPolicyOrPermissionChangeInvalidation(t *testing.T) {
 		t.Fatal("expected different property IDs to fail isolation check")
 	}
 }
+
+func TestCreateRefundApprovalRequest_NilRepo_Returns503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	pid := uuid.New()
+	makerID := uuid.New()
+	tenantID := uuid.New()
+	paymentID := uuid.New()
+
+	payments := newMockRefundPaymentRepo()
+	payments.payments[paymentID] = &domain.Payment{ID: paymentID, TenantID: tenantID, Amount: 1000000, Provider: "cashfree"}
+
+	h := &Handlers{Deps: Deps{
+		GatewayPaymentRepo: payments,
+		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
+		RefundApprovalRepo: nil, // Nil repository must fail closed
+	}}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: makerID, PropertyID: &pid, Role: domain.RoleOwner})
+		c.Next()
+	})
+	r.POST("/owner/payments/:id/refund/requests", h.OwnerCreateRefundRequest)
+
+	body := []byte(`{"amount_paise": 100000, "reason": "Customer requested cancel"}`)
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idem-test-123")
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable when RefundApprovalRepo is nil, got: %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	pid := uuid.New()
+	makerID := uuid.New()
+	tenantID := uuid.New()
+	paymentID := uuid.New()
+	idemKey := "idem-concurrent-test"
+
+	payments := newMockRefundPaymentRepo()
+	payments.payments[paymentID] = &domain.Payment{ID: paymentID, TenantID: tenantID, Amount: 1000000, Provider: "cashfree"}
+
+	approvalStore := newMockPhase4ApprovalStore()
+	// Pre-populate existing row that simulated concurrent thread inserted
+	existingHash := domain.ComputeRefundMaterialHash(pid, paymentID, tenantID, 200000, "Customer cancel")
+	existingReq := &domain.RefundApprovalRequest{
+		ID:                uuid.New(),
+		PropertyID:        pid,
+		PaymentID:         paymentID,
+		TenantID:          tenantID,
+		AmountPaise:       200000,
+		Reason:            "Customer cancel",
+		IdempotencyKey:    idemKey,
+		RequestedBy:       makerID,
+		Status:            domain.RefundApprovalPending,
+		RequiredApprovals: 1,
+		MaterialHash:      existingHash,
+	}
+	approvalStore.requests[existingReq.ID] = existingReq
+	// Simulate conflict error when CreateRequest is called
+	approvalStore.conflictOnCreate = true
+
+	h := &Handlers{Deps: Deps{
+		GatewayPaymentRepo: payments,
+		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
+		RefundApprovalRepo: approvalStore,
+	}}
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: makerID, PropertyID: &pid, Role: domain.RoleOwner})
+		c.Next()
+	})
+	r.POST("/owner/payments/:id/refund/requests", h.OwnerCreateRefundRequest)
+
+	// 1. Identical payload -> must return 200 OK (idempotent replay)
+	bodyMatching := []byte(`{"amount_paise": 200000, "reason": "Customer cancel"}`)
+	req1 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader(bodyMatching))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", idemKey)
+	rec1 := httptest.NewRecorder()
+	r.ServeHTTP(rec1, req1)
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for exact replay under unique conflict, got: %d (body: %s)", rec1.Code, rec1.Body.String())
+	}
+
+	// 2. Conflicting payload (different amount or reason) with same idempotency key -> must return 409 Conflict
+	bodyDifferent := []byte(`{"amount_paise": 300000, "reason": "Different reason entirely"}`)
+	req2 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader(bodyDifferent))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", idemKey)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for differing payload under unique conflict, got: %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+}
+

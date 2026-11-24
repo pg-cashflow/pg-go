@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
@@ -19,6 +20,7 @@ var (
 	ErrRefundApprovalScopeMismatch = errors.New("postgres: refund approval property scope mismatch")
 	ErrManagerRefundsDisabled      = errors.New("postgres: manager refunds disabled by property owner")
 	ErrManagerRefundLimitExceeded  = errors.New("postgres: manager refund amount exceeds property limit")
+	ErrRefundApprovalConflict      = errors.New("postgres: refund approval idempotency conflict")
 )
 
 // validateManagerRefundPolicy checks the owner-controlled manager delegation policy.
@@ -138,7 +140,14 @@ func (r *RefundApprovalRepo) CreateRequest(ctx context.Context, req *domain.Refu
 			req.RequestedBy, req.RequestedByRole, req.Status, req.RequiredApprovals, req.MaterialHash,
 			approvalsJSON, req.RejectedBy, req.RejectedAt, req.RejectionReason, req.RefundID, req.CreatedAt, req.UpdatedAt,
 		)
-		return err
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return ErrRefundApprovalConflict
+			}
+			return err
+		}
+		return nil
 	})
 }
 

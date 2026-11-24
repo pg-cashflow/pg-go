@@ -657,10 +657,10 @@ func (s *Service) Vacate(ctx context.Context, tenantID uuid.UUID) error {
 				return fmt.Errorf("supersede open payment intents: %w", err)
 			}
 
-			// 4. Retire active KYC verifications upon departure
+			// 4. Retire active KYC verifications upon departure (mark expired)
 			_, err = tx.Exec(ctx, `
 				UPDATE kyc_verification
-				SET status='superseded', updated_at=NOW()
+				SET status='expired', updated_at=NOW()
 				WHERE tenant_id=$1 AND status IN ('verified', 'pending', 'pending_manual_review')`,
 				tenantID,
 			)

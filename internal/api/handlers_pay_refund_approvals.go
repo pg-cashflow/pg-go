@@ -97,8 +97,8 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 		return
 	}
 
-	if h.GatewayPaymentRepo == nil || h.TenantStore == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "payment repository unavailable"})
+	if h.GatewayPaymentRepo == nil || h.TenantStore == nil || h.RefundApprovalRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund approval repository unavailable"})
 		return
 	}
 
@@ -126,27 +126,26 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 		return
 	}
 
+	// Compute canonical material hash first for authoritative content binding
+	materialHash := domain.ComputeRefundMaterialHash(pid, paymentID, p.TenantID, body.AmountPaise, body.Reason)
+
 	// Check existing idempotency
-	if h.RefundApprovalRepo != nil {
-		existing, err := h.RefundApprovalRepo.GetRequestByPaymentAndIdempotency(ctx, paymentID, idempotencyKey)
-		if err == nil && existing != nil {
-			if existing.AmountPaise != body.AmountPaise || existing.Reason != body.Reason {
-				c.JSON(http.StatusConflict, gin.H{
-					"error": "idempotency key conflict: refund request exists with different amount or reason",
-					"code":  "IDEMPOTENCY_CONFLICT",
-				})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"refund_request": existing})
+	existing, err := h.RefundApprovalRepo.GetRequestByPaymentAndIdempotency(ctx, paymentID, idempotencyKey)
+	if err == nil && existing != nil {
+		if existing.AmountPaise != body.AmountPaise || existing.Reason != body.Reason || existing.MaterialHash != materialHash {
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "idempotency key conflict: refund request exists with different amount or reason",
+				"code":  "IDEMPOTENCY_CONFLICT",
+			})
 			return
 		}
+		c.JSON(http.StatusOK, gin.H{"refund_request": existing})
+		return
 	}
 
 	// Evaluate policy threshold
 	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
 	requiredApprovals, _ := domain.EvaluateRefundThreshold(body.AmountPaise, effectiveLimit, h.AppEnv)
-
-	materialHash := domain.ComputeRefundMaterialHash(pid, paymentID, p.TenantID, body.AmountPaise, body.Reason)
 
 	req := &domain.RefundApprovalRequest{
 		ID:                uuid.New(),
@@ -166,24 +165,37 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 		UpdatedAt:         time.Now().UTC(),
 	}
 
-	if h.RefundApprovalRepo != nil {
-		if err := h.RefundApprovalRepo.CreateRequest(ctx, req); err != nil {
-			if errors.Is(err, postgres.ErrManagerRefundsDisabled) {
-				apierr.RespondClientErr(c, http.StatusForbidden, "manager refunds are disabled by the property owner", apierr.CodeFinanceForbidden)
+	if err := h.RefundApprovalRepo.CreateRequest(ctx, req); err != nil {
+		if errors.Is(err, postgres.ErrRefundApprovalConflict) {
+			// Database-enforced atomic conflict recovery: read concurrently inserted row
+			existing, getErr := h.RefundApprovalRepo.GetRequestByPaymentAndIdempotency(ctx, paymentID, idempotencyKey)
+			if getErr == nil && existing != nil {
+				if existing.AmountPaise == body.AmountPaise && existing.Reason == body.Reason && existing.MaterialHash == materialHash {
+					c.JSON(http.StatusOK, gin.H{"refund_request": existing})
+					return
+				}
+				c.JSON(http.StatusConflict, gin.H{
+					"error": "idempotency key conflict: refund request exists with different parameters",
+					"code":  "IDEMPOTENCY_CONFLICT",
+				})
 				return
 			}
-			if errors.Is(err, postgres.ErrManagerRefundLimitExceeded) {
-				apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
-				return
-			}
-			if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
-				apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
-				return
-			}
-			slog.Error("failed to create refund approval request", "payment_id", paymentID, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record refund approval request"})
+		}
+		if errors.Is(err, postgres.ErrManagerRefundsDisabled) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "manager refunds are disabled by the property owner", apierr.CodeFinanceForbidden)
 			return
 		}
+		if errors.Is(err, postgres.ErrManagerRefundLimitExceeded) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "refund amount exceeds the limit set by the property owner; ask the owner to issue it", apierr.CodeRefundManagerLimitExceeded)
+			return
+		}
+		if errors.Is(err, postgres.ErrCapabilityDenied) || errors.Is(err, postgres.ErrManagerInactive) {
+			apierr.RespondClientErr(c, http.StatusForbidden, "manager lacks required permission to issue refunds", apierr.CodeFinanceForbidden)
+			return
+		}
+		slog.Error("failed to create refund approval request", "payment_id", paymentID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record refund approval request"})
+		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"refund_request": req})
