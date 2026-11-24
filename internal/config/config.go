@@ -92,6 +92,8 @@ type Config struct {
 	// Must be set independently via PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET.
 	// In production this field is required; the server refuses to start without it (REQ-SEC-008).
 	PayoutExportChecksumSecret string
+	// PayoutApprovalActiveKID designates the active key ID used for signing immutable payout approval snapshots.
+	PayoutApprovalActiveKID string
 	// PayoutApprovalSecret is the HMAC-SHA256 secret dedicated to signing immutable payout approval snapshots.
 	PayoutApprovalSecret string
 	// PayoutApprovalKeys holds versioned approval signing keys for rotation (version -> secret).
@@ -174,6 +176,7 @@ func Load() (*Config, error) {
 		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
 		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
 		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
+		PayoutApprovalActiveKID:           envFirst("PAYOUT_APPROVAL_ACTIVE_KID", "CF_PAYOUT_APPROVAL_ACTIVE_KID"),
 		PayoutApprovalSecret:              envFirst("PAYOUT_APPROVAL_SECRET", "CF_PAYOUT_APPROVAL_SECRET"),
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
 		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
@@ -187,6 +190,20 @@ func Load() (*Config, error) {
 	}
 	if keysStr := os.Getenv("PAYOUT_APPROVAL_KEYS"); keysStr != "" {
 		cfg.PayoutApprovalKeys = parseVersionedApprovalKeys(keysStr)
+	}
+	if cfg.PayoutApprovalActiveKID == "" {
+		cfg.PayoutApprovalActiveKID = "v1"
+	}
+	if cfg.PayoutApprovalKeys == nil {
+		cfg.PayoutApprovalKeys = make(map[string]string)
+	}
+	if sec := strings.TrimSpace(cfg.PayoutApprovalSecret); sec != "" {
+		if existing, ok := cfg.PayoutApprovalKeys["v1"]; ok && existing != sec {
+			return nil, fmt.Errorf("conflicting payout approval configuration: PAYOUT_APPROVAL_SECRET does not match PAYOUT_APPROVAL_KEYS[v1]")
+		}
+		if _, ok := cfg.PayoutApprovalKeys["v1"]; !ok {
+			cfg.PayoutApprovalKeys["v1"] = sec
+		}
 	}
 	if secretsStr := os.Getenv("CF_PAYOUT_WEBHOOK_SECRETS"); secretsStr != "" {
 		cfg.CashfreePayoutWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
@@ -245,8 +262,17 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
-		if strings.TrimSpace(cfg.PayoutApprovalSecret) == "" && len(cfg.PayoutApprovalKeys) == 0 {
-			return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET is required in production (must not reuse JWT_SECRET)")
+		if len(cfg.PayoutApprovalKeys) == 0 {
+			return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET or PAYOUT_APPROVAL_KEYS is required in production (must not reuse JWT_SECRET)")
+		}
+		activeSec, ok := cfg.PayoutApprovalKeys[cfg.PayoutApprovalActiveKID]
+		if !ok || strings.TrimSpace(activeSec) == "" {
+			return nil, fmt.Errorf("PAYOUT_APPROVAL_ACTIVE_KID %q not found in PAYOUT_APPROVAL_KEYS", cfg.PayoutApprovalActiveKID)
+		}
+		for kid, sec := range cfg.PayoutApprovalKeys {
+			if len(sec) < 32 {
+				return nil, fmt.Errorf("payout approval key %q must be at least 32 bytes (got %d)", kid, len(sec))
+			}
 		}
 		// Step-up OTP (payout_approval) is email-only by architectural contract
 		// (docs/specs/auth-frontend-backend-contract.md §1.2). Without SMTP,

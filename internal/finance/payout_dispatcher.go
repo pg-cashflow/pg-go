@@ -30,6 +30,7 @@ type PayoutDispatcher struct {
 	encryptionKey       []byte
 	keyRing             *crypto.KeyRing
 	approvalSigningKeys map[string][]byte
+	approvalKeyRing     *crypto.ApprovalKeyRing
 	alerter             PayoutProtectAlerter
 }
 
@@ -57,6 +58,14 @@ func (d *PayoutDispatcher) SetApprovalSigningKeys(keys map[string][]byte) {
 	d.approvalSigningKeys = keys
 }
 
+// SetApprovalKeyRing sets the unified versioned ApprovalKeyRing for verifying approved batch snapshots.
+func (d *PayoutDispatcher) SetApprovalKeyRing(kr *crypto.ApprovalKeyRing) {
+	d.approvalKeyRing = kr
+	if kr != nil {
+		d.approvalSigningKeys = kr.VerificationKeys()
+	}
+}
+
 // SetAlerter configures the notification alerter for stuck or pending Cashfree approvals.
 func (d *PayoutDispatcher) SetAlerter(a PayoutProtectAlerter) {
 	d.alerter = a
@@ -71,6 +80,7 @@ func (d *PayoutDispatcher) WithRepo(repo *postgres.PayoutRepo) *PayoutDispatcher
 		encryptionKey:       d.encryptionKey,
 		keyRing:             d.keyRing,
 		approvalSigningKeys: d.approvalSigningKeys,
+		approvalKeyRing:     d.approvalKeyRing,
 		alerter:             d.alerter,
 	}
 }

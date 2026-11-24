@@ -1228,15 +1228,17 @@ func (h *Handlers) getChecksumSecret() string {
 }
 
 // getPayoutApprovalSigningKey returns the dedicated HMAC secret and keyID used to sign immutable payout approval snapshots.
+// It uses PayoutApprovalKeyRing if configured, ensuring the active KID is always selected for signing.
+// Fallbacks to ChecksumSecret or JWTSecret are strictly forbidden to enforce cryptographic isolation.
 func (h *Handlers) getPayoutApprovalSigningKey() ([]byte, string) {
+	if h.PayoutApprovalKeyRing != nil {
+		k, kid, err := h.PayoutApprovalKeyRing.ActiveKey()
+		if err == nil && len(k) >= domain.MinApprovalSigningKeyLength {
+			return k, kid
+		}
+	}
 	if len(h.PayoutApprovalSigningKey) >= domain.MinApprovalSigningKeyLength {
 		return h.PayoutApprovalSigningKey, "v1"
-	}
-	if len(h.PayoutChecksumSecret) >= domain.MinApprovalSigningKeyLength {
-		return []byte(h.PayoutChecksumSecret), "v1"
-	}
-	if len(h.JWTSecret) >= domain.MinApprovalSigningKeyLength {
-		return []byte(h.JWTSecret), "v1"
 	}
 	return nil, ""
 }

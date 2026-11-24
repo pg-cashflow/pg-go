@@ -109,6 +109,7 @@ type Deps struct {
 	PayoutPlatformRepo           PayoutPlatformStore
 	PayoutWebhookRepo            PayoutWebhookStore
 	PayoutChecksumSecret         string
+	PayoutApprovalKeyRing        *crypto.ApprovalKeyRing
 	PayoutApprovalSigningKey     []byte
 	PayoutApprovalKeys           map[string][]byte
 	PayoutEncryptionKey          []byte

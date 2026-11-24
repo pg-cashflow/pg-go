@@ -448,19 +448,27 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		}
 	}
 
-	approvalSecret := cfg.PayoutApprovalSecret
-	if approvalSecret == "" {
-		approvalSecret = cfg.PayoutExportChecksumSecret
-	}
-	if approvalSecret == "" {
-		approvalSecret = cfg.JWTSecret
-	}
-	payoutApprovalSigningKey := []byte(approvalSecret)
-	approvalSigningKeys := map[string][]byte{
-		"v1": payoutApprovalSigningKey,
-	}
+	rawApprovalKeys := make(map[string][]byte, len(cfg.PayoutApprovalKeys))
 	for kid, sec := range cfg.PayoutApprovalKeys {
-		approvalSigningKeys[kid] = []byte(sec)
+		rawApprovalKeys[kid] = []byte(sec)
+	}
+	var approvalKeyRing *crypto.ApprovalKeyRing
+	if len(rawApprovalKeys) > 0 {
+		var err error
+		approvalKeyRing, err = crypto.NewApprovalKeyRing(cfg.PayoutApprovalActiveKID, rawApprovalKeys)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize payout approval key ring: %w", err)
+		}
+	} else if cfg.AppEnv == "production" {
+		return nil, errors.New("payout approval key ring is required in production")
+	}
+
+	var payoutApprovalSigningKey []byte
+	approvalSigningKeys := map[string][]byte{}
+	if approvalKeyRing != nil {
+		k, _, _ := approvalKeyRing.ActiveKey()
+		payoutApprovalSigningKey = k
+		approvalSigningKeys = approvalKeyRing.VerificationKeys()
 	}
 
 	var payoutDispatcher *finance.PayoutDispatcher
@@ -483,6 +491,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		})
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		payoutDispatcher.SetKeyRing(payoutKeyRing)
+		payoutDispatcher.SetApprovalKeyRing(approvalKeyRing)
 		payoutDispatcher.SetApprovalSigningKeys(approvalSigningKeys)
 		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv, "auto_dispatch", cfg.CashfreePayoutAutoDispatchEnabled)
 	} else if cfg.CashfreePayoutDispatchEnabled || cfg.CashfreePayoutAutoDispatchEnabled {
@@ -567,6 +576,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		PayoutRepo:                      payoutRepo,
 		PayoutDispatcher:                payoutDispatcher,
 		PayoutChecksumSecret:            cfg.PayoutExportChecksumSecret,
+		PayoutApprovalKeyRing:           approvalKeyRing,
 		PayoutApprovalSigningKey:        payoutApprovalSigningKey,
 		PayoutApprovalKeys:              approvalSigningKeys,
 		PayoutEncryptionKey:             payoutEncryptionKey,

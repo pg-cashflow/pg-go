@@ -237,6 +237,8 @@ func (h *Handlers) TenantKYCConsent(c *gin.Context) {
 
 // TenantKYCRevoke handles POST /api/tenant/kyc/revoke.
 // Implements DPDP Rule 8 erasure: nulls PII from all related records.
+// Invariant: Consent revocation must remain unconditionally accessible even if
+// the property owner has deactivated the KYC module.
 func (h *Handlers) TenantKYCRevoke(c *gin.Context) {
 	svc := h.kycSvcOrErr(c)
 	if svc == nil {
@@ -244,9 +246,6 @@ func (h *Handlers) TenantKYCRevoke(c *gin.Context) {
 	}
 	t := tenantFromContext(c)
 	if t == nil {
-		return
-	}
-	if !h.requirePropertyActiveModule(c, t.PropertyID, "kyc") {
 		return
 	}
 	actor := fmt.Sprintf("tenant:%s", t.ID)
