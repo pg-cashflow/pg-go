@@ -460,25 +460,37 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 	items []domain.PayoutItem,
 	statusResp *cashfree.BatchTransferStatusResponse,
 ) error {
-	itemMap := make(map[string]domain.PayoutItem, len(items))
+	expectedTransferMap := make(map[string]domain.PayoutItem, len(items))
 	for _, it := range items {
-		cleanID := strings.ReplaceAll(it.ID.String(), "-", "")
-		itemMap[cleanID] = it
+		expectedID := DerivePayoutTransferID(it)
+		expectedTransferMap[expectedID] = it
 	}
 
-	seen := make(map[string]struct{})
+	seen := make(map[string]struct{}, len(statusResp.Transfers))
 
 	// 1. Reconcile transfers explicitly returned in batch status
 	for _, st := range statusResp.Transfers {
-		cleanTransferID := strings.TrimPrefix(st.TransferID, "pgo_")
-		if idx := strings.IndexAny(cleanTransferID, "_"); idx != -1 {
-			cleanTransferID = cleanTransferID[:idx]
-		}
-		it, ok := itemMap[cleanTransferID]
-		if !ok {
+		incomingID := st.TransferID
+		if incomingID == "" {
+			slog.Error("payout batch reconcile: empty transfer_id in gateway batch status",
+				"batch_id", batch.ID, "status", st.Status)
 			continue
 		}
-		seen[cleanTransferID] = struct{}{}
+
+		if _, duplicate := seen[incomingID]; duplicate {
+			slog.Error("payout batch reconcile: duplicate transfer_id in gateway batch status; potential incident",
+				"batch_id", batch.ID, "transfer_id", incomingID)
+			continue
+		}
+		seen[incomingID] = struct{}{}
+
+		it, ok := expectedTransferMap[incomingID]
+		if !ok {
+			slog.Error("payout batch reconcile: unknown provider transfer ID; refusing mutation",
+				"batch_id", batch.ID, "unknown_transfer_id", incomingID, "status", st.Status)
+			continue
+		}
+
 		if err := d.reconcileSingleTransfer(ctx, batch, it, &st); err != nil {
 			return err
 		}
@@ -494,8 +506,8 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 	isBatchProcessed := batchStatus == "PROCESSED" || batchStatus == "SUCCESS" || batchStatus == "PARTIALLY_FAILED" || batchStatus == "FAILED"
 
 	if isBatchProcessed {
-		for cleanID, it := range itemMap {
-			if _, ok := seen[cleanID]; ok {
+		for expectedID, it := range expectedTransferMap {
+			if _, ok := seen[expectedID]; ok {
 				continue
 			}
 			if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
@@ -536,6 +548,17 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 	it domain.PayoutItem,
 	st *cashfree.TransferStatusItem,
 ) error {
+	expectedTransferID := DerivePayoutTransferID(it)
+	if st.TransferID != expectedTransferID {
+		slog.Error("payout batch reconcile: missing or mismatched transfer ID; refusing state mutation",
+			"expected", expectedTransferID,
+			"got", st.TransferID,
+			"item_id", it.ID,
+			"status", st.Status,
+		)
+		return nil
+	}
+
 	cfID := st.CFTransferID
 	switch st.Status {
 	case "SUCCESS":
@@ -546,12 +569,6 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 				"status", st.Status,
 				"status_code", st.StatusCode,
 			)
-			return nil
-		}
-		expectedTransferID := DerivePayoutTransferID(it)
-		if strings.TrimSpace(st.TransferID) == "" || st.TransferID != expectedTransferID {
-			slog.Error("payout batch reconcile: missing or mismatched transfer ID; refusing settlement",
-				"expected", expectedTransferID, "got", st.TransferID, "item_id", it.ID)
 			return nil
 		}
 		if strings.TrimSpace(st.TransferAmount.String()) == "" {

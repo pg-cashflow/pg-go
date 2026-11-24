@@ -615,6 +615,7 @@ func TestTenantKYCUpload_InFlight_Returns409(t *testing.T) {
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("document_type", "aadhaar")
 	part, _ := writer.CreateFormFile("file", "aadhaar.jpg")
 	_, _ = part.Write([]byte("fake image bytes"))
 	_ = writer.Close()
@@ -658,6 +659,7 @@ func TestTenantKYCUpload_RateLimit_BurstEnforced(t *testing.T) {
 	makeUploadReq := func() *http.Request {
 		body := &bytes.Buffer{}
 		writer := multipart.NewWriter(body)
+		_ = writer.WriteField("document_type", "aadhaar")
 		part, _ := writer.CreateFormFile("file", "aadhaar.jpg")
 		_, _ = part.Write([]byte("fake image bytes"))
 		_ = writer.Close()

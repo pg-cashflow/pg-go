@@ -83,23 +83,24 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 		t.Fatalf("expected status pending, got %s", v1.Status)
 	}
 
-	// 3. Second Initiate Verification (supersede pending)
+	// 3. Second Initiate Verification while v1 is pending MUST fail with ErrVerificationInProgress
 	vendorRef2 := "cf_ref_test_002"
+	_, err = repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRef2, "tenant")
+	if !errors.Is(err, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress when initiating while pending, got: %v", err)
+	}
+
+	// Fail v1 with terminal state; now a new attempt is permitted
+	if err := repo.FailVerificationTx(ctx, v1.ID, "FAILED_PREV", "system"); err != nil {
+		t.Fatalf("fail v1: %v", err)
+	}
+
 	v2, err := repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRef2, "tenant")
 	if err != nil {
-		t.Fatalf("InitiateVerificationTx 2 (supersede) failed: %v", err)
+		t.Fatalf("InitiateVerificationTx 2 failed after v1 failure: %v", err)
 	}
 	if v2.Status != domain.KYCStatusPending {
 		t.Fatalf("expected status pending, got %s", v2.Status)
-	}
-
-	// Check that v1 is now expired/superseded
-	v1Reloaded, err := repo.GetVerificationByVendorRefID(ctx, vendorRef1)
-	if err != nil {
-		t.Fatalf("failed to fetch v1: %v", err)
-	}
-	if v1Reloaded.Status != domain.KYCStatusExpired {
-		t.Fatalf("expected v1 status to be expired, got %s", v1Reloaded.Status)
 	}
 
 	// 4. Complete Verification on v2
@@ -136,7 +137,7 @@ func TestLiveKYCRepo_LifecycleAndAuditChain(t *testing.T) {
 	// Expected audit sequence:
 	// 1. consent_given
 	// 2. verification_initiated (v1)
-	// 3. verification_superseded (v1)
+	// 3. verification_failed (v1)
 	// 4. verification_initiated (v2)
 	// 5. verification_completed (v2)
 	if len(logs) < 5 {
@@ -388,52 +389,30 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 			done.Wait()
 
 			// Verify outcome:
+			// Invariant: An active pending verification must NEVER be superseded.
 			// Either:
-			// Outcome 1: Complete won.
-			//   vA was completed (completeErr == nil).
-			//   supersede saw verified vA and returned ErrAlreadyVerified.
-			// Outcome 2: Supersede won.
-			//   supersede succeeded (supersedeErr == nil, supersedeResult.Status == pending).
-			//   vA was superseded/expired, so Complete failed with ErrVerificationNotPending.
-			// In NEITHER outcome should:
-			//   - A deadlock error occur (pq/pgx deadlock 40P01)
-			//   - Both claim to have completed/superseded vA into an inconsistent state
+			//   - Goroutine 2 acquired the lock first while vA was pending: InitiateVerificationTx returns ErrVerificationInProgress.
+			//     Then Goroutine 1 completes vA cleanly.
+			//   - Goroutine 1 acquired the lock first and completed vA: InitiateVerificationTx returns ErrAlreadyVerified.
+			// In neither case should vA be superseded or expired.
 			t.Logf("iteration %d: completeErr=%v, supersedeErr=%v", i, completeErr, supersedeErr)
 
-			if completeErr != nil && !errors.Is(completeErr, domain.ErrVerificationNotPending) {
+			if completeErr != nil {
 				t.Fatalf("iteration %d: unexpected completeErr: %v", i, completeErr)
 			}
-			if supersedeErr != nil && !errors.Is(supersedeErr, domain.ErrAlreadyVerified) {
+			if supersedeErr != nil && !errors.Is(supersedeErr, domain.ErrAlreadyVerified) && !errors.Is(supersedeErr, domain.ErrVerificationInProgress) {
 				t.Fatalf("iteration %d: unexpected supersedeErr: %v", i, supersedeErr)
 			}
 
-			if completeErr == nil {
-				if completeResult == nil || completeResult.Status != domain.KYCStatusVerified {
-					t.Fatalf("iteration %d: expected completeResult verified, got %+v", i, completeResult)
-				}
-				// Complete succeeded: vA must be verified
-				reloadedVA, err := repo.GetVerificationByVendorRefID(ctx, vendorRefA)
-				if err != nil {
-					t.Fatalf("iteration %d: fetch vA: %v", i, err)
-				}
-				if reloadedVA.Status != domain.KYCStatusVerified {
-					t.Fatalf("iteration %d: expected vA status verified, got %s", i, reloadedVA.Status)
-				}
-			} else {
-				// Complete failed with ErrVerificationNotPending: supersede must have succeeded
-				if supersedeErr != nil {
-					t.Fatalf("iteration %d: both operations failed! completeErr=%v, supersedeErr=%v", i, completeErr, supersedeErr)
-				}
-				reloadedVA, err := repo.GetVerificationByVendorRefID(ctx, vendorRefA)
-				if err != nil {
-					t.Fatalf("iteration %d: fetch vA: %v", i, err)
-				}
-				if reloadedVA.Status != domain.KYCStatusExpired {
-					t.Fatalf("iteration %d: expected vA status expired, got %s", i, reloadedVA.Status)
-				}
-				if supersedeResult == nil || supersedeResult.Status != domain.KYCStatusPending {
-					t.Fatalf("iteration %d: expected session B pending, got %+v", i, supersedeResult)
-				}
+			if completeResult == nil || completeResult.Status != domain.KYCStatusVerified {
+				t.Fatalf("iteration %d: expected completeResult verified, got %+v", i, completeResult)
+			}
+			reloadedVA, err := repo.GetVerificationByVendorRefID(ctx, vendorRefA)
+			if err != nil {
+				t.Fatalf("iteration %d: fetch vA: %v", i, err)
+			}
+			if reloadedVA.Status != domain.KYCStatusVerified {
+				t.Fatalf("iteration %d: expected vA status verified, got %s", i, reloadedVA.Status)
 			}
 		}(i)
 	}

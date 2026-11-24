@@ -296,7 +296,8 @@ func TestPhase3_PGAndPayoutsSecretRotation(t *testing.T) {
 		r := gin.New()
 		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
-		body := fmt.Sprintf(`{"event":"TRANSFER_FAILED","data":{"transfer_id":"pgo_%s","status":"FAILED"}}`, itemID)
+		cleanID := strings.ReplaceAll(itemID.String(), "-", "")
+		body := fmt.Sprintf(`{"event":"TRANSFER_FAILED","data":{"transfer_id":"pgo_%s","status":"FAILED"}}`, cleanID)
 		ts := fmt.Sprintf("%d", time.Now().Unix())
 
 		// Signed with oldest active secret (v1)
@@ -497,6 +498,8 @@ func TestPhase3_PayoutTransferCompletion_SentToBeneficiaryVsAcknowledged(t *test
 	r := gin.New()
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
+	cleanID := strings.ReplaceAll(itemID.String(), "-", "")
+
 	t.Run("TRANSFER_SUCCESS_With_SENT_TO_BENEFICIARY_DoesNotCompletePayout", func(t *testing.T) {
 		body := fmt.Sprintf(`{
 			"event": "TRANSFER_SUCCESS",
@@ -509,7 +512,7 @@ func TestPhase3_PayoutTransferCompletion_SentToBeneficiaryVsAcknowledged(t *test
 				"status_description": "Transfer is sent to beneficiary bank",
 				"transfer_amount": 2500.00
 			}
-		}`, time.Now().Format(time.RFC3339), itemID)
+		}`, time.Now().Format(time.RFC3339), cleanID)
 
 		ts := fmt.Sprintf("%d", time.Now().Unix())
 		sig := signTestHMAC(secret, ts+body)
@@ -543,7 +546,7 @@ func TestPhase3_PayoutTransferCompletion_SentToBeneficiaryVsAcknowledged(t *test
 				"utr": "UTR998877665544",
 				"acknowledged": 1
 			}
-		}`, time.Now().Format(time.RFC3339), itemID)
+		}`, time.Now().Format(time.RFC3339), cleanID)
 
 		ts := fmt.Sprintf("%d", time.Now().Unix())
 		sig := signTestHMAC(secret, ts+body)

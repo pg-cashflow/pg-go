@@ -96,6 +96,17 @@ func (f *fakeRepo) InitiateVerificationTx(_ context.Context, tenantID, consentID
 	if f.initiateVTxFn != nil {
 		return f.initiateVTxFn()
 	}
+	if f.verification != nil {
+		if f.verification.Status == domain.KYCStatusVerified {
+			if f.verification.ExpiresAt == nil || time.Now().UTC().Before(*f.verification.ExpiresAt) {
+				return nil, domain.ErrAlreadyVerified
+			}
+		} else if f.verification.Status == domain.KYCStatusPending ||
+			f.verification.Status == domain.KYCStatusPendingManualReview ||
+			f.verification.Status == domain.KYCStatusRequestUnknown {
+			return nil, domain.ErrVerificationInProgress
+		}
+	}
 	v := &domain.KYCVerification{
 		ID:                uuid.New(),
 		TenantID:          tenantID,
@@ -817,7 +828,7 @@ func TestVerifyAadhaarDocument_Success(t *testing.T) {
 	}
 }
 
-func TestVerifyAadhaarDocument_VendorRefPersistenceFailureFailsVerification(t *testing.T) {
+func TestVerifyAadhaarDocument_VendorRefPersistenceFailurePreservesRequestUnknown(t *testing.T) {
 	tenantID := uuid.New()
 	repo := &fakeRepo{
 		consent: &domain.KYCConsent{
@@ -846,17 +857,17 @@ func TestVerifyAadhaarDocument_VendorRefPersistenceFailureFailsVerification(t *t
 	if err == nil {
 		t.Fatalf("expected error on vendor ref persistence failure, got nil")
 	}
-	if v != nil {
-		t.Fatalf("expected nil verification, got %+v", v)
+	if v == nil || v.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected verification with request_unknown status, got %+v", v)
 	}
 	if repo.updateVendorRefAttempts != 3 {
 		t.Fatalf("expected 3 updateVendorRef attempts with retry, got %d", repo.updateVendorRefAttempts)
 	}
-	if repo.verification == nil || repo.verification.Status != domain.KYCStatusFailed {
-		t.Fatalf("expected verification to be marked failed, got %+v", repo.verification)
+	if repo.verification == nil || repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected verification to be preserved as request_unknown, got %+v", repo.verification)
 	}
-	if repo.verification.FailureReason == nil || *repo.verification.FailureReason != "VENDOR_REF_PERSISTENCE_FAILED" {
-		t.Fatalf("expected failure reason VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
+	if repo.verification.FailureReason == nil || !strings.Contains(*repo.verification.FailureReason, "VENDOR_REF_PERSISTENCE_FAILED") {
+		t.Fatalf("expected failure reason to contain VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
 	}
 }
 
@@ -958,6 +969,128 @@ func TestService_VerifyAadhaarDocument_Cooldown(t *testing.T) {
 	}
 	if len(repo.releasedLockIDs) != 1 || repo.releasedLockIDs[0] != tenantID {
 		t.Fatalf("expected lease lock to be released on cooldown return, got: %v", repo.releasedLockIDs)
+	}
+}
+
+func TestService_VerifyDocument_ActiveStateGuards(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    domain.KYCStatus
+		age       time.Duration
+		method    domain.KYCMethod
+		expectErr error
+	}{
+		{
+			name:      "pending at 1 second blocks new attempt",
+			status:    domain.KYCStatusPending,
+			age:       1 * time.Second,
+			expectErr: domain.ErrVerificationInProgress,
+		},
+		{
+			name:      "pending at 61 seconds blocks new attempt",
+			status:    domain.KYCStatusPending,
+			age:       61 * time.Second,
+			expectErr: domain.ErrVerificationInProgress,
+		},
+		{
+			name:      "pending at 24 hours blocks new attempt",
+			status:    domain.KYCStatusPending,
+			age:       24 * time.Hour,
+			expectErr: domain.ErrVerificationInProgress,
+		},
+		{
+			name:      "request_unknown blocks new attempt",
+			status:    domain.KYCStatusRequestUnknown,
+			age:       5 * time.Minute,
+			expectErr: domain.ErrVerificationInProgress,
+		},
+		{
+			name:      "pending_manual_review blocks new attempt",
+			status:    domain.KYCStatusPendingManualReview,
+			age:       10 * time.Minute,
+			expectErr: domain.ErrVerificationInProgress,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tenantID := uuid.New()
+			consentID := uuid.New()
+			repo := &fakeRepo{
+				consent: &domain.KYCConsent{
+					ID:       consentID,
+					TenantID: tenantID,
+				},
+				verification: &domain.KYCVerification{
+					ID:        uuid.New(),
+					TenantID:  tenantID,
+					Status:    tc.status,
+					CreatedAt: time.Now().UTC().Add(-tc.age),
+				},
+			}
+			cf := &fakeCashfree{}
+			svc := newTestService(repo, cf)
+
+			// 1. OCR attempt blocked
+			_, err := svc.VerifyDocument(context.Background(), tenantID, strings.NewReader("\xff\xd8\xff dummy"), "card.jpg", "image/jpeg", "aadhaar", "tenant:"+tenantID.String())
+			if !errors.Is(err, tc.expectErr) {
+				t.Fatalf("VerifyDocument: expected %v, got %v", tc.expectErr, err)
+			}
+			if cf.ocrCalled {
+				t.Fatal("expected Cashfree OCR to not be called when active verification exists")
+			}
+
+			// 2. Aadhaar OTP attempt blocked
+			_, err = svc.InitiateAadhaarOTP(context.Background(), tenantID, "999999999999", "tenant:"+tenantID.String())
+			if !errors.Is(err, tc.expectErr) {
+				t.Fatalf("InitiateAadhaarOTP: expected %v, got %v", tc.expectErr, err)
+			}
+			if cf.requestOTPCalled {
+				t.Fatal("expected Cashfree OTP to not be called when active verification exists")
+			}
+		})
+	}
+}
+
+func TestVerifyDocument_PostProviderPersistenceFailure_PreservesRequestUnknown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+		updateVendorRefErr: errors.New("db connection failure on vendor ref"),
+	}
+	cf := &fakeCashfree{
+		ocrResp: &cashfree.SmartOCRResponse{
+			ReferenceID: "cf_mock_ref_12345",
+			Status:      "SUCCESS",
+			Name:        "Test Tenant",
+			MaskedUID:   "XXXXXXXX1234",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	verif, err := svc.VerifyDocument(context.Background(), tenantID, strings.NewReader("\xff\xd8\xff dummy"), "card.jpg", "image/jpeg", "aadhaar", "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected error on persistence failure, got nil")
+	}
+
+	// Must preserve request_unknown status, NOT failed
+	if verif == nil {
+		t.Fatal("expected non-nil verification record returned with request_unknown")
+	}
+	if verif.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected status %s, got %s", domain.KYCStatusRequestUnknown, verif.Status)
+	}
+
+	// Verify repo verification record was transitioned to request_unknown, NOT failed
+	if repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected repo status to be request_unknown, got %s", repo.verification.Status)
+	}
+	if repo.verification.FailureReason == nil || !strings.Contains(*repo.verification.FailureReason, "VENDOR_REF_PERSISTENCE_FAILED") {
+		t.Fatalf("expected FailureReason to contain VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
 	}
 }
 

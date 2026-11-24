@@ -201,7 +201,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:     fmt.Sprintf("pgo_%s", itemA.ID),
+			TransferID:     fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemA.ID.String(), "-", "")),
 			CFTransferID:   cfTr1,
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
@@ -270,7 +270,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:        fmt.Sprintf("pgo_%s", itemB.ID),
+			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemB.ID.String(), "-", "")),
 			CFTransferID:      cfTr2,
 			Status:            "FAILED",
 			StatusCode:        "BENE_BANK_DECLINED",
@@ -316,7 +316,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:        fmt.Sprintf("pgo_%s", itemA.ID),
+			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemA.ID.String(), "-", "")),
 			CFTransferID:      cfTr1,
 			Status:            "REVERSED",
 			StatusDescription: "Bank returned funds due to closed account",
@@ -378,7 +378,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:        fmt.Sprintf("pgo_%s", itemC.ID),
+			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemC.ID.String(), "-", "")),
 			CFTransferID:      cfTr3,
 			Status:            "REVERSED",
 			StatusDescription: "Bank reversal forcing ledger outbox fallback",
@@ -460,7 +460,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:        fmt.Sprintf("pgo_%s", itemD.ID),
+			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemD.ID.String(), "-", "")),
 			CFTransferID:      cfTr4,
 			Status:            "REVERSED",
 			StatusDescription: "Bank reversal with failing outbox",
@@ -514,7 +514,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			EventTime: time.Now().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:        fmt.Sprintf("pgo_%s", itemE.ID),
+			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemE.ID.String(), "-", "")),
 			CFTransferID:      cfTr5,
 			Status:            "SUCCESS",
 			StatusCode:        "COMPLETED",
@@ -714,8 +714,9 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 
 	makeEnv := func(evt string, itemID uuid.UUID) PayoutWebhookEnvelope {
 		ack := 1
+		cleanID := strings.ReplaceAll(itemID.String(), "-", "")
 		data := PayoutWebhookData{
-			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			TransferID:     fmt.Sprintf("pgo_%s", cleanID),
 			CFTransferID:   "cf_tr_unit_1",
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
@@ -1045,7 +1046,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		unconfirmedData := PayoutWebhookData{
-			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			TransferID:   fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID: "cf_tr_unconfirmed",
 			Status:       "SUCCESS",
 			StatusCode:   "WAIT_TIME_EXCEEDED",
@@ -1099,7 +1100,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			TransferID:   fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID: "cf_tr_unack",
 			Status:       "SUCCESS",
 			StatusCode:   "COMPLETED",
@@ -1153,7 +1154,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			TransferID:     fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID:   "cf_tr_no_ack",
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
@@ -1211,7 +1212,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			TransferID:     fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID:   "cf_tr_v2_ack",
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
@@ -1546,7 +1547,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:   fmt.Sprintf("pgo_%s", itemID),
+			TransferID:   fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID: "cf_tr_rev_conflict",
 			Status:       "REVERSED",
 		}
@@ -1602,7 +1603,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			EventTime: time.Now().UTC().Format(time.RFC3339),
 		}
 		data := PayoutWebhookData{
-			TransferID:     fmt.Sprintf("pgo_%s", itemID),
+			TransferID:     fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemID.String(), "-", "")),
 			CFTransferID:   "cf_tr_ack_conflict",
 			Status:         "SUCCESS",
 			StatusCode:     "COMPLETED",
@@ -1670,7 +1671,8 @@ func TestPayoutWebhook_AuditAndDuplicate(t *testing.T) {
 	r := gin.New()
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 	env := PayoutWebhookEnvelope{Event: "TRANSFER_FAILED", EventTime: time.Now().UTC().Format(time.RFC3339)}
-	env.Data, _ = json.Marshal(PayoutWebhookData{TransferID: "pgo_" + itemID.String(), CFTransferID: "cf_dup_1", Status: "FAILED", StatusDescription: "no"})
+	cleanID := strings.ReplaceAll(itemID.String(), "-", "")
+	env.Data, _ = json.Marshal(PayoutWebhookData{TransferID: "pgo_" + cleanID, CFTransferID: "cf_dup_1", Status: "FAILED", StatusDescription: "no"})
 	for i := 0; i < 2; i++ {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
@@ -1713,6 +1715,7 @@ func TestPayoutWebhook_AuditDataMinimization(t *testing.T) {
 	r := gin.New()
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
+	cleanID := strings.ReplaceAll(itemID.String(), "-", "")
 	// Construct webhook with sensitive beneficiary bank details
 	rawJSON := fmt.Sprintf(`{
 		"event": "TRANSFER_SUCCESS",
@@ -1731,7 +1734,7 @@ func TestPayoutWebhook_AuditDataMinimization(t *testing.T) {
 				"email": "beneficiary@example.com"
 			}
 		}
-	}`, time.Now().UTC().Format(time.RFC3339), itemID.String())
+	}`, time.Now().UTC().Format(time.RFC3339), cleanID)
 
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sig := signPayoutWebhook(secret, ts, []byte(rawJSON))
@@ -1762,7 +1765,7 @@ func TestPayoutWebhook_AuditDataMinimization(t *testing.T) {
 		}
 	}
 	// Verify operational fields are retained
-	for _, operational := range []string{"pgo_" + itemID.String(), "cf_tr_12345", "SUCCESS", "COMPLETED", "UTR12345678"} {
+	for _, operational := range []string{"pgo_" + cleanID, "cf_tr_12345", "SUCCESS", "COMPLETED", "UTR12345678"} {
 		if !strings.Contains(storedPayload, operational) {
 			t.Errorf("operational field %q must be retained in audit raw_payload: %s", operational, storedPayload)
 		}
@@ -1800,8 +1803,9 @@ func TestPayoutWebhook_SecretRotation(t *testing.T) {
 	r := gin.New()
 	r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
 
+	cleanID := strings.ReplaceAll(itemID.String(), "-", "")
 	makeReq := func(sec string) *http.Request {
-		raw := fmt.Sprintf(`{"event":"TRANSFER_FAILED","data":{"transfer_id":"pgo_%s","status":"FAILED"}}`, itemID)
+		raw := fmt.Sprintf(`{"event":"TRANSFER_FAILED","data":{"transfer_id":"pgo_%s","status":"FAILED"}}`, cleanID)
 		ts := fmt.Sprintf("%d", time.Now().Unix())
 		sig := signPayoutWebhook(sec, ts, []byte(raw))
 		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree/payouts", bytes.NewReader([]byte(raw)))

@@ -21,6 +21,9 @@ import (
 // 4. Worker crashes after journal write and retries: deterministic UUIDs ensure zero duplicate journal entries.
 // 5. Invariant check: sum(debit) == sum(credit) holds.
 func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping physical crash test in -short mode")
+	}
 	dbURL := testutil.RequireDB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

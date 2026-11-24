@@ -306,8 +306,10 @@ func (r *KYCRepo) RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor s
 	})
 }
 
-// InitiateVerificationTx atomizes superseding any stale pending/expired verification and
-// inserting a new pending verification record while maintaining unbroken audit hash chains.
+// InitiateVerificationTx locks the tenant row, verifies that no active verification is in progress,
+// and inserts a new pending verification record while maintaining unbroken audit hash chains.
+// If an active verification (pending, request_unknown, pending_manual_review) already exists,
+// it returns domain.ErrVerificationInProgress. It NEVER supersedes an in-flight verification.
 func (r *KYCRepo) InitiateVerificationTx(
 	ctx context.Context,
 	tenantID, consentID uuid.UUID,
@@ -388,25 +390,7 @@ func (r *KYCRepo) InitiateVerificationTx(
 					return domain.ErrAlreadyVerified
 				}
 			case domain.KYCStatusPending, domain.KYCStatusPendingManualReview, domain.KYCStatusRequestUnknown:
-				// Pending verification superseded by fresh attempt
-				reason := "superseded by new attempt"
-				_, err = tx.Exec(ctx, `
-					UPDATE kyc_verification
-					SET status = 'expired',
-						document_bytes = NULL,
-						attested_photo_bytes = NULL,
-						photo_stored = FALSE,
-						failure_reason = $2,
-						updated_at = $3
-					WHERE id = $1
-				`, existing.ID, reason, now)
-				if err != nil {
-					return fmt.Errorf("kyc: supersede pending verification: %w", err)
-				}
-
-				if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_superseded", "pending verification superseded by new attempt", now); err != nil {
-					return fmt.Errorf("kyc: append superseded audit log: %w", err)
-				}
+				return domain.ErrVerificationInProgress
 			}
 		}
 

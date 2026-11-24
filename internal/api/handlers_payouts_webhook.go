@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 )
 
@@ -418,7 +419,9 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	item, err := repo.GetPayoutItemByID(ctx, itemID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("payout webhook: item not found", "item_id", itemID)
+			errMsg := fmt.Sprintf("payout item %s not found for transfer_id %q event %s", itemID, data.TransferID, evtType)
+			slog.Error("payout webhook dead-letter: item not found", "item_id", itemID, "transfer_id", data.TransferID, "event_type", evtType)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "dead_letter", &errMsg)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -427,7 +430,24 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		return
 	}
 	if item == nil {
-		slog.Warn("payout webhook: item not found", "item_id", itemID)
+		errMsg := fmt.Sprintf("payout item %s is nil for transfer_id %q event %s", itemID, data.TransferID, evtType)
+		slog.Error("payout webhook dead-letter: item is nil", "item_id", itemID, "transfer_id", data.TransferID, "event_type", evtType)
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "dead_letter", &errMsg)
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Canonical transfer ID validation: incoming data.TransferID must equal DerivePayoutTransferID(*item) exactly.
+	expectedTransferID := finance.DerivePayoutTransferID(*item)
+	if data.TransferID != expectedTransferID {
+		errMsg := fmt.Sprintf("transfer_id mismatch: incoming %q does not match canonical %q for item %s (event %s)", data.TransferID, expectedTransferID, item.ID, evtType)
+		slog.Error("payout webhook: transfer_id mismatch; refusing status mutation",
+			"incoming_transfer_id", data.TransferID,
+			"expected_transfer_id", expectedTransferID,
+			"item_id", item.ID,
+			"event_type", evtType,
+		)
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "dead_letter", &errMsg)
 		c.Status(http.StatusOK)
 		return
 	}

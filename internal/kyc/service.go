@@ -283,7 +283,24 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	name := domain.NormalizeName(data.Name)
 	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
 
-	// 6. Initiate pending (supersedes any stale record).
+	// 6. Pre-check active verification status under tenant scope
+	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+		return nil, fmt.Errorf("kyc service: check active verification for qr: %w", err)
+	}
+	if active != nil {
+		if active.Status == domain.KYCStatusVerified {
+			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
+				return nil, domain.ErrAlreadyVerified
+			}
+		} else if active.Status == domain.KYCStatusPending ||
+			active.Status == domain.KYCStatusPendingManualReview ||
+			active.Status == domain.KYCStatusRequestUnknown {
+			return nil, domain.ErrVerificationInProgress
+		}
+	}
+
+	// 7. Initiate pending verification
 	vendorRefID := uuid.New().String()
 	pending, err := s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
@@ -294,7 +311,7 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 		return nil, fmt.Errorf("kyc service: initiate qr verification: %w", err)
 	}
 
-	// 7. Route to manual review:
+	// 8. Route to manual review:
 	// A standalone Secure QR verification must never auto-verify based on cryptographic signature
 	// and name matching alone, as anyone with a photo of another person's QR could pass.
 	// Both clean matches and name mismatches are routed to pending_manual_review via SubmitManualReviewTx.
@@ -385,7 +402,7 @@ func (s *Service) VerifyDocument(
 		s.releaseLease(context.Background(), tenantID, leaseToken)
 	}()
 
-	// 3. Under lease lock: pre-check active verification status and enforce 60s cooldown
+	// 3. Under lease lock: pre-check active verification status
 	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
 	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
 		return nil, fmt.Errorf("kyc service: check active verification: %w", err)
@@ -395,7 +412,9 @@ func (s *Service) VerifyDocument(
 			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
 				return nil, domain.ErrAlreadyVerified
 			}
-		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
+		} else if active.Status == domain.KYCStatusPending ||
+			active.Status == domain.KYCStatusPendingManualReview ||
+			active.Status == domain.KYCStatusRequestUnknown {
 			return nil, domain.ErrVerificationInProgress
 		}
 	}
@@ -501,13 +520,14 @@ func (s *Service) VerifyDocument(
 		}
 	}
 	if updateRefErr != nil {
-		slog.ErrorContext(ctx, "kyc service: failed to persist vendor_ref_id after retries; failing verification",
+		slog.ErrorContext(ctx, "kyc service: failed to persist vendor_ref_id after retries; preserving request_unknown",
 			"verification_id", pending.ID,
 			"vendor_ref_id", vendorRefID,
 			"err", updateRefErr,
 		)
-		_ = s.repo.FailVerificationTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED", actor)
-		return nil, fmt.Errorf("kyc service: persist vendor ref id: %w", updateRefErr)
+		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED: "+updateRefErr.Error(), actor)
+		pending.Status = domain.KYCStatusRequestUnknown
+		return pending, fmt.Errorf("kyc service: persist vendor ref id: %w", updateRefErr)
 	}
 
 	docURL := fmt.Sprintf("/api/owner/kyc/%s/document", pending.ID)
@@ -517,7 +537,14 @@ func (s *Service) VerifyDocument(
 		normDocType,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("kyc service: submit manual review: %w", err)
+		slog.ErrorContext(ctx, "kyc service: failed to submit manual review after provider success; preserving request_unknown",
+			"verification_id", pending.ID,
+			"vendor_ref_id", vendorRefID,
+			"err", err,
+		)
+		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "MANUAL_REVIEW_PERSISTENCE_FAILED: "+err.Error(), actor)
+		pending.Status = domain.KYCStatusRequestUnknown
+		return pending, fmt.Errorf("kyc service: submit manual review: %w", err)
 	}
 
 	return underReview, nil
@@ -587,7 +614,9 @@ func (s *Service) InitiateAadhaarOTP(
 			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
 				return "", domain.ErrAlreadyVerified
 			}
-		} else if active.Status == domain.KYCStatusPending && time.Since(active.CreatedAt) < 60*time.Second {
+		} else if active.Status == domain.KYCStatusPending ||
+			active.Status == domain.KYCStatusPendingManualReview ||
+			active.Status == domain.KYCStatusRequestUnknown {
 			return "", domain.ErrVerificationInProgress
 		}
 	}
@@ -1020,6 +1049,22 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	defer func() {
 		s.releaseLease(context.Background(), tenantID, leaseToken)
 	}()
+
+	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
+	if err != nil && !errors.Is(err, domain.ErrVerificationNotFound) {
+		return nil, "", fmt.Errorf("kyc service: check active verification for digilocker: %w", err)
+	}
+	if active != nil {
+		if active.Status == domain.KYCStatusVerified {
+			if active.ExpiresAt == nil || time.Now().UTC().Before(*active.ExpiresAt) {
+				return nil, "", domain.ErrAlreadyVerified
+			}
+		} else if active.Status == domain.KYCStatusPending ||
+			active.Status == domain.KYCStatusPendingManualReview ||
+			active.Status == domain.KYCStatusRequestUnknown {
+			return nil, "", domain.ErrVerificationInProgress
+		}
+	}
 
 	vendorRefID := fmt.Sprintf("cf_dgl_%s", uuid.New().String())
 	pending, err := s.repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRefID, actor)
