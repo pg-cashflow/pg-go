@@ -64,9 +64,9 @@ type KYCRepo interface {
 	RevokeConsent(ctx context.Context, tenantID uuid.UUID, actor string) error
 
 	InitiateVerificationTx(ctx context.Context, tenantID, consentID uuid.UUID, method domain.KYCMethod, vendorName, vendorRefID, actor string) (*domain.KYCVerification, error)
-	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, majorityDate *time.Time, actor string) (*domain.KYCVerification, error)
+	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, majorityDate *time.Time, actor string, leaseToken ...uuid.UUID) (*domain.KYCVerification, error)
 	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error
-	MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
+	MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)
 	GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
@@ -83,7 +83,7 @@ type KYCRepo interface {
 	GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error)
 	GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
 
-	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string, documentType ...string) (*domain.KYCVerification, error)
+	SubmitManualReviewTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, ocrData, documentURL string, documentBytes []byte, documentContentType string, actor string, documentType string, leaseToken ...uuid.UUID) (*domain.KYCVerification, error)
 	ApproveManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	RejectManualReviewTx(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error)
@@ -155,13 +155,15 @@ func (s *Service) acquireLease(ctx context.Context, tenantID uuid.UUID, ttl time
 }
 
 func (s *Service) releaseLease(ctx context.Context, tenantID, leaseToken uuid.UUID) {
+	relCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if fenced, ok := s.repo.(interface {
 		ReleaseInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID) error
 	}); ok {
-		_ = fenced.ReleaseInFlightLockWithToken(ctx, tenantID, leaseToken)
+		_ = fenced.ReleaseInFlightLockWithToken(relCtx, tenantID, leaseToken)
 		return
 	}
-	_ = s.repo.ReleaseInFlightLock(ctx, tenantID)
+	_ = s.repo.ReleaseInFlightLock(relCtx, tenantID)
 }
 
 // RecordConsent persists the tenant's explicit DPDP consent before any
@@ -404,7 +406,7 @@ func (s *Service) VerifyDocument(
 		return nil, domain.ErrVerificationInProgress
 	}
 	defer func() {
-		s.releaseLease(context.Background(), tenantID, leaseToken)
+		s.releaseLease(ctx, tenantID, leaseToken)
 	}()
 
 	// 3. Under lease lock: pre-check active verification status
@@ -528,7 +530,7 @@ func (s *Service) VerifyDocument(
 			"vendor_ref_id", vendorRefID,
 			"err", updateRefErr,
 		)
-		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED: "+updateRefErr.Error(), actor)
+		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED: "+updateRefErr.Error(), actor, leaseToken)
 		pending.Status = domain.KYCStatusRequestUnknown
 		return pending, fmt.Errorf("kyc service: persist vendor ref id: %w", updateRefErr)
 	}
@@ -537,7 +539,7 @@ func (s *Service) VerifyDocument(
 	underReview, err := s.repo.SubmitManualReviewTx(ctx,
 		pending.ID, maskedUID, identityHash,
 		string(ocrBytes), docURL, fileBytes, contentType, actor,
-		normDocType,
+		normDocType, leaseToken,
 	)
 	if err != nil {
 		slog.ErrorContext(ctx, "kyc service: failed to submit manual review after provider success; preserving request_unknown",
@@ -545,7 +547,7 @@ func (s *Service) VerifyDocument(
 			"vendor_ref_id", vendorRefID,
 			"err", err,
 		)
-		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "MANUAL_REVIEW_PERSISTENCE_FAILED: "+err.Error(), actor)
+		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "MANUAL_REVIEW_PERSISTENCE_FAILED: "+err.Error(), actor, leaseToken)
 		pending.Status = domain.KYCStatusRequestUnknown
 		return pending, fmt.Errorf("kyc service: submit manual review: %w", err)
 	}
@@ -596,7 +598,7 @@ func (s *Service) InitiateAadhaarOTP(
 		return "", domain.ErrVerificationInProgress
 	}
 	defer func() {
-		s.releaseLease(context.Background(), tenantID, leaseToken)
+		s.releaseLease(ctx, tenantID, leaseToken)
 	}()
 
 	if s.cashfree == nil {
@@ -688,7 +690,7 @@ func (s *Service) InitiateAadhaarOTP(
 		if fail.Class == cashfree.FailureSystemFault {
 			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
 		}
-		_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor)
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
 		return "", fail
 	}
 
@@ -715,7 +717,7 @@ func (s *Service) InitiateAadhaarOTP(
 		if fail.Class == cashfree.FailureSystemFault {
 			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
 		}
-		_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor)
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
 		return "", fail
 	}
 
@@ -836,7 +838,7 @@ func (s *Service) CompleteAadhaarOTP(
 		return nil, domain.ErrVerificationInProgress
 	}
 	defer func() {
-		s.releaseLease(context.Background(), tenantID, leaseToken)
+		s.releaseLease(ctx, tenantID, leaseToken)
 	}()
 
 	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", refID)
@@ -866,7 +868,11 @@ func (s *Service) CompleteAadhaarOTP(
 		} else {
 			msg = err.Error()
 		}
-		return nil, s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, httpStatus, msg, actor, err)
+		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, httpStatus, msg, actor, err)
+		if fail.Class == cashfree.FailureTerminal || fail.Class == cashfree.FailureSystemFault {
+			_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
+		}
+		return nil, fail
 	}
 
 	// Fail closed unless status == "VALID", before reading any demographic identity data
@@ -881,7 +887,11 @@ func (s *Service) CompleteAadhaarOTP(
 			}
 		}
 		underlying := fmt.Errorf("aadhaar otp verification not valid: status=%s, message=%s", statusStr, msg)
-		return nil, s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, 200, msg, actor, underlying)
+		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, 200, msg, actor, underlying)
+		if fail.Class == cashfree.FailureTerminal || fail.Class == cashfree.FailureSystemFault {
+			_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
+		}
+		return nil, fail
 	}
 
 	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
@@ -918,7 +928,7 @@ func (s *Service) CompleteAadhaarOTP(
 		verified, completeErr = s.repo.CompleteVerificationTx(ctx,
 			pending.ID, res.MaskedUID, identityHash, isDedupable,
 			s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
-			now, expiresAt, majorityDate, actor,
+			now, expiresAt, majorityDate, actor, leaseToken,
 		)
 		if completeErr == nil {
 			break
@@ -1072,7 +1082,7 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 		return nil, "", domain.ErrVerificationInProgress
 	}
 	defer func() {
-		s.releaseLease(context.Background(), tenantID, leaseToken)
+		s.releaseLease(ctx, tenantID, leaseToken)
 	}()
 
 	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
@@ -1104,11 +1114,11 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	})
 	if err != nil {
 		if isAmbiguousKYCError(err) {
-			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor)
+			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor, leaseToken)
 			pending.Status = domain.KYCStatusRequestUnknown
 			return pending, "", fmt.Errorf("kyc service: create digilocker url ambiguous state: %w", err)
 		}
-		_ = s.repo.FailVerificationTx(ctx, pending.ID, "CREATE_URL_FAILED", actor)
+		_ = s.repo.FailVerificationTx(ctx, pending.ID, "CREATE_URL_FAILED", actor, leaseToken)
 		return nil, "", fmt.Errorf("kyc service: create digilocker url: %w", err)
 	}
 

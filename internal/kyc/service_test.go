@@ -133,7 +133,7 @@ func (f *fakeRepo) UpdateVendorRefIDTx(_ context.Context, verificationID uuid.UU
 	return nil
 }
 
-func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, _, _ time.Time, _ *time.Time, _ string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maskedUID, _ string, _ bool, _ int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, _, _ time.Time, _ *time.Time, _ string, _ ...uuid.UUID) (*domain.KYCVerification, error) {
 	if f.completeVTxFn != nil {
 		return f.completeVTxFn(id)
 	}
@@ -173,7 +173,7 @@ func (f *fakeRepo) FailVerificationTx(_ context.Context, id uuid.UUID, reason, _
 	return nil
 }
 
-func (f *fakeRepo) MarkRequestUnknownTx(_ context.Context, id uuid.UUID, reason, _ string) error {
+func (f *fakeRepo) MarkRequestUnknownTx(_ context.Context, id uuid.UUID, reason, _ string, _ ...uuid.UUID) error {
 	if f.verification != nil && f.verification.ID == id {
 		f.verification.Status = domain.KYCStatusRequestUnknown
 		f.verification.FailureReason = &reason
@@ -232,7 +232,7 @@ func (f *fakeRepo) GetTenantName(_ context.Context, _ uuid.UUID) (string, error)
 func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, error) {
 	return f.attestedPhoto, nil
 }
-func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string, _ ...string) (*domain.KYCVerification, error) {
+func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string, _ string, _ ...uuid.UUID) (*domain.KYCVerification, error) {
 	var raw struct {
 		NameMismatch bool `json:"name_mismatch"`
 	}

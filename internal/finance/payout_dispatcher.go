@@ -637,7 +637,9 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 				incidentType = "EMPTY_TRANSFER_ID"
 			}
 			msg := fmt.Sprintf("expected transfer ID %q, got %q (status=%s)", expectedTransferID, st.TransferID, st.Status)
-			_ = d.repo.RecordItemIncident(ctx, batch.ID, it.ID, incidentType, expectedTransferID, st.TransferID, msg)
+			if err := d.repo.RecordItemIncident(ctx, batch.ID, it.ID, incidentType, expectedTransferID, st.TransferID, msg); err != nil {
+				return fmt.Errorf("payout batch reconcile: persist item incident: %w", err)
+			}
 		}
 		return nil
 	}

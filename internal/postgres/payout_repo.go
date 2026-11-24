@@ -1019,32 +1019,44 @@ func (r *PayoutRepo) RecordBatchRejectionObservation(ctx context.Context, batchI
 func (r *PayoutRepo) RecordBatchIncident(ctx context.Context, batchID uuid.UUID, incidentType, details string) error {
 	fpRaw := fmt.Sprintf("%s:%s:%s", batchID, incidentType, details)
 	fp := fmt.Sprintf("%x", sha256.Sum256([]byte(fpRaw)))
-
-	_, _ = r.db.Exec(ctx, `
-		INSERT INTO payout_reconciliation_incidents (
-			fingerprint, incident_type, batch_id, details,
-			occurrence_count, status, first_seen_at, last_seen_at
-		) VALUES ($1, $2, $3, $4, 1, 'open', NOW(), NOW())
-		ON CONFLICT (fingerprint) DO UPDATE SET
-			occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
-			details = EXCLUDED.details,
-			last_seen_at = EXCLUDED.last_seen_at
-	`, fp, incidentType, batchID, details)
-
 	incidentMsg := fmt.Sprintf("RECONCILIATION_INCIDENT [%s]: %s", incidentType, details)
-	tag, err := r.db.Exec(ctx, `
-		UPDATE payout_batches
-		SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || ' | ' || $2 END,
-		    updated_at = NOW()
-		WHERE id = $1`, batchID, incidentMsg,
-	)
-	if err != nil {
-		return fmt.Errorf("payout repo: record batch incident: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
-	}
-	return nil
+
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		tagInc, err := tx.Exec(ctx, `
+			INSERT INTO payout_reconciliation_incidents (
+				fingerprint, incident_type, batch_id, details,
+				occurrence_count, status, first_seen_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, 1, 'open', NOW(), NOW())
+			ON CONFLICT (fingerprint) DO UPDATE SET
+				occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
+				details = EXCLUDED.details,
+				last_seen_at = EXCLUDED.last_seen_at
+		`, fp, incidentType, batchID, details)
+		if err != nil {
+			return fmt.Errorf("payout repo: insert batch incident: %w", err)
+		}
+		if tagInc.RowsAffected() == 0 {
+			return fmt.Errorf("payout repo: insert batch incident: zero rows affected")
+		}
+
+		tagBatch, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET notes = CASE
+				WHEN notes IS NULL OR notes = '' THEN $2
+				WHEN position($2 in notes) > 0 THEN notes
+				ELSE notes || ' | ' || $2
+			    END,
+			    updated_at = NOW()
+			WHERE id = $1`, batchID, incidentMsg,
+		)
+		if err != nil {
+			return fmt.Errorf("payout repo: record batch incident: %w", err)
+		}
+		if tagBatch.RowsAffected() == 0 {
+			return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
+		}
+		return nil
+	})
 }
 
 // RecordItemIncident records a granular item-level reconciliation incident (e.g. mismatched or empty transfer ID)
@@ -1056,27 +1068,45 @@ func (r *PayoutRepo) RecordItemIncident(
 ) error {
 	fpRaw := fmt.Sprintf("%s:%s:%s:%s:%s", batchID, itemID, incidentType, expectedTransferID, receivedTransferID)
 	fp := fmt.Sprintf("%x", sha256.Sum256([]byte(fpRaw)))
-
-	_, _ = r.db.Exec(ctx, `
-		INSERT INTO payout_reconciliation_incidents (
-			fingerprint, incident_type, batch_id, payout_item_id,
-			expected_transfer_id, received_transfer_id, details,
-			occurrence_count, status, first_seen_at, last_seen_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 'open', NOW(), NOW())
-		ON CONFLICT (fingerprint) DO UPDATE SET
-			occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
-			details = EXCLUDED.details,
-			last_seen_at = EXCLUDED.last_seen_at
-	`, fp, incidentType, batchID, itemID, expectedTransferID, receivedTransferID, details)
-
 	incidentMsg := fmt.Sprintf("RECONCILIATION_ITEM_INCIDENT [%s] item %s: %s", incidentType, itemID, details)
-	_, err := r.db.Exec(ctx, `
-		UPDATE payout_batches
-		SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || ' | ' || $2 END,
-		    updated_at = NOW()
-		WHERE id = $1`, batchID, incidentMsg,
-	)
-	return err
+
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		tagInc, err := tx.Exec(ctx, `
+			INSERT INTO payout_reconciliation_incidents (
+				fingerprint, incident_type, batch_id, payout_item_id,
+				expected_transfer_id, received_transfer_id, details,
+				occurrence_count, status, first_seen_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 'open', NOW(), NOW())
+			ON CONFLICT (fingerprint) DO UPDATE SET
+				occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
+				details = EXCLUDED.details,
+				last_seen_at = EXCLUDED.last_seen_at
+		`, fp, incidentType, batchID, itemID, expectedTransferID, receivedTransferID, details)
+		if err != nil {
+			return fmt.Errorf("payout repo: insert item incident: %w", err)
+		}
+		if tagInc.RowsAffected() == 0 {
+			return fmt.Errorf("payout repo: insert item incident: zero rows affected")
+		}
+
+		tagBatch, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET notes = CASE
+				WHEN notes IS NULL OR notes = '' THEN $2
+				WHEN position($2 in notes) > 0 THEN notes
+				ELSE notes || ' | ' || $2
+			    END,
+			    updated_at = NOW()
+			WHERE id = $1`, batchID, incidentMsg,
+		)
+		if err != nil {
+			return fmt.Errorf("payout repo: record item incident: %w", err)
+		}
+		if tagBatch.RowsAffected() == 0 {
+			return fmt.Errorf("payout repo: record item incident: batch %s not found or update blocked by rls", batchID)
+		}
+		return nil
+	})
 }
 
 // SetBatchFailed sets batch status to failed on definitive rejections (e.g. manual operator intervention).

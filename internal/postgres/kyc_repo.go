@@ -441,6 +441,35 @@ func (r *KYCRepo) InitiateVerificationTx(
 	return newVerification, nil
 }
 
+// assertLeaseFencedTx validates that the tenant lease row exists, is locked FOR UPDATE,
+// is owned by leaseToken, and has not passed its canonical expires_at timestamp.
+func (r *KYCRepo) assertLeaseFencedTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, now time.Time, leaseToken ...uuid.UUID) error {
+	if len(leaseToken) == 0 || leaseToken[0] == uuid.Nil {
+		return nil
+	}
+	var activeToken uuid.UUID
+	var expiresAt time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT lease_token, expires_at
+		FROM kyc_in_flight_lock
+		WHERE tenant_id = $1
+		FOR UPDATE
+	`, tenantID).Scan(&activeToken, &expiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
+		}
+		return fmt.Errorf("kyc: verify lease lock: %w", err)
+	}
+	if activeToken != leaseToken[0] {
+		return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
+	}
+	if now.After(expiresAt) {
+		return fmt.Errorf("kyc: lease expired at %s for tenant %s: fencing abort", expiresAt.Format(time.RFC3339), tenantID)
+	}
+	return nil
+}
+
 // CompleteVerificationTx marks a pending verification as verified, populates PII hashes,
 // updates tenant profile with masked UID, and logs completion in the audit ledger.
 func (r *KYCRepo) CompleteVerificationTx(
@@ -455,6 +484,7 @@ func (r *KYCRepo) CompleteVerificationTx(
 	verifiedAt, expiresAt time.Time,
 	majorityDate *time.Time,
 	actor string,
+	leaseToken ...uuid.UUID,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
 	var updated *domain.KYCVerification
@@ -470,14 +500,19 @@ func (r *KYCRepo) CompleteVerificationTx(
 			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
 		}
 
-		// 2. Acquire row lock on tenant FIRST (enforces global lock hierarchy: tenants -> kyc_verification)
+		// 2. Acquire row lock on tenant FIRST (enforces global lock hierarchy: tenants -> kyc_in_flight_lock -> kyc_verification)
 		var exists int
 		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("kyc: lock tenant: %w", err)
 		}
 
-		// 3. Now acquire row lock on kyc_verification
+		// 3. Validate lease fencing under row lock if a leaseToken is supplied
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
+		}
+
+		// 4. Now acquire row lock on kyc_verification
 		existing, err := r.scanKYCVerification(tx.QueryRow(ctx, `
 			SELECT `+kycVerificationCols+`
 			FROM kyc_verification
@@ -624,18 +659,8 @@ func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UU
 			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
 		}
 
-		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
-			var activeToken uuid.UUID
-			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
-			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
-				}
-				return fmt.Errorf("kyc: verify lease lock: %w", err)
-			}
-			if activeToken != leaseToken[0] {
-				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
-			}
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
 		}
 
 		tag, err := tx.Exec(ctx, `
@@ -659,22 +684,33 @@ func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UU
 }
 
 // MarkRequestUnknownTx transitions a pending verification to request_unknown when transport outcome is ambiguous.
-func (r *KYCRepo) MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error {
+func (r *KYCRepo) MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error {
 	now := time.Now().UTC()
 
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
-		err := tx.QueryRow(ctx, `
-			UPDATE kyc_verification
-			SET status = 'request_unknown', failure_reason = $2, updated_at = $3
-			WHERE id = $1 AND status IN ('pending', 'request_unknown')
-			RETURNING tenant_id
-		`, verificationID, reason, now).Scan(&tenantID)
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return fmt.Errorf("kyc: pending verification %s not found", verificationID)
 			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE kyc_verification
+			SET status = 'request_unknown', failure_reason = $2, updated_at = $3
+			WHERE id = $1 AND status IN ('pending', 'request_unknown')
+		`, verificationID, reason, now)
+		if err != nil {
 			return fmt.Errorf("kyc: update verification request_unknown: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("kyc: pending verification %s not found", verificationID)
 		}
 
 		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_request_unknown", reason, now); err != nil {
@@ -698,18 +734,8 @@ func (r *KYCRepo) ExpireVerificationTx(ctx context.Context, verificationID uuid.
 			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
 		}
 
-		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
-			var activeToken uuid.UUID
-			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
-			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
-				}
-				return fmt.Errorf("kyc: verify lease lock: %w", err)
-			}
-			if activeToken != leaseToken[0] {
-				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
-			}
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
 		}
 
 		tag, err := tx.Exec(ctx, `
@@ -1136,14 +1162,14 @@ func (r *KYCRepo) TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID
 // TryAcquireInFlightLockWithToken acquires a leased lock with a specific fencing token.
 func (r *KYCRepo) TryAcquireInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID, ttl time.Duration) (bool, error) {
 	now := time.Now().UTC()
-	cutoff := now.Add(-ttl)
-	tag, err := r.pool.Exec(ctx, `
-		INSERT INTO kyc_in_flight_lock (tenant_id, lease_token, locked_at)
-		VALUES ($1, $2, $3)
+	expiresAt := now.Add(ttl)
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO kyc_in_flight_lock (tenant_id, lease_token, locked_at, expires_at)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (tenant_id)
-		DO UPDATE SET lease_token = EXCLUDED.lease_token, locked_at = EXCLUDED.locked_at
-		WHERE kyc_in_flight_lock.locked_at <= $4
-	`, tenantID, leaseToken, now, cutoff)
+		DO UPDATE SET lease_token = EXCLUDED.lease_token, locked_at = EXCLUDED.locked_at, expires_at = EXCLUDED.expires_at
+		WHERE kyc_in_flight_lock.expires_at <= $3
+	`, tenantID, leaseToken, now, expiresAt)
 	if err != nil {
 		return false, fmt.Errorf("kyc: acquire in-flight lock: %w", err)
 	}
@@ -1152,7 +1178,7 @@ func (r *KYCRepo) TryAcquireInFlightLockWithToken(ctx context.Context, tenantID,
 
 // ReleaseInFlightLock removes the in-flight lease for a tenant.
 func (r *KYCRepo) ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		DELETE FROM kyc_in_flight_lock WHERE tenant_id = $1
 	`, tenantID)
 	if err != nil {
@@ -1163,7 +1189,7 @@ func (r *KYCRepo) ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) e
 
 // ReleaseInFlightLockWithToken removes the in-flight lease only if owned by leaseToken.
 func (r *KYCRepo) ReleaseInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := r.db.Exec(ctx, `
 		DELETE FROM kyc_in_flight_lock WHERE tenant_id = $1 AND lease_token = $2
 	`, tenantID, leaseToken)
 	if err != nil {
@@ -1220,14 +1246,15 @@ func (r *KYCRepo) SubmitManualReviewTx(
 	documentBytes []byte,
 	documentContentType string,
 	actor string,
-	documentType ...string,
+	documentType string,
+	leaseToken ...uuid.UUID,
 ) (*domain.KYCVerification, error) {
 	now := time.Now().UTC()
 	var updated *domain.KYCVerification
 
-	docTypeVal := "aadhaar"
-	if len(documentType) > 0 && documentType[0] != "" {
-		docTypeVal = string(domain.NormalizeDocumentType(documentType[0]))
+	docTypeVal := string(domain.NormalizeDocumentType(documentType))
+	if docTypeVal == "" {
+		docTypeVal = "aadhaar"
 	}
 
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
@@ -1244,6 +1271,10 @@ func (r *KYCRepo) SubmitManualReviewTx(
 		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
 		}
 
 		encDocBytes, err := r.encryptBytes(documentBytes)
@@ -1331,24 +1362,14 @@ func (r *KYCRepo) UpdateVerificationPendingManualReviewTx(
 			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
 		}
 
-		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
-			var activeToken uuid.UUID
-			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
-			if err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
-					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
-				}
-				return fmt.Errorf("kyc: verify lease lock: %w", err)
-			}
-			if activeToken != leaseToken[0] {
-				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
-			}
-		}
-
 		var exists int
 		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
 		if err != nil {
 			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		if err := r.assertLeaseFencedTx(ctx, tx, tenantID, now, leaseToken...); err != nil {
+			return err
 		}
 
 		var finalEncDocBytes []byte
