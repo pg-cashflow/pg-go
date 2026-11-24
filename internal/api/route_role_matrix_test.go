@@ -119,16 +119,16 @@ func classifyRoute(path string) (routeClass, bool) {
 
 // matrixFixture holds the identities and stores shared by every matrix case.
 type matrixFixture struct {
-	secret      string
-	propA       uuid.UUID // the owner's and manager's property
-	propB       uuid.UUID // belongs to someone else
-	ownerUser   *domain.User
-	managerUser *domain.User
-	tenantUser     *domain.User
-	pendingUser    *domain.User
+	secret          string
+	propA           uuid.UUID // the owner's and manager's property
+	propB           uuid.UUID // belongs to someone else
+	ownerUser       *domain.User
+	managerUser     *domain.User
+	tenantUser      *domain.User
+	pendingUser     *domain.User
 	platformOpsUser *domain.User
-	tenantID       uuid.UUID
-	tokens         map[matrixCaller]string
+	tenantID        uuid.UUID
+	tokens          map[matrixCaller]string
 }
 
 func newMatrixFixture(t *testing.T) *matrixFixture {

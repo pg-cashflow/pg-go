@@ -187,8 +187,8 @@ func (s *phase3MockIntentStore) GetByCFPaymentID(context.Context, string) (*doma
 	return s.intent, nil
 }
 func (s *phase3MockIntentStore) MarkPaid(context.Context, uuid.UUID, string) error { return nil }
-func (s *phase3MockIntentStore) MarkFailed(context.Context, uuid.UUID) error        { return nil }
-func (s *phase3MockIntentStore) MarkPending(context.Context, uuid.UUID) error       { return nil }
+func (s *phase3MockIntentStore) MarkFailed(context.Context, uuid.UUID) error       { return nil }
+func (s *phase3MockIntentStore) MarkPending(context.Context, uuid.UUID) error      { return nil }
 func (s *phase3MockIntentStore) SaveDuesSnapshot(context.Context, uuid.UUID, []domain.PaymentIntentDue) error {
 	return nil
 }

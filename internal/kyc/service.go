@@ -99,7 +99,7 @@ type KYCRepo interface {
 // CashfreeKYCClient is the Cashfree dependency for document OCR, DigiLocker, and Aadhaar OTP.
 // Implemented by *cashfree.Client via CashfreeAdapter.
 type CashfreeKYCClient interface {
-	UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*cashfree.SmartOCRResponse, error)
+	UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string, verificationID ...string) (*cashfree.SmartOCRResponse, error)
 	UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error)
 	RequestAadhaarOTP(ctx context.Context, aadhaarNumber string) (*cashfree.AadhaarOTPInitResult, error)
 	VerifyAadhaarOTP(ctx context.Context, refID, otp string) (*cashfree.AadhaarOTPVerifyResult, error)
@@ -133,6 +133,11 @@ type Service struct {
 // NewService constructs a ready-to-use KYC service.
 func NewService(repo KYCRepo, cashfree CashfreeKYCClient, cfg Config) *Service {
 	return &Service{repo: repo, cashfree: cashfree, cfg: cfg}
+}
+
+// CashfreeClient returns the underlying CashfreeKYCClient.
+func (s *Service) CashfreeClient() CashfreeKYCClient {
+	return s.cashfree
 }
 
 // --- Consent ------------------------------------------------------------------
@@ -426,11 +431,11 @@ func (s *Service) VerifyDocument(
 		return nil, fmt.Errorf("kyc service: fetch tenant name: %w", err)
 	}
 
-	intentRefID := fmt.Sprintf("intent_ocr_%s", uuid.New().String())
+	correlationID := fmt.Sprintf("cf_ocr_%s", strings.ReplaceAll(uuid.New().String(), "-", "")[:24])
 	pending, err := s.repo.InitiateVerificationTx(ctx,
 		tenantID, consent.ID,
 		domain.KYCMethodOCR,
-		"cashfree_smart_ocr", intentRefID, actor,
+		"cashfree_smart_ocr", correlationID, actor,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kyc service: initiate ocr verification intent: %w", err)
@@ -438,11 +443,9 @@ func (s *Service) VerifyDocument(
 
 	var resp *cashfree.SmartOCRResponse
 	if s.cashfree != nil {
-		resp, err = s.cashfree.UploadDocument(ctx, bytes.NewReader(fileBytes), filename, normDocType)
+		resp, err = s.cashfree.UploadDocument(ctx, bytes.NewReader(fileBytes), filename, normDocType, correlationID)
 		if err != nil {
-			var apiErr *cashfree.APIError
-			is5xx := errors.As(err, &apiErr) && apiErr.StatusCode >= 500
-			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || isAmbiguousTransportError(err) || is5xx {
+			if isAmbiguousKYCError(err) {
 				_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor)
 				pending.Status = domain.KYCStatusRequestUnknown
 				return pending, fmt.Errorf("kyc service: upload document ambiguous state: %w", err)
@@ -661,6 +664,26 @@ func (s *Service) InitiateAadhaarOTP(
 		} else {
 			msg = err.Error()
 		}
+
+		if isAmbiguousKYCError(err) || httpStatus >= 500 {
+			slog.ErrorContext(ctx, "kyc service: ambiguous provider outcome during aadhaar otp initiation; preserving request_unknown",
+				"tenant_id", tenantID,
+				"verification_id", pending.ID,
+				"http_status", httpStatus,
+				"err", err,
+			)
+			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
+			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "AMBIGUOUS_PROVIDER_OUTCOME: "+msg, actor)
+			pending.Status = domain.KYCStatusRequestUnknown
+			return "", &AadhaarVerifyFailure{
+				ReasonCode:        "REQUEST_UNKNOWN",
+				Class:             cashfree.FailureSystemFault,
+				Retryable:         false,
+				AttemptsRemaining: 0,
+				Underlying:        err,
+			}
+		}
+
 		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, httpStatus, msg, actor, err)
 		if fail.Class == cashfree.FailureSystemFault {
 			_ = s.repo.RefundOTPAttemptTx(ctx, tenantID)
@@ -713,12 +736,14 @@ func (s *Service) InitiateAadhaarOTP(
 		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
 	}
 	if updateErr != nil {
-		slog.Error("CRITICAL: failed to update vendor reference id after Cashfree success",
+		slog.Error("CRITICAL: failed to update vendor reference id after Cashfree success; preserving request_unknown",
 			"tenant_id", tenantID,
 			"ref_id", res.RefID,
 			"vendor_ref_id", vendorRefID,
 			"err", updateErr,
 		)
+		_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, "VENDOR_REF_PERSISTENCE_FAILED: "+updateErr.Error(), actor)
+		pending.Status = domain.KYCStatusRequestUnknown
 		return "", fmt.Errorf("kyc service: update vendor ref id: %w", updateErr)
 	}
 
@@ -1078,7 +1103,7 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 		UserFlow:       userFlow,
 	})
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || isAmbiguousTransportError(err) {
+		if isAmbiguousKYCError(err) {
 			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, err.Error(), actor)
 			pending.Status = domain.KYCStatusRequestUnknown
 			return pending, "", fmt.Errorf("kyc service: create digilocker url ambiguous state: %w", err)
@@ -1105,6 +1130,22 @@ func isAmbiguousTransportError(err error) bool {
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "eof")
+}
+
+func isAmbiguousKYCError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var apiErr *cashfree.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode >= 500 {
+			return true
+		}
+	}
+	return isAmbiguousTransportError(err)
 }
 
 // ProcessDigiLockerCallback processes a status change delivered by webhook or polling.

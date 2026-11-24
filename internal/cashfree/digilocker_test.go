@@ -234,15 +234,15 @@ func TestGetDigiLockerAadhaar_PendingIs202(t *testing.T) {
 
 func TestGetDigiLockerAadhaar_IncompleteSuccessIsCorrupt(t *testing.T) {
 	bodies := map[string]string{
-		"no name":                      `{"status":"SUCCESS","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
-		"no uid":                       `{"status":"SUCCESS","name":"A B","dob":"02-02-1995"}`,
-		"no dob":                       `{"status":"SUCCESS","name":"A B","uid":"xxxxxxxx5647"}`,
-		"unknown":                      `{"status":"WHATEVER","name":"A B","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
-		"bad json":                     `not json`,
-		"unmasked 12 digit uid":        `{"status":"SUCCESS","name":"A B","uid":"123456789012","dob":"02-02-1995"}`,
-		"unmasked hyphenated aadhaar":  `{"status":"SUCCESS","name":"A B","aadhaar_number":"1234-5678-9012","dob":"02-02-1995"}`,
-		"short mask":                   `{"status":"SUCCESS","name":"A B","uid":"XXXX1234","dob":"02-02-1995"}`,
-		"all mask without digits":      `{"status":"SUCCESS","name":"A B","uid":"XXXXXXXXXXXX","dob":"02-02-1995"}`,
+		"no name":                     `{"status":"SUCCESS","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
+		"no uid":                      `{"status":"SUCCESS","name":"A B","dob":"02-02-1995"}`,
+		"no dob":                      `{"status":"SUCCESS","name":"A B","uid":"xxxxxxxx5647"}`,
+		"unknown":                     `{"status":"WHATEVER","name":"A B","uid":"xxxxxxxx5647","dob":"02-02-1995"}`,
+		"bad json":                    `not json`,
+		"unmasked 12 digit uid":       `{"status":"SUCCESS","name":"A B","uid":"123456789012","dob":"02-02-1995"}`,
+		"unmasked hyphenated aadhaar": `{"status":"SUCCESS","name":"A B","aadhaar_number":"1234-5678-9012","dob":"02-02-1995"}`,
+		"short mask":                  `{"status":"SUCCESS","name":"A B","uid":"XXXX1234","dob":"02-02-1995"}`,
+		"all mask without digits":     `{"status":"SUCCESS","name":"A B","uid":"XXXXXXXXXXXX","dob":"02-02-1995"}`,
 	}
 	for name, body := range bodies {
 		c, _ := newDigiLockerServer(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) })

@@ -141,34 +141,34 @@ func (c *KYCConsent) IsActive() bool {
 }
 
 type KYCVerification struct {
-	ID                 uuid.UUID  `json:"id"`
-	TenantID           uuid.UUID  `json:"tenant_id"`
-	ConsentID          uuid.UUID  `json:"consent_id"`
-	VendorName         string     `json:"vendor_name"`
-	VendorReferenceID  string     `json:"vendor_reference_id"`
-	CFReferenceID      *string    `json:"cf_reference_id,omitempty"`
-	MaskedUID          *string    `json:"masked_uid,omitempty"`
-	IdentityHash       *string    `json:"identity_hash,omitempty"`
-	HashKeyVersion     int16      `json:"hash_key_version"`
-	IsDedupable        bool       `json:"is_dedupable"`
-	DuplicateDetected  bool       `json:"duplicate_detected"`
+	ID                 uuid.UUID    `json:"id"`
+	TenantID           uuid.UUID    `json:"tenant_id"`
+	ConsentID          uuid.UUID    `json:"consent_id"`
+	VendorName         string       `json:"vendor_name"`
+	VendorReferenceID  string       `json:"vendor_reference_id"`
+	CFReferenceID      *string      `json:"cf_reference_id,omitempty"`
+	MaskedUID          *string      `json:"masked_uid,omitempty"`
+	IdentityHash       *string      `json:"identity_hash,omitempty"`
+	HashKeyVersion     int16        `json:"hash_key_version"`
+	IsDedupable        bool         `json:"is_dedupable"`
+	DuplicateDetected  bool         `json:"duplicate_detected"`
 	Method             KYCMethod    `json:"method"`
 	DocumentType       DocumentType `json:"document_type,omitempty"`
 	Status             KYCStatus    `json:"status"`
-	FailureReason      *string    `json:"failure_reason,omitempty"`
-	QRStatus           *string    `json:"qr_status,omitempty"`
-	NameMismatch       bool       `json:"name_mismatch"`
-	AttestedPhotoBytes []byte     `json:"-"`
-	PhotoStored        bool       `json:"photo_stored"`
-	ReviewedBy         *uuid.UUID `json:"reviewed_by,omitempty"`
-	ReviewedAt         *time.Time `json:"reviewed_at,omitempty"`
-	RejectionReason    *string    `json:"rejection_reason,omitempty"`
-	OCRData            *string    `json:"ocr_data,omitempty"`
-	DocumentURL        *string    `json:"document_url,omitempty"`
-	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
-	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	FailureReason      *string      `json:"failure_reason,omitempty"`
+	QRStatus           *string      `json:"qr_status,omitempty"`
+	NameMismatch       bool         `json:"name_mismatch"`
+	AttestedPhotoBytes []byte       `json:"-"`
+	PhotoStored        bool         `json:"photo_stored"`
+	ReviewedBy         *uuid.UUID   `json:"reviewed_by,omitempty"`
+	ReviewedAt         *time.Time   `json:"reviewed_at,omitempty"`
+	RejectionReason    *string      `json:"rejection_reason,omitempty"`
+	OCRData            *string      `json:"ocr_data,omitempty"`
+	DocumentURL        *string      `json:"document_url,omitempty"`
+	VerifiedAt         *time.Time   `json:"verified_at,omitempty"`
+	ExpiresAt          *time.Time   `json:"expires_at,omitempty"`
+	CreatedAt          time.Time    `json:"created_at"`
+	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
 func (v *KYCVerification) IsValid(now time.Time) bool {

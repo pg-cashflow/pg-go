@@ -24,18 +24,18 @@ import (
 // ---- Fake KYCService --------------------------------------------------------
 
 type fakeKYCSvc struct {
-	consentFn            func(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error)
-	qrFn                 func(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
-	revokeFn             func(ctx context.Context, tenantID uuid.UUID, actor string) error
-	statusFn             func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
-	ownerViewFn          func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
-	vendorRefFn          func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
-	clearDupFn           func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
-	uploadFn             func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
-	photoFn              func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
-	approveFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
-	rejectFn             func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
-	processDigiLockerFn  func(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
+	consentFn           func(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error)
+	qrFn                func(ctx context.Context, tenantID uuid.UUID, rawQR, actor string) (*domain.KYCVerification, error)
+	revokeFn            func(ctx context.Context, tenantID uuid.UUID, actor string) error
+	statusFn            func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, *domain.KYCConsent, error)
+	ownerViewFn         func(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, []domain.KYCAuditLog, error)
+	vendorRefFn         func(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error)
+	clearDupFn          func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
+	uploadFn            func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
+	photoFn             func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
+	approveFn           func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
+	rejectFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
+	processDigiLockerFn func(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
 }
 
 func (f *fakeKYCSvc) RecordConsent(ctx context.Context, tenantID uuid.UUID, purpose, version, text, ip, ua, actor string) (*domain.KYCConsent, error) {

@@ -80,252 +80,252 @@ func prepareRefundTx(ctx context.Context, tx pgx.Tx, pid uuid.UUID, p *domain.Pa
 	}
 
 	// 1. Lock Tenant (1)
-		var dummy uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
-			return fmt.Errorf("lock tenant: %w", err)
-		}
+	var dummy uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id=$1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil {
+		return fmt.Errorf("lock tenant: %w", err)
+	}
 
-		// Gather dues linked to this payment via payment_allocations
-		rows, err := tx.Query(ctx, `
+	// Gather dues linked to this payment via payment_allocations
+	rows, err := tx.Query(ctx, `
 			SELECT pa.due_id, pa.amount_paise, d.due_date, d.kind, d.original_amount, d.amount, d.status
 			FROM payment_allocations pa
 			JOIN dues d ON d.id = pa.due_id
 			WHERE pa.payment_id = $1
 			ORDER BY d.due_date ASC, d.id ASC`, p.ID)
-		if err != nil {
-			return fmt.Errorf("query payment allocations: %w", err)
-		}
-		defer rows.Close()
+	if err != nil {
+		return fmt.Errorf("query payment allocations: %w", err)
+	}
+	defer rows.Close()
 
-		var duesList []dueAllocInfo
-		for rows.Next() {
-			var info dueAllocInfo
-			if err := rows.Scan(&info.dueID, &info.allocatedPaise, &info.dueDate, &info.kind, &info.originalAmount, &info.amount, &info.status); err != nil {
-				return err
-			}
-			duesList = append(duesList, info)
+	var duesList []dueAllocInfo
+	for rows.Next() {
+		var info dueAllocInfo
+		if err := rows.Scan(&info.dueID, &info.allocatedPaise, &info.dueDate, &info.kind, &info.originalAmount, &info.amount, &info.status); err != nil {
+			return err
 		}
-		rows.Close()
+		duesList = append(duesList, info)
+	}
+	rows.Close()
 
-		// 3. Lock Dues (3) in topological sort order: ORDER BY due_date ASC, id ASC
-		if len(duesList) > 0 {
-			dueIDs := make([]uuid.UUID, len(duesList))
-			for i, d := range duesList {
-				dueIDs[i] = d.dueID
-			}
-			_, err = tx.Exec(ctx, `
+	// 3. Lock Dues (3) in topological sort order: ORDER BY due_date ASC, id ASC
+	if len(duesList) > 0 {
+		dueIDs := make([]uuid.UUID, len(duesList))
+		for i, d := range duesList {
+			dueIDs[i] = d.dueID
+		}
+		_, err = tx.Exec(ctx, `
 				SELECT id FROM dues 
 				WHERE id = ANY($1) 
 				ORDER BY due_date ASC, id ASC FOR UPDATE`, dueIDs)
-			if err != nil {
-				return fmt.Errorf("lock dues: %w", err)
-			}
+		if err != nil {
+			return fmt.Errorf("lock dues: %w", err)
 		}
+	}
 
-		// 6. Lock Payment (6)
-		var paymentAmt int
-		var isUnapplied bool
-		if err := tx.QueryRow(ctx, `
+	// 6. Lock Payment (6)
+	var paymentAmt int
+	var isUnapplied bool
+	if err := tx.QueryRow(ctx, `
 			SELECT amount, is_unapplied 
 			FROM payments 
 			WHERE id = $1 FOR UPDATE`, p.ID).Scan(&paymentAmt, &isUnapplied); err != nil {
-			return fmt.Errorf("lock payment: %w", err)
-		}
+		return fmt.Errorf("lock payment: %w", err)
+	}
 
-		// 7. Lock Payment Allocations (7)
-		_, err = tx.Exec(ctx, `
+	// 7. Lock Payment Allocations (7)
+	_, err = tx.Exec(ctx, `
 			SELECT id FROM payment_allocations 
 			WHERE payment_id = $1 
 			ORDER BY due_id ASC, id ASC FOR UPDATE`, p.ID)
-		if err != nil {
-			return fmt.Errorf("lock payment allocations: %w", err)
-		}
+	if err != nil {
+		return fmt.Errorf("lock payment allocations: %w", err)
+	}
 
-		// 8. Lock Gateway Refunds (8)
-		_, err = tx.Exec(ctx, `
+	// 8. Lock Gateway Refunds (8)
+	_, err = tx.Exec(ctx, `
 			SELECT id FROM gateway_refunds 
 			WHERE payment_id = $1 
 			ORDER BY created_at ASC, id ASC FOR UPDATE`, p.ID)
-		if err != nil {
-			return fmt.Errorf("lock gateway refunds: %w", err)
-		}
+	if err != nil {
+		return fmt.Errorf("lock gateway refunds: %w", err)
+	}
 
-		// Locked Idempotency Guard: check if an identical refund was already initiated while waiting for locks
-		if rfRow.IdempotencyKey != nil && *rfRow.IdempotencyKey != "" {
-			existing, lookupErr := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
-			if lookupErr == nil && existing != nil {
-				if existing.AmountPaise != req.AmountPaise || norm.NFC.String(existing.Reason) != req.Reason {
-					return &refundValidationErr{msg: "idempotency key conflict: refund already exists with different amount or reason", status: http.StatusConflict}
-				}
-				*rfRow = *existing
-				return nil
+	// Locked Idempotency Guard: check if an identical refund was already initiated while waiting for locks
+	if rfRow.IdempotencyKey != nil && *rfRow.IdempotencyKey != "" {
+		existing, lookupErr := txPayRepo.GetRefundByPaymentAndIdempotency(ctx, p.ID, *rfRow.IdempotencyKey)
+		if lookupErr == nil && existing != nil {
+			if existing.AmountPaise != req.AmountPaise || norm.NFC.String(existing.Reason) != req.Reason {
+				return &refundValidationErr{msg: "idempotency key conflict: refund already exists with different amount or reason", status: http.StatusConflict}
 			}
-			if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
-				return fmt.Errorf("check refund idempotency under lock: %w", lookupErr)
-			}
+			*rfRow = *existing
+			return nil
 		}
+		if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+			return fmt.Errorf("check refund idempotency under lock: %w", lookupErr)
+		}
+	}
 
-		// Guard A: Settlement Terminal Boundary Guard
-		var settledDepartureExists bool
-		err = tx.QueryRow(ctx, `
+	// Guard A: Settlement Terminal Boundary Guard
+	var settledDepartureExists bool
+	err = tx.QueryRow(ctx, `
 			SELECT EXISTS (
 				SELECT 1 FROM tenant_departures 
 				WHERE tenant_id = $1 AND status IN ('approved', 'refunded')
 			)`, p.TenantID).Scan(&settledDepartureExists)
-		if err != nil {
-			return fmt.Errorf("check settled departure: %w", err)
-		}
-		if settledDepartureExists {
-			return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
-		}
+	if err != nil {
+		return fmt.Errorf("check settled departure: %w", err)
+	}
+	if settledDepartureExists {
+		return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
+	}
 
-		checkDueIDs := make([]uuid.UUID, 0, len(duesList)+1)
-		for _, d := range duesList {
-			checkDueIDs = append(checkDueIDs, d.dueID)
-		}
-		if p.DueID != uuid.Nil {
-			checkDueIDs = append(checkDueIDs, p.DueID)
-		}
-		if len(checkDueIDs) > 0 {
-			var adjExists bool
-			err = tx.QueryRow(ctx, `
+	checkDueIDs := make([]uuid.UUID, 0, len(duesList)+1)
+	for _, d := range duesList {
+		checkDueIDs = append(checkDueIDs, d.dueID)
+	}
+	if p.DueID != uuid.Nil {
+		checkDueIDs = append(checkDueIDs, p.DueID)
+	}
+	if len(checkDueIDs) > 0 {
+		var adjExists bool
+		err = tx.QueryRow(ctx, `
 				SELECT EXISTS (
 					SELECT 1 FROM departure_due_adjustments 
 					WHERE due_id = ANY($1)
 				)`, checkDueIDs).Scan(&adjExists)
-			if err != nil {
-				return fmt.Errorf("check departure due adjustments: %w", err)
-			}
-			if adjExists {
-				return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
-			}
-		}
-
-		// Validate remaining refundable balance under lock
-		alreadyRefunded, err := txPayRepo.GetPaymentRefundedPaise(ctx, p.ID)
 		if err != nil {
-			return fmt.Errorf("get refunded paise: %w", err)
+			return fmt.Errorf("check departure due adjustments: %w", err)
 		}
-		if req.AmountPaise > int64(paymentAmt)-alreadyRefunded {
+		if adjExists {
+			return &refundValidationErr{msg: "Cannot issue gateway refund against payment tied to a settled departure. Deposit and rent adjustments must be resolved via departure disbursement/payout ledger."}
+		}
+	}
+
+	// Validate remaining refundable balance under lock
+	alreadyRefunded, err := txPayRepo.GetPaymentRefundedPaise(ctx, p.ID)
+	if err != nil {
+		return fmt.Errorf("get refunded paise: %w", err)
+	}
+	if req.AmountPaise > int64(paymentAmt)-alreadyRefunded {
+		return &refundValidationErr{
+			msg:    fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded),
+			status: http.StatusBadRequest,
+			code:   apierr.CodePaymentRefundExceedsBalance,
+		}
+	}
+
+	// Calculate LIFO refund allocations across dues (due_date DESC)
+	if !isUnapplied {
+		if len(duesList) == 0 {
 			return &refundValidationErr{
-				msg:    fmt.Sprintf("refund amount %d paise exceeds remaining balance %d paise", req.AmountPaise, int64(paymentAmt)-alreadyRefunded),
-				status: http.StatusBadRequest,
-				code:   apierr.CodePaymentRefundExceedsBalance,
+				msg:    "payment has no associated dues for refund allocation",
+				status: http.StatusUnprocessableEntity,
+				code:   apierr.CodePaymentRefundShortfall,
 			}
 		}
-
-		// Calculate LIFO refund allocations across dues (due_date DESC)
-		if !isUnapplied {
-			if len(duesList) == 0 {
-				return &refundValidationErr{
-					msg:    "payment has no associated dues for refund allocation",
-					status: http.StatusUnprocessableEntity,
-					code:   apierr.CodePaymentRefundShortfall,
-				}
+		remRefund := req.AmountPaise
+		for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
+			d := duesList[i]
+			prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, d.dueID, rfRow.ID)
+			if err != nil {
+				return fmt.Errorf("get payment due refunded: %w", err)
 			}
-			remRefund := req.AmountPaise
-			for i := len(duesList) - 1; i >= 0 && remRefund > 0; i-- {
-				d := duesList[i]
-				prevRefunded, err := txPayRepo.GetPaymentDueRefundedPaise(ctx, p.ID, d.dueID, rfRow.ID)
-				if err != nil {
-					return fmt.Errorf("get payment due refunded: %w", err)
-				}
-				remAlloc := d.allocatedPaise - prevRefunded
-				if remAlloc <= 0 {
-					continue
-				}
-				netPaid, err := txPayRepo.GetDueUnreservedPaidPaise(ctx, d.dueID)
-				if err != nil {
-					return fmt.Errorf("get due net paid: %w", err)
-				}
-				maxAlloc := remAlloc
-				if netPaid < maxAlloc {
-					maxAlloc = netPaid
-				}
-				if maxAlloc <= 0 {
-					continue
-				}
-				allocAmt := remRefund
-				if allocAmt > maxAlloc {
-					allocAmt = maxAlloc
-				}
-				allocationsToCreate = append(allocationsToCreate, refundAllocItem{
-					dueID:       d.dueID,
-					amountPaise: allocAmt,
-					dueKind:     d.kind,
-				})
-				remRefund -= allocAmt
+			remAlloc := d.allocatedPaise - prevRefunded
+			if remAlloc <= 0 {
+				continue
 			}
+			netPaid, err := txPayRepo.GetDueUnreservedPaidPaise(ctx, d.dueID)
+			if err != nil {
+				return fmt.Errorf("get due net paid: %w", err)
+			}
+			maxAlloc := remAlloc
+			if netPaid < maxAlloc {
+				maxAlloc = netPaid
+			}
+			if maxAlloc <= 0 {
+				continue
+			}
+			allocAmt := remRefund
+			if allocAmt > maxAlloc {
+				allocAmt = maxAlloc
+			}
+			allocationsToCreate = append(allocationsToCreate, refundAllocItem{
+				dueID:       d.dueID,
+				amountPaise: allocAmt,
+				dueKind:     d.kind,
+			})
+			remRefund -= allocAmt
+		}
 
-			if remRefund > 0 {
-				return &refundValidationErr{
-					msg:    fmt.Sprintf("refund allocation shortfall: %d paise unallocated across dues", remRefund),
-					status: http.StatusUnprocessableEntity,
-					code:   apierr.CodePaymentRefundShortfall,
-				}
+		if remRefund > 0 {
+			return &refundValidationErr{
+				msg:    fmt.Sprintf("refund allocation shortfall: %d paise unallocated across dues", remRefund),
+				status: http.StatusUnprocessableEntity,
+				code:   apierr.CodePaymentRefundShortfall,
 			}
 		}
+	}
 
-		// Pre-insert gateway_refunds in status 'initiated'
-		if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
-			return fmt.Errorf("create initiated refund: %w", err)
-		}
+	// Pre-insert gateway_refunds in status 'initiated'
+	if err := txPayRepo.CreateOrUpdateRefund(ctx, rfRow); err != nil {
+		return fmt.Errorf("create initiated refund: %w", err)
+	}
 
-		// Pre-insert refund_allocations
-		for _, item := range allocationsToCreate {
-			dueIDCopy := item.dueID
-			if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
-				RefundID:    rfRow.ID,
-				DueID:       &dueIDCopy,
-				AmountPaise: item.amountPaise,
-			}); err != nil {
-				return fmt.Errorf("create refund allocation: %w", err)
-			}
+	// Pre-insert refund_allocations
+	for _, item := range allocationsToCreate {
+		dueIDCopy := item.dueID
+		if err := txPayRepo.CreateRefundAllocation(ctx, &domain.RefundAllocation{
+			RefundID:    rfRow.ID,
+			DueID:       &dueIDCopy,
+			AmountPaise: item.amountPaise,
+		}); err != nil {
+			return fmt.Errorf("create refund allocation: %w", err)
 		}
+	}
 
-		// Enqueue gateway refund dispatch into dedicated payment_commands outbox
-		dispatchPayload := domain.RefundDispatchPayload{
-			PropertyID: pid,
-			RefundID:   rfRow.ID,
-			PaymentID:  p.ID,
-		}
-		rawDispatchPayload, err := json.Marshal(dispatchPayload)
-		if err != nil {
-			return fmt.Errorf("marshal refund dispatch command: %w", err)
-		}
-		dispatchKey := fmt.Sprintf("refund_dispatch:%s", rfRow.ID)
-		_, err = tx.Exec(ctx, `
+	// Enqueue gateway refund dispatch into dedicated payment_commands outbox
+	dispatchPayload := domain.RefundDispatchPayload{
+		PropertyID: pid,
+		RefundID:   rfRow.ID,
+		PaymentID:  p.ID,
+	}
+	rawDispatchPayload, err := json.Marshal(dispatchPayload)
+	if err != nil {
+		return fmt.Errorf("marshal refund dispatch command: %w", err)
+	}
+	dispatchKey := fmt.Sprintf("refund_dispatch:%s", rfRow.ID)
+	_, err = tx.Exec(ctx, `
 			INSERT INTO payment_commands (command_type, property_id, source_id, payload, idempotency_key, status, max_attempts, created_at)
 			VALUES ($1, $2, $3, $4, $5, 'pending', $6, NOW())
 			ON CONFLICT (idempotency_key) DO NOTHING`,
-			domain.PaymentCommandRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey, domain.DefaultPaymentCommandMaxAttempts,
-		)
-		if err != nil {
-			return fmt.Errorf("enqueue refund dispatch command: %w", err)
-		}
+		domain.PaymentCommandRefundDispatch, pid, rfRow.ID, rawDispatchPayload, dispatchKey, domain.DefaultPaymentCommandMaxAttempts,
+	)
+	if err != nil {
+		return fmt.Errorf("enqueue refund dispatch command: %w", err)
+	}
 
-		// Enqueue tenant notification for pending refund into transactional outbox
-		if p.TenantID != uuid.Nil {
-			notifPayload, mErr := json.Marshal(map[string]any{
-				"refund_id":    rfRow.ID.String(),
-				"payment_id":   p.ID.String(),
-				"amount_paise": rfRow.AmountPaise,
-				"reason":       rfRow.Reason,
-			})
-			if mErr != nil {
-				return fmt.Errorf("marshal refund pending notification: %w", mErr)
-			}
-			_, err = tx.Exec(ctx, `
+	// Enqueue tenant notification for pending refund into transactional outbox
+	if p.TenantID != uuid.Nil {
+		notifPayload, mErr := json.Marshal(map[string]any{
+			"refund_id":    rfRow.ID.String(),
+			"payment_id":   p.ID.String(),
+			"amount_paise": rfRow.AmountPaise,
+			"reason":       rfRow.Reason,
+		})
+		if mErr != nil {
+			return fmt.Errorf("marshal refund pending notification: %w", mErr)
+		}
+		_, err = tx.Exec(ctx, `
 				INSERT INTO outbox_events (event_type, property_id, tenant_id, actor_role, payload, created_at)
 				VALUES ($1, $2, $3, $4, $5, NOW())`,
-				string(domain.EvtPaymentRefundPending), pid, p.TenantID, string(rfRow.Source), notifPayload,
-			)
-			if err != nil {
-				return fmt.Errorf("enqueue refund pending notification outbox: %w", err)
-			}
+			string(domain.EvtPaymentRefundPending), pid, p.TenantID, string(rfRow.Source), notifPayload,
+		)
+		if err != nil {
+			return fmt.Errorf("enqueue refund pending notification outbox: %w", err)
 		}
+	}
 
-		return nil
+	return nil
 }
 
 func (r *postgresRefundTxRunner) CleanupFailedRefund(ctx context.Context, rfRow *domain.GatewayRefund) error {

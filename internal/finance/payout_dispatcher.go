@@ -466,9 +466,11 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 		expectedTransferMap[expectedID] = it
 	}
 
-	seen := make(map[string]struct{}, len(statusResp.Transfers))
+	// PASS 1: Whole-response validation. Count transfer IDs and detect incidents across the full batch payload.
+	idCounts := make(map[string]int, len(statusResp.Transfers))
+	var duplicateIDs []string
+	var unknownIDs []string
 
-	// 1. Reconcile transfers explicitly returned in batch status
 	for _, st := range statusResp.Transfers {
 		incomingID := st.TransferID
 		if incomingID == "" {
@@ -476,24 +478,66 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 				"batch_id", batch.ID, "status", st.Status)
 			continue
 		}
+		idCounts[incomingID]++
+		if idCounts[incomingID] == 2 {
+			duplicateIDs = append(duplicateIDs, incomingID)
+		}
+		if _, ok := expectedTransferMap[incomingID]; !ok && idCounts[incomingID] == 1 {
+			unknownIDs = append(unknownIDs, incomingID)
+		}
+	}
 
-		if _, duplicate := seen[incomingID]; duplicate {
-			slog.Error("payout batch reconcile: duplicate transfer_id in gateway batch status; potential incident",
-				"batch_id", batch.ID, "transfer_id", incomingID)
+	// Persist durable reconciliation incidents before any item mutation
+	if len(duplicateIDs) > 0 {
+		dupMsg := fmt.Sprintf("duplicate transfer IDs in gateway batch status: %s", strings.Join(duplicateIDs, ", "))
+		slog.ErrorContext(ctx, "payout batch reconcile: duplicate transfer IDs detected; refusing mutation of affected items",
+			"batch_id", batch.ID,
+			"duplicate_ids", duplicateIDs,
+		)
+		if d.repo != nil {
+			_ = d.repo.RecordBatchIncident(ctx, batch.ID, "DUPLICATE_TRANSFER_ID", dupMsg)
+		}
+	}
+
+	if len(unknownIDs) > 0 {
+		unknownMsg := fmt.Sprintf("unrecognized transfer IDs in gateway batch status: %s", strings.Join(unknownIDs, ", "))
+		slog.ErrorContext(ctx, "payout batch reconcile: unknown transfer IDs in provider response; refusing mutation",
+			"batch_id", batch.ID,
+			"unknown_ids", unknownIDs,
+		)
+		if d.repo != nil {
+			_ = d.repo.RecordBatchIncident(ctx, batch.ID, "UNKNOWN_TRANSFER_ID", unknownMsg)
+		}
+	}
+
+	// Build incident filter: items with duplicate or unknown IDs are blocked from state mutation
+	incidentIDs := make(map[string]struct{}, len(duplicateIDs)+len(unknownIDs))
+	for _, id := range duplicateIDs {
+		incidentIDs[id] = struct{}{}
+	}
+	for _, id := range unknownIDs {
+		incidentIDs[id] = struct{}{}
+	}
+
+	// PASS 2: Process ONLY unique, validated items whose IDs are free of incident conflicts
+	seen := make(map[string]struct{}, len(expectedTransferMap))
+	for _, st := range statusResp.Transfers {
+		incomingID := st.TransferID
+		if incomingID == "" {
 			continue
 		}
-		seen[incomingID] = struct{}{}
-
+		if _, isIncident := incidentIDs[incomingID]; isIncident {
+			continue
+		}
 		it, ok := expectedTransferMap[incomingID]
 		if !ok {
-			slog.Error("payout batch reconcile: unknown provider transfer ID; refusing mutation",
-				"batch_id", batch.ID, "unknown_transfer_id", incomingID, "status", st.Status)
 			continue
 		}
 
 		if err := d.reconcileSingleTransfer(ctx, batch, it, &st); err != nil {
 			return err
 		}
+		seen[incomingID] = struct{}{}
 	}
 
 	// 2. Identify all locally unresolved transfers not present in batch response.
@@ -511,6 +555,9 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 				continue
 			}
 			if it.Status != domain.PayoutProcessing && it.Status != domain.PayoutPending {
+				continue
+			}
+			if d.client == nil {
 				continue
 			}
 			transferID := DerivePayoutTransferID(it)
@@ -538,8 +585,11 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 	}
 
 	// 3. Derive batch status after all available item-level results have been applied.
-	_, err := d.repo.UpdateBatchStatusFromItemsTx(ctx, nil, batch.ID)
-	return err
+	if d.repo != nil {
+		_, err := d.repo.UpdateBatchStatusFromItemsTx(ctx, nil, batch.ID)
+		return err
+	}
+	return nil
 }
 
 func (d *PayoutDispatcher) reconcileSingleTransfer(

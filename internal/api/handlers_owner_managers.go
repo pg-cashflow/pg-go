@@ -44,10 +44,10 @@ func isDelegableCapability(cap string) bool {
 }
 
 const (
-	ProfileFrontDesk       = "front_desk"
-	ProfileOperations      = "operations"
+	ProfileFrontDesk        = "front_desk"
+	ProfileOperations       = "operations"
 	ProfileFinanceAssistant = "finance_assistant"
-	ProfileCustom          = "custom"
+	ProfileCustom           = "custom"
 )
 
 var profileCapabilities = map[string][]string{
@@ -879,17 +879,17 @@ func (h *Handlers) publishManagerAudit(c *gin.Context, propertyID, managerID uui
 
 // ManagerAuditResult contains deep consistency audit details for a single manager.
 type ManagerAuditResult struct {
-	ManagerID             uuid.UUID `json:"manager_id"`
-	Phone                 string    `json:"phone"`
-	Email                 string    `json:"email,omitempty"`
-	Profile               string    `json:"profile"`
-	IsDisabled            bool      `json:"is_disabled"`
-	ActualCapabilities    []string  `json:"actual_capabilities"`
-	ExpectedCapabilities  []string  `json:"expected_capabilities"`
-	MissingCapabilities   []string  `json:"missing_capabilities"`
+	ManagerID              uuid.UUID `json:"manager_id"`
+	Phone                  string    `json:"phone"`
+	Email                  string    `json:"email,omitempty"`
+	Profile                string    `json:"profile"`
+	IsDisabled             bool      `json:"is_disabled"`
+	ActualCapabilities     []string  `json:"actual_capabilities"`
+	ExpectedCapabilities   []string  `json:"expected_capabilities"`
+	MissingCapabilities    []string  `json:"missing_capabilities"`
 	UnexpectedCapabilities []string  `json:"unexpected_capabilities"`
-	HasDrift              bool      `json:"has_drift"`
-	DriftReason           string    `json:"drift_reason,omitempty"`
+	HasDrift               bool      `json:"has_drift"`
+	DriftReason            string    `json:"drift_reason,omitempty"`
 }
 
 // ManagerAuditSummary aggregates audit findings for the property.

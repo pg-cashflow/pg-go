@@ -20,8 +20,8 @@ func NewCashfreeAdapter(client *cashfree.Client) *CashfreeAdapter {
 	return &CashfreeAdapter{client: client}
 }
 
-func (a *CashfreeAdapter) UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*cashfree.SmartOCRResponse, error) {
-	return a.client.UploadDocument(ctx, fileReader, filename, documentType)
+func (a *CashfreeAdapter) UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string, verificationID ...string) (*cashfree.SmartOCRResponse, error) {
+	return a.client.UploadDocument(ctx, fileReader, filename, documentType, verificationID...)
 }
 
 func (a *CashfreeAdapter) UploadAadhaarDocument(ctx context.Context, fileReader io.Reader, filename string) (*cashfree.SmartOCRResponse, error) {

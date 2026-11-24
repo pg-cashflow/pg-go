@@ -406,4 +406,3 @@ type PaymentIntentQuarantineStore interface {
 	CountNeedsReviewByProperty(ctx context.Context, propertyID uuid.UUID) (int, error)
 	ListByProperty(ctx context.Context, propertyID uuid.UUID, status string, limit int) ([]domain.PaymentIntentQuarantine, error)
 }
-

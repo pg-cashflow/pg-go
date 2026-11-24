@@ -59,7 +59,7 @@ type fakeRepo struct {
 	tenantName              string
 	attestedPhoto           []byte
 	docBytes                []byte
-	docContentType         string
+	docContentType          string
 	lockAcquired            *bool
 	lockAcquireErr          error
 	lockReleaseErr          error
@@ -74,6 +74,7 @@ type fakeRepo struct {
 	recordFailureAndCountFn func(reasonCode string) (int, error)
 	otpAttemptCount         int
 	countAndRecordOTPFn     func(maxAllowed int) (int, error)
+	initialVendorRefID      string
 }
 
 func (f *fakeRepo) RecordConsent(_ context.Context, c *domain.KYCConsent, _ string) error {
@@ -107,6 +108,7 @@ func (f *fakeRepo) InitiateVerificationTx(_ context.Context, tenantID, consentID
 			return nil, domain.ErrVerificationInProgress
 		}
 	}
+	f.initialVendorRefID = vendorRefID
 	v := &domain.KYCVerification{
 		ID:                uuid.New(),
 		TenantID:          tenantID,
@@ -360,14 +362,14 @@ func (f *fakeRepo) UpdateCFReferenceIDTx(_ context.Context, _ uuid.UUID, cfRefID
 }
 
 type fakeCashfree struct {
-	ocrResp          *cashfree.SmartOCRResponse
-	ocrErr           error
-	ocrCalled        bool
-	requestOTPErr    error
-	requestOTPResp   *cashfree.AadhaarOTPInitResult
-	requestOTPCalled bool
-	verifyOTPErr     error
-	verifyOTPResp    *cashfree.AadhaarOTPVerifyResult
+	ocrResp           *cashfree.SmartOCRResponse
+	ocrErr            error
+	ocrCalled         bool
+	requestOTPErr     error
+	requestOTPResp    *cashfree.AadhaarOTPInitResult
+	requestOTPCalled  bool
+	verifyOTPErr      error
+	verifyOTPResp     *cashfree.AadhaarOTPVerifyResult
 	digiLockerSession *cashfree.DigiLockerSession
 	digiLockerErr     error
 	digiLockerStatus  *cashfree.DigiLockerStatusResult
@@ -423,7 +425,7 @@ func (f *fakeCashfree) UploadAadhaarDocument(_ context.Context, _ io.Reader, _ s
 	f.ocrCalled = true
 	return f.ocrResp, f.ocrErr
 }
-func (f *fakeCashfree) UploadDocument(_ context.Context, _ io.Reader, _ string, _ string) (*cashfree.SmartOCRResponse, error) {
+func (f *fakeCashfree) UploadDocument(_ context.Context, _ io.Reader, _ string, _ string, _ ...string) (*cashfree.SmartOCRResponse, error) {
 	f.ocrCalled = true
 	return f.ocrResp, f.ocrErr
 }
@@ -1091,6 +1093,148 @@ func TestVerifyDocument_PostProviderPersistenceFailure_PreservesRequestUnknown(t
 	}
 	if repo.verification.FailureReason == nil || !strings.Contains(*repo.verification.FailureReason, "VENDOR_REF_PERSISTENCE_FAILED") {
 		t.Fatalf("expected FailureReason to contain VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
+	}
+}
+
+func TestInitiateAadhaarOTP_AmbiguousTimeoutOr5xx_PreservesRequestUnknownAndBlocksRetry(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		requestOTPErr: &cashfree.APIError{
+			StatusCode: 504,
+			Body:       "gateway timeout contacting uidai",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected error on 504 gateway timeout, got nil")
+	}
+
+	if repo.verification == nil {
+		t.Fatal("expected verification record in repo, got nil")
+	}
+	if repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected status %s, got %s", domain.KYCStatusRequestUnknown, repo.verification.Status)
+	}
+	if repo.verification.FailureReason == nil || !strings.Contains(*repo.verification.FailureReason, "AMBIGUOUS_PROVIDER_OUTCOME") {
+		t.Fatalf("expected FailureReason to contain AMBIGUOUS_PROVIDER_OUTCOME, got %v", repo.verification.FailureReason)
+	}
+
+	// Active state guard: subsequent attempt MUST be blocked with ErrVerificationInProgress
+	_, retryErr := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if !errors.Is(retryErr, domain.ErrVerificationInProgress) {
+		t.Fatalf("expected ErrVerificationInProgress on retry while request_unknown, got %v", retryErr)
+	}
+}
+
+func TestInitiateAadhaarOTP_VendorRefPersistenceFailure_PreservesRequestUnknown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+		updateVendorRefErr: errors.New("database connection refused on vendor ref write"),
+	}
+	cf := &fakeCashfree{
+		requestOTPResp: &cashfree.AadhaarOTPInitResult{
+			RefID:   "998877",
+			Status:  "SUCCESS",
+			Message: "OTP sent",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	checkDigit, _ := aadhaar.GenerateVerhoeffCheckDigit("29384756102")
+	validAadhaar := fmt.Sprintf("29384756102%d", checkDigit)
+
+	_, err := svc.InitiateAadhaarOTP(context.Background(), tenantID, validAadhaar, "tenant:"+tenantID.String())
+	if err == nil {
+		t.Fatal("expected error on vendor ref persistence failure, got nil")
+	}
+
+	if repo.verification == nil {
+		t.Fatal("expected verification record in repo, got nil")
+	}
+	if repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected status %s, got %s", domain.KYCStatusRequestUnknown, repo.verification.Status)
+	}
+	if repo.verification.FailureReason == nil || !strings.Contains(*repo.verification.FailureReason, "VENDOR_REF_PERSISTENCE_FAILED") {
+		t.Fatalf("expected FailureReason to contain VENDOR_REF_PERSISTENCE_FAILED, got %v", repo.verification.FailureReason)
+	}
+}
+
+func TestInitiateDigiLocker_API500_PreservesRequestUnknown(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		digiLockerErr: &cashfree.APIError{
+			StatusCode: 500,
+			Body:       "internal provider failure creating session",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	verif, _, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://example.com/return", "tenant:"+tenantID.String(), "")
+	if err == nil {
+		t.Fatal("expected error on DigiLocker 500, got nil")
+	}
+
+	if verif == nil || verif.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected returned verification to be request_unknown, got %+v", verif)
+	}
+	if repo.verification == nil || repo.verification.Status != domain.KYCStatusRequestUnknown {
+		t.Fatalf("expected repo verification status request_unknown, got %+v", repo.verification)
+	}
+}
+
+func TestVerifyDocument_CanonicalCorrelationIDPersistedBeforeDispatch(t *testing.T) {
+	tenantID := uuid.New()
+	consentID := uuid.New()
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:       consentID,
+			TenantID: tenantID,
+		},
+	}
+	cf := &fakeCashfree{
+		ocrResp: &cashfree.SmartOCRResponse{
+			ReferenceID: "cf_mock_ref_9988",
+			Status:      "SUCCESS",
+			Name:        "Test Tenant",
+			MaskedUID:   "XXXXXXXX1234",
+		},
+	}
+	svc := newTestService(repo, cf)
+
+	_, err := svc.VerifyDocument(context.Background(), tenantID, strings.NewReader("\xff\xd8\xff dummy"), "card.jpg", "image/jpeg", "aadhaar", "tenant:"+tenantID.String())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if repo.verification == nil {
+		t.Fatal("expected repo verification, got nil")
+	}
+	if !strings.HasPrefix(repo.initialVendorRefID, "cf_ocr_") {
+		t.Errorf("expected initial persisted vendorRefID to have prefix cf_ocr_, got %q", repo.initialVendorRefID)
 	}
 }
 

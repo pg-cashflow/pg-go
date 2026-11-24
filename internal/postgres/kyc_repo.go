@@ -644,6 +644,55 @@ func (r *KYCRepo) MarkRequestUnknownTx(ctx context.Context, verificationID uuid.
 	})
 }
 
+// ExpireVerificationTx transitions an active verification to expired status with audit logging.
+func (r *KYCRepo) ExpireVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error {
+	now := time.Now().UTC()
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var tenantID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			UPDATE kyc_verification
+			SET status = 'expired', failure_reason = $2, updated_at = $3
+			WHERE id = $1 AND status IN ('pending', 'request_unknown')
+			RETURNING tenant_id
+		`, verificationID, reason, now).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("kyc: verification %s not found or not in pending/request_unknown", verificationID)
+			}
+			return fmt.Errorf("kyc: expire verification: %w", err)
+		}
+		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_expired", reason, now)
+	})
+}
+
+// ListRequestUnknownVerifications returns verifications in request_unknown status.
+func (r *KYCRepo) ListRequestUnknownVerifications(ctx context.Context, limit int) ([]*domain.KYCVerification, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+kycVerificationCols+`
+		FROM kyc_verification
+		WHERE status = 'request_unknown'
+		ORDER BY created_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("kyc: list request_unknown: %w", err)
+	}
+	defer rows.Close()
+
+	var results []*domain.KYCVerification
+	for rows.Next() {
+		v, err := r.scanKYCVerification(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, v)
+	}
+	return results, rows.Err()
+}
+
 // GetActiveVerificationByTenant retrieves any currently pending, under-review, or verified verification for a tenant.
 func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
 	return r.scanKYCVerification(r.pool.QueryRow(ctx, `

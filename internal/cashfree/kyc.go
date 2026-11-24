@@ -94,7 +94,7 @@ type SmartOCRResponse struct {
 // UploadDocument submits an identity document file (JPEG/PNG/PDF up to 5MB) to Cashfree Smart OCR (/bharat-ocr).
 // Supports voluntary document types: AADHAAR, PAN, PASSPORT_FRONT, VOTER_ID, DRIVING_LICENCE.
 // Invariant: Full Aadhaar numbers/UIDs are redacted immediately upon unmarshaling.
-func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string) (*SmartOCRResponse, error) {
+func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filename string, documentType string, verificationIDOptional ...string) (*SmartOCRResponse, error) {
 	if !c.cfg.Enabled() {
 		return nil, fmt.Errorf("cashfree: not configured")
 	}
@@ -117,7 +117,12 @@ func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filen
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	verificationID := fmt.Sprintf("cf_ocr_%s", strings.ReplaceAll(uuid.New().String(), "-", "")[:24])
+	var verificationID string
+	if len(verificationIDOptional) > 0 && strings.TrimSpace(verificationIDOptional[0]) != "" {
+		verificationID = strings.TrimSpace(verificationIDOptional[0])
+	} else {
+		verificationID = fmt.Sprintf("cf_ocr_%s", strings.ReplaceAll(uuid.New().String(), "-", "")[:24])
+	}
 	if err := writer.WriteField("verification_id", verificationID); err != nil {
 		return nil, fmt.Errorf("cashfree ocr: write verification_id: %w", err)
 	}

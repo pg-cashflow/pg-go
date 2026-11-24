@@ -512,5 +512,3 @@ func TestWebhookRetry_TimestampDrift_GatewayError_FailsClosed(t *testing.T) {
 		t.Fatalf("invariant violated: gateway error must not be settled")
 	}
 }
-
-

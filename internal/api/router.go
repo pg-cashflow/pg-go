@@ -45,39 +45,39 @@ type Deps struct {
 	UserStore        UserStore
 	PreferencesStore PreferencesStore
 
-	Joins              JoinService
-	InviteResolver     InviteResolver
-	SlotInvites        SlotInviteService
-	Referrals          ReferralAdmissionService
-	Waitlist           WaitlistAdmissionService
-	OnboardingSettings OnboardingSettingsStore
-	JoinIdempotency    JoinIdempotencyStore
-	ReportStore        ReportStore
-	IntentStore        IntentStore
-	IntentLifecycle    IntentLifecycle
+	Joins                JoinService
+	InviteResolver       InviteResolver
+	SlotInvites          SlotInviteService
+	Referrals            ReferralAdmissionService
+	Waitlist             WaitlistAdmissionService
+	OnboardingSettings   OnboardingSettingsStore
+	JoinIdempotency      JoinIdempotencyStore
+	ReportStore          ReportStore
+	IntentStore          IntentStore
+	IntentLifecycle      IntentLifecycle
 	FeatureKYCDigiLocker bool
-	PaymentLookup      PaymentLookup
-	Collector          *collector.Service
-	CashfreeSecret     string
-	CashfreeSecrets    map[string]string
-	CashfreeEnv        string
-	CashfreeClient     CashfreeClient
-	BankVerifier       BankAccountVerifier
+	PaymentLookup        PaymentLookup
+	Collector            *collector.Service
+	CashfreeSecret       string
+	CashfreeSecrets      map[string]string
+	CashfreeEnv          string
+	CashfreeClient       CashfreeClient
+	BankVerifier         BankAccountVerifier
 
-	GatewayPaymentRepo      GatewayPaymentRepo
-	OrderSettler            payment.OrderGatewaySettler
-	UnmatchedReceipts       UnmatchedReceiptStore
-	PaymentIntentQuarantine PaymentIntentQuarantineStore
-	WebhookToleranceSec     int
-	WebhookAPIVersion   string
-	Pool                *pgxpool.Pool
-	AppPool             *pgxpool.Pool
-	DBCluster           *postgres.DBCluster
+	GatewayPaymentRepo              GatewayPaymentRepo
+	OrderSettler                    payment.OrderGatewaySettler
+	UnmatchedReceipts               UnmatchedReceiptStore
+	PaymentIntentQuarantine         PaymentIntentQuarantineStore
+	WebhookToleranceSec             int
+	WebhookAPIVersion               string
+	Pool                            *pgxpool.Pool
+	AppPool                         *pgxpool.Pool
+	DBCluster                       *postgres.DBCluster
 	RefundTxRunner                  RefundTxRunner
 	RefundApprovalRepo              RefundApprovalStore
 	SingleOwnerRefundThresholdPaise *int64
 	RefundWindowDays                int
-	CalendarTokenStore  CalendarTokenStore
+	CalendarTokenStore              CalendarTokenStore
 
 	Gamification      *gamification.Service
 	GamificationStore gamification.Store
@@ -133,7 +133,7 @@ type Deps struct {
 	CapabilityStore ManagerCapabilityStore
 	BankAccountRepo BankAccountStore
 
-	KYCSvc KYCService // nil-safe: KYC routes 503 gracefully if unset
+	KYCSvc                    KYCService // nil-safe: KYC routes 503 gracefully if unset
 	CashfreeKYCWebhookSecret  string
 	CashfreeKYCWebhookSecrets map[string]string
 

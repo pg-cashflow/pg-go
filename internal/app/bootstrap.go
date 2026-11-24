@@ -718,6 +718,12 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		kycInboxWorker.SetFeatureKYCDigiLocker(bg.featureKYCDigiLocker)
 		go kycInboxWorker.Start(ctx, 5*time.Second)
 		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
+
+		if bg.kycSvc != nil {
+			kycReconciler := kycsvc.NewKYCReconciler(bg.kycRepo, bg.kycSvc.CashfreeClient(), bg.kycSvc)
+			go kycReconciler.Start(ctx, 60*time.Second)
+			bg.logger.Info("kyc: request_unknown reconciler background worker started", "interval", "60s")
+		}
 	}
 
 	// Cashfree order quarantine is a payment-integrity control, not a ledger

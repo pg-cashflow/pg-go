@@ -1433,6 +1433,53 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("transfer_id_exact_canonical_mismatch_is_dead_lettered", func(t *testing.T) {
+		updateCalled := false
+		stubGateway := &stubGatewayRepo{}
+		mock := &mockPayoutWebhookStore{
+			getItemFunc: func(ctx context.Context, id uuid.UUID) (*domain.PayoutItem, error) {
+				return &domain.PayoutItem{
+					ID:          id,
+					AmountPaise: 1000,
+					Status:      domain.PayoutProcessing,
+				}, nil
+			},
+			updateStatusFunc: func(ctx context.Context, tx pgx.Tx, id uuid.UUID, status domain.PayoutItemStatus, cfTransferID, utr *string, settledAt *time.Time, failureReason *string) error {
+				updateCalled = true
+				return nil
+			},
+		}
+		h := &Handlers{Deps: Deps{
+			CashfreePayoutWebhookSecret: secret,
+			GatewayPaymentRepo:          stubGateway,
+			PayoutWebhookRepo:           mock,
+		}}
+		r := gin.New()
+		r.POST("/webhooks/cashfree/payouts", h.CashfreePayoutWebhook)
+		env := makeEnv("TRANSFER_ACKNOWLEDGED", itemID)
+		var data PayoutWebhookData
+		if err := json.Unmarshal(env.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		// Incoming transfer ID has mismatched suffix
+		data.TransferID = data.TransferID + "_mismatched_suffix"
+		env.Data, _ = json.Marshal(data)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, createTestSignedWebhookReq(secret, env))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 acknowledgement for dead-lettered event, got %d: %s", w.Code, w.Body.String())
+		}
+		if updateCalled {
+			t.Fatal("transfer ID mismatch must NOT mutate payout status")
+		}
+		if !stubGateway.deadLettered || stubGateway.lastStatus != "dead_letter" {
+			t.Fatalf("expected event dead_lettered in gateway audit repo, got status: %q, deadLettered: %v", stubGateway.lastStatus, stubGateway.deadLettered)
+		}
+		if !strings.Contains(stubGateway.lastReason, "transfer_id mismatch") {
+			t.Fatalf("expected dead letter reason to contain transfer_id mismatch, got: %q", stubGateway.lastReason)
+		}
+	})
+
 	t.Run("low_balance_alert_returns_200", func(t *testing.T) {
 		h := &Handlers{
 			Deps: Deps{

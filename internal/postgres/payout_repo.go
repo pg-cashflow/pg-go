@@ -1013,6 +1013,19 @@ func (r *PayoutRepo) RecordBatchRejectionObservation(ctx context.Context, batchI
 	return err
 }
 
+// RecordBatchIncident records a reconciliation incident (such as duplicate or unknown transfer IDs)
+// in the batch notes audit trail and platform logs.
+func (r *PayoutRepo) RecordBatchIncident(ctx context.Context, batchID uuid.UUID, incidentType, details string) error {
+	incidentMsg := fmt.Sprintf("RECONCILIATION_INCIDENT [%s]: %s", incidentType, details)
+	_, err := r.db.Exec(ctx, `
+		UPDATE payout_batches
+		SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || ' | ' || $2 END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, incidentMsg,
+	)
+	return err
+}
+
 // SetBatchFailed sets batch status to failed on definitive rejections (e.g. manual operator intervention).
 func (r *PayoutRepo) SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error {
 	_, err := r.db.Exec(ctx, `

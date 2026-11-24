@@ -12,15 +12,15 @@ import (
 )
 
 type mockIntentLifecycleStore struct {
-	byOrderID        map[string]*domain.PaymentIntent
-	byCFID           map[string]*domain.PaymentIntent
-	byDueID          map[uuid.UUID]*domain.PaymentIntent
-	touchedOrderIDs  []string
-	paidIntents      map[uuid.UUID]string
-	errOnTouch       error
-	errOnMarkPaid    error
-	errOnLatestOpen  error
-	errOnGetByOrder  error
+	byOrderID       map[string]*domain.PaymentIntent
+	byCFID          map[string]*domain.PaymentIntent
+	byDueID         map[uuid.UUID]*domain.PaymentIntent
+	touchedOrderIDs []string
+	paidIntents     map[uuid.UUID]string
+	errOnTouch      error
+	errOnMarkPaid   error
+	errOnLatestOpen error
+	errOnGetByOrder error
 }
 
 func newMockIntentLifecycleStore() *mockIntentLifecycleStore {
