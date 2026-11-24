@@ -75,6 +75,9 @@ func ValidateRolesConfig(maintInfo, appInfo RoleInfo, maintURL, appURL, appEnv s
 		if maintInfo.RoleName != "pgapp_maint" {
 			return fmt.Errorf("maintPool connected as '%s'; production maintenance pool requires 'pgapp_maint'", maintInfo.RoleName)
 		}
+		if !maintInfo.HasAppRoleMember {
+			return errors.New("maintPool role must have membership in 'pgapp_app' (pg_has_role(session_user, 'pgapp_app', 'MEMBER')) for scoped transactions")
+		}
 		if maintInfo.IsSuperuser {
 			return errors.New("maintPool role has superuser privileges")
 		}

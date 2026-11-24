@@ -1,15 +1,91 @@
 SET lock_timeout = '5s';
 
--- Migration 127: Complete Multi-Tenant Row Level Security Coverage
+-- Migration 127: Complete Multi-Tenant Row Level Security & Financial Immutability Hardening
 -- Standard: ASD-STE100
 -- Purpose:
---   Enforce strict property isolation across all financial, operational, and KYC tables
---   that previously lacked database-level RLS policies.
---   Policies fail closed for pgapp_app when app.current_property_id is unset or empty,
---   while permitting unrestricted maintenance access for pgapp_maint and pgapp_worker.
+--   1. Enforce strict table-specific privileges: restore and enforce revocation of UPDATE/DELETE
+--      on all append-only financial and ledger records (capital_transactions, expense_payments,
+--      payout_records, payout_record_items, daily_settlement_balance_runs, departure_due_adjustments,
+--      financial_journal_entries).
+--   2. Add database-level immutability triggers on daily_settlement_balance_runs and departure_due_adjustments.
+--   3. Create structured, deduplicated payout_reconciliation_incidents table.
+--   4. Enforce fail-closed Row Level Security (RLS) across all property-scoped, parent-linked,
+--      and KYC tables (including kyc_in_flight_lock, kyc_failure_log, and kyc_otp_attempt_log).
 
 -- ============================================================================
--- 1. Direct Property-Scoped Tables
+-- 1. Database-Level Immutability Triggers
+-- ============================================================================
+CREATE OR REPLACE FUNCTION trg_immutable_audit_table()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION '% records are immutable and cannot be updated or deleted', TG_TABLE_NAME;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_balance_runs_immutable') THEN
+        CREATE TRIGGER trg_balance_runs_immutable
+        BEFORE UPDATE OR DELETE ON daily_settlement_balance_runs
+        FOR EACH ROW EXECUTE FUNCTION trg_immutable_audit_table();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_departure_due_adj_immutable') THEN
+        CREATE TRIGGER trg_departure_due_adj_immutable
+        BEFORE UPDATE OR DELETE ON departure_due_adjustments
+        FOR EACH ROW EXECUTE FUNCTION trg_immutable_audit_table();
+    END IF;
+END $$;
+
+-- ============================================================================
+-- 2. Structured Payout Reconciliation Incidents Table
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS payout_reconciliation_incidents (
+    id BIGSERIAL PRIMARY KEY,
+    fingerprint VARCHAR(64) NOT NULL UNIQUE,
+    incident_type VARCHAR(64) NOT NULL,
+    batch_id UUID REFERENCES payout_batches(id) ON DELETE CASCADE,
+    payout_item_id UUID REFERENCES payout_items(id) ON DELETE CASCADE,
+    expected_transfer_id TEXT,
+    received_transfer_id TEXT,
+    details TEXT NOT NULL,
+    evidence_payload_hash VARCHAR(64),
+    occurrence_count INT NOT NULL DEFAULT 1,
+    status VARCHAR(24) NOT NULL DEFAULT 'open',
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payout_recon_incidents_batch ON payout_reconciliation_incidents(batch_id, status);
+CREATE INDEX IF NOT EXISTS idx_payout_recon_incidents_item ON payout_reconciliation_incidents(payout_item_id, status);
+
+ALTER TABLE payout_reconciliation_incidents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payout_reconciliation_incidents FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS payout_reconciliation_incidents_app ON payout_reconciliation_incidents;
+CREATE POLICY payout_reconciliation_incidents_app ON payout_reconciliation_incidents
+    FOR ALL TO pgapp_app
+    USING (
+        EXISTS (
+            SELECT 1 FROM payout_batches pb
+            WHERE pb.id = payout_reconciliation_incidents.batch_id
+              AND pb.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM payout_batches pb
+            WHERE pb.id = payout_reconciliation_incidents.batch_id
+              AND pb.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
+        )
+    );
+
+DROP POLICY IF EXISTS payout_reconciliation_incidents_maint ON payout_reconciliation_incidents;
+CREATE POLICY payout_reconciliation_incidents_maint ON payout_reconciliation_incidents
+    FOR ALL TO pgapp_maint, pgapp_worker
+    USING (true)
+    WITH CHECK (true);
+
+-- ============================================================================
+-- 3. Direct Property-Scoped Tables
 -- ============================================================================
 DO $$
 DECLARE
@@ -27,7 +103,24 @@ DECLARE
         'daily_settlement_balances',
         'daily_settlement_balance_runs',
         'ledger_control_overrides',
-        'tenant_departures'
+        'tenant_departures',
+        'approval_requests',
+        'staff_profiles',
+        'leave_policies',
+        'attendance_records',
+        'wage_calculations',
+        'kpi_snapshots',
+        'roi_snapshots',
+        'leakage_events',
+        'recommendations',
+        'forecast_snapshots',
+        'meal_prep_actuals',
+        'property_settings',
+        'ledger_outbox_events',
+        'period_tie_outs',
+        'reward_liability_transactions',
+        'expense_import_suggestions',
+        'payment_commands'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -53,7 +146,25 @@ BEGIN
 END $$;
 
 -- ============================================================================
--- 2. Parent-Linked Tables (departure_deductions, departure_due_adjustments)
+-- 4. Hybrid Scoped Table: financial_categories (Global Defaults + Property Custom)
+-- ============================================================================
+ALTER TABLE financial_categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE financial_categories FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS financial_categories_app ON financial_categories;
+CREATE POLICY financial_categories_app ON financial_categories
+    FOR ALL TO pgapp_app
+    USING (property_id IS NULL OR property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid)
+    WITH CHECK (property_id IS NOT NULL AND property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS financial_categories_maint ON financial_categories;
+CREATE POLICY financial_categories_maint ON financial_categories
+    FOR ALL TO pgapp_maint, pgapp_worker
+    USING (true)
+    WITH CHECK (true);
+
+-- ============================================================================
+-- 5. Parent-Linked Tables (departure_deductions, departure_due_adjustments)
 -- ============================================================================
 
 -- departure_deductions
@@ -113,94 +224,57 @@ CREATE POLICY departure_due_adjustments_maint ON departure_due_adjustments
     WITH CHECK (true);
 
 -- ============================================================================
--- 3. KYC Tables Isolation (kyc_verification, kyc_consent, kyc_audit_log, kyc_webhook_inbox)
+-- 6. KYC Tables Isolation (Core & Auxiliary)
 -- ============================================================================
 
--- kyc_verification
-ALTER TABLE kyc_verification ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kyc_verification FORCE ROW LEVEL SECURITY;
+-- Helper macro for all tenant-parented KYC tables
+DO $$
+DECLARE
+    tbl TEXT;
+    kyc_tables TEXT[] := ARRAY[
+        'kyc_verification',
+        'kyc_consent',
+        'kyc_audit_log',
+        'kyc_in_flight_lock',
+        'kyc_failure_log',
+        'kyc_otp_attempt_log'
+    ];
+BEGIN
+    FOREACH tbl IN ARRAY kyc_tables LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', tbl);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY;', tbl);
 
-DROP POLICY IF EXISTS kyc_verification_app ON kyc_verification;
-CREATE POLICY kyc_verification_app ON kyc_verification
-    FOR ALL TO pgapp_app
-    USING (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_verification.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    )
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_verification.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    );
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I;', tbl || '_app', tbl);
+        EXECUTE format('
+            CREATE POLICY %I ON %I
+            FOR ALL TO pgapp_app
+            USING (
+                EXISTS (
+                    SELECT 1 FROM tenants t
+                    WHERE t.id = %I.tenant_id
+                      AND t.property_id = NULLIF(current_setting(''app.current_property_id'', true), '''')::uuid
+                )
+            )
+            WITH CHECK (
+                EXISTS (
+                    SELECT 1 FROM tenants t
+                    WHERE t.id = %I.tenant_id
+                      AND t.property_id = NULLIF(current_setting(''app.current_property_id'', true), '''')::uuid
+                )
+            );
+        ', tbl || '_app', tbl, tbl, tbl);
 
-DROP POLICY IF EXISTS kyc_verification_maint ON kyc_verification;
-CREATE POLICY kyc_verification_maint ON kyc_verification
-    FOR ALL TO pgapp_maint, pgapp_worker
-    USING (true)
-    WITH CHECK (true);
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I;', tbl || '_maint', tbl);
+        EXECUTE format('
+            CREATE POLICY %I ON %I
+            FOR ALL TO pgapp_maint, pgapp_worker
+            USING (true)
+            WITH CHECK (true);
+        ', tbl || '_maint', tbl);
+    END LOOP;
+END $$;
 
--- kyc_consent
-ALTER TABLE kyc_consent ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kyc_consent FORCE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS kyc_consent_app ON kyc_consent;
-CREATE POLICY kyc_consent_app ON kyc_consent
-    FOR ALL TO pgapp_app
-    USING (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_consent.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    )
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_consent.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    );
-
-DROP POLICY IF EXISTS kyc_consent_maint ON kyc_consent;
-CREATE POLICY kyc_consent_maint ON kyc_consent
-    FOR ALL TO pgapp_maint, pgapp_worker
-    USING (true)
-    WITH CHECK (true);
-
--- kyc_audit_log
-ALTER TABLE kyc_audit_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE kyc_audit_log FORCE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS kyc_audit_log_app ON kyc_audit_log;
-CREATE POLICY kyc_audit_log_app ON kyc_audit_log
-    FOR ALL TO pgapp_app
-    USING (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_audit_log.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    )
-    WITH CHECK (
-        EXISTS (
-            SELECT 1 FROM tenants t
-            WHERE t.id = kyc_audit_log.tenant_id
-              AND t.property_id = NULLIF(current_setting('app.current_property_id', true), '')::uuid
-        )
-    );
-
-DROP POLICY IF EXISTS kyc_audit_log_maint ON kyc_audit_log;
-CREATE POLICY kyc_audit_log_maint ON kyc_audit_log
-    FOR ALL TO pgapp_maint, pgapp_worker
-    USING (true)
-    WITH CHECK (true);
-
--- kyc_webhook_inbox (Background ingestion queue - restricted from broad application pool access)
+-- kyc_webhook_inbox (Background ingestion queue - isolated completely from pgapp_app)
 ALTER TABLE kyc_webhook_inbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kyc_webhook_inbox FORCE ROW LEVEL SECURITY;
 
@@ -217,11 +291,66 @@ CREATE POLICY kyc_webhook_inbox_maint ON kyc_webhook_inbox
     WITH CHECK (true);
 
 -- ============================================================================
--- 4. Role Permissions
+-- 7. Role Privileges: Table-Specific Permissions & Immutability Enforcement
 -- ============================================================================
-GRANT SELECT, INSERT, UPDATE, DELETE ON 
+
+-- Revoke mutation rights on append-only financial and audit tables from all runtime roles
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgapp_app') THEN
+        REVOKE UPDATE, DELETE ON 
+            capital_transactions,
+            expense_payments,
+            payout_records,
+            payout_record_items,
+            daily_settlement_balance_runs,
+            departure_due_adjustments,
+            financial_journal_entries,
+            kyc_audit_log
+        FROM pgapp_app;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgapp_maint') THEN
+        REVOKE UPDATE, DELETE ON 
+            capital_transactions,
+            expense_payments,
+            payout_records,
+            payout_record_items,
+            daily_settlement_balance_runs,
+            departure_due_adjustments,
+            financial_journal_entries,
+            kyc_audit_log
+        FROM pgapp_maint;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pgapp_worker') THEN
+        REVOKE UPDATE, DELETE ON 
+            capital_transactions,
+            expense_payments,
+            payout_records,
+            payout_record_items,
+            daily_settlement_balance_runs,
+            departure_due_adjustments,
+            financial_journal_entries,
+            kyc_audit_log
+        FROM pgapp_worker;
+    END IF;
+END $$;
+
+-- Grant SELECT, INSERT on append-only tables
+GRANT SELECT, INSERT ON 
     capital_transactions,
     expense_payments,
+    payout_records,
+    payout_record_items,
+    daily_settlement_balance_runs,
+    departure_due_adjustments,
+    financial_journal_entries,
+    kyc_audit_log
+TO pgapp_app, pgapp_maint, pgapp_worker;
+
+-- Grant read/write on mutable tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON 
     manager_advances,
     manager_reimbursements,
     budgets,
@@ -230,13 +359,33 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     financial_corrections,
     daily_financial_rollups,
     daily_settlement_balances,
-    daily_settlement_balance_runs,
     ledger_control_overrides,
     tenant_departures,
     departure_deductions,
-    departure_due_adjustments,
+    approval_requests,
+    staff_profiles,
+    leave_policies,
+    attendance_records,
+    wage_calculations,
+    kpi_snapshots,
+    roi_snapshots,
+    leakage_events,
+    recommendations,
+    forecast_snapshots,
+    meal_prep_actuals,
+    property_settings,
+    ledger_outbox_events,
+    period_tie_outs,
+    reward_liability_transactions,
+    expense_import_suggestions,
+    payment_commands,
+    financial_categories,
     kyc_verification,
-    kyc_consent
+    kyc_consent,
+    kyc_in_flight_lock,
+    kyc_failure_log,
+    kyc_otp_attempt_log,
+    payout_reconciliation_incidents
 TO pgapp_app, pgapp_maint, pgapp_worker;
 
-GRANT SELECT, INSERT ON kyc_audit_log TO pgapp_app, pgapp_maint, pgapp_worker;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pgapp_app, pgapp_maint, pgapp_worker;

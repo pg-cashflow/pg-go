@@ -162,7 +162,7 @@ func (f *fakeRepo) CompleteVerificationTx(_ context.Context, id uuid.UUID, maske
 	}
 	return v, nil
 }
-func (f *fakeRepo) FailVerificationTx(_ context.Context, id uuid.UUID, reason, _ string) error {
+func (f *fakeRepo) FailVerificationTx(_ context.Context, id uuid.UUID, reason, _ string, _ ...uuid.UUID) error {
 	if f.failVTxFn != nil {
 		return f.failVTxFn(id, reason)
 	}

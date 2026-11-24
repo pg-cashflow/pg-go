@@ -236,6 +236,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	collectorSvc := collector.New(intentRepo, cfOrders)
 
 	var kycSvc api.KYCService
+	var maintKYCSvc kycsvc.KYCCallbackProcessor
 	var kycRepo *postgres.KYCRepo
 	var cfKYCAdapter kycsvc.CashfreeKYCClient
 	if cfg.KYCIdentitySecret != "" {
@@ -261,9 +262,11 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		} else {
 			return nil, fmt.Errorf("kyc: KYC_DOC_CRYPTO_KEY is mandatory whenever KYC is enabled (DPDP Section 8(5) requirement)")
 		}
-		kycRepo = postgres.NewKYCRepo(maintPool, kycDocKey)
+		appKYCRepo := postgres.NewKYCRepo(appPool, scopedDB, kycDocKey)
+		maintKYCRepo := postgres.NewKYCRepo(maintPool, maintPool, kycDocKey)
 		validityDays := cfg.KYCVerificationValidityDays
-		kycRepo.SetVerificationValidityDays(validityDays)
+		appKYCRepo.SetVerificationValidityDays(validityDays)
+		maintKYCRepo.SetVerificationValidityDays(validityDays)
 		if len(kycDocKey) == 32 {
 			kycKeyRing, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, kycDocKey)
 			if err != nil {
@@ -276,7 +279,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 					}
 				}
 			}
-			kycRepo.SetKeyRing(kycKeyRing)
+			appKYCRepo.SetKeyRing(kycKeyRing)
+			maintKYCRepo.SetKeyRing(kycKeyRing)
 		}
 		var kycPubKey *rsa.PublicKey
 		if strings.EqualFold(cfg.CashfreeKYCAuthMode, "signature") && cfg.CashfreeKYCPublicKeyPEM != "" {
@@ -313,11 +317,19 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 					activeHashVersion = v
 				}
 			}
-			kycRepo.SetIdentitySecrets(cfg.KYCIdentitySecrets)
+			appKYCRepo.SetIdentitySecrets(cfg.KYCIdentitySecrets)
+			maintKYCRepo.SetIdentitySecrets(cfg.KYCIdentitySecrets)
 		} else if cfg.KYCIdentitySecret != "" {
-			kycRepo.SetIdentitySecrets(map[int16]string{1: cfg.KYCIdentitySecret})
+			appKYCRepo.SetIdentitySecrets(map[int16]string{1: cfg.KYCIdentitySecret})
+			maintKYCRepo.SetIdentitySecrets(map[int16]string{1: cfg.KYCIdentitySecret})
 		}
-		kycSvc = kycsvc.NewService(kycRepo, cfKYCAdapter, kycsvc.Config{
+		kycRepo = maintKYCRepo
+		kycSvc = kycsvc.NewService(appKYCRepo, cfKYCAdapter, kycsvc.Config{
+			IdentitySecret:           activeIdentitySecret,
+			HashKeyVersion:           activeHashVersion,
+			VerificationValidityDays: validityDays,
+		})
+		maintKYCSvc = kycsvc.NewService(maintKYCRepo, cfKYCAdapter, kycsvc.Config{
 			IdentitySecret:           activeIdentitySecret,
 			HashKeyVersion:           activeHashVersion,
 			VerificationValidityDays: validityDays,
@@ -602,7 +614,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		paymentRepo:          maintPaymentRepo,
 		referralSvc:          referralSvc,
 		kycRepo:              kycRepo,
-		kycSvc:               kycSvc,
+		kycSvc:               maintKYCSvc,
 		cfKYCAdapter:         cfKYCAdapter,
 		featureKYCDigiLocker: cfg.FeatureKYCDigiLocker,
 	}

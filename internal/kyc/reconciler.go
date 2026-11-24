@@ -16,8 +16,8 @@ import (
 // KYCReconcilerStore defines persistence operations required for KYC reconciliation.
 type KYCReconcilerStore interface {
 	ListRequestUnknownVerifications(ctx context.Context, limit int) ([]*domain.KYCVerification, error)
-	ExpireVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
-	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
+	ExpireVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error
+	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error
 	UpdateVerificationPendingManualReviewTx(
 		ctx context.Context,
 		verificationID uuid.UUID,
@@ -27,9 +27,10 @@ type KYCReconcilerStore interface {
 		isDedupable bool,
 		docType domain.DocumentType,
 		actor string,
+		leaseToken ...uuid.UUID,
 	) error
-	TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (bool, error)
-	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
+	TryAcquireInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID, ttl time.Duration) (bool, error)
+	ReleaseInFlightLockWithToken(ctx context.Context, tenantID, leaseToken uuid.UUID) error
 }
 
 // KYCReconciler handles durable background reconciliation of request_unknown verifications.
@@ -108,9 +109,10 @@ func (r *KYCReconciler) ReconcileBatch(ctx context.Context, limit int) (int, err
 func (r *KYCReconciler) reconcileSingle(ctx context.Context, v *domain.KYCVerification) error {
 	now := r.nowFn().UTC()
 	const actor = "kyc:reconciler"
+	leaseToken := uuid.New()
 
 	if r.repo != nil {
-		locked, err := r.repo.TryAcquireInFlightLock(ctx, v.TenantID, 5*time.Minute)
+		locked, err := r.repo.TryAcquireInFlightLockWithToken(ctx, v.TenantID, leaseToken, 5*time.Minute)
 		if err != nil {
 			return fmt.Errorf("kyc reconciler: lock tenant: %w", err)
 		}
@@ -119,33 +121,33 @@ func (r *KYCReconciler) reconcileSingle(ctx context.Context, v *domain.KYCVerifi
 			return ErrInFlightLockContention
 		}
 		defer func() {
-			_ = r.repo.ReleaseInFlightLock(ctx, v.TenantID)
+			_ = r.repo.ReleaseInFlightLockWithToken(ctx, v.TenantID, leaseToken)
 		}()
 	}
 
 	switch v.Method {
 	case domain.KYCMethodDigiLocker:
-		return r.reconcileDigiLocker(ctx, v, now, actor)
+		return r.reconcileDigiLocker(ctx, v, now, actor, leaseToken)
 
 	case domain.KYCMethodAadhaarOTP:
-		return r.reconcileAadhaarOTP(ctx, v, now, actor)
+		return r.reconcileAadhaarOTP(ctx, v, now, actor, leaseToken)
 
 	case domain.KYCMethodOCR:
-		return r.reconcileDocumentUpload(ctx, v, now, actor)
+		return r.reconcileDocumentUpload(ctx, v, now, actor, leaseToken)
 
 	default:
 		// For unhandled or legacy methods, expire if older than 24 hours
 		if now.Sub(v.CreatedAt) > 24*time.Hour {
-			return r.repo.ExpireVerificationTx(ctx, v.ID, "unhandled method ambiguity window expired", actor)
+			return r.repo.ExpireVerificationTx(ctx, v.ID, "unhandled method ambiguity window expired", actor, leaseToken)
 		}
 		return nil
 	}
 }
 
-func (r *KYCReconciler) reconcileDigiLocker(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string) error {
+func (r *KYCReconciler) reconcileDigiLocker(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string, leaseToken uuid.UUID) error {
 	if r.cashfree == nil || v.VendorReferenceID == "" {
 		if now.Sub(v.CreatedAt) > 24*time.Hour {
-			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker session expired without vendor reference", actor)
+			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker session expired without vendor reference", actor, leaseToken)
 		}
 		return nil
 	}
@@ -155,10 +157,10 @@ func (r *KYCReconciler) reconcileDigiLocker(ctx context.Context, v *domain.KYCVe
 		// If gateway returns 404 or definitively not found, or if session expired (>24h)
 		var apiErr *cashfree.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			return r.repo.FailVerificationTx(ctx, v.ID, "DIGILOCKER_SESSION_NOT_FOUND", actor)
+			return r.repo.FailVerificationTx(ctx, v.ID, "DIGILOCKER_SESSION_NOT_FOUND", actor, leaseToken)
 		}
 		if now.Sub(v.CreatedAt) > 24*time.Hour {
-			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker session query timed out after 24 hours", actor)
+			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker session query timed out after 24 hours", actor, leaseToken)
 		}
 		return fmt.Errorf("query digilocker status: %w", err)
 	}
@@ -181,31 +183,31 @@ func (r *KYCReconciler) reconcileDigiLocker(ctx context.Context, v *domain.KYCVe
 		return nil
 
 	case "EXPIRED":
-		return r.repo.ExpireVerificationTx(ctx, v.ID, "DIGILOCKER_SESSION_EXPIRED", actor)
+		return r.repo.ExpireVerificationTx(ctx, v.ID, "DIGILOCKER_SESSION_EXPIRED", actor, leaseToken)
 
 	case "FAILED", "REJECTED":
-		return r.repo.FailVerificationTx(ctx, v.ID, "DIGILOCKER_VERIFICATION_FAILED", actor)
+		return r.repo.FailVerificationTx(ctx, v.ID, "DIGILOCKER_VERIFICATION_FAILED", actor, leaseToken)
 
 	default:
 		// Still in progress at provider. If past 24h, expire.
 		if now.Sub(v.CreatedAt) > 24*time.Hour {
-			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker pending timeout exceeded 24 hours", actor)
+			return r.repo.ExpireVerificationTx(ctx, v.ID, "digilocker pending timeout exceeded 24 hours", actor, leaseToken)
 		}
 		return nil
 	}
 }
 
-func (r *KYCReconciler) reconcileAadhaarOTP(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string) error {
+func (r *KYCReconciler) reconcileAadhaarOTP(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string, leaseToken uuid.UUID) error {
 	// UIDAI Aadhaar OTP validity is 10 minutes.
 	// If 15 minutes have elapsed since creation, the OTP session is definitively expired at UIDAI/Cashfree.
 	// Safely transition request_unknown to expired, allowing the tenant to initiate a fresh attempt.
 	if now.Sub(v.CreatedAt) >= 15*time.Minute {
-		return r.repo.ExpireVerificationTx(ctx, v.ID, "aadhaar otp session expired after ambiguity window", actor)
+		return r.repo.ExpireVerificationTx(ctx, v.ID, "aadhaar otp session expired after ambiguity window", actor, leaseToken)
 	}
 	return nil
 }
 
-func (r *KYCReconciler) reconcileDocumentUpload(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string) error {
+func (r *KYCReconciler) reconcileDocumentUpload(ctx context.Context, v *domain.KYCVerification, now time.Time, actor string, leaseToken uuid.UUID) error {
 	// If an OCR request is in request_unknown and no webhook callback has arrived within 2 hours,
 	// escalate to pending_manual_review so the property owner/operator can review the document directly
 	// without stranding the tenant indefinitely.
@@ -234,6 +236,7 @@ func (r *KYCReconciler) reconcileDocumentUpload(ctx context.Context, v *domain.K
 			false,
 			docType,
 			actor,
+			leaseToken,
 		)
 	}
 	return nil

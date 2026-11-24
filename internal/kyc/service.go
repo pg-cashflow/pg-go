@@ -65,7 +65,7 @@ type KYCRepo interface {
 
 	InitiateVerificationTx(ctx context.Context, tenantID, consentID uuid.UUID, method domain.KYCMethod, vendorName, vendorRefID, actor string) (*domain.KYCVerification, error)
 	CompleteVerificationTx(ctx context.Context, verificationID uuid.UUID, maskedUID, identityHash string, isDedupable bool, hashKeyVersion int16, qrStatus *string, nameMismatch bool, attestedPhotoBytes []byte, verifiedAt, expiresAt time.Time, majorityDate *time.Time, actor string) (*domain.KYCVerification, error)
-	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
+	FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error
 	MarkRequestUnknownTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error
 
 	GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error)

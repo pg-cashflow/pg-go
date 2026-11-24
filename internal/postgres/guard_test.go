@@ -7,10 +7,11 @@ import (
 
 func TestValidateRolesConfig_Production(t *testing.T) {
 	validMaint := RoleInfo{
-		RoleName:     "pgapp_maint",
-		IsSuperuser:  false,
-		BypassRLS:    false,
-		IsTableOwner: false,
+		RoleName:         "pgapp_maint",
+		IsSuperuser:      false,
+		BypassRLS:        false,
+		IsTableOwner:     false,
+		HasAppRoleMember: true,
 	}
 	validApp := RoleInfo{
 		RoleName:         "pgapp_app",
@@ -42,6 +43,15 @@ func TestValidateRolesConfig_Production(t *testing.T) {
 		err := ValidateRolesConfig(badMaint, validApp, maintURL, appURL, "production")
 		if err == nil || !strings.Contains(err.Error(), "requires 'pgapp_maint'") {
 			t.Fatalf("expected maint role error, got: %v", err)
+		}
+	})
+
+	t.Run("fails when maintPool lacks pgapp_app membership", func(t *testing.T) {
+		badMaint := validMaint
+		badMaint.HasAppRoleMember = false
+		err := ValidateRolesConfig(badMaint, validApp, maintURL, appURL, "production")
+		if err == nil || !strings.Contains(err.Error(), "maintPool role must have membership in 'pgapp_app'") {
+			t.Fatalf("expected maint membership error, got: %v", err)
 		}
 	})
 

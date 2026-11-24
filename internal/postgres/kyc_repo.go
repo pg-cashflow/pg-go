@@ -19,6 +19,7 @@ import (
 
 type KYCRepo struct {
 	pool                     *pgxpool.Pool
+	db                       DBTX
 	cryptoKey                []byte
 	keyRing                  *crypto.KeyRing
 	identitySecrets          map[int16]string
@@ -36,18 +37,37 @@ func (r *KYCRepo) SetIdentitySecrets(secrets map[int16]string) {
 	r.identitySecrets = secrets
 }
 
-func NewKYCRepo(pool *pgxpool.Pool, cryptoKey ...[]byte) *KYCRepo {
+func NewKYCRepo(pool *pgxpool.Pool, args ...any) *KYCRepo {
 	var key []byte
-	if len(cryptoKey) > 0 {
-		key = cryptoKey[0]
+	var db DBTX = pool
+	for _, arg := range args {
+		switch v := arg.(type) {
+		case DBTX:
+			if v != nil {
+				db = v
+			}
+		case []byte:
+			key = v
+		}
 	}
-	r := &KYCRepo{pool: pool, cryptoKey: key}
+	r := &KYCRepo{pool: pool, db: db, cryptoKey: key}
 	if len(key) == 32 {
 		if kr, err := crypto.NewKeyRing(crypto.CurrentKeyVersion, key); err == nil {
 			r.keyRing = kr
 		}
 	}
 	return r
+}
+
+func (r *KYCRepo) WithScopedDB(db DBTX) *KYCRepo {
+	return &KYCRepo{
+		pool:                     r.pool,
+		db:                       db,
+		cryptoKey:                r.cryptoKey,
+		keyRing:                  r.keyRing,
+		identitySecrets:          r.identitySecrets,
+		verificationValidityDays: r.verificationValidityDays,
+	}
 }
 
 func (r *KYCRepo) SetCryptoKey(key []byte) {
@@ -220,7 +240,7 @@ func (r *KYCRepo) RecordConsent(ctx context.Context, c *domain.KYCConsent, actor
 
 // GetActiveConsentByTenant fetches the most recent unrevoked consent for a tenant.
 func (r *KYCRepo) GetActiveConsentByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCConsent, error) {
-	return scanKYCConsent(r.pool.QueryRow(ctx, `
+	return scanKYCConsent(r.db.QueryRow(ctx, `
 		SELECT `+kycConsentCols+`
 		FROM kyc_consent
 		WHERE tenant_id = $1 AND revoked_at IS NULL
@@ -591,22 +611,43 @@ func (r *KYCRepo) CompleteVerificationTx(
 }
 
 // FailVerificationTx records a verification failure and logs it in the audit ledger.
-func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error {
+func (r *KYCRepo) FailVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error {
 	now := time.Now().UTC()
 
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
-		err := tx.QueryRow(ctx, `
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("kyc: verification %s not found", verificationID)
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
+			var activeToken uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
+				}
+				return fmt.Errorf("kyc: verify lease lock: %w", err)
+			}
+			if activeToken != leaseToken[0] {
+				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
+			}
+		}
+
+		tag, err := tx.Exec(ctx, `
 			UPDATE kyc_verification
 			SET status = 'failed', failure_reason = $2, updated_at = $3
 			WHERE id = $1 AND status IN ('pending', 'request_unknown')
-			RETURNING tenant_id
-		`, verificationID, reason, now).Scan(&tenantID)
+		`, verificationID, reason, now)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("kyc: pending verification %s not found", verificationID)
-			}
 			return fmt.Errorf("kyc: update verification failure: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("kyc: pending verification %s not found", verificationID)
 		}
 
 		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_failed", reason, now); err != nil {
@@ -645,21 +686,42 @@ func (r *KYCRepo) MarkRequestUnknownTx(ctx context.Context, verificationID uuid.
 }
 
 // ExpireVerificationTx transitions an active verification to expired status with audit logging.
-func (r *KYCRepo) ExpireVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string) error {
+func (r *KYCRepo) ExpireVerificationTx(ctx context.Context, verificationID uuid.UUID, reason, actor string, leaseToken ...uuid.UUID) error {
 	now := time.Now().UTC()
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		var tenantID uuid.UUID
-		err := tx.QueryRow(ctx, `
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("kyc: verification %s not found", verificationID)
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
+			var activeToken uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
+				}
+				return fmt.Errorf("kyc: verify lease lock: %w", err)
+			}
+			if activeToken != leaseToken[0] {
+				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
+			}
+		}
+
+		tag, err := tx.Exec(ctx, `
 			UPDATE kyc_verification
 			SET status = 'expired', failure_reason = $2, updated_at = $3
 			WHERE id = $1 AND status IN ('pending', 'request_unknown')
-			RETURNING tenant_id
-		`, verificationID, reason, now).Scan(&tenantID)
+		`, verificationID, reason, now)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("kyc: verification %s not found or not in pending/request_unknown", verificationID)
-			}
 			return fmt.Errorf("kyc: expire verification: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("kyc: verification %s not found or not in pending/request_unknown", verificationID)
 		}
 		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_expired", reason, now)
 	})
@@ -670,7 +732,7 @@ func (r *KYCRepo) ListRequestUnknownVerifications(ctx context.Context, limit int
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE status = 'request_unknown'
@@ -695,7 +757,7 @@ func (r *KYCRepo) ListRequestUnknownVerifications(ctx context.Context, limit int
 
 // GetActiveVerificationByTenant retrieves any currently pending, under-review, or verified verification for a tenant.
 func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
-	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.db.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE tenant_id = $1 AND status IN ('pending', 'request_unknown', 'verified', 'pending_manual_review')
@@ -704,7 +766,7 @@ func (r *KYCRepo) GetActiveVerificationByTenant(ctx context.Context, tenantID uu
 
 // GetVerificationByVendorRefID retrieves a verification record by its unique vendor reference ID.
 func (r *KYCRepo) GetVerificationByVendorRefID(ctx context.Context, vendorRefID string) (*domain.KYCVerification, error) {
-	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.db.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE vendor_reference_id = $1
@@ -737,7 +799,7 @@ func (r *KYCRepo) GetVerificationByCFReferenceID(ctx context.Context, cfRefID st
 	if cfRefID == "" {
 		return nil, domain.ErrVerificationNotFound
 	}
-	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.db.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE cf_reference_id = $1
@@ -767,7 +829,7 @@ func (r *KYCRepo) UpdateCFReferenceIDTx(ctx context.Context, verificationID uuid
 // CheckDuplicateIdentity checks if an active, verified identity hash matches another tenant.
 func (r *KYCRepo) CheckDuplicateIdentity(ctx context.Context, identityHash string, hashKeyVersion int16, excludeTenantID uuid.UUID) (bool, error) {
 	var exists bool
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM kyc_verification
 			WHERE identity_hash = $1
@@ -785,7 +847,7 @@ func (r *KYCRepo) CheckDuplicateIdentity(ctx context.Context, identityHash strin
 
 // ListAuditLogsByTenant returns the cryptographic audit trail for a tenant in sequential order.
 func (r *KYCRepo) ListAuditLogsByTenant(ctx context.Context, tenantID uuid.UUID) ([]domain.KYCAuditLog, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT `+kycAuditCols+`
 		FROM kyc_audit_log
 		WHERE tenant_id = $1
@@ -1026,7 +1088,7 @@ func (r *KYCRepo) appendAuditLogTx(ctx context.Context, tx pgx.Tx, tenantID uuid
 // tenant regardless of status — used by the owner view which needs to surface
 // even failed/revoked/expired records.
 func (r *KYCRepo) GetLatestVerificationByTenant(ctx context.Context, tenantID uuid.UUID) (*domain.KYCVerification, error) {
-	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.db.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE tenant_id = $1
@@ -1113,7 +1175,7 @@ func (r *KYCRepo) ReleaseInFlightLockWithToken(ctx context.Context, tenantID, le
 // GetTenantName retrieves the tenant's submitted name from the tenants table.
 func (r *KYCRepo) GetTenantName(ctx context.Context, tenantID uuid.UUID) (string, error) {
 	var name string
-	err := r.pool.QueryRow(ctx, `SELECT name FROM tenants WHERE id = $1`, tenantID).Scan(&name)
+	err := r.db.QueryRow(ctx, `SELECT name FROM tenants WHERE id = $1`, tenantID).Scan(&name)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", fmt.Errorf("kyc: tenant %s not found", tenantID)
@@ -1126,7 +1188,7 @@ func (r *KYCRepo) GetTenantName(ctx context.Context, tenantID uuid.UUID) (string
 // GetAttestedPhoto fetches the verified government/vendor-attested Aadhaar photo crop.
 func (r *KYCRepo) GetAttestedPhoto(ctx context.Context, tenantID uuid.UUID) ([]byte, error) {
 	var photoBytes []byte
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT attested_photo_bytes
 		FROM kyc_verification
 		WHERE tenant_id = $1 AND status = 'verified' AND photo_stored = TRUE
@@ -1251,6 +1313,7 @@ func (r *KYCRepo) UpdateVerificationPendingManualReviewTx(
 	isDedupable bool,
 	docType domain.DocumentType,
 	actor string,
+	leaseToken ...uuid.UUID,
 ) error {
 	now := time.Now().UTC()
 	docTypeVal := string(domain.NormalizeDocumentType(string(docType)))
@@ -1266,6 +1329,20 @@ func (r *KYCRepo) UpdateVerificationPendingManualReviewTx(
 				return domain.ErrVerificationNotFound
 			}
 			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		if len(leaseToken) > 0 && leaseToken[0] != uuid.Nil {
+			var activeToken uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT lease_token FROM kyc_in_flight_lock WHERE tenant_id = $1`, tenantID).Scan(&activeToken)
+			if err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return fmt.Errorf("kyc: lease expired or lost for tenant %s (fencing abort)", tenantID)
+				}
+				return fmt.Errorf("kyc: verify lease lock: %w", err)
+			}
+			if activeToken != leaseToken[0] {
+				return fmt.Errorf("kyc: stale lease token for tenant %s (expected %s, found %s): fencing abort", tenantID, leaseToken[0], activeToken)
+			}
 		}
 
 		var exists int
@@ -1333,7 +1410,7 @@ func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, str
 	var attestedBytes []byte
 	var tenantID uuid.UUID
 
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT document_bytes, document_content_type, attested_photo_bytes, tenant_id
 		FROM kyc_verification
 		WHERE id = $1
@@ -1375,7 +1452,7 @@ func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, str
 // VerifyPropertyOwnership verifies that a verification record belongs to a tenant of propertyID.
 func (r *KYCRepo) VerifyPropertyOwnership(ctx context.Context, verificationID, propertyID uuid.UUID) (bool, error) {
 	var exists int
-	err := r.pool.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, `
 		SELECT 1
 		FROM kyc_verification v
 		JOIN tenants t ON t.id = v.tenant_id
@@ -1690,7 +1767,7 @@ func (r *KYCRepo) RejectManualReviewTx(
 
 // ListPendingReviews returns all pending_manual_review records for tenants belonging to the given property.
 func (r *KYCRepo) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := r.db.Query(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification v
 		WHERE v.status = 'pending_manual_review'
@@ -1715,7 +1792,7 @@ func (r *KYCRepo) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) 
 
 // GetVerificationByID fetches a single verification record by its primary key UUID.
 func (r *KYCRepo) GetVerificationByID(ctx context.Context, id uuid.UUID) (*domain.KYCVerification, error) {
-	return r.scanKYCVerification(r.pool.QueryRow(ctx, `
+	return r.scanKYCVerification(r.db.QueryRow(ctx, `
 		SELECT `+kycVerificationCols+`
 		FROM kyc_verification
 		WHERE id = $1

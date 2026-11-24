@@ -631,6 +631,14 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 			"item_id", it.ID,
 			"status", st.Status,
 		)
+		if d.repo != nil {
+			incidentType := "TRANSFER_ID_MISMATCH"
+			if st.TransferID == "" {
+				incidentType = "EMPTY_TRANSFER_ID"
+			}
+			msg := fmt.Sprintf("expected transfer ID %q, got %q (status=%s)", expectedTransferID, st.TransferID, st.Status)
+			_ = d.repo.RecordItemIncident(ctx, batch.ID, it.ID, incidentType, expectedTransferID, st.TransferID, msg)
+		}
 		return nil
 	}
 

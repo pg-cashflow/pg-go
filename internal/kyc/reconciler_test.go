@@ -2,7 +2,9 @@ package kyc
 
 import (
 	"context"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +19,9 @@ type mockReconcilerStore struct {
 	failedVerifications  map[uuid.UUID]string
 	manualReviews        map[uuid.UUID]string
 	lockHeld             bool
+	activeLeaseToken     uuid.UUID
+	lastPassedToken      uuid.UUID
+	rejectStaleLease     bool
 }
 
 func newMockReconcilerStore() *mockReconcilerStore {
@@ -31,12 +36,24 @@ func (m *mockReconcilerStore) ListRequestUnknownVerifications(_ context.Context,
 	return m.items, nil
 }
 
-func (m *mockReconcilerStore) ExpireVerificationTx(_ context.Context, verificationID uuid.UUID, reason, _ string) error {
+func (m *mockReconcilerStore) ExpireVerificationTx(_ context.Context, verificationID uuid.UUID, reason, _ string, leaseToken ...uuid.UUID) error {
+	if len(leaseToken) > 0 {
+		m.lastPassedToken = leaseToken[0]
+		if m.rejectStaleLease && m.activeLeaseToken != uuid.Nil && leaseToken[0] != m.activeLeaseToken {
+			return errors.New("kyc: stale lease token (fencing abort)")
+		}
+	}
 	m.expiredVerifications[verificationID] = reason
 	return nil
 }
 
-func (m *mockReconcilerStore) FailVerificationTx(_ context.Context, verificationID uuid.UUID, reason, _ string) error {
+func (m *mockReconcilerStore) FailVerificationTx(_ context.Context, verificationID uuid.UUID, reason, _ string, leaseToken ...uuid.UUID) error {
+	if len(leaseToken) > 0 {
+		m.lastPassedToken = leaseToken[0]
+		if m.rejectStaleLease && m.activeLeaseToken != uuid.Nil && leaseToken[0] != m.activeLeaseToken {
+			return errors.New("kyc: stale lease token (fencing abort)")
+		}
+	}
 	m.failedVerifications[verificationID] = reason
 	return nil
 }
@@ -50,19 +67,30 @@ func (m *mockReconcilerStore) UpdateVerificationPendingManualReviewTx(
 	_ bool,
 	_ domain.DocumentType,
 	_ string,
+	leaseToken ...uuid.UUID,
 ) error {
+	if len(leaseToken) > 0 {
+		m.lastPassedToken = leaseToken[0]
+		if m.rejectStaleLease && m.activeLeaseToken != uuid.Nil && leaseToken[0] != m.activeLeaseToken {
+			return errors.New("kyc: stale lease token (fencing abort)")
+		}
+	}
 	m.manualReviews[verificationID] = ocrToStore
 	return nil
 }
 
-func (m *mockReconcilerStore) TryAcquireInFlightLock(_ context.Context, _ uuid.UUID, _ time.Duration) (bool, error) {
+func (m *mockReconcilerStore) TryAcquireInFlightLockWithToken(_ context.Context, _ uuid.UUID, leaseToken uuid.UUID, _ time.Duration) (bool, error) {
 	if m.lockHeld {
 		return false, nil
 	}
+	m.activeLeaseToken = leaseToken
 	return true, nil
 }
 
-func (m *mockReconcilerStore) ReleaseInFlightLock(_ context.Context, _ uuid.UUID) error {
+func (m *mockReconcilerStore) ReleaseInFlightLockWithToken(_ context.Context, _ uuid.UUID, leaseToken uuid.UUID) error {
+	if m.activeLeaseToken == leaseToken {
+		m.activeLeaseToken = uuid.Nil
+	}
 	return nil
 }
 
@@ -276,5 +304,52 @@ func TestKYCReconciler_InFlightLock_SkipsConcurrentProcessing(t *testing.T) {
 	}
 	if _, ok := store.expiredVerifications[verifID]; ok {
 		t.Errorf("verification with active in-flight lease must NOT be modified by reconciler")
+	}
+}
+
+func TestKYCReconciler_LeaseTokenFencing_PassesTokenAndPreventsStaleMutations(t *testing.T) {
+	verifID := uuid.New()
+	tenantID := uuid.New()
+	now := time.Now()
+
+	store := newMockReconcilerStore()
+	store.items = []*domain.KYCVerification{
+		{
+			ID:        verifID,
+			TenantID:  tenantID,
+			Method:    domain.KYCMethodAadhaarOTP,
+			Status:    domain.KYCStatusRequestUnknown,
+			CreatedAt: now.Add(-30 * time.Minute),
+		},
+	}
+
+	reconciler := NewKYCReconciler(store, nil, nil)
+	reconciler.nowFn = func() time.Time { return now }
+
+	n, err := reconciler.ReconcileBatch(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 item processed, got %d", n)
+	}
+
+	if store.lastPassedToken == uuid.Nil {
+		t.Errorf("expected reconciler to pass fencing leaseToken, but got nil")
+	}
+
+	// Verify lease lock was released cleanly
+	if store.activeLeaseToken != uuid.Nil {
+		t.Errorf("expected lease lock to be released after reconciliation, but was %s", store.activeLeaseToken)
+	}
+
+	// Stale worker test: simulate worker executing mutation with a stale lease token
+	store.rejectStaleLease = true
+	store.activeLeaseToken = uuid.New() // New worker acquired a newer lease
+	staleToken := uuid.New()
+
+	staleErr := store.ExpireVerificationTx(context.Background(), verifID, "stale attempt", "reconciler", staleToken)
+	if staleErr == nil || !strings.Contains(staleErr.Error(), "stale lease token") {
+		t.Fatalf("expected stale lease token rejection, got %v", staleErr)
 	}
 }
