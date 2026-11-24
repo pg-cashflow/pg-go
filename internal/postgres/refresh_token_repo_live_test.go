@@ -282,3 +282,139 @@ func TestLivePostgresConcurrentRotation(t *testing.T) {
 		}
 	}
 }
+
+// TestLivePostgresGraceWindowChainRevocation tests the specific defect scenario where a third
+// concurrent duplicate arrives *after* the grace path has already been executed once.
+//
+// Sequence:
+//
+//	A) Worker 0 rotates R → S1 (normal path, commits).
+//	B) Worker 1 uses R within grace window; repo walks chain, finds S1 active, returns (S1, ErrGraceWindow). No new row minted.
+//	C) Worker 2 uses R within grace window *after* B; must ALSO return (S1, ErrGraceWindow), NOT revoke family.
+//
+// Invariant: family is never revoked inside the grace window for a legitimate duplicate.
+// Invariant: exactly 1 active successor exists at all times.
+func TestLivePostgresGraceWindowChainRevocation(t *testing.T) {
+	pool, _ := setupLiveTestPool(t, 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, m := range []string{
+		"030_refresh_tokens.sql",
+		"033_refresh_tokens_revoked_at.sql",
+		"034_refresh_tokens_family_started_at.sql",
+		"052_refresh_tokens_replaced_by.sql",
+	} {
+		mPath := filepath.Join("..", "..", "migrations", m)
+		mSQL, err := os.ReadFile(mPath)
+		if err != nil {
+			t.Fatalf("failed reading migration %s: %v", m, err)
+		}
+		if _, err := pool.Exec(ctx, string(mSQL)); err != nil {
+			t.Fatalf("failed applying migration %s: %v", m, err)
+		}
+	}
+
+	repo := NewRefreshTokenRepo(pool)
+	userID := uuid.New()
+	familyID := uuid.New()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO users (id, phone, role)
+		VALUES ($1, $2, 'tenant')
+		ON CONFLICT (id) DO NOTHING`,
+		userID, "+91"+strconv.FormatInt(time.Now().UnixNano()%10000000000, 10),
+	)
+	if err != nil {
+		t.Fatalf("failed inserting test user: %v", err)
+	}
+
+	rootHash := "grace_chain_root_" + uuid.New().String()[:8]
+	rootRT := &domain.RefreshToken{
+		ID:              uuid.New(),
+		UserID:          userID,
+		FamilyID:        familyID,
+		TokenHash:       rootHash,
+		ExpiresAt:       time.Now().UTC().Add(30 * 24 * time.Hour),
+		Revoked:         false,
+		FamilyStartedAt: time.Now().UTC(),
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := repo.StoreRefreshToken(ctx, rootRT); err != nil {
+		t.Fatalf("store root token: %v", err)
+	}
+
+	countActive := func(label string) int {
+		t.Helper()
+		var n int
+		if scanErr := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM refresh_tokens WHERE family_id = $1 AND revoked = FALSE AND expires_at > NOW()`,
+			familyID,
+		).Scan(&n); scanErr != nil {
+			t.Fatalf("%s: countActive query: %v", label, scanErr)
+		}
+		return n
+	}
+
+	// Step A: Normal rotation R → S1
+	rotatedS1, err := repo.RotateTokenTx(ctx, rootHash, &domain.RefreshToken{
+		TokenHash: "grace_chain_s1_" + uuid.New().String()[:8],
+		ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("step A: normal rotation R→S1 failed: %v", err)
+	}
+	t.Logf("Step A: S1 minted ID=%s", rotatedS1.ID)
+	if n := countActive("after step A"); n != 1 {
+		t.Fatalf("after step A: expected 1 active token, got %d", n)
+	}
+
+	// Step B: Duplicate use of R within grace window → (leaf, ErrGraceWindow), zero new rows
+	bLeaf, bErr := repo.RotateTokenTx(ctx, rootHash, &domain.RefreshToken{
+		TokenHash: "grace_chain_b_" + uuid.New().String()[:8],
+		ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+	})
+	if !errors.Is(bErr, domain.ErrGraceWindow) {
+		t.Fatalf("step B: expected ErrGraceWindow, got err=%v leaf=%v", bErr, bLeaf)
+	}
+	if bLeaf == nil || bLeaf.UserID == uuid.Nil {
+		t.Fatal("step B: ErrGraceWindow must return non-nil leaf with valid UserID")
+	}
+	if bLeaf.UserID != userID {
+		t.Errorf("step B: leaf.UserID=%s want %s", bLeaf.UserID, userID)
+	}
+	if n := countActive("after step B"); n != 1 {
+		t.Fatalf("after step B: expected 1 active token, got %d — grace path minted an extra row", n)
+	}
+	t.Logf("Step B: grace returned leaf ID=%s (ErrGraceWindow)", bLeaf.ID)
+
+	// Step C: Third duplicate, also within grace window; must return same leaf as B
+	cLeaf, cErr := repo.RotateTokenTx(ctx, rootHash, &domain.RefreshToken{
+		TokenHash: "grace_chain_c_" + uuid.New().String()[:8],
+		ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour),
+	})
+	if !errors.Is(cErr, domain.ErrGraceWindow) {
+		t.Fatalf("step C: expected ErrGraceWindow, got err=%v leaf=%v", cErr, cLeaf)
+	}
+	if cLeaf == nil || cLeaf.UserID == uuid.Nil {
+		t.Fatal("step C: ErrGraceWindow must return non-nil leaf with valid UserID")
+	}
+	if bLeaf.ID != cLeaf.ID {
+		t.Errorf("B and C returned different leaf IDs: B=%s C=%s — idempotency broken", bLeaf.ID, cLeaf.ID)
+	}
+	if n := countActive("after step C"); n != 1 {
+		t.Fatalf("after step C: expected 1 active token, got %d", n)
+	}
+	t.Logf("Step C: grace returned same leaf ID=%s (ErrGraceWindow)", cLeaf.ID)
+
+	// Final: family must NOT be fully revoked
+	var allRevoked bool
+	if scanErr := pool.QueryRow(ctx,
+		`SELECT bool_and(revoked) FROM refresh_tokens WHERE family_id = $1`, familyID,
+	).Scan(&allRevoked); scanErr != nil {
+		t.Fatalf("check family revoke state: %v", scanErr)
+	}
+	if allRevoked {
+		t.Fatal("family was incorrectly fully revoked inside the grace window — P1-A defect not fixed")
+	}
+}

@@ -2306,7 +2306,9 @@ func (r *PayoutRepo) CreatePayoutReconciliationCase(
 		return nil, fmt.Errorf("begin create reconciliation case tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)"); err != nil {
+		return nil, fmt.Errorf("set platform ops scope: %w", err)
+	}
 
 	var (
 		item       domain.PayoutItem
@@ -2391,10 +2393,35 @@ func (r *PayoutRepo) CreatePayoutReconciliationCase(
 	return &reconCase, nil
 }
 
+// beginPlatformOpsTx starts a transaction and sets the transaction-local
+// app.is_platform_ops = 'true' scope required by the RLS policy on
+// platform_payout_reconciliation_cases (migration 124). Errors from set_config
+// are propagated — not silently discarded — so misconfiguration is visible at
+// call time. Callers must defer tx.Rollback(ctx).
+func (r *PayoutRepo) beginPlatformOpsTx(ctx context.Context) (pgx.Tx, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin platform ops tx: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)"); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("set platform ops scope: %w", err)
+	}
+	return tx, nil
+}
+
 // GetPayoutReconciliationCase retrieves a single reconciliation case by ID.
+// A scoped transaction is required so the RLS policy on
+// platform_payout_reconciliation_cases (migration 124) allows the read.
 func (r *PayoutRepo) GetPayoutReconciliationCase(ctx context.Context, caseID uuid.UUID) (*domain.PlatformPayoutReconciliationCase, error) {
+	tx, err := r.beginPlatformOpsTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var c domain.PlatformPayoutReconciliationCase
-	err := r.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
 		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
 		       status, item_snapshot::text, rejection_reason, created_at, reviewed_at, updated_at
@@ -2412,10 +2439,15 @@ func (r *PayoutRepo) GetPayoutReconciliationCase(ctx context.Context, caseID uui
 		}
 		return nil, fmt.Errorf("get reconciliation case %s: %w", caseID, err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit get reconciliation case tx: %w", err)
+	}
 	return &c, nil
 }
 
 // ListPayoutReconciliationCases returns platform payout reconciliation cases with optional status filter.
+// A scoped transaction is required so the RLS policy on
+// platform_payout_reconciliation_cases (migration 124) allows the read.
 func (r *PayoutRepo) ListPayoutReconciliationCases(ctx context.Context, status *domain.PayoutReconciliationCaseStatus, limit, offset int) ([]domain.PlatformPayoutReconciliationCase, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -2423,6 +2455,12 @@ func (r *PayoutRepo) ListPayoutReconciliationCases(ctx context.Context, status *
 	if offset < 0 {
 		offset = 0
 	}
+	tx, err := r.beginPlatformOpsTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	query := `
 		SELECT id, payout_item_id, proposed_status, utr, cf_transfer_id, settled_at,
 		       failure_reason, notes, evidence_ref, evidence_hash, maker_id, checker_id,
@@ -2436,7 +2474,7 @@ func (r *PayoutRepo) ListPayoutReconciliationCases(ctx context.Context, status *
 		s := string(*status)
 		statusStr = &s
 	}
-	rows, err := r.pool.Query(ctx, query, statusStr, limit, offset)
+	rows, err := tx.Query(ctx, query, statusStr, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list reconciliation cases: %w", err)
 	}
@@ -2455,7 +2493,13 @@ func (r *PayoutRepo) ListPayoutReconciliationCases(ctx context.Context, status *
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit list reconciliation cases tx: %w", err)
+	}
+	return out, nil
 }
 
 // ApprovePayoutReconciliationCase approves a pending reconciliation case as an independent checker.
@@ -2476,7 +2520,9 @@ func (r *PayoutRepo) ApprovePayoutReconciliationCase(
 		return nil, fmt.Errorf("begin approve reconciliation case tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)"); err != nil {
+		return nil, fmt.Errorf("set platform ops scope: %w", err)
+	}
 
 	var reconCase domain.PlatformPayoutReconciliationCase
 	err = tx.QueryRow(ctx, `
@@ -2709,7 +2755,9 @@ func (r *PayoutRepo) RejectPayoutReconciliationCase(
 		return nil, fmt.Errorf("begin reject reconciliation case tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)"); err != nil {
+		return nil, fmt.Errorf("set platform ops scope: %w", err)
+	}
 
 	var reconCase domain.PlatformPayoutReconciliationCase
 	err = tx.QueryRow(ctx, `

@@ -64,20 +64,37 @@ const (
 	DocTypeDrivingLicence DocumentType = "driving_licence"
 )
 
-// NormalizeDocumentType canonicalizes incoming document type strings.
-func NormalizeDocumentType(docType string) DocumentType {
+// ParseDocumentType parses and validates a document type string.
+// Returns an error for empty or unrecognized values — callers must not silently default to Aadhaar.
+// Use this for all new code. The old NormalizeDocumentType is kept for internal pre-validated paths.
+func ParseDocumentType(docType string) (DocumentType, error) {
 	switch strings.ToLower(strings.TrimSpace(docType)) {
+	case "aadhaar", "aadhaar_card":
+		return DocTypeAadhaar, nil
 	case "pan":
-		return DocTypePAN
+		return DocTypePAN, nil
 	case "passport", "passport_front":
-		return DocTypePassport
+		return DocTypePassport, nil
 	case "voter_id", "voter":
-		return DocTypeVoterID
+		return DocTypeVoterID, nil
 	case "driving_licence", "driving_license", "dl":
-		return DocTypeDrivingLicence
+		return DocTypeDrivingLicence, nil
+	case "":
+		return "", fmt.Errorf("document_type is required")
 	default:
-		return DocTypeAadhaar
+		return "", fmt.Errorf("unsupported document_type %q: must be one of aadhaar, pan, passport, voter_id, driving_licence", docType)
 	}
+}
+
+// NormalizeDocumentType canonicalizes incoming document type strings.
+// Deprecated: use ParseDocumentType which rejects unknown types instead of silently defaulting.
+// Kept for internal paths that have already validated the type.
+func NormalizeDocumentType(docType string) DocumentType {
+	dt, err := ParseDocumentType(docType)
+	if err != nil {
+		return DocTypeAadhaar // legacy fallback — only internal callers that pre-validate should reach this
+	}
+	return dt
 }
 
 // AadhaarOTPMaxAttempts defines the unified retry and burst budget for Aadhaar OTP verification.

@@ -809,6 +809,44 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		if errors.Is(err, domain.ErrRefreshTokenExpired) {
 			return "", "", nil, ErrRefreshTokenExpired
 		}
+		// Grace-window: a duplicate request arrived within RefreshGraceWindow of the original
+		// rotation. The repo walked the replaced_by chain and found the current active leaf.
+		// rotatedRT carries the leaf's UserID so we can issue a fresh access token.
+		// The caller MUST NOT update the refresh cookie — the client's existing cookie
+		// is already the valid successor token.
+		if errors.Is(err, domain.ErrGraceWindow) && rotatedRT != nil {
+			user, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
+			if uerr != nil {
+				return "", "", nil, fmt.Errorf("grace-window load user: %w", uerr)
+			}
+			if user.IsDisabled() {
+				if s.refreshRepo != nil {
+					InvalidateFamily(rotatedRT.FamilyID)
+					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+				}
+				return "", "", nil, ErrAccessRevoked
+			}
+			if user.TenantID != nil && s.tenants != nil {
+				t, terr := s.tenants.GetByID(ctx, *user.TenantID)
+				if terr != nil {
+					return "", "", nil, fmt.Errorf("grace-window load tenant: %w", terr)
+				}
+				if t != nil && !t.CanSignIn() {
+					if s.refreshRepo != nil {
+						InvalidateFamily(rotatedRT.FamilyID)
+						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+					}
+					return "", "", nil, ErrTenantVacated
+				}
+			}
+			accessToken, aerr := IssueAccessTokenWithFamily(s.jwtSecret, user, &rotatedRT.FamilyID)
+			if aerr != nil {
+				return "", "", nil, fmt.Errorf("grace-window issue access token: %w", aerr)
+			}
+			setCachedTokenVersion(user.ID, user.TokenVersion)
+			// Return empty newPlaintextRefreshToken: handler must not set a new cookie.
+			return accessToken, "", user, nil
+		}
 		return "", "", nil, fmt.Errorf("rotate refresh token: %w", err)
 	}
 

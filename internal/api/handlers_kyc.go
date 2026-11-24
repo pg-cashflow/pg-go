@@ -344,13 +344,14 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 	}
 
 	actor := fmt.Sprintf("tenant:%s", t.ID)
-	docType := strings.TrimSpace(c.PostForm("document_type"))
-	if docType == "" {
-		docType = "aadhaar"
+	docTypeRaw := strings.TrimSpace(c.PostForm("document_type"))
+	normDocType, parseErr := domain.ParseDocumentType(docTypeRaw)
+	if parseErr != nil {
+		apierr.RespondBindErr(c, parseErr.Error(), apierr.CodeRequestInvalidBody)
+		return
 	}
-	normDocType := string(domain.NormalizeDocumentType(docType))
 
-	v, err := svc.VerifyDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, ct, normDocType, actor)
+	v, err := svc.VerifyDocument(c.Request.Context(), t.ID, file, fileHeader.Filename, ct, string(normDocType), actor)
 	if err != nil {
 		respondErr(c, kycClientErr(err))
 		return

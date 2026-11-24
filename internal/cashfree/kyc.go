@@ -110,7 +110,7 @@ func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filen
 	case "DRIVING_LICENCE", "DRIVING_LICENSE", "DL":
 		cfDocType = "DRIVING_LICENCE"
 	default:
-		cfDocType = "AADHAAR"
+		return nil, fmt.Errorf("cashfree ocr: unsupported document type %q", documentType)
 	}
 
 	var body bytes.Buffer

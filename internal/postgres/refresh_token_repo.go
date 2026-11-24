@@ -153,7 +153,12 @@ func (r *RefreshTokenRepo) ListActiveSessions(ctx context.Context, userID uuid.U
 }
 
 // RotateTokenTx atomically validates, revokes, and rotates a refresh token inside a single transaction.
-// Row-level locking (FOR UPDATE) eliminates race conditions, and a short grace window (domain.RefreshGraceWindow, 5s) protects against network retransmits.
+// Row-level locking (FOR UPDATE) eliminates race conditions, and a short grace window (domain.RefreshGraceWindow, 30s) protects against network retransmits.
+//
+// Grace-window idempotency invariant: within RefreshGraceWindow of consuming token T, every
+// duplicate use of T must receive the same active successor without minting a new token.
+// Returns (leafToken, domain.ErrGraceWindow) so the caller can issue a fresh access token
+// without updating the refresh cookie — the client's existing cookie is already the valid successor.
 func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, newRT *domain.RefreshToken) (*domain.RefreshToken, error) {
 	var tx pgx.Tx
 	var err error
@@ -203,59 +208,50 @@ func (r *RefreshTokenRepo) RotateTokenTx(ctx context.Context, oldHash string, ne
 			return nil, fmt.Errorf("check active family tokens: %w", err)
 		}
 
-		// Grace window check: only applies if the family has not been nuked (active tokens exist)
-		// and this token was revoked within the last 30 seconds, and successor has not been used.
-		// In the grace path, mint a child token from the successor and return it so the caller
-		// can set a fresh cookie, self-healing sessions where the original rotation response was lost.
+		// Grace-window idempotency: only applies when the family still has active tokens,
+		// the consumed token was revoked within RefreshGraceWindow, and a successor pointer exists.
+		//
+		// Design invariant: a duplicate use of a consumed token within the grace window must
+		// return the SAME active successor without minting any new token. We walk the replaced_by
+		// chain (capped at maxGraceChainDepth) to find the current unrevoked leaf, then return
+		// (leaf, ErrGraceWindow). The caller issues a fresh access token from the leaf's UserID
+		// but must NOT update the refresh cookie — the client's existing cookie is already the
+		// valid successor. No INSERT or UPDATE is performed in this path.
+		const maxGraceChainDepth = 16
 		if activeCount > 0 && current.RevokedAt != nil && time.Since(*current.RevokedAt) <= domain.RefreshGraceWindow && replacedBy != nil {
-			var successor domain.RefreshToken
-			querySuccessor := `
-				SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at
-				FROM refresh_tokens
-				WHERE id = $1
-				FOR UPDATE
-			`
-			if err := tx.QueryRow(ctx, querySuccessor, *replacedBy).Scan(
-				&successor.ID, &successor.UserID, &successor.FamilyID,
-				&successor.TokenHash, &successor.ExpiresAt, &successor.Revoked,
-				&successor.RevokedAt, &successor.FamilyStartedAt, &successor.CreatedAt,
-			); err == nil && !successor.Revoked {
-				now := time.Now().UTC()
-				if newRT.ID == uuid.Nil {
-					newRT.ID = uuid.New()
+			var leaf *domain.RefreshToken
+			walkID := replacedBy
+			for depth := 0; depth < maxGraceChainDepth && walkID != nil; depth++ {
+				var node domain.RefreshToken
+				var nodeReplacedBy *uuid.UUID
+				err := tx.QueryRow(ctx, `
+					SELECT id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, created_at, replaced_by
+					FROM refresh_tokens
+					WHERE id = $1
+					FOR UPDATE
+				`, *walkID).Scan(
+					&node.ID, &node.UserID, &node.FamilyID,
+					&node.TokenHash, &node.ExpiresAt, &node.Revoked,
+					&node.RevokedAt, &node.FamilyStartedAt, &node.CreatedAt, &nodeReplacedBy,
+				)
+				if err != nil {
+					break // Node missing or query error — stop walk, fall through to family revoke
 				}
-				newRT.FamilyID = successor.FamilyID
-				newRT.UserID = successor.UserID
-				newRT.FamilyStartedAt = familyStarted
-				newRT.CreatedAt = now
-				newRT.LastUsedAt = now
-				if newRT.UserAgent == nil {
-					newRT.UserAgent = current.UserAgent
+				if !node.Revoked {
+					leaf = &node
+					break
 				}
-				if newRT.IPAddress == nil {
-					newRT.IPAddress = current.IPAddress
-				}
+				walkID = nodeReplacedBy
+			}
 
-				// Insert new child token to heal session
-				if _, err := tx.Exec(ctx, `
-					INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, expires_at, revoked, revoked_at, family_started_at, user_agent, ip_address, last_used_at, created_at)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-					newRT.ID, newRT.UserID, newRT.FamilyID, newRT.TokenHash, newRT.ExpiresAt, false, nil, newRT.FamilyStartedAt, newRT.UserAgent, newRT.IPAddress, newRT.LastUsedAt, newRT.CreatedAt,
-				); err != nil {
-					return nil, fmt.Errorf("insert grace-window child token: %w", err)
-				}
-
-				// Revoke successor and link replaced_by to new child token
-				if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = $1, replaced_by = $2 WHERE id = $3`, now, newRT.ID, successor.ID); err != nil {
-					return nil, fmt.Errorf("revoke successor in grace window: %w", err)
-				}
-
+			if leaf != nil {
+				// Found the current active leaf. Commit the read-only transaction and signal grace.
 				if r.pool != nil {
 					if err := tx.Commit(ctx); err != nil {
-						return nil, fmt.Errorf("commit grace-window rotate tx: %w", err)
+						return nil, fmt.Errorf("commit grace-window read tx: %w", err)
 					}
 				}
-				return newRT, nil
+				return leaf, domain.ErrGraceWindow
 			}
 		}
 
