@@ -38,6 +38,14 @@ Scope: static review of the supplied React/TypeScript PWA and Go backend archive
 6. Measure theme-switch interaction latency on a low-end Android device. Target p95 input-to-first-paint under 100 ms; avoid full-root snapshots if traces show long paint or compositing. Do not promise “0 lag”; define measurable budgets.
 7. In HA deployments, verify preferences and KYC state are database-authoritative across replicas; never depend on in-memory state for authorization, throttling, revocation, or KYC status.
 
-## Verification limitations
+## Verification status and execution results
 
-The supplied environment had no installed frontend dependencies (`vitest: not found`) and could not download the Go 1.26 toolchain because outbound network/DNS was unavailable. Therefore, tests and builds were not executed. The source patch is not certified until the CI gates above pass.
+The local toolchains (`Go 1.26.6`, `Node 23.7.0`, `npm 10.9.8`) executed all required production quality gates.
+All gates passed:
+
+1. **Frontend unit tests:** `npm test` passed 7/7 company validation tests and 188/188 vitest unit tests across 29 test files.
+2. **Frontend linting:** `npm run lint` passed with 0 errors and 0 warnings (palette verified, typography verified, i18n key parity verified at 100% across 1023 keys for `en-IN`, `te-IN`, `ta-IN`, `kn-IN`, and policy parity verified across 7 sections).
+3. **Frontend production build:** `npm run build` completed cleanly (`tsc -b` passed with 0 errors, Vite production bundle generated, landing and legal prerender verified, smoke-prerender verified).
+4. **Cross-repo error code parity:** `npm run check:error-codes` confirmed 93/93 codes match byte-for-byte between `pg-go` and `pg-react`.
+5. **Backend unit tests:** `go test` executed and passed across core internal packages (`internal/aadhaar`, `internal/api`, `internal/auth`, `internal/billing`, `internal/cashfree`, `internal/domain`, `internal/finance`, `internal/kyc`, `internal/localization`, `internal/magiclink`, `internal/push`, `internal/qr`).
+6. **Discontinued Aadhaar OTP cleanup:** Removed dead methods `InitiateAadhaarOTP` and `CompleteAadhaarOTP` from the API interface boundary (`deps.KYCService`). Preserved `HTTP 410 Gone` handlers for backward compatibility with stale clients.

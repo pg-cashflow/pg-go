@@ -22,14 +22,6 @@ type mockKYCServiceWithUpstreamError struct {
 	upstreamErr error
 }
 
-func (m *mockKYCServiceWithUpstreamError) InitiateAadhaarOTP(ctx context.Context, tenantID uuid.UUID, aadhaarNumber, actor string) (string, error) {
-	return "", m.upstreamErr
-}
-
-func (m *mockKYCServiceWithUpstreamError) CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error) {
-	return nil, m.upstreamErr
-}
-
 func (m *mockKYCServiceWithUpstreamError) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, qrPayload, actor string) (*domain.KYCVerification, error) {
 	return nil, m.upstreamErr
 }

@@ -33,7 +33,6 @@ type fakeKYCSvc struct {
 	clearDupFn           func(ctx context.Context, verificationID uuid.UUID, actor, reason string) error
 	uploadFn             func(ctx context.Context, tenantID uuid.UUID, fileReader io.Reader, filename, contentType, actor string) (*domain.KYCVerification, error)
 	photoFn              func(ctx context.Context, tenantID uuid.UUID) ([]byte, error)
-	completeAadhaarOTPFn func(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error)
 	approveFn            func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, actor string) (*domain.KYCVerification, error)
 	rejectFn             func(ctx context.Context, verificationID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.KYCVerification, error)
 	processDigiLockerFn  func(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error)
@@ -104,22 +103,6 @@ func (f *fakeKYCSvc) ClearDuplicateFlag(ctx context.Context, verificationID uuid
 		return f.clearDupFn(ctx, verificationID, actor, reason)
 	}
 	return nil
-}
-func (f *fakeKYCSvc) InitiateAadhaarOTP(ctx context.Context, tenantID uuid.UUID, aadhaarNumber, actor string) (string, error) {
-	return "test_aadhaar_ref_123", nil
-}
-func (f *fakeKYCSvc) CompleteAadhaarOTP(ctx context.Context, tenantID uuid.UUID, refID, otp, actor string) (*domain.KYCVerification, error) {
-	if f.completeAadhaarOTPFn != nil {
-		return f.completeAadhaarOTPFn(ctx, tenantID, refID, otp, actor)
-	}
-	now := time.Now()
-	return &domain.KYCVerification{
-		ID:         uuid.New(),
-		TenantID:   tenantID,
-		Status:     domain.KYCStatusVerified,
-		Method:     domain.KYCMethodAadhaarOTP,
-		VerifiedAt: &now,
-	}, nil
 }
 func (f *fakeKYCSvc) ListPendingReviews(ctx context.Context, propertyID uuid.UUID) ([]domain.KYCVerification, error) {
 	return nil, nil

@@ -101,6 +101,8 @@ func (c *Client) UploadDocument(ctx context.Context, fileReader io.Reader, filen
 
 	var cfDocType string
 	switch strings.ToUpper(strings.TrimSpace(documentType)) {
+	case "AADHAAR":
+		cfDocType = "AADHAAR"
 	case "PAN":
 		cfDocType = "PAN"
 	case "PASSPORT", "PASSPORT_FRONT":
