@@ -396,6 +396,7 @@ func TestLiveKYCRepo_ConcurrentCompleteAndSupersede(t *testing.T) {
 			//   - Goroutine 1 acquired the lock first and completed vA: InitiateVerificationTx returns ErrAlreadyVerified.
 			// In neither case should vA be superseded or expired.
 			t.Logf("iteration %d: completeErr=%v, supersedeErr=%v", i, completeErr, supersedeErr)
+			_ = supersedeResult
 
 			if completeErr != nil {
 				t.Fatalf("iteration %d: unexpected completeErr: %v", i, completeErr)

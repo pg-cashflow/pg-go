@@ -28,6 +28,8 @@ type KYCReconcilerStore interface {
 		docType domain.DocumentType,
 		actor string,
 	) error
+	TryAcquireInFlightLock(ctx context.Context, tenantID uuid.UUID, ttl time.Duration) (bool, error)
+	ReleaseInFlightLock(ctx context.Context, tenantID uuid.UUID) error
 }
 
 // KYCReconciler handles durable background reconciliation of request_unknown verifications.
@@ -47,6 +49,9 @@ func NewKYCReconciler(repo KYCReconcilerStore, cashfree CashfreeKYCClient, proce
 		nowFn:     time.Now,
 	}
 }
+
+// ErrInFlightLockContention indicates a verification is currently leased by another worker or active tenant session.
+var ErrInFlightLockContention = errors.New("kyc reconciler: verification locked by active lease")
 
 // Start runs the reconciler periodically in the background until the context is canceled.
 func (r *KYCReconciler) Start(ctx context.Context, interval time.Duration) {
@@ -84,6 +89,9 @@ func (r *KYCReconciler) ReconcileBatch(ctx context.Context, limit int) (int, err
 			continue
 		}
 		if err := r.reconcileSingle(ctx, v); err != nil {
+			if errors.Is(err, ErrInFlightLockContention) {
+				continue
+			}
 			slog.WarnContext(ctx, "kyc reconciler: failed to reconcile verification",
 				"verification_id", v.ID,
 				"method", v.Method,
@@ -100,6 +108,20 @@ func (r *KYCReconciler) ReconcileBatch(ctx context.Context, limit int) (int, err
 func (r *KYCReconciler) reconcileSingle(ctx context.Context, v *domain.KYCVerification) error {
 	now := r.nowFn().UTC()
 	const actor = "kyc:reconciler"
+
+	if r.repo != nil {
+		locked, err := r.repo.TryAcquireInFlightLock(ctx, v.TenantID, 5*time.Minute)
+		if err != nil {
+			return fmt.Errorf("kyc reconciler: lock tenant: %w", err)
+		}
+		if !locked {
+			slog.InfoContext(ctx, "kyc reconciler: skipping verification with active in-flight lease", "tenant_id", v.TenantID, "verification_id", v.ID)
+			return ErrInFlightLockContention
+		}
+		defer func() {
+			_ = r.repo.ReleaseInFlightLock(ctx, v.TenantID)
+		}()
+	}
 
 	switch v.Method {
 	case domain.KYCMethodDigiLocker:

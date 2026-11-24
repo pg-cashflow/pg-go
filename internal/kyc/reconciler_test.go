@@ -16,6 +16,7 @@ type mockReconcilerStore struct {
 	expiredVerifications map[uuid.UUID]string
 	failedVerifications  map[uuid.UUID]string
 	manualReviews        map[uuid.UUID]string
+	lockHeld             bool
 }
 
 func newMockReconcilerStore() *mockReconcilerStore {
@@ -51,6 +52,17 @@ func (m *mockReconcilerStore) UpdateVerificationPendingManualReviewTx(
 	_ string,
 ) error {
 	m.manualReviews[verificationID] = ocrToStore
+	return nil
+}
+
+func (m *mockReconcilerStore) TryAcquireInFlightLock(_ context.Context, _ uuid.UUID, _ time.Duration) (bool, error) {
+	if m.lockHeld {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (m *mockReconcilerStore) ReleaseInFlightLock(_ context.Context, _ uuid.UUID) error {
 	return nil
 }
 
@@ -231,5 +243,38 @@ func TestKYCReconciler_DocumentUpload_EscalatesToManualReviewAfter2Hours(t *test
 	}
 	if _, ok := store.manualReviews[verifIDRecent]; ok {
 		t.Errorf("recent OCR request should NOT be escalated to manual review yet")
+	}
+}
+
+func TestKYCReconciler_InFlightLock_SkipsConcurrentProcessing(t *testing.T) {
+	verifID := uuid.New()
+	tenantID := uuid.New()
+	now := time.Now()
+
+	store := newMockReconcilerStore()
+	store.lockHeld = true // Simulate another replica or tenant request holding the in-flight lock
+	store.items = []*domain.KYCVerification{
+		{
+			ID:        verifID,
+			TenantID:  tenantID,
+			Method:    domain.KYCMethodAadhaarOTP,
+			Status:    domain.KYCStatusRequestUnknown,
+			CreatedAt: now.Add(-30 * time.Minute),
+		},
+	}
+
+	reconciler := NewKYCReconciler(store, nil, nil)
+	reconciler.nowFn = func() time.Time { return now }
+
+	n, err := reconciler.ReconcileBatch(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Item should be skipped safely without modifying state
+	if n != 0 {
+		t.Fatalf("expected 0 items processed due to active lock, got %d", n)
+	}
+	if _, ok := store.expiredVerifications[verifID]; ok {
+		t.Errorf("verification with active in-flight lease must NOT be modified by reconciler")
 	}
 }

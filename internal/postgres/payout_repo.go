@@ -1017,13 +1017,19 @@ func (r *PayoutRepo) RecordBatchRejectionObservation(ctx context.Context, batchI
 // in the batch notes audit trail and platform logs.
 func (r *PayoutRepo) RecordBatchIncident(ctx context.Context, batchID uuid.UUID, incidentType, details string) error {
 	incidentMsg := fmt.Sprintf("RECONCILIATION_INCIDENT [%s]: %s", incidentType, details)
-	_, err := r.db.Exec(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE payout_batches
 		SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || ' | ' || $2 END,
 		    updated_at = NOW()
 		WHERE id = $1`, batchID, incidentMsg,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("payout repo: record batch incident: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
+	}
+	return nil
 }
 
 // SetBatchFailed sets batch status to failed on definitive rejections (e.g. manual operator intervention).

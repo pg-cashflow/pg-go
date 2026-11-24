@@ -13,10 +13,11 @@ func TestValidateRolesConfig_Production(t *testing.T) {
 		IsTableOwner: false,
 	}
 	validApp := RoleInfo{
-		RoleName:     "pgapp_app",
-		IsSuperuser:  false,
-		BypassRLS:    false,
-		IsTableOwner: false,
+		RoleName:         "pgapp_app",
+		IsSuperuser:      false,
+		BypassRLS:        false,
+		IsTableOwner:     false,
+		HasAppRoleMember: true,
 	}
 	maintURL := "postgres://pgapp_maint:secret@localhost:5432/pgapp"
 	appURL := "postgres://pgapp_app:secret@localhost:5432/pgapp"
@@ -77,6 +78,15 @@ func TestValidateRolesConfig_Production(t *testing.T) {
 		err := ValidateRolesConfig(validMaint, badApp, maintURL, appURL, "production")
 		if err == nil || !strings.Contains(err.Error(), "requires 'pgapp_app'") {
 			t.Fatalf("expected app role error, got: %v", err)
+		}
+	})
+
+	t.Run("fails when appPool lacks pgapp_app membership", func(t *testing.T) {
+		badApp := validApp
+		badApp.HasAppRoleMember = false
+		err := ValidateRolesConfig(validMaint, badApp, maintURL, appURL, "production")
+		if err == nil || !strings.Contains(err.Error(), "membership in 'pgapp_app'") {
+			t.Fatalf("expected membership error, got: %v", err)
 		}
 	})
 

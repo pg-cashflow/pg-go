@@ -1240,6 +1240,92 @@ func (r *KYCRepo) SubmitManualReviewTx(
 	return updated, nil
 }
 
+// UpdateVerificationPendingManualReviewTx marks an active verification (specifically request_unknown or pending)
+// as pending_manual_review with provided metadata and audit logging.
+func (r *KYCRepo) UpdateVerificationPendingManualReviewTx(
+	ctx context.Context,
+	verificationID uuid.UUID,
+	maskedUID, identityHash, ocrToStore, documentURL string,
+	encDocBytes []byte,
+	documentContentType string,
+	isDedupable bool,
+	docType domain.DocumentType,
+	actor string,
+) error {
+	now := time.Now().UTC()
+	docTypeVal := string(domain.NormalizeDocumentType(string(docType)))
+	if docTypeVal == "" {
+		docTypeVal = "aadhaar"
+	}
+
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var tenantID uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT tenant_id FROM kyc_verification WHERE id = $1`, verificationID).Scan(&tenantID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lookup verification tenant: %w", err)
+		}
+
+		var exists int
+		err = tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, tenantID).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("kyc: lock tenant: %w", err)
+		}
+
+		var finalEncDocBytes []byte
+		if len(encDocBytes) > 0 {
+			finalEncDocBytes, err = r.encryptBytes(encDocBytes)
+			if err != nil {
+				return fmt.Errorf("kyc: encrypt document bytes: %w", err)
+			}
+		}
+
+		storedOCR := ocrToStore
+		if ocrToStore != "" && (len(r.cryptoKey) == 32 || r.keyRing != nil) && !strings.Contains(ocrToStore, `"ciphertext"`) {
+			encOCR, err := r.encryptBytes([]byte(ocrToStore))
+			if err != nil {
+				return fmt.Errorf("kyc: encrypt ocr data: %w", err)
+			}
+			encJSON, err := json.Marshal(map[string]any{
+				"encrypted":  true,
+				"ciphertext": base64.StdEncoding.EncodeToString(encOCR),
+			})
+			if err != nil {
+				return fmt.Errorf("kyc: marshal encrypted ocr data: %w", err)
+			}
+			storedOCR = string(encJSON)
+		}
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE kyc_verification
+			SET status = 'pending_manual_review',
+				masked_uid = $2,
+				identity_hash = $3,
+				ocr_data = $4::jsonb,
+				document_url = $5,
+				document_bytes = COALESCE($6, document_bytes),
+				document_content_type = CASE WHEN $6 IS NOT NULL THEN $7 ELSE document_content_type END,
+				is_dedupable = $8,
+				document_type = $9,
+				updated_at = $10
+			WHERE id = $1 AND status IN ('pending', 'request_unknown')
+		`, verificationID, maskedUID, identityHash, storedOCR, documentURL, finalEncDocBytes, documentContentType, isDedupable, docTypeVal, now)
+		if err != nil {
+			return fmt.Errorf("kyc: update verification to pending_manual_review: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("kyc: verification %s not found or not in pending/request_unknown", verificationID)
+		}
+
+		if err := r.appendAuditLogTx(ctx, tx, tenantID, actor, "verification_pending_manual_review", fmt.Sprintf("escalated to manual review doc_type=%s", docTypeVal), now); err != nil {
+			return fmt.Errorf("kyc: append manual review audit log: %w", err)
+		}
+		return nil
+	})
+}
+
 // GetKYCDocument fetches the uploaded document binary or fallback attested photo for a verification.
 func (r *KYCRepo) GetKYCDocument(ctx context.Context, id uuid.UUID) ([]byte, string, error) {
 	var docBytes []byte

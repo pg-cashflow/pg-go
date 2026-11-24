@@ -10,19 +10,21 @@ import (
 
 // RoleInfo captures PostgreSQL security attributes for a connected role.
 type RoleInfo struct {
-	RoleName     string
-	IsSuperuser  bool
-	BypassRLS    bool
-	IsTableOwner bool
+	RoleName         string
+	IsSuperuser      bool
+	BypassRLS        bool
+	IsTableOwner     bool
+	HasAppRoleMember bool
 }
 
 // QueryRoleInfo inspects the connection role, superuser status, bypassrls status,
-// and whether the role owns any tables in the public schema.
+// whether the role owns any tables in the public schema, and whether session_user has membership in pgapp_app.
 func QueryRoleInfo(ctx context.Context, pool *pgxpool.Pool) (RoleInfo, error) {
 	var info RoleInfo
 	query := `
 		SELECT r.rolname, r.rolsuper, r.rolbypassrls,
-		       EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user)
+		       EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tableowner = current_user),
+		       COALESCE((SELECT pg_has_role(session_user, 'pgapp_app', 'MEMBER') FROM pg_roles WHERE rolname = 'pgapp_app'), false)
 		FROM pg_roles r
 		WHERE r.rolname = current_user`
 	err := pool.QueryRow(ctx, query).Scan(
@@ -30,6 +32,7 @@ func QueryRoleInfo(ctx context.Context, pool *pgxpool.Pool) (RoleInfo, error) {
 		&info.IsSuperuser,
 		&info.BypassRLS,
 		&info.IsTableOwner,
+		&info.HasAppRoleMember,
 	)
 	if err != nil {
 		return RoleInfo{}, fmt.Errorf("inspect connection role: %w", err)
@@ -85,6 +88,9 @@ func ValidateRolesConfig(maintInfo, appInfo RoleInfo, maintURL, appURL, appEnv s
 		// Application pool checks
 		if appInfo.RoleName != "pgapp_app" {
 			return fmt.Errorf("appPool connected as '%s'; production app pool requires 'pgapp_app'", appInfo.RoleName)
+		}
+		if !appInfo.HasAppRoleMember {
+			return errors.New("appPool role must have membership in 'pgapp_app' (pg_has_role(session_user, 'pgapp_app', 'MEMBER'))")
 		}
 		if appInfo.IsSuperuser {
 			return errors.New("appPool role has superuser privileges")

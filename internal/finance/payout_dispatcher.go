@@ -62,6 +62,19 @@ func (d *PayoutDispatcher) SetAlerter(a PayoutProtectAlerter) {
 	d.alerter = a
 }
 
+// WithRepo returns a copy of PayoutDispatcher configured with an alternative PayoutRepo (e.g. maintenance pool for background jobs).
+func (d *PayoutDispatcher) WithRepo(repo *postgres.PayoutRepo) *PayoutDispatcher {
+	return &PayoutDispatcher{
+		repo:                repo,
+		client:              d.client,
+		fundsourceID:        d.fundsourceID,
+		encryptionKey:       d.encryptionKey,
+		keyRing:             d.keyRing,
+		approvalSigningKeys: d.approvalSigningKeys,
+		alerter:             d.alerter,
+	}
+}
+
 // DispatchBatch processes an outbox-triggered batch transfer against Cashfree Transfers V2.
 func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID) error {
 	if d.client == nil {
@@ -495,7 +508,13 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			"duplicate_ids", duplicateIDs,
 		)
 		if d.repo != nil {
-			_ = d.repo.RecordBatchIncident(ctx, batch.ID, "DUPLICATE_TRANSFER_ID", dupMsg)
+			if recErr := d.repo.RecordBatchIncident(ctx, batch.ID, "DUPLICATE_TRANSFER_ID", dupMsg); recErr != nil {
+				slog.ErrorContext(ctx, "payout batch reconcile: failed to persist duplicate transfer ID incident",
+					"batch_id", batch.ID,
+					"err", recErr,
+				)
+				return fmt.Errorf("payout batch reconcile: persist duplicate transfer ID incident: %w", recErr)
+			}
 		}
 	}
 
@@ -506,7 +525,13 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			"unknown_ids", unknownIDs,
 		)
 		if d.repo != nil {
-			_ = d.repo.RecordBatchIncident(ctx, batch.ID, "UNKNOWN_TRANSFER_ID", unknownMsg)
+			if recErr := d.repo.RecordBatchIncident(ctx, batch.ID, "UNKNOWN_TRANSFER_ID", unknownMsg); recErr != nil {
+				slog.ErrorContext(ctx, "payout batch reconcile: failed to persist unknown transfer ID incident",
+					"batch_id", batch.ID,
+					"err", recErr,
+				)
+				return fmt.Errorf("payout batch reconcile: persist unknown transfer ID incident: %w", recErr)
+			}
 		}
 	}
 

@@ -237,6 +237,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	var kycSvc api.KYCService
 	var kycRepo *postgres.KYCRepo
+	var cfKYCAdapter kycsvc.CashfreeKYCClient
 	if cfg.KYCIdentitySecret != "" {
 		// Decode AES-256-GCM key for Aadhaar document-bytes encryption.
 		// KYC_DOC_CRYPTO_KEY must be exactly 64 hex chars (= 32 bytes).
@@ -277,7 +278,6 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 			}
 			kycRepo.SetKeyRing(kycKeyRing)
 		}
-		var cfKYCAdapter kycsvc.CashfreeKYCClient
 		var kycPubKey *rsa.PublicKey
 		if strings.EqualFold(cfg.CashfreeKYCAuthMode, "signature") && cfg.CashfreeKYCPublicKeyPEM != "" {
 			parsedKey, err := cashfree.ParseRSAPublicKeyOrCertificate([]byte(cfg.CashfreeKYCPublicKeyPEM))
@@ -575,6 +575,12 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		CalendarTokenStore:              calendarTokenRepo,
 	})
 
+	var maintPayoutDispatcher *finance.PayoutDispatcher
+	if payoutDispatcher != nil {
+		maintPayoutRepo := postgres.NewPayoutRepo(maintPool, financeSvc)
+		maintPayoutDispatcher = payoutDispatcher.WithRepo(maintPayoutRepo)
+	}
+
 	bg := backgroundConfig{
 		logger:               logger,
 		maintPool:            maintPool,
@@ -587,7 +593,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		quarantineRepo:       quarantineRepo,
 		orderSettler:         orderSettler,
 		financeSvc:           financeSvc,
-		payoutDispatch:       payoutDispatcher,
+		payoutDispatch:       maintPayoutDispatcher,
 		mail:                 mail,
 		adminEmail:           cfg.AdminEmail,
 		adminPhone:           cfg.AdminPhone,
@@ -597,6 +603,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		referralSvc:          referralSvc,
 		kycRepo:              kycRepo,
 		kycSvc:               kycSvc,
+		cfKYCAdapter:         cfKYCAdapter,
 		featureKYCDigiLocker: cfg.FeatureKYCDigiLocker,
 	}
 
@@ -640,6 +647,7 @@ type backgroundConfig struct {
 	referralSvc          *referral.Service
 	kycRepo              *postgres.KYCRepo
 	kycSvc               kycsvc.KYCCallbackProcessor
+	cfKYCAdapter         kycsvc.CashfreeKYCClient
 	featureKYCDigiLocker bool
 }
 
@@ -720,8 +728,33 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 		bg.logger.Info("kyc: webhook inbox background worker started", "interval", "5s")
 
 		if bg.kycSvc != nil {
-			kycReconciler := kycsvc.NewKYCReconciler(bg.kycRepo, bg.kycSvc.CashfreeClient(), bg.kycSvc)
-			go kycReconciler.Start(ctx, 60*time.Second)
+			kycReconciler := kycsvc.NewKYCReconciler(bg.kycRepo, bg.cfKYCAdapter, bg.kycSvc)
+			go func() {
+				ticker := time.NewTicker(60 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, "kyc_reconciler")
+						if err != nil {
+							bg.logger.Error("kyc reconciler lock failed", "err", err)
+							continue
+						}
+						if !acquired {
+							continue
+						}
+						n, rErr := kycReconciler.ReconcileBatch(ctx, 50)
+						_ = release(ctx)
+						if rErr != nil && !errors.Is(rErr, context.Canceled) {
+							bg.logger.Error("kyc reconciler finished with errors", "reconciled", n, "err", rErr)
+						} else if n > 0 {
+							bg.logger.Info("kyc reconciler reconciled verifications", "count", n)
+						}
+					}
+				}
+			}()
 			bg.logger.Info("kyc: request_unknown reconciler background worker started", "interval", "60s")
 		}
 	}
@@ -795,7 +828,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 	}
 
 	if bg.payoutDispatch != nil {
-		payoutLister := postgres.NewPayoutRepo(bg.maintPool)
+		payoutLister := postgres.NewPayoutRepo(bg.maintPool, bg.financeSvc)
 		bg.logger.Info("payout status poller started", "interval", "5m", "stale_after", "10m")
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
