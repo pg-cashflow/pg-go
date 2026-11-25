@@ -53,6 +53,12 @@ func TestFencedMutations_RejectNilOrCancelledLease(t *testing.T) {
 			if _, err := repo.UpdateBatchStatusFromItemsFenced(context.Background(), tc.lease); !errors.Is(err, domain.ErrStaleDispatchLease) {
 				t.Fatalf("UpdateBatchStatusFromItemsFenced: expected ErrStaleDispatchLease, got %v", err)
 			}
+			if err := repo.RecordBatchIncidentFenced(context.Background(), tc.lease, "UNKNOWN_TRANSFER_ID", "details"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("RecordBatchIncidentFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
+			if err := repo.RecordItemIncidentFenced(context.Background(), tc.lease, itemID, "TRANSFER_ID_MISMATCH", "exp", "got", "details"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("RecordItemIncidentFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
 		})
 	}
 }

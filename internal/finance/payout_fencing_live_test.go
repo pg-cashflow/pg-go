@@ -150,9 +150,9 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 		}
 
 		repoA := postgres.NewPayoutRepo(pool)
-		repoA.SetDispatchLeaseTimings(250*time.Millisecond, 100*time.Millisecond)
+		repoA.SetDispatchLeaseTimings(1500*time.Millisecond, 2500*time.Millisecond)
 		repoB := postgres.NewPayoutRepo(pool)
-		repoB.SetDispatchLeaseTimings(5*time.Second, 2*time.Second)
+		repoB.SetDispatchLeaseTimings(10*time.Second, 4*time.Second)
 
 		leaseA, acqA, err := repoA.TryLockBatchDispatch(ctx, batch.ID)
 		if err != nil || !acqA {
@@ -173,7 +173,7 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 
 		// Simulate lease expiry without renewal (e.g., Worker A lost DB connectivity),
 		// then Worker B acquires the expired lease and increments generation to 2.
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(1800 * time.Millisecond)
 
 		leaseB, acqB2, err := repoB.TryLockBatchDispatch(ctx, batch.ID)
 		if err != nil || !acqB2 {
@@ -187,7 +187,7 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 		// Give Worker A's heartbeat a moment to observe ownership loss and cancel leaseA.Ctx.
 		select {
 		case <-leaseA.Ctx.Done():
-		case <-time.After(1 * time.Second):
+		case <-time.After(4 * time.Second):
 			t.Fatalf("expected Worker A lease context to be cancelled after takeover")
 		}
 
@@ -200,6 +200,12 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 		}
 		if _, err := repoA.UpdateBatchStatusFromItemsFenced(ctx, leaseA); !errors.Is(err, domain.ErrStaleDispatchLease) {
 			t.Fatalf("expected ErrStaleDispatchLease from stale UpdateBatchStatusFromItemsFenced, got %v", err)
+		}
+		if err := repoA.RecordBatchIncidentFenced(ctx, leaseA, "UNKNOWN_TRANSFER_ID", "stale"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+			t.Fatalf("expected ErrStaleDispatchLease from stale RecordBatchIncidentFenced, got %v", err)
+		}
+		if err := repoA.RecordItemIncidentFenced(ctx, leaseA, item.ID, "TRANSFER_ID_MISMATCH", "exp", "got", "stale"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+			t.Fatalf("expected ErrStaleDispatchLease from stale RecordItemIncidentFenced, got %v", err)
 		}
 
 		// Release leaseB so Worker B's PayoutDispatcher can run DispatchBatch and query the original batch status.

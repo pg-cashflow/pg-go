@@ -542,7 +542,7 @@ func (d *PayoutDispatcher) reconcileBatchStatusFenced(
 			"duplicate_ids", duplicateIDs,
 		)
 		if d.repo != nil {
-			if recErr := d.repo.RecordBatchIncident(ctx, batch.ID, "DUPLICATE_TRANSFER_ID", dupMsg); recErr != nil {
+			if recErr := d.recordBatchIncident(ctx, lease, batch.ID, "DUPLICATE_TRANSFER_ID", dupMsg); recErr != nil {
 				slog.ErrorContext(ctx, "payout batch reconcile: failed to persist duplicate transfer ID incident",
 					"batch_id", batch.ID,
 					"err", recErr,
@@ -559,7 +559,7 @@ func (d *PayoutDispatcher) reconcileBatchStatusFenced(
 			"unknown_ids", unknownIDs,
 		)
 		if d.repo != nil {
-			if recErr := d.repo.RecordBatchIncident(ctx, batch.ID, "UNKNOWN_TRANSFER_ID", unknownMsg); recErr != nil {
+			if recErr := d.recordBatchIncident(ctx, lease, batch.ID, "UNKNOWN_TRANSFER_ID", unknownMsg); recErr != nil {
 				slog.ErrorContext(ctx, "payout batch reconcile: failed to persist unknown transfer ID incident",
 					"batch_id", batch.ID,
 					"err", recErr,
@@ -685,7 +685,7 @@ func (d *PayoutDispatcher) reconcileSingleTransferFenced(
 				incidentType = "EMPTY_TRANSFER_ID"
 			}
 			msg := fmt.Sprintf("expected transfer ID %q, got %q (status=%s)", expectedTransferID, st.TransferID, st.Status)
-			if err := d.repo.RecordItemIncident(ctx, batch.ID, it.ID, incidentType, expectedTransferID, st.TransferID, msg); err != nil {
+			if err := d.recordItemIncident(ctx, lease, batch.ID, it.ID, incidentType, expectedTransferID, st.TransferID, msg); err != nil {
 				return fmt.Errorf("payout batch reconcile: persist item incident: %w", err)
 			}
 		}
@@ -805,6 +805,30 @@ func (d *PayoutDispatcher) updateItemStatus(
 		return d.repo.UpdatePayoutItemStatusFenced(ctx, lease, itemID, status, cfTransferID, utr, settledAt, failureReason)
 	}
 	return d.repo.UpdatePayoutItemStatusTx(ctx, nil, itemID, status, cfTransferID, utr, settledAt, failureReason)
+}
+
+func (d *PayoutDispatcher) recordBatchIncident(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
+	batchID uuid.UUID,
+	incidentType, details string,
+) error {
+	if lease != nil {
+		return d.repo.RecordBatchIncidentFenced(ctx, lease, incidentType, details)
+	}
+	return d.repo.RecordBatchIncident(ctx, batchID, incidentType, details)
+}
+
+func (d *PayoutDispatcher) recordItemIncident(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
+	batchID, itemID uuid.UUID,
+	incidentType, expectedTransferID, receivedTransferID, details string,
+) error {
+	if lease != nil {
+		return d.repo.RecordItemIncidentFenced(ctx, lease, itemID, incidentType, expectedTransferID, receivedTransferID, details)
+	}
+	return d.repo.RecordItemIncident(ctx, batchID, itemID, incidentType, expectedTransferID, receivedTransferID, details)
 }
 
 // UnmarshalPayoutBatchPayload extracts batch_id from the ledger outbox payload.

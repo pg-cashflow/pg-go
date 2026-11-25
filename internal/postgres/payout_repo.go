@@ -672,8 +672,8 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		JOIN payout_payees pp ON pp.id = pi.payee_id
 		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending' AND pp.is_verified = TRUE
 		ORDER BY pi.created_at ASC, pi.id ASC
-		FOR UPDATE OF pi SKIP LOCKED
-		LIMIT $2`, propertyID, domain.MaxPayoutBatchItems,
+		LIMIT $2
+		FOR UPDATE OF pi SKIP LOCKED`, propertyID, domain.MaxPayoutBatchItems,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -894,11 +894,7 @@ func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID
 			case <-leaseCtx.Done():
 				return
 			case <-ticker.C:
-				renewTimeout := 5 * time.Second
-				if ttl < renewTimeout {
-					renewTimeout = ttl
-				}
-				renewCtx, renewCancel := context.WithTimeout(context.Background(), renewTimeout)
+				renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				renewed, err := manager.RenewLease(renewCtx, lease, ttl)
 				if err != nil || !renewed {
 					renewCancel()
@@ -1287,46 +1283,64 @@ func (r *PayoutRepo) RecordBatchRejectionObservation(ctx context.Context, batchI
 // RecordBatchIncident records a reconciliation incident (such as duplicate or unknown transfer IDs)
 // in the dedicated payout_reconciliation_incidents table as well as the batch notes audit trail.
 func (r *PayoutRepo) RecordBatchIncident(ctx context.Context, batchID uuid.UUID, incidentType, details string) error {
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.recordBatchIncidentTx(ctx, tx, batchID, incidentType, details)
+	})
+}
+
+// RecordBatchIncidentFenced records a batch-level reconciliation incident only if the worker's
+// dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) RecordBatchIncidentFenced(ctx context.Context, lease *PayoutDispatchLease, incidentType, details string) error {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		return r.recordBatchIncidentTx(ctx, tx, lease.BatchID, incidentType, details)
+	})
+}
+
+func (r *PayoutRepo) recordBatchIncidentTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID, incidentType, details string) error {
 	fpRaw := fmt.Sprintf("%s:%s:%s", batchID, incidentType, details)
 	fp := fmt.Sprintf("%x", sha256.Sum256([]byte(fpRaw)))
 	incidentMsg := fmt.Sprintf("RECONCILIATION_INCIDENT [%s]: %s", incidentType, details)
 
-	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
-		tagInc, err := tx.Exec(ctx, `
-			INSERT INTO payout_reconciliation_incidents (
-				fingerprint, incident_type, batch_id, details,
-				occurrence_count, status, first_seen_at, last_seen_at
-			) VALUES ($1, $2, $3, $4, 1, 'open', NOW(), NOW())
-			ON CONFLICT (fingerprint) DO UPDATE SET
-				occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
-				details = EXCLUDED.details,
-				last_seen_at = EXCLUDED.last_seen_at
-		`, fp, incidentType, batchID, details)
-		if err != nil {
-			return fmt.Errorf("payout repo: insert batch incident: %w", err)
-		}
-		if tagInc.RowsAffected() == 0 {
-			return fmt.Errorf("payout repo: insert batch incident: zero rows affected")
-		}
+	tagInc, err := tx.Exec(ctx, `
+		INSERT INTO payout_reconciliation_incidents (
+			fingerprint, incident_type, batch_id, details,
+			occurrence_count, status, first_seen_at, last_seen_at
+		) VALUES ($1, $2, $3, $4, 1, 'open', NOW(), NOW())
+		ON CONFLICT (fingerprint) DO UPDATE SET
+			occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
+			details = EXCLUDED.details,
+			last_seen_at = EXCLUDED.last_seen_at
+	`, fp, incidentType, batchID, details)
+	if err != nil {
+		return fmt.Errorf("payout repo: insert batch incident: %w", err)
+	}
+	if tagInc.RowsAffected() == 0 {
+		return fmt.Errorf("payout repo: insert batch incident: zero rows affected")
+	}
 
-		tagBatch, err := tx.Exec(ctx, `
-			UPDATE payout_batches
-			SET notes = CASE
-				WHEN notes IS NULL OR notes = '' THEN $2
-				WHEN position($2 in notes) > 0 THEN notes
-				ELSE notes || ' | ' || $2
-			    END,
-			    updated_at = NOW()
-			WHERE id = $1`, batchID, incidentMsg,
-		)
-		if err != nil {
-			return fmt.Errorf("payout repo: record batch incident: %w", err)
-		}
-		if tagBatch.RowsAffected() == 0 {
-			return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
-		}
-		return nil
-	})
+	tagBatch, err := tx.Exec(ctx, `
+		UPDATE payout_batches
+		SET notes = CASE
+			WHEN notes IS NULL OR notes = '' THEN $2
+			WHEN position($2 in notes) > 0 THEN notes
+			ELSE notes || ' | ' || $2
+		    END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, incidentMsg,
+	)
+	if err != nil {
+		return fmt.Errorf("payout repo: record batch incident: %w", err)
+	}
+	if tagBatch.RowsAffected() == 0 {
+		return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
+	}
+	return nil
 }
 
 // RecordItemIncident records a granular item-level reconciliation incident (e.g. mismatched or empty transfer ID)
@@ -1336,47 +1350,75 @@ func (r *PayoutRepo) RecordItemIncident(
 	batchID, itemID uuid.UUID,
 	incidentType, expectedTransferID, receivedTransferID, details string,
 ) error {
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		return r.recordItemIncidentTx(ctx, tx, batchID, itemID, incidentType, expectedTransferID, receivedTransferID, details)
+	})
+}
+
+// RecordItemIncidentFenced records an item-level reconciliation incident only if the worker's
+// dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) RecordItemIncidentFenced(
+	ctx context.Context,
+	lease *PayoutDispatchLease,
+	itemID uuid.UUID,
+	incidentType, expectedTransferID, receivedTransferID, details string,
+) error {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		return r.recordItemIncidentTx(ctx, tx, lease.BatchID, itemID, incidentType, expectedTransferID, receivedTransferID, details)
+	})
+}
+
+func (r *PayoutRepo) recordItemIncidentTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	batchID, itemID uuid.UUID,
+	incidentType, expectedTransferID, receivedTransferID, details string,
+) error {
 	fpRaw := fmt.Sprintf("%s:%s:%s:%s:%s", batchID, itemID, incidentType, expectedTransferID, receivedTransferID)
 	fp := fmt.Sprintf("%x", sha256.Sum256([]byte(fpRaw)))
 	incidentMsg := fmt.Sprintf("RECONCILIATION_ITEM_INCIDENT [%s] item %s: %s", incidentType, itemID, details)
 
-	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
-		tagInc, err := tx.Exec(ctx, `
-			INSERT INTO payout_reconciliation_incidents (
-				fingerprint, incident_type, batch_id, payout_item_id,
-				expected_transfer_id, received_transfer_id, details,
-				occurrence_count, status, first_seen_at, last_seen_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 'open', NOW(), NOW())
-			ON CONFLICT (fingerprint) DO UPDATE SET
-				occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
-				details = EXCLUDED.details,
-				last_seen_at = EXCLUDED.last_seen_at
-		`, fp, incidentType, batchID, itemID, expectedTransferID, receivedTransferID, details)
-		if err != nil {
-			return fmt.Errorf("payout repo: insert item incident: %w", err)
-		}
-		if tagInc.RowsAffected() == 0 {
-			return fmt.Errorf("payout repo: insert item incident: zero rows affected")
-		}
+	tagInc, err := tx.Exec(ctx, `
+		INSERT INTO payout_reconciliation_incidents (
+			fingerprint, incident_type, batch_id, payout_item_id,
+			expected_transfer_id, received_transfer_id, details,
+			occurrence_count, status, first_seen_at, last_seen_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 'open', NOW(), NOW())
+		ON CONFLICT (fingerprint) DO UPDATE SET
+			occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
+			details = EXCLUDED.details,
+			last_seen_at = EXCLUDED.last_seen_at
+	`, fp, incidentType, batchID, itemID, expectedTransferID, receivedTransferID, details)
+	if err != nil {
+		return fmt.Errorf("payout repo: insert item incident: %w", err)
+	}
+	if tagInc.RowsAffected() == 0 {
+		return fmt.Errorf("payout repo: insert item incident: zero rows affected")
+	}
 
-		tagBatch, err := tx.Exec(ctx, `
-			UPDATE payout_batches
-			SET notes = CASE
-				WHEN notes IS NULL OR notes = '' THEN $2
-				WHEN position($2 in notes) > 0 THEN notes
-				ELSE notes || ' | ' || $2
-			    END,
-			    updated_at = NOW()
-			WHERE id = $1`, batchID, incidentMsg,
-		)
-		if err != nil {
-			return fmt.Errorf("payout repo: record item incident: %w", err)
-		}
-		if tagBatch.RowsAffected() == 0 {
-			return fmt.Errorf("payout repo: record item incident: batch %s not found or update blocked by rls", batchID)
-		}
-		return nil
-	})
+	tagBatch, err := tx.Exec(ctx, `
+		UPDATE payout_batches
+		SET notes = CASE
+			WHEN notes IS NULL OR notes = '' THEN $2
+			WHEN position($2 in notes) > 0 THEN notes
+			ELSE notes || ' | ' || $2
+		    END,
+		    updated_at = NOW()
+		WHERE id = $1`, batchID, incidentMsg,
+	)
+	if err != nil {
+		return fmt.Errorf("payout repo: record item incident: %w", err)
+	}
+	if tagBatch.RowsAffected() == 0 {
+		return fmt.Errorf("payout repo: record item incident: batch %s not found or update blocked by rls", batchID)
+	}
+	return nil
 }
 
 // SetBatchFailed sets batch status to failed on definitive rejections (e.g. manual operator intervention).
