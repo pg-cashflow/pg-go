@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -45,6 +46,13 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 	defer pool.Close()
 
 	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	mig130, err := os.ReadFile(filepath.Join("..", "..", "migrations", "130_payout_dispatch_fence_generation.sql"))
+	if err != nil {
+		t.Fatalf("read migration 130: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(mig130)); err != nil {
+		t.Fatalf("apply migration 130: %v", err)
+	}
 
 	propID := uuid.New()
 	inviteCode := fmtInviteCode("FNCE")

@@ -1151,11 +1151,22 @@ func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.U
 	return err
 }
 
+// checkDispatchLeasePrecondition fails fast before acquiring a DB connection if the lease is nil or cancelled.
+func checkDispatchLeasePrecondition(lease *PayoutDispatchLease) error {
+	if lease == nil || lease.Ctx == nil || lease.Lease == nil {
+		return domain.ErrStaleDispatchLease
+	}
+	if err := lease.Ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
+	}
+	return nil
+}
+
 // SetBatchDispatchUnknownFenced sets batch status to dispatch_unknown only if the worker's
 // dispatch lease and monotonic fencing generation remain valid.
 func (r *PayoutRepo) SetBatchDispatchUnknownFenced(ctx context.Context, lease *PayoutDispatchLease, reason string) error {
-	if lease == nil {
-		return domain.ErrStaleDispatchLease
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
 	}
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
@@ -1192,8 +1203,8 @@ func (r *PayoutRepo) UpdatePayoutItemStatusFenced(
 	settledAt *time.Time,
 	failureReason *string,
 ) error {
-	if lease == nil {
-		return domain.ErrStaleDispatchLease
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
 	}
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
@@ -1215,8 +1226,8 @@ func (r *PayoutRepo) ReconcilePayoutItemWithOutboxFenced(
 	settledAt *time.Time,
 	failureReason *string,
 ) error {
-	if lease == nil {
-		return domain.ErrStaleDispatchLease
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
 	}
 	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
 		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
@@ -1240,8 +1251,8 @@ func (r *PayoutRepo) ReconcilePayoutItemWithOutboxFenced(
 // UpdateBatchStatusFromItemsFenced rolls up item statuses onto payout_batches only if the worker's
 // dispatch lease and monotonic fencing generation remain valid.
 func (r *PayoutRepo) UpdateBatchStatusFromItemsFenced(ctx context.Context, lease *PayoutDispatchLease) (*domain.PayoutBatch, error) {
-	if lease == nil {
-		return nil, domain.ErrStaleDispatchLease
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return nil, err
 	}
 	var updated *domain.PayoutBatch
 	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
