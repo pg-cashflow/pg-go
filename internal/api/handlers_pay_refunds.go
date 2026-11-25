@@ -648,7 +648,7 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 	if windowDays <= 0 {
 		windowDays = 120
 	}
-	refundEligible := !time.Now().UTC().Sub(paymentTime).After(time.Duration(windowDays) * 24 * time.Hour)
+	refundEligible := time.Now().UTC().Sub(paymentTime) <= time.Duration(windowDays)*24*time.Hour
 
 	c.JSON(http.StatusOK, gin.H{
 		"payment_id":                 p.ID,
