@@ -236,23 +236,17 @@ func (r *PayoutRepo) ApproveBatchSigned(
 	}
 
 	// 8. Transition batch status to 'approved'
-	var approvedBatch domain.PayoutBatch
-	err = tx.QueryRow(ctx, `
+	approvedBatchPtr, err := scanBatch(tx.QueryRow(ctx, `
 		UPDATE payout_batches
 		SET status = 'approved', approved_by = $2, approved_at = $3, updated_at = $3
 		WHERE id = $1 AND status = 'draft'
 		RETURNING `+batchCols,
 		batchID, approverID, now,
-	).Scan(
-		&approvedBatch.ID, &approvedBatch.PropertyID, &approvedBatch.BatchNumber,
-		&approvedBatch.FormatType, &approvedBatch.Status, &approvedBatch.TotalAmountPaise,
-		&approvedBatch.ItemCount, &approvedBatch.CreatedBy, &approvedBatch.ApprovedBy,
-		&approvedBatch.ApprovedAt, &approvedBatch.FileChecksum, &approvedBatch.Notes,
-		&approvedBatch.CreatedAt, &approvedBatch.UpdatedAt,
-	)
+	))
 	if err != nil {
 		return nil, nil, fmt.Errorf("update batch status to approved: %w", err)
 	}
+	approvedBatch := *approvedBatchPtr
 
 	if ownsTx {
 		if err := tx.Commit(ctx); err != nil {
