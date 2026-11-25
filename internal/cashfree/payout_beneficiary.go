@@ -185,6 +185,23 @@ func ValidateBeneficiaryReady(expectedID string, expectedInst BeneficiaryInstrum
 	return nil
 }
 
+// safeProviderErrorCode retains only a short machine-readable provider code.
+// Provider error bodies can contain account data or request details, so do not
+// surface arbitrary strings in application errors or logs.
+func safeProviderErrorCode(body []byte) string {
+	code := strings.TrimSpace(parseProviderErrorCode(body))
+	if code == "" || len(code) > 64 {
+		return ""
+	}
+	for _, r := range code {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return ""
+		}
+	}
+	return code
+}
+
 // GetBeneficiary retrieves the current provider state; never invent status or bank details.
 // Cashfree Payouts V2 uses GET /beneficiary?beneficiary_id={beneficiary_id}.
 func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string) (*BeneficiaryResponse, error) {
@@ -213,12 +230,18 @@ func (c *PayoutClient) GetBeneficiary(ctx context.Context, beneficiaryID string)
 		return nil, fmt.Errorf("cashfree payout: read beneficiary: %w", err)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// Provider error bodies are not safe log material. Keep only the structured
+		// provider error code so response text cannot leak beneficiary or request data.
+		errCode := safeProviderErrorCode(body)
 		slog.Error("CASHFREE PAYOUT AUTHENTICATION REJECTED - CONFIGURATION ERROR",
 			"status", resp.StatusCode,
 			"path", resp.Request.URL.Path,
-			"body", string(body),
+			"code", errCode,
 		)
-		return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, string(body))
+		if errCode != "" {
+			return nil, fmt.Errorf("%w: HTTP %d: %s", ErrPayoutAuthRejected, resp.StatusCode, errCode)
+		}
+		return nil, fmt.Errorf("%w: HTTP %d", ErrPayoutAuthRejected, resp.StatusCode)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("cashfree payout: get beneficiary HTTP %d", resp.StatusCode)

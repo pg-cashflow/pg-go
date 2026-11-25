@@ -170,19 +170,30 @@ func (h *Handlers) CashfreeWebhook(c *gin.Context) {
 			if refID == "" {
 				refID = strings.TrimSpace(v.RefundID)
 			}
-			if refID != "" {
-				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "REFUND_STATUS", refID, "")
+			if refID != "" && strings.TrimSpace(v.Type) != "" && strings.TrimSpace(v.RefundStatus) != "" {
+				// Match the exact tuple written by handleRefundWebhook. The event type and
+				// status are part of the unique key because one refund can move through
+				// multiple valid states (for example PENDING -> SUCCESS).
+				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(
+					c.Request.Context(), "cashfree", v.Type, refID, v.RefundStatus,
+				)
 				if err == nil && alreadyProcessed {
-					slog.Info("cashfree refund webhook duplicate delivery suppressed by refund_id", "refund_id", refID)
+					slog.Info("cashfree refund webhook duplicate delivery suppressed by provider refund event", "refund_id", refID, "event", v.Type, "status", v.RefundStatus)
 					c.Status(http.StatusOK)
 					return
 				}
 			}
 		case cashfree.DisputeWebhook:
-			if strings.TrimSpace(v.DisputeID) != "" {
-				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(c.Request.Context(), "cashfree", "DISPUTE_STATUS", strings.TrimSpace(v.DisputeID), "")
+			disputeID := strings.TrimSpace(v.DisputeID)
+			disputeStatus := strings.TrimSpace(v.DisputeStatus)
+			if disputeID != "" {
+				// The handler records this exact tuple. Include status because a dispute can
+				// move through multiple states; an empty status would never match it.
+				alreadyProcessed, err := h.GatewayPaymentRepo.HasProcessedEvent(
+					c.Request.Context(), "cashfree", "DISPUTE_STATUS", disputeID, disputeStatus,
+				)
 				if err == nil && alreadyProcessed {
-					slog.Info("cashfree dispute webhook duplicate delivery suppressed by dispute_id", "dispute_id", v.DisputeID)
+					slog.Info("cashfree dispute webhook duplicate delivery suppressed by dispute event", "dispute_id", disputeID, "status", disputeStatus)
 					c.Status(http.StatusOK)
 					return
 				}
@@ -721,62 +732,131 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWebhook, evtRecord *domain.WebhookEvent, idempotencyHeader string) {
 	ctx := c.Request.Context()
+	disputeID := strings.TrimSpace(disp.DisputeID)
+	disputeStatus := strings.TrimSpace(disp.DisputeStatus)
+	if disputeID == "" {
+		msg := "dispute webhook is missing dispute_id; natural idempotency cannot be enforced"
+		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "dead_letter", &msg)
+		}
+		slog.Error("cashfree dispute webhook dead-letter", "reason", msg, "order_id", disp.OrderID)
+		c.Status(http.StatusOK)
+		return
+	}
+
+	// Resolve the tenant/property context before recording the event. The durable
+	// outbox insert and event identity are committed together when the pool exists.
+	var propID uuid.UUID
+	var tenantID *uuid.UUID
+	if h.IntentStore != nil && strings.TrimSpace(disp.OrderID) != "" {
+		intent, err := h.IntentStore.GetByOrderID(ctx, disp.OrderID)
+		if err == nil && intent != nil && h.DueStore != nil {
+			if due, dueErr := h.DueStore.GetByID(ctx, intent.DueID); dueErr == nil && due != nil {
+				propID = due.PropertyID
+				tenantID = &due.TenantID
+			}
+		}
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"order_id":             disp.OrderID,
+		"dispute_id":           disputeID,
+		"dispute_type":         disp.DisputeType,
+		"dispute_status":       disputeStatus,
+		"dispute_amount_paise": disp.DisputeAmount,
+		"respond_by":           disp.RespondBy,
+		"reason_description":   disp.ReasonDescription,
+	})
+
+	firstSeen := false
+	if h.Pool != nil {
+		err := postgres.WithinTx(ctx, h.Pool, func(tx pgx.Tx) error {
+			var recordErr error
+			firstSeen, recordErr = postgres.NewPaymentRepo(tx).RecordProcessedEvent(
+				ctx, "cashfree", "DISPUTE_STATUS", disputeID, disputeStatus,
+			)
+			if recordErr != nil || !firstSeen || propID == uuid.Nil {
+				return recordErr
+			}
+			return postgres.NewOutboxRepo(tx).InsertOutboxEventTx(ctx, tx, &domain.OutboxEvent{
+				EventType:  string(domain.EvtPaymentDisputed),
+				PropertyID: propID,
+				TenantID:   tenantID,
+				ActorRole:  string(domain.RoleOwner),
+				Payload:    payload,
+			})
+		})
+		if err != nil {
+			slog.Error("cashfree dispute webhook idempotency/outbox transaction failed", "dispute_id", disputeID, "status", disputeStatus, "err", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dispute event persistence temporarily unavailable"})
+			return
+		}
+	} else {
+		// This fallback is for isolated handler tests and non-production wiring.
+		// Production bootstrap supplies Pool so the idempotency key and outbox are atomic.
+		if h.GatewayPaymentRepo == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dispute event repository unavailable"})
+			return
+		}
+		var err error
+		firstSeen, err = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "DISPUTE_STATUS", disputeID, disputeStatus)
+		if err != nil {
+			slog.Error("cashfree dispute webhook idempotency record failed", "dispute_id", disputeID, "err", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dispute event persistence temporarily unavailable"})
+			return
+		}
+		if firstSeen && propID != uuid.Nil && h.OutboxEvents != nil {
+			if err := h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+				EventType:  string(domain.EvtPaymentDisputed),
+				PropertyID: propID,
+				TenantID:   tenantID,
+				ActorRole:  string(domain.RoleOwner),
+				Payload:    payload,
+			}); err != nil {
+				slog.Error("cashfree dispute webhook outbox insert failed", "dispute_id", disputeID, "err", err)
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dispute notification persistence temporarily unavailable"})
+				return
+			}
+		}
+	}
+
+	if !firstSeen {
+		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+			_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "duplicate", nil)
+		}
+		slog.Info("cashfree dispute webhook duplicate delivery suppressed", "dispute_id", disputeID, "status", disputeStatus)
+		c.Status(http.StatusOK)
+		return
+	}
+
 	slog.Default().Error("CASHFREE PAYMENT DISPUTE RECEIVED: OPERATOR ACTION REQUIRED",
-		"dispute_id", disp.DisputeID,
+		"dispute_id", disputeID,
 		"order_id", disp.OrderID,
 		"cf_payment_id", disp.CFPaymentID,
 		"dispute_type", disp.DisputeType,
-		"dispute_status", disp.DisputeStatus,
+		"dispute_status", disputeStatus,
 		"dispute_amount_paise", disp.DisputeAmount,
 		"respond_by", disp.RespondBy,
 		"reason_code", disp.ReasonCode,
 		"reason_description", disp.ReasonDescription,
 	)
 
-	statusMsg := fmt.Sprintf("dispute_id=%s type=%s status=%s respond_by=%s", disp.DisputeID, disp.DisputeType, disp.DisputeStatus, disp.RespondBy)
+	statusMsg := fmt.Sprintf("dispute_id=%s type=%s status=%s respond_by=%s", disputeID, disp.DisputeType, disputeStatus, disp.RespondBy)
 	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
 		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "dispute_action_required", &statusMsg)
 	}
 
-	if h.IntentStore != nil && disp.OrderID != "" {
-		intent, err := h.IntentStore.GetByOrderID(ctx, disp.OrderID)
-		if err == nil && intent != nil {
-			var propID uuid.UUID
-			var tenantID *uuid.UUID
-			if h.DueStore != nil {
-				if d, err := h.DueStore.GetByID(ctx, intent.DueID); err == nil && d != nil {
-					propID = d.PropertyID
-					tenantID = &d.TenantID
-				}
-			}
-
-			payload, _ := json.Marshal(map[string]any{
-				"order_id":             disp.OrderID,
-				"dispute_id":           disp.DisputeID,
-				"dispute_type":         disp.DisputeType,
-				"dispute_status":       disp.DisputeStatus,
-				"dispute_amount_paise": disp.DisputeAmount,
-				"respond_by":           disp.RespondBy,
-				"reason_description":   disp.ReasonDescription,
-			})
-			if h.Events != nil {
-				_ = h.Events.Publish(ctx, domain.Event{
-					PropertyID: propID,
-					TenantID:   tenantID,
-					EventType:  domain.EvtPaymentDisputed,
-					OccurredAt: time.Now().UTC(),
-					Payload:    payload,
-				})
-			}
-			if h.OutboxEvents != nil {
-				_ = h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
-					EventType:  string(domain.EvtPaymentDisputed),
-					PropertyID: propID,
-					TenantID:   tenantID,
-					ActorRole:  string(domain.RoleOwner),
-					Payload:    payload,
-				})
-			}
+	// Publish the operational event after the durable outbox transaction commits.
+	// The outbox is the retryable delivery path; this event publish is best effort.
+	if propID != uuid.Nil && h.Events != nil {
+		if err := h.Events.Publish(ctx, domain.Event{
+			PropertyID: propID,
+			TenantID:   tenantID,
+			EventType:  domain.EvtPaymentDisputed,
+			OccurredAt: time.Now().UTC(),
+			Payload:    payload,
+		}); err != nil {
+			slog.Warn("cashfree dispute event publish deferred to outbox", "dispute_id", disputeID, "err", err)
 		}
 	}
 
@@ -784,8 +864,7 @@ func (h *Handlers) handleDisputeWebhook(c *gin.Context, disp cashfree.DisputeWeb
 		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 	}
 
-	// Fail-Safe Ledger Invariant: A dispute is a contested claim, NOT an authorized or confirmed refund.
-	// We strictly refrain from mutating double-entry journals or resetting dues to pending automatically.
-	// Returning HTTP 200 OK acknowledges the webhook delivery to prevent gateway retry storms.
+	// A dispute is a contested claim, not an authorized or confirmed refund.
+	// Never mutate the double-entry journal or reset dues to pending automatically.
 	c.Status(http.StatusOK)
 }

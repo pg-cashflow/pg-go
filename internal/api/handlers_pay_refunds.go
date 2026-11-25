@@ -638,12 +638,26 @@ func (h *Handlers) GetPaymentRefundHistory(c *gin.Context) {
 		remainingPaise = 0
 	}
 
+	// Use the server clock and the same timestamp/window rules as the refund
+	// command handler. The browser displays this value; it never decides eligibility.
+	paymentTime := p.CreatedAt
+	if !p.MatchedAt.IsZero() {
+		paymentTime = p.MatchedAt
+	}
+	windowDays := h.RefundWindowDays
+	if windowDays <= 0 {
+		windowDays = 120
+	}
+	refundEligible := !time.Now().UTC().Sub(paymentTime).After(time.Duration(windowDays) * 24 * time.Hour)
+
 	c.JSON(http.StatusOK, gin.H{
 		"payment_id":                 p.ID,
 		"original_amount_paise":      p.Amount,
 		"refunded_amount_paise":      refundedPaise,
 		"reserved_amount_paise":      reservedPaise,
 		"remaining_refundable_paise": remainingPaise,
+		"refund_eligible":            refundEligible,
+		"refund_window_days":         windowDays,
 		"refunds":                    list,
 		"pending_operation":          pendingOp,
 	})

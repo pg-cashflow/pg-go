@@ -47,6 +47,33 @@ func TestCashfreePayoutClientDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestGetBeneficiaryAuthErrorDoesNotExposeProviderBody(t *testing.T) {
+	const privateDetail = "account_number=123456789012; beneficiary_name=Jane Doe; internal_token=secret-value"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/beneficiary" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprintf(w, `{"code":"AUTH_FAILED","message":%q}`, privateDetail)
+	}))
+	defer srv.Close()
+
+	client := NewPayoutClient(PayoutConfig{ClientID: "test_cid", ClientSecret: "test_sec", FundsourceID: "fund_01"})
+	client.SetBaseOverride(srv.URL)
+	_, err := client.GetBeneficiary(context.Background(), "bene_test")
+	if err == nil {
+		t.Fatal("expected authentication rejection")
+	}
+	if !errors.Is(err, ErrPayoutAuthRejected) {
+		t.Fatalf("expected ErrPayoutAuthRejected, got %v", err)
+	}
+	if strings.Contains(err.Error(), privateDetail) || strings.Contains(err.Error(), "secret-value") {
+		t.Fatalf("provider response details leaked through error: %v", err)
+	}
+}
+
 func TestDeriveBeneficiaryID(t *testing.T) {
 	payeeID := uuid.MustParse("12345678-1234-5678-1234-567812345678")
 	hashA := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
@@ -538,6 +565,41 @@ func TestPayoutClient_AuthRejected_401_403(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "ip_validation_failed") {
 				t.Fatalf("expected response body error code in error message, got %v", err)
+			}
+		})
+	}
+}
+
+func TestPayoutClient_GetBeneficiaryAuthErrorDoesNotLeakBody(t *testing.T) {
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("status_%d", code), func(t *testing.T) {
+			const secretMarker = "private-beneficiary-account-123456"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/beneficiary" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte(`{"code":"ip_validation_failed","message":"invalid credentials","account":"` + secretMarker + `"}`))
+			}))
+			defer srv.Close()
+
+			client := NewPayoutClient(PayoutConfig{
+				ClientID: "test_cid", ClientSecret: "test_sec", FundsourceID: "fund_01",
+			})
+			client.SetBaseOverride(srv.URL)
+
+			_, err := client.GetBeneficiary(context.Background(), "beneficiary_1")
+			if err == nil {
+				t.Fatal("expected authentication error")
+			}
+			if !errors.Is(err, ErrPayoutAuthRejected) {
+				t.Fatalf("expected ErrPayoutAuthRejected, got %v", err)
+			}
+			if strings.Contains(err.Error(), secretMarker) || strings.Contains(err.Error(), "invalid credentials") {
+				t.Fatalf("provider response body leaked through error: %v", err)
+			}
+			if !strings.Contains(err.Error(), "ip_validation_failed") {
+				t.Fatalf("expected safe provider error code in error, got %v", err)
 			}
 		})
 	}

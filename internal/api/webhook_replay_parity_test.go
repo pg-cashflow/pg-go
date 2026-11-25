@@ -137,9 +137,21 @@ type retryMockGatewayRepo struct {
 	processed map[string]bool
 }
 
-func (m *retryMockGatewayRepo) HasProcessedEvent(_ context.Context, provider, eventType, providerRefID, _ string) (bool, error) {
-	key := fmt.Sprintf("%s:%s:%s", provider, eventType, providerRefID)
+func (m *retryMockGatewayRepo) HasProcessedEvent(_ context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
+	key := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
 	return m.processed[key], nil
+}
+
+func (m *retryMockGatewayRepo) RecordProcessedEvent(_ context.Context, provider, eventType, providerRefID, eventStatus string) (bool, error) {
+	if m.processed == nil {
+		m.processed = make(map[string]bool)
+	}
+	key := fmt.Sprintf("%s:%s:%s:%s", provider, eventType, providerRefID, eventStatus)
+	if m.processed[key] {
+		return false, nil
+	}
+	m.processed[key] = true
+	return true, nil
 }
 
 // TestWebhookRetry_AlreadyProcessed_Returns200 verifies that authentic webhooks that were already
@@ -153,7 +165,7 @@ func TestWebhookRetry_AlreadyProcessed_Returns200(t *testing.T) {
 
 	repo := &retryMockGatewayRepo{
 		processed: map[string]bool{
-			"cashfree:PAYMENT_SETTLED:998877": true,
+			"cashfree:PAYMENT_SETTLED:998877:": true,
 		},
 	}
 
@@ -228,6 +240,90 @@ func (m *mockParityIntentStore) LatestOpenForDue(context.Context, uuid.UUID) (*d
 // TestWebhookRetry_TimestampDrift_VerifiedByGatewayAPI_Success verifies that when an unhandled webhook
 // arrives with a stale timestamp (>300s, e.g. a Cashfree retry at 10m or 30m), but Cashfree's live REST
 // API confirms the payment is valid and captured, the webhook is accepted and settled.
+
+// TestWebhookRetry_AlreadyProcessedRefund_Returns200 verifies that delayed standard and
+// auto-refund retries match the exact event identity stored by handleRefundWebhook.
+func TestWebhookRetry_AlreadyProcessedRefund_Returns200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-refund-123"
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-600*time.Second).Unix())
+
+	cases := []struct {
+		name      string
+		body      string
+		eventType string
+		refundID  string
+		status    string
+	}{
+		{
+			name:      "standard refund",
+			body:      `{"type":"REFUND_STATUS_WEBHOOK","data":{"refund":{"cf_refund_id":"cf_ref_1","refund_id":"ref_1","order_id":"ord_1","cf_payment_id":123,"refund_status":"SUCCESS","refund_amount":50.00}}}`,
+			eventType: "REFUND_STATUS_WEBHOOK", refundID: "cf_ref_1", status: "SUCCESS",
+		},
+		{
+			name:      "automatic refund",
+			body:      `{"type":"AUTO_REFUND_STATUS_WEBHOOK","data":{"auto_refund":{"cf_refund_id":"cf_ref_2","refund_id":"ref_2","order_id":"ord_2","cf_payment_id":456,"refund_status":"PENDING","refund_amount":25.00}}}`,
+			eventType: "AUTO_REFUND_STATUS_WEBHOOK", refundID: "cf_ref_2", status: "PENDING",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &retryMockGatewayRepo{processed: map[string]bool{
+				fmt.Sprintf("cashfree:%s:%s:%s", tc.eventType, tc.refundID, tc.status): true,
+			}}
+			h := &Handlers{Deps: Deps{
+				CashfreeSecret: secret, WebhookToleranceSec: 300, GatewayPaymentRepo: repo,
+			}}
+			r := gin.New()
+			r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+			req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(tc.body))
+			req.Header.Set("x-webhook-timestamp", oldTS)
+			req.Header.Set("x-webhook-signature", signHMACSHA256(secret, oldTS+tc.body))
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for already-processed %s retry with stale timestamp, got %d", tc.eventType, w.Code)
+			}
+		})
+	}
+}
+
+func TestWebhookRetry_DisputeStatusIdentity_IsRecordedAndDeduplicated(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "whsec-dispute-123"
+	body := `{"type":"DISPUTE_STATUS_UPDATE_WEBHOOK","data":{"dispute":{"dispute_id":"disp_123","dispute_type":"CHARGEBACK","dispute_status":"OPEN","order_id":"ord_disp_123","cf_payment_id":456,"dispute_amount":50.00,"reason_code":"FRAUD","reason_description":"Cardholder dispute"}}}`
+	repo := &retryMockGatewayRepo{processed: map[string]bool{}}
+	h := &Handlers{Deps: Deps{
+		CashfreeSecret: secret, WebhookToleranceSec: 300, GatewayPaymentRepo: repo,
+	}}
+	r := gin.New()
+	r.POST("/webhooks/cashfree", h.CashfreeWebhook)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/cashfree", bytes.NewBufferString(body))
+		req.Header.Set("x-webhook-timestamp", ts)
+		req.Header.Set("x-webhook-signature", signHMACSHA256(secret, ts+body))
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("attempt %d: expected 200, got %d (%s)", attempt, w.Code, w.Body.String())
+		}
+	}
+
+	key := "cashfree:DISPUTE_STATUS:disp_123:OPEN"
+	if !repo.processed[key] {
+		t.Fatalf("expected exact dispute identity %q to be recorded", key)
+	}
+	if len(repo.webhookEvents) != 1 {
+		t.Fatalf("expected the duplicate attempt to be acknowledged before a second audit insert, got %d webhook records", len(repo.webhookEvents))
+	}
+	if repo.lastStatus != "dispute_action_required" {
+		t.Fatalf("expected the first webhook audit record to be marked action-required, got %q", repo.lastStatus)
+	}
+}
+
 func TestWebhookRetry_TimestampDrift_VerifiedByGatewayAPI_Success(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const secret = "whsec-pay-123"

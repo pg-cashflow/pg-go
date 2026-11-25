@@ -53,3 +53,7 @@ func TestLiveSQL_RLSCoverage(t *testing.T) {
 func TestLiveSQL_RLSPropertyScopeRatchet(t *testing.T) {
 	runSQLScriptStrippingMetacommands(t, filepath.Join("scripts", "sql", "rls_property_scope_ratchet.sql"))
 }
+
+func TestLiveSQL_OutboxAppPrivilegeRatchet(t *testing.T) {
+	runSQLScriptStrippingMetacommands(t, filepath.Join("scripts", "sql", "outbox_app_privilege_ratchet.sql"))
+}

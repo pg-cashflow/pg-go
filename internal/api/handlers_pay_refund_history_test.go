@@ -25,16 +25,17 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 	tenantID := uuid.New()
 	ownerID := uuid.New()
 
+	now := time.Now().UTC()
 	basePayment := &domain.Payment{
 		ID:         paymentID,
 		PropertyID: &propID,
 		TenantID:   tenantID,
 		Amount:     5000,
+		CreatedAt:  now.Add(-10 * 24 * time.Hour),
 	}
 
 	refRef1 := "rf_test_history_1"
 	refRef2 := "rf_test_history_2"
-	now := time.Now().UTC()
 
 	refund1 := &domain.GatewayRefund{
 		ID:              uuid.New(),
@@ -76,6 +77,7 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 		Deps: Deps{
 			GatewayPaymentRepo: repo,
 			TenantStore:        tenantStore,
+			RefundWindowDays:   120,
 		},
 	}
 
@@ -114,6 +116,8 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 			RefundedAmountPaise      int64     `json:"refunded_amount_paise"`
 			ReservedAmountPaise      int64     `json:"reserved_amount_paise"`
 			RemainingRefundablePaise int64     `json:"remaining_refundable_paise"`
+			RefundEligible           bool      `json:"refund_eligible"`
+			RefundWindowDays         int       `json:"refund_window_days"`
 			Refunds                  []struct {
 				ID          uuid.UUID `json:"id"`
 				AmountPaise int64     `json:"amount_paise"`
@@ -134,6 +138,8 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 		assert.Equal(t, int64(1500), resp.RefundedAmountPaise)
 		assert.Equal(t, int64(1000), resp.ReservedAmountPaise)
 		assert.Equal(t, int64(2500), resp.RemainingRefundablePaise) // 5000 - (1500 + 1000)
+		assert.True(t, resp.RefundEligible)
+		assert.Equal(t, 120, resp.RefundWindowDays)
 		assert.Len(t, resp.Refunds, 2)
 		require.NotNil(t, resp.PendingOperation)
 		assert.Equal(t, refund2.ID, resp.PendingOperation.ID)
@@ -147,6 +153,27 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 
 		router.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("Refund eligibility is calculated by the server clock", func(t *testing.T) {
+		expiredID := uuid.New()
+		expired := *basePayment
+		expired.ID = expiredID
+		expired.CreatedAt = time.Now().UTC().Add(-121 * 24 * time.Hour)
+		repo.payments[expiredID] = &expired
+
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/payments/"+expiredID.String()+"/refunds", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp struct {
+			RefundEligible   bool `json:"refund_eligible"`
+			RefundWindowDays int  `json:"refund_window_days"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.False(t, resp.RefundEligible)
+		assert.Equal(t, 120, resp.RefundWindowDays)
 	})
 
 	t.Run("Non-existent payment returns 404", func(t *testing.T) {

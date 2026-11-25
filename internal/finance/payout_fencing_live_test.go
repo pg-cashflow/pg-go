@@ -45,7 +45,9 @@ func TestLivePayoutFencing_And_500ItemCap(t *testing.T) {
 	}
 	defer pool.Close()
 
-	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+	if err := postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply project migrations: %v", err)
+	}
 	mig130, err := os.ReadFile(filepath.Join("..", "..", "migrations", "130_payout_dispatch_fence_generation.sql"))
 	if err != nil {
 		t.Fatalf("read migration 130: %v", err)
