@@ -29,6 +29,7 @@ func validConfig() *Config {
 		AdminEmail:            "admin@example.com",
 		FrontendURL:           "https://pg.example.com",
 		AppEnv:                "development",
+		FinanceEnabled:        true,
 	}
 }
 

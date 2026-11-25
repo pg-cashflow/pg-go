@@ -59,6 +59,7 @@ type routeClass struct {
 
 var exactPublicPaths = map[string]bool{
 	"/healthz":                       true,
+	"/healthz/workers":               true,
 	"/metrics":                       true,
 	"/p/:token":                      true,
 	"/p/:token/push/subscribe":       true,
@@ -67,6 +68,7 @@ var exactPublicPaths = map[string]bool{
 	"/webhooks/cashfree/payouts":     true,
 	"/webhooks/cashfree/settlements": true,
 	"/api/healthz":                   true,
+	"/api/healthz/workers":           true,
 	"/api/metrics":                   true,
 	"/api/push/vapid-public-key":     true,
 	"/api/join/invite/:code":         true,

@@ -1,6 +1,7 @@
 package cashfree
 
 import (
+	"math"
 	"testing"
 )
 
@@ -22,11 +23,21 @@ func TestParseRupeesToPaise(t *testing.T) {
 		{"0.00", 0, false},
 		{" 1234.56 ", 123456, false},
 		{"-50.25", -5025, false},
+		{"-0.50", -50, false},
+		{"92233720368547758.07", math.MaxInt64, false},
+		{"-92233720368547758.08", math.MinInt64, false},
 		// Invalid cases
 		{"", 0, true},
+		{".", 0, true},
+		{"-.", 0, true},
 		{"abc", 0, true},
+		{"12.+3", 0, true},
+		{"12.-3", 0, true},
 		{"12.345", 0, true}, // More than 2 decimal places
 		{"12.3.4", 0, true},
+		{"92233720368547758.08", 0, true},  // MaxInt64 + 1 overflow
+		{"-92233720368547758.09", 0, true}, // MinInt64 - 1 underflow
+		{"999999999999999999.00", 0, true},
 	}
 
 	for _, tt := range tests {
@@ -53,6 +64,9 @@ func TestFormatPaiseToRupees(t *testing.T) {
 		{5, "0.05"},
 		{0, "0.00"},
 		{-5025, "-50.25"},
+		{-50, "-0.50"},
+		{math.MaxInt64, "92233720368547758.07"},
+		{math.MinInt64, "-92233720368547758.08"},
 	}
 
 	for _, tt := range tests {

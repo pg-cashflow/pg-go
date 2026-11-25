@@ -237,6 +237,12 @@ func (c *Config) ValidateForRealDeployment() error {
 		}
 	}
 
+	cashfreePGConfigured := strings.TrimSpace(c.CashfreePGAppID) != "" || strings.TrimSpace(c.CashfreeAppID) != "" ||
+		strings.TrimSpace(c.CashfreePGSecretKey) != "" || strings.TrimSpace(c.CashfreeSecretKey) != ""
+	if cashfreePGConfigured && !c.FinanceEnabled {
+		errs = append(errs, "FINANCE_ENABLED=false cannot be combined with Cashfree PG credentials (refund dispatch and ledger workers would not start)")
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("startup validation failed:\n  - %s", strings.Join(errs, "\n  - "))
 	}

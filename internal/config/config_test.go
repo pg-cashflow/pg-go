@@ -47,8 +47,8 @@ func TestLoadRequiresSecrets(t *testing.T) {
 	if cfg.KYCIdentitySecret != "" {
 		t.Fatalf("expected empty KYCIdentitySecret when unset, got %q", cfg.KYCIdentitySecret)
 	}
-	if cfg.FeatureKYCDigiLocker {
-		t.Fatal("expected DigiLocker to be disabled by default")
+	if !cfg.FeatureKYCDigiLocker {
+		t.Fatal("expected DigiLocker to be enabled by default")
 	}
 
 	// When set, it should be loaded faithfully

@@ -10,6 +10,7 @@ import (
 func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFunc) {
 	api := r.Group("/api")
 	api.GET("/healthz", health)
+	api.GET("/healthz/workers", workerHealthHandler(d.WorkerHealth))
 	api.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)
 	api.GET("/push/vapid-public-key", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"public_key": d.VAPIDPublicKey})

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -498,6 +499,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}
 
 	refundApprovalRepo := postgres.NewRefundApprovalRepo(appPool)
+	workerHealth := newWorkerHealthRegistry()
 
 	router := api.NewRouter(api.Deps{
 		JWTSecret:                       cfg.JWTSecret,
@@ -583,6 +585,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		SettlementBalancer:              settlementBalancer,
 		LedgerOutboxRepo:                ledgerOutboxRepo,
 		MetricsSecret:                   cfg.MetricsSecret,
+		WorkerHealth:                    workerHealth,
 		CapabilityStore:                 postgres.NewCapabilityRepo(maintPool),
 		CalendarTokenStore:              calendarTokenRepo,
 	})
@@ -617,6 +620,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		kycSvc:               maintKYCSvc,
 		cfKYCAdapter:         cfKYCAdapter,
 		featureKYCDigiLocker: cfg.FeatureKYCDigiLocker,
+		workerHealth:         workerHealth,
 	}
 
 	cleanup := func() {
@@ -661,6 +665,7 @@ type backgroundConfig struct {
 	kycSvc               kycsvc.KYCCallbackProcessor
 	cfKYCAdapter         kycsvc.CashfreeKYCClient
 	featureKYCDigiLocker bool
+	workerHealth         *workerHealthRegistry
 }
 
 func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
@@ -781,29 +786,36 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 			Log:     bg.logger,
 		}
 		runQuarantine := func() {
-			release, acquired, err := jobs.AcquireJobLock(ctx, bg.maintPool, jobs.PaymentIntentQuarantineLockName)
+			runCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
+			defer cancel()
+
+			release, acquired, err := jobs.AcquireJobLock(runCtx, bg.maintPool, jobs.PaymentIntentQuarantineLockName)
 			if err != nil {
 				bg.logger.Error("payment intent quarantine lock failed", "err", err)
+				bg.workerHealth.Record("payment_intent_quarantine", err)
 				return
 			}
 			if !acquired {
 				return
 			}
-			// The distributed lease lasts 10 minutes. A five-order batch bounds
-			// worst-case Cashfree HTTP time below the lease without renewal.
+			// The distributed lease lasts 10 minutes. A five-order batch and a
+			// 6-minute run deadline bound worst-case Cashfree HTTP time below
+			// the lease without renewal.
 			defer func() {
-				releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
+				releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer releaseCancel()
 				if releaseErr := release(releaseCtx); releaseErr != nil {
 					bg.logger.Warn("payment intent quarantine lease release failed", "err", releaseErr)
 				}
 			}()
-			if err := worker.Run(ctx, 5); err != nil && !errors.Is(err, context.Canceled) {
-				bg.logger.Error("payment intent quarantine worker completed with errors", "err", err)
+			runErr := worker.Run(runCtx, 5)
+			bg.workerHealth.Record("payment_intent_quarantine", runErr)
+			if runErr != nil && !errors.Is(runErr, context.Canceled) {
+				bg.logger.Error("payment intent quarantine worker completed with errors", "err", runErr)
 			}
 		}
-		runQuarantine()
 		go func() {
+			runQuarantine()
 			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -956,4 +968,49 @@ func (a *kycDeadLetterEmailAlerter) NotifyKYCDeadLetter(ctx context.Context, ite
 		item.Attempts, item.ID, item.Provider, failureErr,
 	)
 	return a.mail.Send(ctx, a.adminEmail, subject, body)
+}
+
+type workerHealthRegistry struct {
+	mu      sync.RWMutex
+	workers map[string]api.WorkerStatus
+}
+
+func newWorkerHealthRegistry() *workerHealthRegistry {
+	return &workerHealthRegistry{
+		workers: make(map[string]api.WorkerStatus),
+	}
+}
+
+func (r *workerHealthRegistry) Record(name string, err error) {
+	if r == nil {
+		return
+	}
+	now := time.Now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prev := r.workers[name]
+	st := api.WorkerStatus{
+		Healthy:       err == nil || errors.Is(err, context.Canceled),
+		LastRunAt:     &now,
+		LastSuccessAt: prev.LastSuccessAt,
+	}
+	if st.Healthy {
+		st.LastSuccessAt = &now
+	} else {
+		st.LastError = err.Error()
+	}
+	r.workers[name] = st
+}
+
+func (r *workerHealthRegistry) Snapshot() map[string]api.WorkerStatus {
+	if r == nil {
+		return map[string]api.WorkerStatus{}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]api.WorkerStatus, len(r.workers))
+	for k, v := range r.workers {
+		out[k] = v
+	}
+	return out
 }

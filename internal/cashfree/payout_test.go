@@ -604,3 +604,80 @@ func TestPayout_Malformed2xxFailClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestGetTransferStatus_Contract(t *testing.T) {
+	cfg := PayoutConfig{
+		ClientID:     "test_cid",
+		ClientSecret: "test_sec",
+		FundsourceID: "fund_01",
+	}
+
+	t.Run("exact method, path, query parameter, and response decoding", func(t *testing.T) {
+		const targetTransferID = "tr_123/abc?x=1"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				t.Fatalf("expected GET method, got %s", r.Method)
+			}
+			if r.URL.Path != "/transfers" {
+				t.Fatalf("expected path /transfers, got %s", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("transfer_id"); got != targetTransferID {
+				t.Fatalf("expected transfer_id=%q, got %q (raw query: %s)", targetTransferID, got, r.URL.RawQuery)
+			}
+			if r.Header.Get("x-client-id") != "test_cid" || r.Header.Get("x-api-version") != "2024-01-01" {
+				http.Error(w, "bad auth headers", http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{
+				"transfer_id": %q,
+				"cf_transfer_id": "cf_tr_999",
+				"status": "SUCCESS",
+				"status_code": "COMPLETED",
+				"status_description": "Transfer completed",
+				"transfer_amount": 12345.67,
+				"transfer_utr": "UTR987654321",
+				"acknowledged_at": "2026-11-25T10:00:00Z"
+			}`, targetTransferID)
+		}))
+		defer srv.Close()
+
+		client := NewPayoutClient(cfg)
+		client.SetBaseOverride(srv.URL)
+
+		item, err := client.GetTransferStatus(context.Background(), targetTransferID)
+		if err != nil {
+			t.Fatalf("GetTransferStatus returned error: %v", err)
+		}
+		if item.TransferID != targetTransferID {
+			t.Fatalf("expected transfer_id %q, got %q", targetTransferID, item.TransferID)
+		}
+		if item.CFTransferID != "cf_tr_999" {
+			t.Fatalf("expected cf_transfer_id cf_tr_999, got %q", item.CFTransferID)
+		}
+		if item.Status != "SUCCESS" || item.StatusCode != "COMPLETED" {
+			t.Fatalf("unexpected status: %s / %s", item.Status, item.StatusCode)
+		}
+		if item.UTR == nil || *item.UTR != "UTR987654321" {
+			t.Fatalf("expected UTR UTR987654321, got %v", item.UTR)
+		}
+		paise, err := item.AmountPaise()
+		if err != nil {
+			t.Fatalf("AmountPaise returned error: %v", err)
+		}
+		if paise != 1234567 {
+			t.Fatalf("expected 1234567 paise, got %d", paise)
+		}
+	})
+
+	t.Run("AmountPaise uses exact decimal arithmetic without float drift", func(t *testing.T) {
+		item := TransferStatusItem{TransferAmount: json.Number("90071992547409.93")}
+		paise, err := item.AmountPaise()
+		if err != nil {
+			t.Fatalf("AmountPaise failed: %v", err)
+		}
+		if paise != 9007199254740993 {
+			t.Fatalf("expected exact 9007199254740993, got %d", paise)
+		}
+	})
+}

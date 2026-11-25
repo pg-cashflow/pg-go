@@ -1161,8 +1161,128 @@ func (r *PayoutRepo) UpdatePayoutItemStatusTx(
 	return err
 }
 
-// ReconcilePayoutItemWithOutbox atomically transitions a payout item status and, if transitioning
-// to succeeded or reversed, enqueues the double-entry financial ledger outbox event.
+// ReconcilePayoutItemTx locks the payout item row, evaluates the monotonic transition table,
+// updates the item and batch rollup only when accepted, and inserts any required ledger outbox
+// events in the exact same transaction. Rejected transitions record a batch incident for
+// reconciliation and emit zero ledger outbox events.
+func (r *PayoutRepo) ReconcilePayoutItemTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	params domain.PayoutReconcileParams,
+) (*domain.PayoutReconcileResult, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("reconcile payout item tx: transaction is required")
+	}
+
+	var priorStatus domain.PayoutItemStatus
+	var batchID *uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT status, batch_id FROM payout_items WHERE id = $1 FOR UPDATE`, params.ItemID).Scan(&priorStatus, &batchID); err != nil {
+		return nil, fmt.Errorf("lock payout item %s: %w", params.ItemID, err)
+	}
+
+	decision := domain.EvaluatePayoutTransition(priorStatus, params.TargetStatus)
+	res := &domain.PayoutReconcileResult{
+		PriorStatus: priorStatus,
+		NewStatus:   priorStatus,
+		NoOp:        decision.NoOp,
+		Conflict:    decision.Conflict,
+	}
+
+	if decision.NoOp {
+		return res, nil
+	}
+
+	if decision.Conflict {
+		if batchID != nil {
+			source := params.Source
+			if source == "" {
+				source = "reconciler"
+			}
+			incidentMsg := fmt.Sprintf("contradictory payout event (%s): local=%s incoming=%s item=%s", source, priorStatus, params.TargetStatus, params.ItemID)
+			if _, incErr := tx.Exec(ctx, `
+				UPDATE payout_batches
+				SET notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+				    updated_at = NOW()
+				WHERE id = $1`, *batchID, incidentMsg,
+			); incErr != nil {
+				return nil, fmt.Errorf("record payout conflict incident: %w", incErr)
+			}
+		}
+		return res, nil
+	}
+
+	if err := r.UpdatePayoutItemStatusTx(ctx, tx, params.ItemID, params.TargetStatus, params.CFTransferID, params.UTR, params.SettledAt, params.FailureReason); err != nil {
+		return nil, err
+	}
+	res.Committed = true
+	res.NewStatus = params.TargetStatus
+
+	occurredAt := time.Now().UTC()
+	if params.SettledAt != nil && !params.SettledAt.IsZero() {
+		occurredAt = *params.SettledAt
+	}
+
+	if r.outbox != nil && params.PropertyID != uuid.Nil && params.AmountPaise > 0 {
+		if decision.EnqueueSettlement {
+			payload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
+				PropertyID:   params.PropertyID,
+				PayoutItemID: params.ItemID,
+				AmountPaise:  params.AmountPaise,
+				OccurredAt:   occurredAt,
+			})
+			if mErr != nil {
+				return nil, fmt.Errorf("marshal payout settlement payload: %w", mErr)
+			}
+			outboxEvt := &domain.LedgerOutboxEvent{
+				EventType:      domain.LedgerOutboxPayoutSettlement,
+				PropertyID:     params.PropertyID,
+				SourceID:       params.ItemID,
+				Payload:        payload,
+				IdempotencyKey: fmt.Sprintf("payout_settled:%s", params.ItemID),
+				MaxAttempts:    5,
+			}
+			if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+				return nil, fmt.Errorf("insert payout settlement outbox event: %w", err)
+			}
+			res.EnqueuedSettlement = true
+		}
+
+		if decision.EnqueueReversal {
+			payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
+				PropertyID:   params.PropertyID,
+				PayoutItemID: params.ItemID,
+				AmountPaise:  params.AmountPaise,
+				OccurredAt:   occurredAt,
+			})
+			if mErr != nil {
+				return nil, fmt.Errorf("marshal payout reversal payload: %w", mErr)
+			}
+			outboxEvt := &domain.LedgerOutboxEvent{
+				EventType:      domain.LedgerOutboxPayoutReversal,
+				PropertyID:     params.PropertyID,
+				SourceID:       params.ItemID,
+				Payload:        payload,
+				IdempotencyKey: fmt.Sprintf("payout_reversed:%s", params.ItemID),
+				MaxAttempts:    5,
+			}
+			if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
+				return nil, fmt.Errorf("insert payout reversal outbox event: %w", err)
+			}
+			res.EnqueuedReversal = true
+		}
+	}
+
+	if batchID != nil {
+		if _, rollErr := r.UpdateBatchStatusFromItemsTx(ctx, tx, *batchID); rollErr != nil {
+			return nil, fmt.Errorf("roll up batch status %s: %w", *batchID, rollErr)
+		}
+	}
+
+	return res, nil
+}
+
+// ReconcilePayoutItemWithOutbox atomically transitions a payout item status and, only if the
+// transition is accepted, enqueues the double-entry financial ledger outbox event(s).
 func (r *PayoutRepo) ReconcilePayoutItemWithOutbox(
 	ctx context.Context,
 	propertyID uuid.UUID,
@@ -1184,92 +1304,19 @@ func (r *PayoutRepo) ReconcilePayoutItemWithOutbox(
 	}
 	defer tx.Rollback(ctx)
 
-	var priorStatus domain.PayoutItemStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM payout_items WHERE id = $1 FOR UPDATE`, itemID).Scan(&priorStatus); err != nil {
-		return fmt.Errorf("lock payout item %s: %w", itemID, err)
-	}
-
-	if err := r.UpdatePayoutItemStatusTx(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason); err != nil {
+	_, err = r.ReconcilePayoutItemTx(ctx, tx, domain.PayoutReconcileParams{
+		PropertyID:    propertyID,
+		ItemID:        itemID,
+		AmountPaise:   amountPaise,
+		TargetStatus:  status,
+		CFTransferID:  cfTransferID,
+		UTR:           utr,
+		SettledAt:     settledAt,
+		FailureReason: failureReason,
+		Source:        "poller:batch_reconcile",
+	})
+	if err != nil {
 		return err
-	}
-
-	occurredAt := time.Now().UTC()
-	if settledAt != nil && !settledAt.IsZero() {
-		occurredAt = *settledAt
-	}
-
-	if r.outbox != nil && propertyID != uuid.Nil && amountPaise > 0 {
-		switch status {
-		case domain.PayoutSucceeded:
-			if priorStatus != domain.PayoutSucceeded {
-				payload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
-					PropertyID:   propertyID,
-					PayoutItemID: itemID,
-					AmountPaise:  amountPaise,
-					OccurredAt:   occurredAt,
-				})
-				if mErr != nil {
-					return fmt.Errorf("marshal payout settlement payload: %w", mErr)
-				}
-				outboxEvt := &domain.LedgerOutboxEvent{
-					EventType:      domain.LedgerOutboxPayoutSettlement,
-					PropertyID:     propertyID,
-					SourceID:       itemID,
-					Payload:        payload,
-					IdempotencyKey: fmt.Sprintf("payout_settled:%s", itemID),
-					MaxAttempts:    5,
-				}
-				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
-					return fmt.Errorf("insert payout settlement outbox event: %w", err)
-				}
-			}
-		case domain.PayoutReversed:
-			if priorStatus != domain.PayoutReversed {
-				if priorStatus != domain.PayoutSucceeded {
-					// Ensure settlement journal event precedes reversal event in ledger outbox
-					sPayload, smErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
-						PropertyID:   propertyID,
-						PayoutItemID: itemID,
-						AmountPaise:  amountPaise,
-						OccurredAt:   occurredAt,
-					})
-					if smErr != nil {
-						return fmt.Errorf("marshal payout settlement payload before reversal: %w", smErr)
-					}
-					sOutboxEvt := &domain.LedgerOutboxEvent{
-						EventType:      domain.LedgerOutboxPayoutSettlement,
-						PropertyID:     propertyID,
-						SourceID:       itemID,
-						Payload:        sPayload,
-						IdempotencyKey: fmt.Sprintf("payout_settled:%s", itemID),
-						MaxAttempts:    5,
-					}
-					if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, sOutboxEvt); err != nil {
-						return fmt.Errorf("insert payout settlement outbox event before reversal: %w", err)
-					}
-				}
-				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
-					PropertyID:   propertyID,
-					PayoutItemID: itemID,
-					AmountPaise:  amountPaise,
-					OccurredAt:   occurredAt,
-				})
-				if mErr != nil {
-					return fmt.Errorf("marshal payout reversal payload: %w", mErr)
-				}
-				outboxEvt := &domain.LedgerOutboxEvent{
-					EventType:      domain.LedgerOutboxPayoutReversal,
-					PropertyID:     propertyID,
-					SourceID:       itemID,
-					Payload:        payload,
-					IdempotencyKey: fmt.Sprintf("payout_reversed:%s", itemID),
-					MaxAttempts:    5,
-				}
-				if err := r.outbox.InsertLedgerOutboxEventTx(ctx, tx, outboxEvt); err != nil {
-					return fmt.Errorf("insert payout reversal outbox event: %w", err)
-				}
-			}
-		}
 	}
 
 	return tx.Commit(ctx)

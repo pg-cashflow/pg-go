@@ -145,6 +145,7 @@ type Deps struct {
 	// REQ-SEC-003: /metrics requires either this token or a valid owner/manager JWT.
 	// Must be set to a high-entropy random value in production.
 	MetricsSecret string
+	WorkerHealth  WorkerHealthReporter
 }
 
 func NewRouter(d Deps) *gin.Engine {

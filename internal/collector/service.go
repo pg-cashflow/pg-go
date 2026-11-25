@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -240,14 +241,31 @@ func isNoRows(err error) bool {
 }
 
 func (s *Service) MultiDuePayIntent(ctx context.Context, dues []*domain.Due, prop *domain.Property, room, customerPhone string) (*domain.PayIntent, error) {
+	if prop == nil {
+		return nil, errors.New("property is required")
+	}
 	if len(dues) == 0 {
 		return nil, errors.New("no dues provided")
 	}
 
 	dueIDs := make([]uuid.UUID, len(dues))
+	seen := make(map[uuid.UUID]struct{}, len(dues))
 	totalAmountPaise := int64(0)
 	payable := true
 	for i, d := range dues {
+		if d == nil || d.ID == uuid.Nil {
+			return nil, errors.New("due and due ID are required")
+		}
+		if _, dup := seen[d.ID]; dup {
+			return nil, fmt.Errorf("duplicate due ID %s", d.ID)
+		}
+		seen[d.ID] = struct{}{}
+		if d.Amount <= 0 {
+			return nil, fmt.Errorf("due %s has non-positive amount %d", d.ID, d.Amount)
+		}
+		if d.Amount > math.MaxInt64-totalAmountPaise {
+			return nil, errors.New("total due amount overflows int64")
+		}
 		dueIDs[i] = d.ID
 		totalAmountPaise += d.Amount
 		if d.Status != domain.DueStatusPending && d.Status != domain.DueStatusPartial {

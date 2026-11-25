@@ -1123,7 +1123,13 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	}
 
 	if sess.ReferenceID != "" {
-		_ = s.repo.UpdateCFReferenceIDTx(ctx, pending.ID, sess.ReferenceID)
+		if refErr := s.repo.UpdateCFReferenceIDTx(ctx, pending.ID, sess.ReferenceID); refErr != nil {
+			slog.Error("kyc service: failed persisting digilocker cf_reference_id; marking request_unknown for reconciliation",
+				"verification_id", pending.ID, "cf_reference_id", sess.ReferenceID, "err", refErr)
+			_ = s.repo.MarkRequestUnknownTx(ctx, pending.ID, fmt.Sprintf("cf_reference_id persistence failed: %v", refErr), actor, leaseToken)
+			pending.Status = domain.KYCStatusRequestUnknown
+			return pending, "", fmt.Errorf("kyc service: persist digilocker reference id: %w", refErr)
+		}
 		pending.CFReferenceID = &sess.ReferenceID
 	}
 
@@ -1300,7 +1306,12 @@ func (s *Service) PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, 
 		return nil, fmt.Errorf("kyc service: poll digilocker status: %w", err)
 	}
 	if res.ReferenceID != "" && (v.CFReferenceID == nil || *v.CFReferenceID != res.ReferenceID) {
-		_ = s.repo.UpdateCFReferenceIDTx(ctx, v.ID, res.ReferenceID)
+		if refErr := s.repo.UpdateCFReferenceIDTx(ctx, v.ID, res.ReferenceID); refErr != nil {
+			slog.Error("kyc service: failed persisting polled digilocker cf_reference_id",
+				"verification_id", v.ID, "cf_reference_id", res.ReferenceID, "err", refErr)
+			return nil, fmt.Errorf("kyc service: persist polled digilocker reference id: %w", refErr)
+		}
+		v.CFReferenceID = &res.ReferenceID
 	}
 	if res.Status.IsTerminal() {
 		return s.ProcessDigiLockerCallback(ctx, v.VendorReferenceID, res.ReferenceID, "", string(res.Status), actor)

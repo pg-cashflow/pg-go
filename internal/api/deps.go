@@ -387,6 +387,13 @@ type PayoutWebhookStore interface {
 	SetBatchFailed(ctx context.Context, batchID uuid.UUID, reason string) error
 }
 
+// PayoutOutboxReconciler is an optional extension of PayoutWebhookStore that
+// atomically locks the payout item, enforces the transition table, and inserts
+// ledger outbox events in the same database transaction.
+type PayoutOutboxReconciler interface {
+	ReconcilePayoutItemTx(ctx context.Context, tx pgx.Tx, params domain.PayoutReconcileParams) (*domain.PayoutReconcileResult, error)
+}
+
 // PayoutPlatformStore defines cross-property payout operations for platform operations.
 type PayoutPlatformStore interface {
 	ListPayoutExceptions(ctx context.Context, limit, offset int) ([]domain.PayoutExceptionItem, error)

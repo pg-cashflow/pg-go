@@ -256,3 +256,80 @@ func ComputeAccountHash(salt []byte, identifier string) string {
 	h.Write([]byte(identifier))
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// PayoutTransitionDecision describes the deterministic outcome of attempting to
+// transition a payout item from one status to another.
+type PayoutTransitionDecision struct {
+	Accepted          bool
+	NoOp              bool
+	Conflict          bool
+	EnqueueSettlement bool
+	EnqueueReversal   bool
+}
+
+// EvaluatePayoutTransition enforces the monotonic payout item state machine.
+// Both webhook reconciliation and batch status polling share this transition table
+// so status mutations and ledger outbox events always agree.
+func EvaluatePayoutTransition(from, to PayoutItemStatus) PayoutTransitionDecision {
+	if from == to {
+		return PayoutTransitionDecision{NoOp: true}
+	}
+
+	switch from {
+	case PayoutReversed, PayoutCancelled:
+		return PayoutTransitionDecision{Conflict: true}
+
+	case PayoutFailed, PayoutRejected, PayoutRetriableFailed:
+		if to == PayoutSucceeded || to == PayoutReversed || to == PayoutProcessing || to == PayoutPending {
+			return PayoutTransitionDecision{Conflict: true}
+		}
+		return PayoutTransitionDecision{Accepted: true}
+
+	case PayoutSucceeded:
+		if to == PayoutReversed {
+			return PayoutTransitionDecision{
+				Accepted:        true,
+				EnqueueReversal: true,
+			}
+		}
+		return PayoutTransitionDecision{Conflict: true}
+
+	case PayoutPending, PayoutProcessing, PayoutCashfreeApprovalPending:
+		d := PayoutTransitionDecision{Accepted: true}
+		if to == PayoutSucceeded {
+			d.EnqueueSettlement = true
+		} else if to == PayoutReversed {
+			d.EnqueueSettlement = true
+			d.EnqueueReversal = true
+		}
+		return d
+
+	default:
+		return PayoutTransitionDecision{Conflict: true}
+	}
+}
+
+// PayoutReconcileParams holds the inputs for atomically reconciling a payout item
+// and its associated ledger outbox events inside one database transaction.
+type PayoutReconcileParams struct {
+	PropertyID    uuid.UUID
+	ItemID        uuid.UUID
+	AmountPaise   int64
+	TargetStatus  PayoutItemStatus
+	CFTransferID  *string
+	UTR           *string
+	SettledAt     *time.Time
+	FailureReason *string
+	Source        string // e.g. "webhook:TRANSFER_ACKNOWLEDGED" or "poller:batch_reconcile"
+}
+
+// PayoutReconcileResult reports the exact committed transition outcome.
+type PayoutReconcileResult struct {
+	PriorStatus        PayoutItemStatus
+	NewStatus          PayoutItemStatus
+	Committed          bool
+	NoOp               bool
+	Conflict           bool
+	EnqueuedSettlement bool
+	EnqueuedReversal   bool
+}

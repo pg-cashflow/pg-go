@@ -548,33 +548,10 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			return
 		}
 
-		// Double-entry ledger mirror: Debit refund_payable, Credit bank
-		// Ledger write must succeed or be durable in outbox before status is updated to Succeeded.
-		if h.Finance != nil {
-			if propID == uuid.Nil {
-				slog.Error("payout webhook: unresolved property for settlement ledger event", "item_id", item.ID)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unresolved property for ledger event"})
-				return
-			}
-			if err := h.Finance.MirrorPayoutSettled(ctx, propID, item.ID, item.AmountPaise, occurredAt); err != nil {
-				slog.Error("failed mirroring settled payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
-				payload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
-					PropertyID:   propID,
-					PayoutItemID: item.ID,
-					AmountPaise:  item.AmountPaise,
-					OccurredAt:   occurredAt,
-				})
-				if mErr != nil {
-					slog.Error("failed marshaling outbox payload for settled payout", "item_id", item.ID, "err", mErr)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal outbox payload failed"})
-					return
-				}
-				if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutSettlement, item.ID, payload, fmt.Sprintf("payout_settled:%s", item.ID)); oErr != nil {
-					slog.Error("outbox fallback failed for settled payout", "item_id", item.ID, "err", oErr)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
-					return
-				}
-			}
+		if h.Finance != nil && propID == uuid.Nil {
+			slog.Error("payout webhook: unresolved property for settlement ledger event", "item_id", item.ID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "unresolved property for ledger event"})
+			return
 		}
 
 		utr := ""
@@ -584,7 +561,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			utr = *data.UTR
 		}
 
-		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutSucceeded, &cfID, &utr, &occurredAt, nil, item.BatchID) {
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), propID, item, domain.PayoutSucceeded, &cfID, &utr, &occurredAt, nil) {
 			return
 		}
 
@@ -598,7 +575,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			targetStatus = domain.PayoutRetriableFailed
 		}
 
-		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, targetStatus, &cfID, nil, nil, &reason, item.BatchID) {
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), propID, item, targetStatus, &cfID, nil, nil, &reason) {
 			return
 		}
 
@@ -620,86 +597,17 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			return
 		}
 
-		// Double-entry ledger mirror: Debit bank, Credit refund_payable
-		// Ledger write must succeed or be durable in outbox before status is updated to Reversed.
-		if h.Finance != nil {
-			if propID == uuid.Nil {
-				slog.Error("payout webhook: unresolved property for reversal ledger event", "item_id", item.ID)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "unresolved property for ledger event"})
-				return
-			}
-			// Invariant: If item was not already marked Succeeded, ensure the settlement journal
-			// (Dr refund_payable / Cr bank) exists before posting the reversal (Dr bank / Cr refund_payable).
-			settlementEnqueued := false
-			if item.Status != domain.PayoutSucceeded {
-				if sErr := h.Finance.MirrorPayoutSettled(ctx, propID, item.ID, item.AmountPaise, occurredAt); sErr != nil {
-					slog.Warn("failed inline settlement mirror prior to reversal, enqueuing settlement outbox event", "item_id", item.ID, "err", sErr)
-					sPayload, mErr := json.Marshal(domain.PayoutSettlementMirrorPayload{
-						PropertyID:   propID,
-						PayoutItemID: item.ID,
-						AmountPaise:  item.AmountPaise,
-						OccurredAt:   occurredAt,
-					})
-					if mErr != nil {
-						slog.Error("failed marshaling outbox payload for settled payout", "item_id", item.ID, "err", mErr)
-						c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal settlement outbox payload failed"})
-						return
-					}
-					if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutSettlement, item.ID, sPayload, fmt.Sprintf("payout_settled:%s", item.ID)); oErr != nil {
-						slog.Error("outbox fallback failed for settled payout prerequisite", "item_id", item.ID, "err", oErr)
-						c.JSON(http.StatusInternalServerError, gin.H{"error": "settlement ledger outbox persistence failed"})
-						return
-					}
-					settlementEnqueued = true
-				}
-			}
-
-			if settlementEnqueued {
-				// Settlement is deferred to outbox worker; reversal MUST also be deferred to preserve causal ordering.
-				payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
-					PropertyID:   propID,
-					PayoutItemID: item.ID,
-					AmountPaise:  item.AmountPaise,
-					OccurredAt:   occurredAt,
-				})
-				if mErr != nil {
-					slog.Error("failed marshaling outbox payload for reversed payout", "item_id", item.ID, "err", mErr)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal outbox payload failed"})
-					return
-				}
-				if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutReversal, item.ID, payload, fmt.Sprintf("payout_reversed:%s", item.ID)); oErr != nil {
-					slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", oErr)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
-					return
-				}
-			} else {
-				if err := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, occurredAt); err != nil {
-					slog.Error("failed mirroring reversed payout journal, attempting outbox fallback", "item_id", item.ID, "err", err)
-					payload, mErr := json.Marshal(domain.PayoutReversalMirrorPayload{
-						PropertyID:   propID,
-						PayoutItemID: item.ID,
-						AmountPaise:  item.AmountPaise,
-						OccurredAt:   occurredAt,
-					})
-					if mErr != nil {
-						slog.Error("failed marshaling outbox payload for reversed payout", "item_id", item.ID, "err", mErr)
-						c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal outbox payload failed"})
-						return
-					}
-					if oErr := h.enqueueLedgerOutboxEvent(ctx, propID, domain.LedgerOutboxPayoutReversal, item.ID, payload, fmt.Sprintf("payout_reversed:%s", item.ID)); oErr != nil {
-						slog.Error("outbox fallback failed for reversed payout", "item_id", item.ID, "err", oErr)
-						c.JSON(http.StatusInternalServerError, gin.H{"error": "ledger outbox persistence failed"})
-						return
-					}
-				}
-			}
+		if h.Finance != nil && propID == uuid.Nil {
+			slog.Error("payout webhook: unresolved property for reversal ledger event", "item_id", item.ID)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "unresolved property for ledger event"})
+			return
 		}
 
 		reason := "transfer reversed by bank"
 		if data.StatusDescription != "" {
 			reason = data.StatusDescription
 		}
-		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutReversed, &cfID, nil, nil, &reason, item.BatchID) {
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), propID, item, domain.PayoutReversed, &cfID, nil, &occurredAt, &reason) {
 			return
 		}
 
@@ -708,7 +616,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		if reason == "" {
 			reason = "transfer rejected by gateway"
 		}
-		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), item.ID, domain.PayoutRejected, &cfID, nil, nil, &reason, item.BatchID) {
+		if !h.commitPayoutItem(c, ctx, audit, evtRecord, repo, evtType, payoutEventRef(data, item.ID), propID, item, domain.PayoutRejected, &cfID, nil, nil, &reason) {
 			return
 		}
 
@@ -748,7 +656,8 @@ func (h *Handlers) gatewayAuditStore() GatewayPaymentRepo {
 	return nil
 }
 
-// commitPayoutItem records the processed event and the status change together.
+// commitPayoutItem records the processed event, transitions the payout item,
+// and enqueues any required ledger outbox events in one atomic transaction.
 // It returns false after writing the HTTP response.
 func (h *Handlers) commitPayoutItem(
 	c *gin.Context,
@@ -757,13 +666,14 @@ func (h *Handlers) commitPayoutItem(
 	evtRecord *domain.WebhookEvent,
 	repo PayoutWebhookStore,
 	evtType, refID string,
-	itemID uuid.UUID,
+	propID uuid.UUID,
+	item *domain.PayoutItem,
 	status domain.PayoutItemStatus,
 	cfTransferID, utr *string,
 	settledAt *time.Time,
 	failureReason *string,
-	batchID *uuid.UUID,
 ) bool {
+	var conflict bool
 	run := func(tx pgx.Tx) error {
 		var first bool
 		var err error
@@ -781,34 +691,64 @@ func (h *Handlers) commitPayoutItem(
 			return errPayoutEventDuplicate
 		}
 		if tx != nil {
-			var currentStatus domain.PayoutItemStatus
-			if lockErr := tx.QueryRow(ctx, `SELECT status FROM payout_items WHERE id = $1 FOR UPDATE`, itemID).Scan(&currentStatus); lockErr != nil {
-				return fmt.Errorf("lock payout item %s: %w", itemID, lockErr)
-			}
-			// Monotonic state transitions (out-of-order event protection):
-			// 1. Once Succeeded, cannot transition back to Failed or Rejected.
-			if currentStatus == domain.PayoutSucceeded && (status == domain.PayoutFailed || status == domain.PayoutRejected || status == domain.PayoutRetriableFailed) {
-				slog.Error("payout item already succeeded; refusing out-of-order failure commit", "item_id", itemID, "current_status", currentStatus, "incoming_status", status)
-				return nil
-			}
-			// 2. Once Reversed, terminal; cannot transition to Succeeded, Failed, or Rejected.
-			if currentStatus == domain.PayoutReversed && status != domain.PayoutReversed {
-				slog.Error("payout item already reversed; refusing out-of-order status commit", "item_id", itemID, "current_status", currentStatus, "incoming_status", status)
-				return nil
-			}
-			// 3. Once Failed or Rejected, cannot transition to Succeeded without reconciliation.
-			if (currentStatus == domain.PayoutFailed || currentStatus == domain.PayoutRejected || currentStatus == domain.PayoutRetriableFailed) && status == domain.PayoutSucceeded {
-				slog.Error("payout item already terminal failed; refusing late success commit", "item_id", itemID, "current_status", currentStatus)
+			if reconciler, ok := repo.(PayoutOutboxReconciler); ok {
+				res, rErr := reconciler.ReconcilePayoutItemTx(ctx, tx, domain.PayoutReconcileParams{
+					PropertyID:    propID,
+					ItemID:        item.ID,
+					AmountPaise:   item.AmountPaise,
+					TargetStatus:  status,
+					CFTransferID:  cfTransferID,
+					UTR:           utr,
+					SettledAt:     settledAt,
+					FailureReason: failureReason,
+					Source:        "webhook:" + evtType,
+				})
+				if rErr != nil {
+					return rErr
+				}
+				if res != nil && res.Conflict {
+					conflict = true
+					slog.Error("payout webhook conflicts with terminal local status; reconciliation required",
+						"item_id", item.ID, "event", evtType, "local_status", res.PriorStatus, "incoming_status", status)
+				}
 				return nil
 			}
 		}
-		if err := repo.UpdatePayoutItemStatusTx(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason); err != nil {
+
+		// Fallback for mock stores without a PostgreSQL transaction.
+		decision := domain.EvaluatePayoutTransition(item.Status, status)
+		if decision.Conflict {
+			conflict = true
+			slog.Error("payout webhook conflicts with terminal local status; reconciliation required",
+				"item_id", item.ID, "event", evtType, "local_status", item.Status, "incoming_status", status)
+			return nil
+		}
+		if decision.NoOp {
+			return nil
+		}
+		if err := repo.UpdatePayoutItemStatusTx(ctx, tx, item.ID, status, cfTransferID, utr, settledAt, failureReason); err != nil {
 			return err
 		}
-		if batchID != nil {
-			if _, rollErr := repo.UpdateBatchStatusFromItemsTx(ctx, tx, *batchID); rollErr != nil {
-				slog.Error("failed rolling up batch status after payout webhook", "batch_id", *batchID, "err", rollErr)
-				return fmt.Errorf("roll up batch status %s: %w", *batchID, rollErr)
+		if item.BatchID != nil {
+			if _, rollErr := repo.UpdateBatchStatusFromItemsTx(ctx, tx, *item.BatchID); rollErr != nil {
+				slog.Error("failed rolling up batch status after payout webhook", "batch_id", *item.BatchID, "err", rollErr)
+				return fmt.Errorf("roll up batch status %s: %w", *item.BatchID, rollErr)
+			}
+		}
+		if h.Finance != nil && propID != uuid.Nil && item.AmountPaise > 0 {
+			occurredAt := time.Now().UTC()
+			if settledAt != nil && !settledAt.IsZero() {
+				occurredAt = *settledAt
+			}
+			if decision.EnqueueSettlement {
+				if mErr := h.Finance.MirrorPayoutSettled(ctx, propID, item.ID, item.AmountPaise, occurredAt); mErr != nil {
+					return fmt.Errorf("mirror payout settled: %w", mErr)
+				}
+			}
+			if decision.EnqueueReversal {
+				if mErr := h.Finance.MirrorPayoutReversed(ctx, propID, item.ID, item.AmountPaise, occurredAt); mErr != nil {
+					return fmt.Errorf("mirror payout reversed: %w", mErr)
+				}
 			}
 		}
 		return nil
@@ -826,8 +766,13 @@ func (h *Handlers) commitPayoutItem(
 		return false
 	}
 	if err != nil {
-		slog.Error("failed updating payout item", "item_id", itemID, "status", status, "err", err)
+		slog.Error("failed updating payout item", "item_id", item.ID, "status", status, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update item failed"})
+		return false
+	}
+	if conflict {
+		updateWebhookAuditStatus(ctx, audit, evtRecord, "terminal_status_conflict", nil)
+		c.Status(http.StatusOK)
 		return false
 	}
 	return true

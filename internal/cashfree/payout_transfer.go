@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -80,16 +79,16 @@ func (t *TransferStatusItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// AmountPaise parses TransferAmount into integer paise.
+// AmountPaise parses TransferAmount into integer paise using exact decimal arithmetic.
 func (t *TransferStatusItem) AmountPaise() (int64, error) {
-	if t.TransferAmount == "" {
+	if strings.TrimSpace(t.TransferAmount.String()) == "" {
 		return 0, errors.New("cashfree: transfer_amount is missing")
 	}
-	f, err := t.TransferAmount.Float64()
+	paise, err := ParseRupeesToPaise(t.TransferAmount.String())
 	if err != nil {
 		return 0, fmt.Errorf("cashfree: invalid transfer_amount %q: %w", t.TransferAmount, err)
 	}
-	return int64(math.Round(f * 100)), nil
+	return paise, nil
 }
 
 // BatchTransferStatusResponse represents the response from GET /payout/transfers/batch.
@@ -284,7 +283,7 @@ func (c *PayoutClient) GetBatchTransferStatus(ctx context.Context, batchTransfer
 	return &out, nil
 }
 
-// GetTransferStatus queries status for an individual transfer via GET /payout/transfers/{transfer_id}.
+// GetTransferStatus queries status for an individual transfer via GET /transfers?transfer_id=...
 func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string) (*TransferStatusItem, error) {
 	if !c.cfg.Enabled() {
 		return nil, ErrPayoutNotConfigured
@@ -293,7 +292,7 @@ func (c *PayoutClient) GetTransferStatus(ctx context.Context, transferID string)
 		return nil, fmt.Errorf("cashfree payout: transfer_id required")
 	}
 
-	reqURL := fmt.Sprintf("%s/transfers/%s", c.endpoint(), url.PathEscape(transferID))
+	reqURL := fmt.Sprintf("%s/transfers?transfer_id=%s", c.endpoint(), url.QueryEscape(transferID))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("cashfree payout: create transfer status request: %w", err)
