@@ -42,6 +42,12 @@ var ErrCashfreeOrderPending = errors.New("the previous Cashfree order is still b
 // ID; it must not reuse the terminal merchant order ID.
 var ErrCashfreeOrderExpired = errors.New("the previous Cashfree payment session has ended; retry checkout")
 
+// ErrAmountBelowMinimum is returned when an online payment amount is below Cashfree's 100-paise (₹1) minimum.
+var ErrAmountBelowMinimum = errors.New("amount is below minimum ₹1 (100 paise) for online payment")
+
+// ErrInvalidCustomerPhone is returned when the tenant phone fails Cashfree adapter validation before intent claim.
+var ErrInvalidCustomerPhone = errors.New("invalid customer phone for online payment")
+
 func New(intents IntentStore, cashfree CashfreeOrders) *Service {
 	return &Service{intents: intents, cashfree: cashfree}
 }
@@ -118,6 +124,12 @@ type PaymentIntentManager interface {
 }
 
 func (s *Service) doEnsureCashfree(ctx context.Context, due *domain.Due, customerPhone string) (string, error) {
+	if due.Amount < cashfree.MinOrderAmountPaise {
+		return "", ErrAmountBelowMinimum
+	}
+	if _, pErr := cashfree.NormalizeCustomerPhone(customerPhone); pErr != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidCustomerPhone, pErr)
+	}
 	minRemaining := 10 * time.Minute
 
 	if mgr, ok := s.intents.(PaymentIntentManager); ok {
@@ -296,6 +308,12 @@ func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due
 }
 
 func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (string, error) {
+	if totalAmountPaise < cashfree.MinOrderAmountPaise {
+		return "", ErrAmountBelowMinimum
+	}
+	if _, pErr := cashfree.NormalizeCustomerPhone(customerPhone); pErr != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidCustomerPhone, pErr)
+	}
 	minRemaining := 10 * time.Minute
 	dueIDs := make([]uuid.UUID, len(dues))
 	amounts := make([]int64, len(dues))

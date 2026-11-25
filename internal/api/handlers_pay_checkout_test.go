@@ -73,14 +73,43 @@ func (m *mockVerifyIntentStore) Create(_ context.Context, _ *domain.PaymentInten
 }
 
 type mockVerifyCFClient struct {
-	cfID    string
-	bankRef string
-	amount  int64
-	ok      bool
+	cfID        string
+	bankRef     string
+	amount      int64
+	ok          bool
+	attempts    []cashfree.PaymentAttempt
+	order       *cashfree.OrderDetails
+	useAttempts bool
 }
 
 func (m *mockVerifyCFClient) FetchSuccessfulPayment(_ context.Context, _ string) (string, string, int64, bool, error) {
 	return m.cfID, m.bankRef, m.amount, m.ok, nil
+}
+
+func (m *mockVerifyCFClient) FetchOrderPayments(_ context.Context, orderID string) ([]cashfree.PaymentAttempt, error) {
+	if m.useAttempts {
+		return m.attempts, nil
+	}
+	if m.ok {
+		return []cashfree.PaymentAttempt{{
+			CFPaymentID:   m.cfID,
+			PaymentStatus: "SUCCESS",
+			AmountPaise:   m.amount,
+			BankReference: m.bankRef,
+		}}, nil
+	}
+	return []cashfree.PaymentAttempt{{
+		CFPaymentID:   "cf_pend",
+		PaymentStatus: "PENDING",
+		AmountPaise:   m.amount,
+	}}, nil
+}
+
+func (m *mockVerifyCFClient) GetOrder(_ context.Context, orderID string) (*cashfree.OrderDetails, error) {
+	if m.order != nil {
+		return m.order, nil
+	}
+	return &cashfree.OrderDetails{OrderID: orderID, OrderStatus: "ACTIVE"}, nil
 }
 
 func (m *mockVerifyCFClient) CreateRefund(_ context.Context, _, _ string, _ int64, _, _ string) (*cashfree.RefundDetails, error) {
@@ -559,5 +588,97 @@ func TestTenantDuePayVerify_RetryAfterFailedAttempt(t *testing.T) {
 
 	if len(paySvc.settledDues) != 1 || paySvc.settledDues[0] != dueID {
 		t.Fatalf("expected due %s to be settled, got %v", dueID, paySvc.settledDues)
+	}
+}
+
+func TestTenantDuePayVerify_AttemptClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	dueID := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+	tenant := &domain.Tenant{ID: tenantID, PropertyID: propID, Status: domain.TenantStatusActive}
+	due := &domain.Due{ID: dueID, PropertyID: propID, TenantID: tenantID, Amount: 100000, Status: domain.DueStatusPending}
+
+	runVerify := func(orderID string, attempts []cashfree.PaymentAttempt, orderStatus string) (bool, string) {
+		intent := &domain.PaymentIntent{
+			ID: uuid.New(), DueID: dueID, Provider: "cashfree", ProviderOrderID: orderID, AmountPaise: 100000, Status: domain.IntentCreated,
+		}
+		h := &Handlers{
+			Deps: Deps{
+				DueStore:    &mockVerifyDueStore{dues: map[uuid.UUID]*domain.Due{dueID: due}},
+				IntentStore: &mockVerifyIntentStore{intent: intent},
+				CashfreeClient: &mockVerifyCFClient{
+					useAttempts: true,
+					attempts:    attempts,
+					order:       &cashfree.OrderDetails{OrderID: orderID, OrderStatus: orderStatus},
+				},
+				Payments: &mockVerifyPayService{},
+			},
+		}
+		r := gin.New()
+		r.POST("/tenant/dues/:id/pay/verify", func(c *gin.Context) {
+			c.Set(auth.ContextTenantKey, tenant)
+			h.TenantDuePayVerify(c)
+		})
+		req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/tenant/dues/%s/pay/verify", dueID), nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		var resp struct {
+			Paid   bool   `json:"paid"`
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+		return resp.Paid, resp.Status
+	}
+
+	// 1. PENDING attempt must return PENDING (never RETRYABLE)
+	paid, status := runVerify("ord_classify_pending_"+uuid.New().String(), []cashfree.PaymentAttempt{
+		{CFPaymentID: "1", PaymentStatus: "FAILED", AmountPaise: 100000},
+		{CFPaymentID: "2", PaymentStatus: "PENDING", AmountPaise: 100000},
+	}, "ACTIVE")
+	if paid || status != "PENDING" {
+		t.Fatalf("expected paid=false status=PENDING when any attempt is PENDING, got paid=%v status=%s", paid, status)
+	}
+
+	// 2. All attempts terminal FAILED/USER_DROPPED on ACTIVE order -> RETRYABLE
+	paid, status = runVerify("ord_classify_retry_"+uuid.New().String(), []cashfree.PaymentAttempt{
+		{CFPaymentID: "1", PaymentStatus: "USER_DROPPED", AmountPaise: 100000},
+		{CFPaymentID: "2", PaymentStatus: "FAILED", AmountPaise: 100000},
+	}, "ACTIVE")
+	if paid || status != "RETRYABLE" {
+		t.Fatalf("expected paid=false status=RETRYABLE when all attempts terminal and order ACTIVE, got paid=%v status=%s", paid, status)
+	}
+
+	// 3. EXPIRED order -> EXPIRED
+	paid, status = runVerify("ord_classify_exp_"+uuid.New().String(), []cashfree.PaymentAttempt{
+		{CFPaymentID: "1", PaymentStatus: "FAILED", AmountPaise: 100000},
+	}, "EXPIRED")
+	if paid || status != "EXPIRED" {
+		t.Fatalf("expected paid=false status=EXPIRED, got paid=%v status=%s", paid, status)
+	}
+}
+
+func TestTenantDuePay_TypedAvailabilityStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propID := uuid.New()
+	dueID := uuid.New()
+
+	// Unknown DOB -> AGE_VERIFICATION_REQUIRED
+	tUnknown := &domain.Tenant{ID: uuid.New(), PropertyID: propID, Status: domain.TenantStatusActive}
+	h := &Handlers{Deps: Deps{KYCSvc: &fakeKYCSvc{}}}
+	r := gin.New()
+	r.GET("/tenant/dues/:id/pay", func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, tUnknown)
+		h.TenantDuePay(c)
+	})
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/tenant/dues/%s/pay", dueID), nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	var resp domain.PayIntent
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Payable || resp.AvailabilityStatus != "AGE_VERIFICATION_REQUIRED" {
+		t.Fatalf("expected Payable=false AvailabilityStatus=AGE_VERIFICATION_REQUIRED, got %+v", resp)
 	}
 }

@@ -592,3 +592,76 @@ func TestCashfree_URLPathEscaping(t *testing.T) {
 		t.Fatalf("CreateRefund failed: created=%+v, err=%v", created, err)
 	}
 }
+
+func TestCreatePaymentOrder_MinAmountPhoneAndNotifyURL(t *testing.T) {
+	var called int
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payment_session_id":"sess_100"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(Config{
+		AppID:     "id",
+		SecretKey: "secret",
+		Env:       "sandbox",
+		ReturnURL: "https://app.example.com/payment/return",
+		NotifyURL: "https://api.example.com/webhooks/cashfree",
+	}).WithBaseURL(srv.URL)
+
+	// 1. Sub-₹1 amount (< 100 paise) must fail before hitting Cashfree
+	if _, _, err := c.CreatePaymentOrder(context.Background(), "ord_99", 99, "+919876543210", "Note"); err == nil {
+		t.Fatal("expected error for amount < 100 paise")
+	}
+	if called != 0 {
+		t.Fatalf("expected 0 HTTP calls for amount < 100 paise, got %d", called)
+	}
+
+	// 2. Boundary 100 paise (₹1) + Indian E.164 normalization -> 10 digits + notify_url
+	sess, _, err := c.CreatePaymentOrder(context.Background(), "ord_100", 100, "+919876543210", "Note")
+	if err != nil || sess != "sess_100" {
+		t.Fatalf("CreatePaymentOrder 100 paise failed: sess=%s, err=%v", sess, err)
+	}
+	cust, _ := gotBody["customer_details"].(map[string]any)
+	if cust["customer_phone"] != "9876543210" {
+		t.Fatalf("expected 10-digit normalized phone 9876543210, got %v", cust["customer_phone"])
+	}
+	meta, _ := gotBody["order_meta"].(map[string]any)
+	if meta["notify_url"] != "https://api.example.com/webhooks/cashfree" {
+		t.Fatalf("expected notify_url in order_meta, got %v", meta["notify_url"])
+	}
+
+	// 3. Non-Indian E.164 must NOT be blindly stripped
+	_, _, err = c.CreatePaymentOrder(context.Background(), "ord_intl", 100, "+14155552671", "Note")
+	if err != nil {
+		t.Fatalf("international E.164 failed: %v", err)
+	}
+	cust, _ = gotBody["customer_details"].(map[string]any)
+	if cust["customer_phone"] != "+14155552671" {
+		t.Fatalf("expected international E.164 preserved, got %v", cust["customer_phone"])
+	}
+}
+
+func TestFetchOrderPayments_AllAttempts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"payments":[
+			{"cf_payment_id":"101","payment_status":"FAILED","payment_amount":500.00},
+			{"cf_payment_id":"102","payment_status":"PENDING","payment_amount":500.00}
+		]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(Config{AppID: "id", SecretKey: "secret", Env: "sandbox"}).WithBaseURL(srv.URL)
+	attempts, err := c.FetchOrderPayments(context.Background(), "ord_attempts_1")
+	if err != nil {
+		t.Fatalf("FetchOrderPayments failed: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0].PaymentStatus != "FAILED" || attempts[1].PaymentStatus != "PENDING" {
+		t.Fatalf("unexpected attempts: %+v", attempts)
+	}
+}

@@ -138,7 +138,11 @@ type PayIntent struct {
 	AmountPaise      int64       `json:"amount_paise"`
 	QRPNGURL         string      `json:"qr_png_url,omitempty"`
 	Payable          bool        `json:"payable"`
-	PaymentSessionID string      `json:"payment_session_id,omitempty"`
+	// AvailabilityStatus gives a typed, non-PII reason when Payable is false
+	// (e.g. PAID, WAIVED, KYC_REQUIRED, GUARDIAN_CONSENT_REQUIRED,
+	// AGE_VERIFICATION_REQUIRED, NO_OPEN_DUES, TEMPORARILY_UNAVAILABLE).
+	AvailabilityStatus string      `json:"availability_status,omitempty"`
+	PaymentSessionID   string      `json:"payment_session_id,omitempty"`
 	DueCount         int         `json:"due_count,omitempty"`
 	DueIDs           []uuid.UUID `json:"due_ids,omitempty"`
 	// FallbackReason is set when the property is in cashfree mode but the backend

@@ -30,6 +30,7 @@ type Config struct {
 	OrderExpiryDuration        time.Duration
 	WebhookReplayWindowSeconds int // replay window in seconds; defaults to 300 if <= 0
 	ReturnURL                  string
+	NotifyURL                  string
 	KYCAuthMode                string // "ip" (default) | "signature"
 	KYCPublicKey               *rsa.PublicKey
 	KYCClientID                string
@@ -126,12 +127,65 @@ type createOrderResp struct {
 	PaymentSessionID string `json:"payment_session_id"`
 }
 
+// MinOrderAmountPaise is Cashfree's documented ₹1 minimum order amount (100 paise).
+const MinOrderAmountPaise int64 = 100
+
+// NormalizeCustomerPhone converts a canonical E.164 phone number into Cashfree's
+// expected format at the provider adapter boundary without altering internal identity state.
+// Indian (+91) numbers are normalized to 10 digits; supported international E.164 numbers
+// are preserved verbatim rather than blindly stripping 3 characters.
+func NormalizeCustomerPhone(raw string) (string, error) {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(cleaned)
+	if cleaned == "" {
+		return "", fmt.Errorf("cashfree: customer phone required")
+	}
+	isDigits := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for i := 0; i < len(s); i++ {
+			if s[i] < '0' || s[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	if strings.HasPrefix(cleaned, "+91") {
+		rest := cleaned[3:]
+		if len(rest) == 10 && isDigits(rest) {
+			return rest, nil
+		}
+		return "", fmt.Errorf("cashfree: invalid Indian phone number")
+	}
+	if strings.HasPrefix(cleaned, "91") && len(cleaned) == 12 && isDigits(cleaned[2:]) {
+		return cleaned[2:], nil
+	}
+	if len(cleaned) == 10 && isDigits(cleaned) {
+		return cleaned, nil
+	}
+	if strings.HasPrefix(cleaned, "+") && len(cleaned) >= 9 && len(cleaned) <= 16 && isDigits(cleaned[1:]) {
+		return cleaned, nil
+	}
+	return "", fmt.Errorf("cashfree: invalid customer phone format")
+}
+
+// CreateUPIOrder is retained as an alias for CreatePaymentOrder for existing callers.
 func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string, idempotencyKey ...string) (string, *time.Time, error) {
+	return c.CreatePaymentOrder(ctx, orderID, amountPaise, customerPhone, note, idempotencyKey...)
+}
+
+// CreatePaymentOrder creates a Cashfree PG order for all merchant-enabled payment methods.
+func (c *Client) CreatePaymentOrder(ctx context.Context, orderID string, amountPaise int64, customerPhone, note string, idempotencyKey ...string) (string, *time.Time, error) {
 	if !c.cfg.Enabled() {
 		return "", nil, fmt.Errorf("cashfree: not configured")
 	}
-	if customerPhone == "" {
-		return "", nil, fmt.Errorf("cashfree: customer phone required")
+	if amountPaise < MinOrderAmountPaise {
+		return "", nil, fmt.Errorf("cashfree: order amount %d paise is below minimum %d paise", amountPaise, MinOrderAmountPaise)
+	}
+	normPhone, phoneErr := NormalizeCustomerPhone(customerPhone)
+	if phoneErr != nil {
+		return "", nil, phoneErr
 	}
 	expiryDur := c.cfg.OrderExpiryDuration
 	if expiryDur <= 0 {
@@ -143,18 +197,18 @@ func (c *Client) CreateUPIOrder(ctx context.Context, orderID string, amountPaise
 	if c.cfg.ReturnURL != "" {
 		orderMeta["return_url"] = c.cfg.ReturnURL
 	}
-
-	customerID := orderID
-	if customerPhone != "" {
-		customerID = "cust_" + strings.TrimPrefix(customerPhone, "+")
+	if c.cfg.NotifyURL != "" {
+		orderMeta["notify_url"] = c.cfg.NotifyURL
 	}
+
+	customerID := "cust_" + strings.TrimPrefix(normPhone, "+")
 
 	body := createOrderBody{
 		OrderID:         orderID,
 		OrderAmount:     json.Number(FormatPaiseToRupees(amountPaise)),
 		OrderCurrency:   "INR",
 		OrderExpiryTime: exp.Format(time.RFC3339),
-		Customer:        map[string]any{"customer_id": customerID, "customer_phone": customerPhone},
+		Customer:        map[string]any{"customer_id": customerID, "customer_phone": normPhone},
 		OrderMeta:       orderMeta,
 		OrderNote:       note,
 	}
@@ -200,38 +254,74 @@ type rawPaymentItem struct {
 	PaymentStatus string      `json:"payment_status"`
 	PaymentAmount json.Number `json:"payment_amount"`
 	BankReference string      `json:"bank_reference"`
+	PaymentTime   string      `json:"payment_time"`
 }
 
 type fetchPaymentsResp struct {
 	Payments []rawPaymentItem `json:"payments"`
 }
 
-func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error) {
+// PaymentAttempt represents a single payment attempt returned by GET /orders/{order_id}/payments.
+type PaymentAttempt struct {
+	CFPaymentID   string
+	PaymentStatus string
+	AmountPaise   int64
+	BankReference string
+	PaymentTime   string
+}
+
+// FetchOrderPayments retrieves all payment attempts for a Cashfree order.
+func (c *Client) FetchOrderPayments(ctx context.Context, orderID string) ([]PaymentAttempt, error) {
 	if !c.cfg.Enabled() {
-		return "", "", 0, false, fmt.Errorf("cashfree: not configured")
+		return nil, fmt.Errorf("cashfree: not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint()+"/orders/"+url.PathEscape(orderID)+"/payments", nil)
 	if err != nil {
-		return "", "", 0, false, err
+		return nil, err
 	}
 	c.sign(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", "", 0, false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return "", "", 0, false, fmt.Errorf("cashfree fetch: %s %s", resp.Status, string(b))
+		return nil, fmt.Errorf("cashfree fetch: %s %s", resp.Status, string(b))
 	}
 	var out fetchPaymentsResp
 	if err := json.Unmarshal(b, &out); err != nil {
-		// some responses are a bare array
 		var arr []rawPaymentItem
 		if err2 := json.Unmarshal(b, &arr); err2 != nil {
-			return "", "", 0, false, err
+			return nil, err
 		}
 		out.Payments = arr
+	}
+	attempts := make([]PaymentAttempt, 0, len(out.Payments))
+	for _, p := range out.Payments {
+		var parsedPaise int64
+		if strings.TrimSpace(p.PaymentAmount.String()) != "" {
+			var pErr error
+			parsedPaise, pErr = ParseRupeesToPaise(p.PaymentAmount.String())
+			if pErr != nil {
+				return nil, fmt.Errorf("cashfree fetch parse amount: %w", pErr)
+			}
+		}
+		attempts = append(attempts, PaymentAttempt{
+			CFPaymentID:   strings.TrimSpace(p.CFPaymentID.String()),
+			PaymentStatus: strings.ToUpper(strings.TrimSpace(p.PaymentStatus)),
+			AmountPaise:   parsedPaise,
+			BankReference: strings.TrimSpace(p.BankReference),
+			PaymentTime:   strings.TrimSpace(p.PaymentTime),
+		})
+	}
+	return attempts, nil
+}
+
+func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cfPaymentID, bankRef string, amountPaise int64, ok bool, err error) {
+	attempts, err := c.FetchOrderPayments(ctx, orderID)
+	if err != nil {
+		return "", "", 0, false, err
 	}
 	type successItem struct {
 		cfPaymentID string
@@ -240,22 +330,17 @@ func (c *Client) FetchSuccessfulPayment(ctx context.Context, orderID string) (cf
 	}
 	var successes []successItem
 	seen := make(map[string]struct{})
-	for _, p := range out.Payments {
-		if strings.EqualFold(p.PaymentStatus, "SUCCESS") {
-			parsedPaise, pErr := ParseRupeesToPaise(p.PaymentAmount.String())
-			if pErr != nil {
-				return "", "", 0, false, fmt.Errorf("cashfree fetch parse amount: %w", pErr)
-			}
-			id := strings.TrimSpace(p.CFPaymentID.String())
-			if id == "" {
+	for _, p := range attempts {
+		if p.PaymentStatus == "SUCCESS" {
+			if p.CFPaymentID == "" {
 				return "", "", 0, false, fmt.Errorf("cashfree fetch: order %q has SUCCESS payment with missing or blank cf_payment_id", orderID)
 			}
-			if _, dup := seen[id]; !dup {
-				seen[id] = struct{}{}
+			if _, dup := seen[p.CFPaymentID]; !dup {
+				seen[p.CFPaymentID] = struct{}{}
 				successes = append(successes, successItem{
-					cfPaymentID: id,
+					cfPaymentID: p.CFPaymentID,
 					bankRef:     p.BankReference,
-					amountPaise: parsedPaise,
+					amountPaise: p.AmountPaise,
 				})
 			}
 		}

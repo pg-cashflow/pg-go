@@ -205,6 +205,7 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		SecretKey:          cfg.CashfreeSecretKey,
 		Env:                cfg.CashfreeEnv,
 		APIVersion:         cfg.WebhookAPIVersion,
+		NotifyURL:          cfg.CashfreePGNotifyURL,
 		KYCClientID:        cfg.CashfreeKYCAppID,
 		KYCSecretKey:       cfg.CashfreeKYCSecretKey,
 		DefaultRefundSpeed: cfg.CashfreeRefundSpeed,

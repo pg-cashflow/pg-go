@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/collector"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
@@ -16,6 +18,7 @@ import (
 type verifyCacheEntry struct {
 	checkedAt time.Time
 	paid      bool
+	status    string
 	cfID      string
 	bankRef   string
 	amount    int64
@@ -26,17 +29,52 @@ var (
 	verifyCache   = make(map[string]verifyCacheEntry)
 )
 
-const verifyThrottleDuration = 3 * time.Second
+const (
+	verifyThrottleDuration = 3 * time.Second
+	maxVerifyCacheEntries  = 1000
+)
+
+func setVerifyCache(orderID string, entry verifyCacheEntry) {
+	verifyCacheMu.Lock()
+	defer verifyCacheMu.Unlock()
+
+	now := entry.checkedAt
+	for k, v := range verifyCache {
+		if now.Sub(v.checkedAt) > 2*time.Minute {
+			delete(verifyCache, k)
+		}
+	}
+	for len(verifyCache) >= maxVerifyCacheEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range verifyCache {
+			if oldestKey == "" || v.checkedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.checkedAt
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(verifyCache, oldestKey)
+	}
+	verifyCache[orderID] = entry
+}
 
 func (h *Handlers) duePayJSON(c *gin.Context, due *domain.Due, role string) {
 	if due.Status == domain.DueStatusPaid || due.Status == domain.DueStatusWaived {
+		avail := "PAID"
+		if due.Status == domain.DueStatusWaived {
+			avail = "WAIVED"
+		}
 		c.JSON(http.StatusOK, domain.PayIntent{
-			Mode:        domain.PaymentModeManual,
-			Note:        domain.UPINote(due.DueCode),
-			DueCode:     due.DueCode,
-			AmountPaise: due.Amount,
-			QRPNGURL:    collector.PNGURL(role, due.ID),
-			Payable:     false,
+			Mode:               domain.PaymentModeManual,
+			Note:               domain.UPINote(due.DueCode),
+			DueCode:            due.DueCode,
+			AmountPaise:        due.Amount,
+			QRPNGURL:           collector.PNGURL(role, due.ID),
+			Payable:            false,
+			AvailabilityStatus: avail,
 		})
 		return
 	}
@@ -132,10 +170,11 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	if !h.tenantPayable(c.Request.Context(), t) {
+	if ok, reason := h.tenantPayability(c.Request.Context(), t); !ok {
 		c.JSON(http.StatusOK, domain.PayIntent{
-			Mode:    domain.PaymentModeManual,
-			Payable: false,
+			Mode:               domain.PaymentModeManual,
+			Payable:            false,
+			AvailabilityStatus: reason,
 		})
 		return
 	}
@@ -149,6 +188,124 @@ func (h *Handlers) TenantDuePay(c *gin.Context) {
 		return
 	}
 	h.duePayJSON(c, due, "tenant")
+}
+
+type orderAttemptVerifier interface {
+	FetchOrderPayments(ctx context.Context, orderID string) ([]cashfree.PaymentAttempt, error)
+	GetOrder(ctx context.Context, orderID string) (*cashfree.OrderDetails, error)
+}
+
+func isTerminalAttemptFailure(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "FAILED", "USER_DROPPED", "CANCELLED", "VOID", "FLAGGED":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handlers) verifyAndClassifyOrder(ctx context.Context, orderID string, intent *domain.PaymentIntent) (paid bool, status string) {
+	verifyCacheMu.Lock()
+	cached, hasCached := verifyCache[orderID]
+	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid && cached.status != "" {
+		verifyCacheMu.Unlock()
+		return false, cached.status
+	}
+	verifyCacheMu.Unlock()
+
+	if verifier, ok := h.CashfreeClient.(orderAttemptVerifier); ok {
+		attempts, err := verifier.FetchOrderPayments(ctx, orderID)
+		if err != nil {
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+			return false, "PENDING"
+		}
+
+		var successes []cashfree.PaymentAttempt
+		seenSuccess := make(map[string]struct{})
+		hasNonTerminal := false
+		for _, a := range attempts {
+			if a.PaymentStatus == "SUCCESS" {
+				if a.CFPaymentID == "" || a.AmountPaise <= 0 {
+					setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+					return false, "PENDING"
+				}
+				if _, dup := seenSuccess[a.CFPaymentID]; !dup {
+					seenSuccess[a.CFPaymentID] = struct{}{}
+					successes = append(successes, a)
+				}
+				continue
+			}
+			if !isTerminalAttemptFailure(a.PaymentStatus) {
+				hasNonTerminal = true
+			}
+		}
+
+		if len(successes) == 1 {
+			s := successes[0]
+			txn := s.BankReference
+			if txn == "" {
+				txn = s.CFPaymentID
+			}
+			if err := h.SettleGatewayOrder(ctx, orderID, s.CFPaymentID, txn, s.AmountPaise, intent, nil); err != nil {
+				setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+				return false, "PENDING"
+			}
+			setVerifyCache(orderID, verifyCacheEntry{
+				checkedAt: time.Now(),
+				paid:      true,
+				status:    "PAID",
+				cfID:      s.CFPaymentID,
+				bankRef:   s.BankReference,
+				amount:    s.AmountPaise,
+			})
+			return true, "PAID"
+		}
+		if len(successes) > 1 || hasNonTerminal {
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+			return false, "PENDING"
+		}
+
+		// Zero attempts or all attempts are confirmed terminal failures: check order status.
+		order, oErr := verifier.GetOrder(ctx, orderID)
+		if oErr != nil || order == nil {
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+			return false, "PENDING"
+		}
+		switch order.OrderStatus {
+		case "EXPIRED", "TERMINATED":
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "EXPIRED"})
+			return false, "EXPIRED"
+		case "ACTIVE":
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "RETRYABLE"})
+			return false, "RETRYABLE"
+		default:
+			setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+			return false, "PENDING"
+		}
+	}
+
+	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(ctx, orderID)
+	if err != nil || !ok || amount <= 0 {
+		setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+		return false, "PENDING"
+	}
+	txn := bankRef
+	if txn == "" {
+		txn = cfID
+	}
+	if err := h.SettleGatewayOrder(ctx, orderID, cfID, txn, amount, intent, nil); err != nil {
+		setVerifyCache(orderID, verifyCacheEntry{checkedAt: time.Now(), paid: false, status: "PENDING"})
+		return false, "PENDING"
+	}
+	setVerifyCache(orderID, verifyCacheEntry{
+		checkedAt: time.Now(),
+		paid:      true,
+		status:    "PAID",
+		cfID:      cfID,
+		bankRef:   bankRef,
+		amount:    amount,
+	})
+	return true, "PAID"
 }
 
 // TenantDuePayVerify handles POST /tenant/dues/:id/pay/verify.
@@ -191,50 +348,8 @@ func (h *Handlers) TenantDuePayVerify(c *gin.Context) {
 		return
 	}
 
-	verifyCacheMu.Lock()
-	cached, hasCached := verifyCache[intent.ProviderOrderID]
-	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid {
-		verifyCacheMu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
-		return
-	}
-	verifyCacheMu.Unlock()
-
-	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), intent.ProviderOrderID)
-	now := time.Now()
-	verifyCacheMu.Lock()
-	if len(verifyCache) > 1000 {
-		for k, v := range verifyCache {
-			if now.Sub(v.checkedAt) > 2*time.Minute {
-				delete(verifyCache, k)
-			}
-		}
-	}
-	verifyCache[intent.ProviderOrderID] = verifyCacheEntry{
-		checkedAt: now,
-		paid:      ok && amount > 0,
-		cfID:      cfID,
-		bankRef:   bankRef,
-		amount:    amount,
-	}
-	verifyCacheMu.Unlock()
-
-	if err != nil || !ok || amount <= 0 {
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
-		return
-	}
-
-	txn := bankRef
-	if txn == "" {
-		txn = cfID
-	}
-
-	if err := h.SettleGatewayOrder(c.Request.Context(), intent.ProviderOrderID, cfID, txn, amount, intent, nil); err != nil {
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID"})
+	paid, status := h.verifyAndClassifyOrder(c.Request.Context(), intent.ProviderOrderID, intent)
+	c.JSON(http.StatusOK, gin.H{"paid": paid, "status": status})
 }
 
 // TenantOrderPayVerify handles POST /tenant/payments/orders/:order_id/verify
@@ -319,50 +434,8 @@ func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 		return
 	}
 
-	verifyCacheMu.Lock()
-	cached, hasCached := verifyCache[orderID]
-	if hasCached && time.Since(cached.checkedAt) < verifyThrottleDuration && !cached.paid {
-		verifyCacheMu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
-		return
-	}
-	verifyCacheMu.Unlock()
-
-	cfID, bankRef, amount, ok, err := h.CashfreeClient.FetchSuccessfulPayment(c.Request.Context(), orderID)
-	now := time.Now()
-	verifyCacheMu.Lock()
-	if len(verifyCache) > 1000 {
-		for k, v := range verifyCache {
-			if now.Sub(v.checkedAt) > 2*time.Minute {
-				delete(verifyCache, k)
-			}
-		}
-	}
-	verifyCache[orderID] = verifyCacheEntry{
-		checkedAt: now,
-		paid:      ok && amount > 0,
-		cfID:      cfID,
-		bankRef:   bankRef,
-		amount:    amount,
-	}
-	verifyCacheMu.Unlock()
-
-	if err != nil || !ok || amount <= 0 {
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
-		return
-	}
-
-	txn := bankRef
-	if txn == "" {
-		txn = cfID
-	}
-
-	if err := h.SettleGatewayOrder(c.Request.Context(), orderID, cfID, txn, amount, intent, nil); err != nil {
-		c.JSON(http.StatusOK, gin.H{"paid": false, "status": "PENDING", "due_ids": dueIDStrs})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"paid": true, "status": "PAID", "due_ids": dueIDStrs})
+	paid, status := h.verifyAndClassifyOrder(c.Request.Context(), orderID, intent)
+	c.JSON(http.StatusOK, gin.H{"paid": paid, "status": status, "due_ids": dueIDStrs})
 }
 
 type PayBatchRequest struct {
@@ -376,10 +449,11 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 	if t == nil {
 		return
 	}
-	if !h.tenantPayable(c.Request.Context(), t) {
+	if ok, reason := h.tenantPayability(c.Request.Context(), t); !ok {
 		c.JSON(http.StatusOK, domain.PayIntent{
-			Mode:    domain.PaymentModeManual,
-			Payable: false,
+			Mode:               domain.PaymentModeManual,
+			Payable:            false,
+			AvailabilityStatus: reason,
 		})
 		return
 	}
@@ -416,9 +490,10 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 	options := domain.CalculatePaymentOptions(ptrList)
 	if len(options) == 0 {
 		c.JSON(http.StatusOK, domain.PayIntent{
-			Mode:    domain.PaymentModeManual,
-			Payable: false,
-			Note:    "no open dues",
+			Mode:               domain.PaymentModeManual,
+			Payable:            false,
+			AvailabilityStatus: "NO_OPEN_DUES",
+			Note:               "no open dues",
 		})
 		return
 	}

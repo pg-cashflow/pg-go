@@ -532,3 +532,20 @@ func TestEnsureCashfree_PassesPersistedIdempotencyKey(t *testing.T) {
 	}
 	_ = err
 }
+
+func TestCollector_MinOrderAmount_RejectsBeforeClaim(t *testing.T) {
+	cf := &stubCF{session: "sess_never"}
+	mgr := &recoveringIntentMgr{}
+	svc := New(mgr, cf)
+
+	due := &domain.Due{ID: uuid.New(), TenantID: uuid.New(), DueCode: "DUESUB1", Amount: 99, Status: domain.DueStatusPending}
+	prop := &domain.Property{PaymentMode: domain.PaymentModeCashfree}
+
+	_, _, err := svc.PayIntent(context.Background(), due, prop, "", "", "+919876543210")
+	if !errors.Is(err, ErrAmountBelowMinimum) {
+		t.Fatalf("expected ErrAmountBelowMinimum, got: %v", err)
+	}
+	if mgr.claimed != nil {
+		t.Fatalf("expected no intent claim for amount < 100 paise")
+	}
+}

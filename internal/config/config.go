@@ -105,6 +105,8 @@ type Config struct {
 	PayoutEncryptionKeys map[byte]string
 	// CashfreePGBaseURL optionally overrides the gateway endpoint in non-production environments.
 	CashfreePGBaseURL string
+	// CashfreePGNotifyURL optionally sets order_meta.notify_url on Create Order requests.
+	CashfreePGNotifyURL string
 	// MetricsSecret protects /metrics via X-Metrics-Token header.
 	MetricsSecret string
 	// WebhookSecretSource indicates the source of CashfreeWebhookSecret ("pg_secret_key" or "override").
@@ -180,6 +182,7 @@ func Load() (*Config, error) {
 		PayoutApprovalSecret:              envFirst("PAYOUT_APPROVAL_SECRET", "CF_PAYOUT_APPROVAL_SECRET"),
 		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
 		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
+		CashfreePGNotifyURL:               strings.TrimSpace(os.Getenv("CASHFREE_PG_NOTIFY_URL")),
 		MetricsSecret:                     strings.TrimSpace(os.Getenv("METRICS_SECRET")),
 		WhatsAppBaseURL:                   strings.TrimSpace(os.Getenv("WHATSAPP_BASE_URL")),
 		WhatsAppPhoneNumberID:             strings.TrimSpace(os.Getenv("WHATSAPP_PHONE_NUMBER_ID")),

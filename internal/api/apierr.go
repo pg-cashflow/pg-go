@@ -34,6 +34,10 @@ func checkoutClientErr(err error) error {
 		return clientErrWithCode(http.StatusConflict, "A previous payment attempt is being checked. Please try again shortly.", apierr.CodePaymentCheckoutPending)
 	case errors.Is(err, collector.ErrCashfreeOrderExpired):
 		return clientErrWithCode(http.StatusConflict, "The previous payment session has ended. Retry to start a new payment.", apierr.CodePaymentCheckoutExpired)
+	case errors.Is(err, collector.ErrAmountBelowMinimum):
+		return clientErr(http.StatusUnprocessableEntity, "Amount must be at least ₹1 (100 paise) for online payment.")
+	case errors.Is(err, collector.ErrInvalidCustomerPhone):
+		return clientErr(http.StatusUnprocessableEntity, "A valid phone number is required for online payment.")
 	default:
 		return err
 	}
