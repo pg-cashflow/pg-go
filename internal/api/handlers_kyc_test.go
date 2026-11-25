@@ -10,7 +10,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1563,4 +1565,75 @@ func TestOwnerKYCDocument_CrossProperty_Forbidden(t *testing.T) {
 		t.Fatalf("expected 200 or 404 for document check, got %d", w.Code)
 	}
 	_ = propA
+}
+
+func TestTenantKYCUpload_HeapUnderMaxConcurrency(t *testing.T) {
+	const concurrency = 8
+	const fileSize = 5 * 1024 * 1024 // 5 MiB
+
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	gateCh := make(chan struct{})
+
+	svc := &fakeKYCSvc{
+		uploadFn: func(_ context.Context, _ uuid.UUID, _ string, file io.Reader, _, _ string) (*domain.KYCVerification, error) {
+			_, _ = io.ReadAll(io.LimitReader(file, fileSize+1))
+			<-gateCh // Hold all 8 slots active simultaneously to measure peak concurrent heap
+			return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusPendingManual}, nil
+		},
+	}
+
+	r := kycTestTenantRouter(svc, "")
+	payload := bytes.Repeat([]byte("A"), fileSize)
+
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	var maxHeapAlloc uint64
+	statuses := make([]int, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			_ = mw.WriteField("doc_type", "aadhaar")
+			fw, _ := mw.CreateFormFile("document", fmt.Sprintf("doc-%d.jpg", idx))
+			_, _ = fw.Write(payload)
+			_ = mw.Close()
+
+			<-startCh
+			req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/upload", &body)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			statuses[idx] = w.Code
+		}(i)
+	}
+
+	close(startCh)
+	// Allow all 8 uploads to enter uploadFn and allocate their 5 MiB buffers
+	time.Sleep(150 * time.Millisecond)
+
+	var during runtime.MemStats
+	runtime.ReadMemStats(&during)
+	if during.HeapAlloc > before.HeapAlloc {
+		maxHeapAlloc = during.HeapAlloc - before.HeapAlloc
+	}
+	close(gateCh)
+	wg.Wait()
+
+	for i, code := range statuses {
+		if code != http.StatusOK {
+			t.Fatalf("upload %d failed with status %d", i, code)
+		}
+	}
+
+	const maxExpectedDeltaBytes = 120 * 1024 * 1024 // 8 * 5 MiB = 40 MiB + multipart overhead, well under 120 MiB
+	t.Logf("Measured concurrent upload heap delta across %d x 5 MiB uploads: %.2f MiB", concurrency, float64(maxHeapAlloc)/(1024*1024))
+	if maxHeapAlloc > maxExpectedDeltaBytes {
+		t.Fatalf("heap delta exceeded bound: got %.2f MiB, limit %.2f MiB", float64(maxHeapAlloc)/(1024*1024), float64(maxExpectedDeltaBytes)/(1024*1024))
+	}
 }

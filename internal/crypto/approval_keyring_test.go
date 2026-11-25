@@ -144,3 +144,44 @@ func TestApprovalKeyRing_RotationSupport(t *testing.T) {
 		t.Errorf("expected 2 verification keys, got %d", len(allKeys))
 	}
 }
+
+func TestApprovalKeyRing_Immutability(t *testing.T) {
+	origV1 := []byte(strings.Repeat("a", 32))
+	inputMap := map[string][]byte{"v1": origV1}
+
+	ring, err := crypto.NewApprovalKeyRing("v1", inputMap)
+	if err != nil {
+		t.Fatalf("NewApprovalKeyRing failed: %v", err)
+	}
+
+	// Mutate caller's input slice and map
+	origV1[0] = 'X'
+	inputMap["v2"] = []byte(strings.Repeat("b", 32))
+
+	active, _, err := ring.ActiveKey()
+	if err != nil {
+		t.Fatalf("ActiveKey failed: %v", err)
+	}
+	if active[0] != 'a' {
+		t.Fatalf("ring internal key was mutated by input slice modification")
+	}
+	if _, ok := ring.GetKey("v2"); ok {
+		t.Fatalf("ring internal map was mutated by input map modification")
+	}
+
+	// Mutate slice returned by ActiveKey, GetKey, and VerificationKeys
+	active[0] = 'Y'
+	gotV1, _ := ring.GetKey("v1")
+	gotV1[1] = 'Z'
+	vKeys := ring.VerificationKeys()
+	vKeys["v1"][2] = 'W'
+	vKeys["injected"] = []byte(strings.Repeat("c", 32))
+
+	freshActive, _, _ := ring.ActiveKey()
+	if freshActive[0] != 'a' || freshActive[1] != 'a' || freshActive[2] != 'a' {
+		t.Fatalf("ring internal key was mutated via returned slices: %q", string(freshActive))
+	}
+	if _, ok := ring.GetKey("injected"); ok {
+		t.Fatalf("ring internal map was mutated via VerificationKeys map")
+	}
+}

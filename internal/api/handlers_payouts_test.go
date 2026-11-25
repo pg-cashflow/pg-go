@@ -167,15 +167,18 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	mockSMS := &mockSMSForPayouts{}
 	otpRepo := postgres.NewOTPRepo(pool)
 	authSvc := auth.NewService(otpRepo, userRepo, nil, nil, mockSMS, "test_otp_secret_32_characters_long", cfg.JWTSecret)
+	testApprovalRing, _ := crypto.NewApprovalKeyRing("v1", map[string][]byte{
+		"v1": []byte("test_approval_signing_key_32bytes_!"),
+	})
 	h := &Handlers{
 		Deps: Deps{
-			Pool:                     pool,
-			PayoutRepo:               payoutRepo,
-			TenantStore:              tenantStore,
-			UserStore:                userRepo,
-			Auth:                     authSvc,
-			PayoutChecksumSecret:     "test_secret_for_http_export",
-			PayoutApprovalSigningKey: []byte("test_approval_signing_key_32bytes_!"),
+			Pool:                  pool,
+			PayoutRepo:            payoutRepo,
+			TenantStore:           tenantStore,
+			UserStore:             userRepo,
+			Auth:                  authSvc,
+			PayoutChecksumSecret:  "test_secret_for_http_export",
+			PayoutApprovalKeyRing: testApprovalRing,
 		},
 	}
 

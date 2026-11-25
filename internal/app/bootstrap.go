@@ -459,16 +459,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize payout approval key ring: %w", err)
 		}
-	} else if cfg.AppEnv == "production" {
-		return nil, errors.New("payout approval key ring is required in production")
-	}
-
-	var payoutApprovalSigningKey []byte
-	approvalSigningKeys := map[string][]byte{}
-	if approvalKeyRing != nil {
-		k, _, _ := approvalKeyRing.ActiveKey()
-		payoutApprovalSigningKey = k
-		approvalSigningKeys = approvalKeyRing.VerificationKeys()
+	} else if cfg.AppEnv == "production" || (cfg.AppEnv == "staging" && (cfg.CashfreePayoutDispatchEnabled || cfg.CashfreePayoutAutoDispatchEnabled)) {
+		return nil, errors.New("payout approval key ring is required in production and when payout dispatch is enabled in staging")
 	}
 
 	var payoutDispatcher *finance.PayoutDispatcher
@@ -492,7 +484,6 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		payoutDispatcher = finance.NewPayoutDispatcher(payoutRepo, payoutClient, cfg.CashfreePayoutFundsourceID, payoutEncryptionKey)
 		payoutDispatcher.SetKeyRing(payoutKeyRing)
 		payoutDispatcher.SetApprovalKeyRing(approvalKeyRing)
-		payoutDispatcher.SetApprovalSigningKeys(approvalSigningKeys)
 		logger.Info("cashfree automated payouts dispatcher enabled", "env", cfg.CashfreePayoutEnv, "auto_dispatch", cfg.CashfreePayoutAutoDispatchEnabled)
 	} else if cfg.CashfreePayoutDispatchEnabled || cfg.CashfreePayoutAutoDispatchEnabled {
 		logger.Warn("CF_PAYOUT_DISPATCH_ENABLED or CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
@@ -577,8 +568,6 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		PayoutDispatcher:                payoutDispatcher,
 		PayoutChecksumSecret:            cfg.PayoutExportChecksumSecret,
 		PayoutApprovalKeyRing:           approvalKeyRing,
-		PayoutApprovalSigningKey:        payoutApprovalSigningKey,
-		PayoutApprovalKeys:              approvalSigningKeys,
 		PayoutEncryptionKey:             payoutEncryptionKey,
 		PayoutKeyRing:                   payoutKeyRing,
 		CashfreePayoutWebhookSecret:     cfg.CashfreePayoutWebhookSecret,

@@ -585,11 +585,15 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 			if tenant.Status != domain.TenantStatusActive && tenant.Status != domain.TenantStatusPendingAllocation {
 				return nil, ErrTenantVacated
 			}
+			verifiedEmail := ""
+			if ident.EmailVerified {
+				verifiedEmail = ident.Email
+			}
 			tid := tenant.ID
 			pid := tenant.PropertyID
 			u := &domain.User{
 				Phone:      ident.Phone,
-				Email:      ident.Email,
+				Email:      verifiedEmail,
 				Role:       domain.RoleTenant,
 				TenantID:   &tid,
 				PropertyID: &pid,
@@ -619,6 +623,10 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 			}
 			return nil, err
 		}
+		if res.SlotInvite != nil && res.SlotInvite.BoundPhone != "" &&
+			NormalizePhone(ident.Phone) != NormalizePhone(res.SlotInvite.BoundPhone) {
+			return nil, ErrInvalidInvite
+		}
 		pid = res.PropertyID
 	} else {
 		invited, err := s.properties.GetByInviteCode(ctx, code)
@@ -630,9 +638,13 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 		}
 		pid = invited.ID
 	}
+	verifiedEmail := ""
+	if ident.EmailVerified {
+		verifiedEmail = ident.Email
+	}
 	u := &domain.User{
 		Phone:      ident.Phone,
-		Email:      ident.Email,
+		Email:      verifiedEmail,
 		Role:       domain.RoleTenant,
 		PropertyID: &pid,
 	}

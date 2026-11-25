@@ -996,12 +996,12 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 
 	signingKey, keyID := h.getPayoutApprovalSigningKey()
 	if len(signingKey) < domain.MinApprovalSigningKeyLength {
-		if h.AppEnv == "production" {
+		if h.AppEnv == "production" || h.AppEnv == "staging" || h.PayoutDispatcher != nil {
 			respondErr(c, fmt.Errorf("payout approval signing key not configured"))
 			return
 		}
-		// In development or test environments without a configured key, use a deterministic 32-byte key
-		// to enforce full signature and payee integrity checks unconditionally.
+		// In local development/test environments without a dispatcher, use a deterministic 32-byte key
+		// to exercise signature verification without external configuration.
 		signingKey = []byte("pg_payout_approval_dev_key_32bytes!")
 		keyID = "dev-v1"
 	}
@@ -1228,17 +1228,14 @@ func (h *Handlers) getChecksumSecret() string {
 }
 
 // getPayoutApprovalSigningKey returns the dedicated HMAC secret and keyID used to sign immutable payout approval snapshots.
-// It uses PayoutApprovalKeyRing if configured, ensuring the active KID is always selected for signing.
-// Fallbacks to ChecksumSecret or JWTSecret are strictly forbidden to enforce cryptographic isolation.
+// It uses PayoutApprovalKeyRing exclusively, ensuring the active KID is always selected for signing.
+// Legacy and cross-domain secret fallbacks are strictly forbidden to enforce cryptographic isolation.
 func (h *Handlers) getPayoutApprovalSigningKey() ([]byte, string) {
 	if h.PayoutApprovalKeyRing != nil {
 		k, kid, err := h.PayoutApprovalKeyRing.ActiveKey()
 		if err == nil && len(k) >= domain.MinApprovalSigningKeyLength {
 			return k, kid
 		}
-	}
-	if len(h.PayoutApprovalSigningKey) >= domain.MinApprovalSigningKeyLength {
-		return h.PayoutApprovalSigningKey, "v1"
 	}
 	return nil, ""
 }

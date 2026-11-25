@@ -189,7 +189,11 @@ func Load() (*Config, error) {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)
 	}
 	if keysStr := os.Getenv("PAYOUT_APPROVAL_KEYS"); keysStr != "" {
-		cfg.PayoutApprovalKeys = parseVersionedApprovalKeys(keysStr)
+		parsed, err := parseVersionedApprovalKeysStrict(keysStr)
+		if err != nil {
+			return nil, fmt.Errorf("PAYOUT_APPROVAL_KEYS: %w", err)
+		}
+		cfg.PayoutApprovalKeys = parsed
 	}
 	if cfg.PayoutApprovalActiveKID == "" {
 		cfg.PayoutApprovalActiveKID = "v1"
@@ -206,10 +210,18 @@ func Load() (*Config, error) {
 		}
 	}
 	if secretsStr := os.Getenv("CF_PAYOUT_WEBHOOK_SECRETS"); secretsStr != "" {
-		cfg.CashfreePayoutWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
+		parsed, err := parseVersionedApprovalKeysStrict(secretsStr)
+		if err != nil {
+			return nil, fmt.Errorf("CF_PAYOUT_WEBHOOK_SECRETS: %w", err)
+		}
+		cfg.CashfreePayoutWebhookSecrets = parsed
 	}
 	if secretsStr := envFirst("CASHFREE_PG_WEBHOOK_SECRETS", "CASHFREE_WEBHOOK_SECRETS"); secretsStr != "" {
-		cfg.CashfreePGWebhookSecrets = parseVersionedApprovalKeys(secretsStr)
+		parsed, err := parseVersionedApprovalKeysStrict(secretsStr)
+		if err != nil {
+			return nil, fmt.Errorf("CASHFREE_PG_WEBHOOK_SECRETS: %w", err)
+		}
+		cfg.CashfreePGWebhookSecrets = parsed
 		cfg.CashfreeWebhookSecrets = cfg.CashfreePGWebhookSecrets
 	}
 	if keysStr := os.Getenv("KYC_IDENTITY_SECRETS"); keysStr != "" {
@@ -262,18 +274,6 @@ func Load() (*Config, error) {
 		if strings.TrimSpace(cfg.PayoutExportChecksumSecret) == "" {
 			return nil, fmt.Errorf("PAYOUT_CHECKSUM_SECRET is required in production (set PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET)")
 		}
-		if len(cfg.PayoutApprovalKeys) == 0 {
-			return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET or PAYOUT_APPROVAL_KEYS is required in production (must not reuse JWT_SECRET)")
-		}
-		activeSec, ok := cfg.PayoutApprovalKeys[cfg.PayoutApprovalActiveKID]
-		if !ok || strings.TrimSpace(activeSec) == "" {
-			return nil, fmt.Errorf("PAYOUT_APPROVAL_ACTIVE_KID %q not found in PAYOUT_APPROVAL_KEYS", cfg.PayoutApprovalActiveKID)
-		}
-		for kid, sec := range cfg.PayoutApprovalKeys {
-			if len(sec) < 32 {
-				return nil, fmt.Errorf("payout approval key %q must be at least 32 bytes (got %d)", kid, len(sec))
-			}
-		}
 		// Step-up OTP (payout_approval) is email-only by architectural contract
 		// (docs/specs/auth-frontend-backend-contract.md §1.2). Without SMTP,
 		// auth.Service silently falls back to mailer.NoopMailer, which reports
@@ -288,6 +288,22 @@ func Load() (*Config, error) {
 		// and recording 127.0.0.1 in every audit and consent log.
 		if len(cfg.TrustedProxies) == 0 {
 			return nil, fmt.Errorf("TRUSTED_PROXIES must be set in production (set to the cloudflared/load-balancer IP or CIDR, e.g. '127.0.0.1')")
+		}
+	}
+	requireApprovalKeys := cfg.AppEnv == "production" ||
+		(cfg.AppEnv == "staging" && (cfg.CashfreePayoutDispatchEnabled || cfg.CashfreePayoutAutoDispatchEnabled))
+	if requireApprovalKeys && len(cfg.PayoutApprovalKeys) == 0 {
+		return nil, fmt.Errorf("PAYOUT_APPROVAL_SECRET or PAYOUT_APPROVAL_KEYS is required in %s when payout dispatch is enabled (must not reuse JWT_SECRET)", cfg.AppEnv)
+	}
+	if len(cfg.PayoutApprovalKeys) > 0 {
+		activeSec, ok := cfg.PayoutApprovalKeys[cfg.PayoutApprovalActiveKID]
+		if !ok || strings.TrimSpace(activeSec) == "" {
+			return nil, fmt.Errorf("PAYOUT_APPROVAL_ACTIVE_KID %q not found in PAYOUT_APPROVAL_KEYS", cfg.PayoutApprovalActiveKID)
+		}
+		for kid, sec := range cfg.PayoutApprovalKeys {
+			if len(sec) < 32 {
+				return nil, fmt.Errorf("payout approval key %q must be at least 32 bytes (got %d)", kid, len(sec))
+			}
 		}
 	}
 	for _, proxy := range cfg.TrustedProxies {
@@ -423,19 +439,28 @@ func parseVersionedHexKeys(s string) (map[byte][]byte, error) {
 	return out, nil
 }
 
-func parseVersionedApprovalKeys(s string) map[string]string {
+func parseVersionedApprovalKeysStrict(s string) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, p := range strings.Split(s, ",") {
-		parts := strings.SplitN(strings.TrimSpace(p), ":", 2)
-		if len(parts) == 2 {
-			k := strings.TrimSpace(parts[0])
-			v := strings.TrimSpace(parts[1])
-			if k != "" && v != "" {
-				out[k] = v
-			}
+		entry := strings.TrimSpace(p)
+		if entry == "" {
+			return nil, fmt.Errorf("malformed versioned key entry: empty segment")
 		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("malformed versioned key entry %q (expected key_id:secret)", entry)
+		}
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if k == "" || v == "" {
+			return nil, fmt.Errorf("malformed versioned key entry %q (empty key_id or secret)", entry)
+		}
+		if _, dup := out[k]; dup {
+			return nil, fmt.Errorf("duplicate key_id %q in versioned keys", k)
+		}
+		out[k] = v
 	}
-	return out
+	return out, nil
 }
 
 func envBoolDefaultTrue(k string) bool {

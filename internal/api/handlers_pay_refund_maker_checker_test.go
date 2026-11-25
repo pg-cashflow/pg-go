@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -15,10 +16,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
+	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 type mockPhase4ApprovalStore struct {
@@ -27,6 +31,8 @@ type mockPhase4ApprovalStore struct {
 	dispatchCalls    int
 	failDispatch     bool
 	conflictOnCreate bool
+	createCalls      int
+	onCreateInject   *domain.RefundApprovalRequest
 }
 
 func newMockPhase4ApprovalStore() *mockPhase4ApprovalStore {
@@ -38,7 +44,13 @@ func newMockPhase4ApprovalStore() *mockPhase4ApprovalStore {
 func (m *mockPhase4ApprovalStore) CreateRequest(_ context.Context, req *domain.RefundApprovalRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.createCalls++
 	if m.conflictOnCreate {
+		if m.onCreateInject != nil {
+			cp := *m.onCreateInject
+			m.requests[cp.ID] = &cp
+			m.onCreateInject = nil
+		}
 		return postgres.ErrRefundApprovalConflict
 	}
 	if req.ID == uuid.Nil {
@@ -982,7 +994,9 @@ func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing
 	payments.payments[paymentID] = &domain.Payment{ID: paymentID, TenantID: tenantID, Amount: 1000000, Provider: "cashfree"}
 
 	approvalStore := newMockPhase4ApprovalStore()
-	// Pre-populate existing row that simulated concurrent thread inserted
+	// Simulate race: Request A's initial lookup misses (m.requests is empty).
+	// When Request A calls CreateRequest, Request B wins the race, inserts existingReq,
+	// and Request A hits ErrRefundApprovalConflict, then reloads existingReq.
 	existingHash := domain.ComputeRefundMaterialHash(pid, paymentID, tenantID, 200000, "Customer cancel")
 	existingReq := &domain.RefundApprovalRequest{
 		ID:                uuid.New(),
@@ -997,8 +1011,7 @@ func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing
 		RequiredApprovals: 1,
 		MaterialHash:      existingHash,
 	}
-	approvalStore.requests[existingReq.ID] = existingReq
-	// Simulate conflict error when CreateRequest is called
+	approvalStore.onCreateInject = existingReq
 	approvalStore.conflictOnCreate = true
 
 	h := &Handlers{Deps: Deps{
@@ -1014,7 +1027,7 @@ func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing
 	})
 	r.POST("/owner/payments/:id/refund/requests", h.OwnerCreateRefundRequest)
 
-	// 1. Identical payload -> must return 200 OK (idempotent replay)
+	// 1. Request A misses initial lookup, calls CreateRequest, hits conflict, fetches Request B's row, replays 200 OK
 	bodyMatching := []byte(`{"amount_paise": 200000, "reason": "Customer cancel"}`)
 	req1 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader(bodyMatching))
 	req1.Header.Set("Content-Type", "application/json")
@@ -1025,17 +1038,200 @@ func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK for exact replay under unique conflict, got: %d (body: %s)", rec1.Code, rec1.Body.String())
 	}
+	if approvalStore.createCalls != 1 {
+		t.Fatalf("expected CreateRequest to be called once on race path, got %d", approvalStore.createCalls)
+	}
 
-	// 2. Conflicting payload (different amount or reason) with same idempotency key -> must return 409 Conflict
+	// 2. Now simulate another race where a fresh idemKey2 misses initial lookup,
+	// concurrent writer inserts conflicting amount/reason, and CreateRequest hits ErrRefundApprovalConflict -> 409 Conflict
+	idemKey2 := "idem-concurrent-conflict"
+	conflictHash := domain.ComputeRefundMaterialHash(pid, paymentID, tenantID, 200000, "Customer cancel")
+	approvalStore.onCreateInject = &domain.RefundApprovalRequest{
+		ID:                uuid.New(),
+		PropertyID:        pid,
+		PaymentID:         paymentID,
+		TenantID:          tenantID,
+		AmountPaise:       200000,
+		Reason:            "Customer cancel",
+		IdempotencyKey:    idemKey2,
+		RequestedBy:       makerID,
+		Status:            domain.RefundApprovalPending,
+		RequiredApprovals: 1,
+		MaterialHash:      conflictHash,
+	}
+
 	bodyDifferent := []byte(`{"amount_paise": 300000, "reason": "Different reason entirely"}`)
 	req2 := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader(bodyDifferent))
 	req2.Header.Set("Content-Type", "application/json")
-	req2.Header.Set("Idempotency-Key", idemKey)
+	req2.Header.Set("Idempotency-Key", idemKey2)
 	rec2 := httptest.NewRecorder()
 	r.ServeHTTP(rec2, req2)
 
 	if rec2.Code != http.StatusConflict {
 		t.Fatalf("expected 409 Conflict for differing payload under unique conflict, got: %d (body: %s)", rec2.Code, rec2.Body.String())
+	}
+	if approvalStore.createCalls != 2 {
+		t.Fatalf("expected CreateRequest to be called twice across both race scenarios, got %d", approvalStore.createCalls)
+	}
+}
+
+func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
+	if testing.Short() {
+		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres refund race test in -short mode")
+	}
+	_ = godotenv.Load("../../.env")
+	testutil.RequireDB(t)
+
+	cfg, err := config.Load()
+	if err != nil {
+		testutil.FailOnSkipIfDBRequired(t, "config load failed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		testutil.FailOnSkipfIfDBRequired(t, "postgres connect failed: %v", err)
+	}
+	defer pool.Close()
+
+	_ = postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations"))
+
+	propID := uuid.New()
+	ownerID := uuid.New()
+	tenantID := uuid.New()
+	dueID := uuid.New()
+	paymentID := uuid.New()
+	phone := fmt.Sprintf("+91%010d", time.Now().UnixNano()%10000000000)
+	inviteCode := fmt.Sprintf("R%s", uuid.New().String()[:7])
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+		VALUES ($1, 'Race Test PG', '100 Race Rd', $2, 'race@upi', 'Owner', 'race@test.com', $3)`,
+		propID, phone, inviteCode); err != nil {
+		t.Fatalf("insert property: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM properties WHERE id = $1`, propID) }()
+
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, phone, role, property_id) VALUES ($1, $2, 'owner', $3)`,
+		ownerID, phone, propID); err != nil {
+		t.Fatalf("insert owner: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, ownerID) }()
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, status)
+		VALUES ($1, $2, 'Race Tenant', $3, 'active')`,
+		tenantID, propID, fmt.Sprintf("+91%010d", (time.Now().UnixNano()+1)%10000000000)); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO dues (id, property_id, tenant_id, period_label, kind, amount_paise, due_date, status)
+		VALUES ($1, $2, $3, '2026-11', 'rent', 1000000, CURRENT_DATE, 'paid')`,
+		dueID, propID, tenantID); err != nil {
+		t.Fatalf("insert due: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payments (id, property_id, due_id, tenant_id, amount_paise, method, provider, status, paid_at)
+		VALUES ($1, $2, $3, $4, 1000000, 'upi_cashfree', 'cashfree', 'paid', NOW())`,
+		paymentID, propID, dueID, tenantID); err != nil {
+		t.Fatalf("insert payment: %v", err)
+	}
+
+	payRepo := postgres.NewPaymentRepo(pool)
+	tenantRepo := postgres.NewTenantRepo(pool)
+	refundApprovalRepo := postgres.NewRefundApprovalRepo(pool)
+
+	h := &Handlers{Deps: Deps{
+		Pool:               pool,
+		GatewayPaymentRepo: payRepo,
+		TenantStore:        tenantRepo,
+		RefundApprovalRepo: refundApprovalRepo,
+	}}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: ownerID, PropertyID: &propID, Role: domain.RoleOwner})
+		c.Next()
+	})
+	r.POST("/owner/payments/:id/refund/requests", h.OwnerCreateRefundRequest)
+
+	// Case 1: 4 concurrent identical requests with the same Idempotency-Key -> all succeed (201 or 200), exactly 1 DB row
+	const workers = 4
+	idemKey := "live-race-idem-1"
+	startCh := make(chan struct{})
+	var wg sync.WaitGroup
+	codes := make([]int, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-startCh
+			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader([]byte(`{"amount_paise": 200000, "reason": "Concurrent test"}`)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", idemKey)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			codes[idx] = rec.Code
+		}(i)
+	}
+	close(startCh)
+	wg.Wait()
+
+	createdCount := 0
+	okCount := 0
+	for i, c := range codes {
+		if c == http.StatusCreated {
+			createdCount++
+		} else if c == http.StatusOK {
+			okCount++
+		} else {
+			t.Fatalf("worker %d unexpected status %d (all codes: %v)", i, c, codes)
+		}
+	}
+	if createdCount != 1 || okCount != workers-1 {
+		t.Fatalf("expected 1x 201 and %dx 200, got codes=%v", workers-1, codes)
+	}
+
+	var rowCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM refund_approval_requests WHERE payment_id = $1 AND idempotency_key = $2`, paymentID, idemKey).Scan(&rowCount); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 row in DB, got %d", rowCount)
+	}
+
+	// Case 2: 2 concurrent requests with same Idempotency-Key but DIFFERENT amounts -> one 201, one 409 Conflict
+	idemKey2 := "live-race-idem-2"
+	startCh2 := make(chan struct{})
+	var wg2 sync.WaitGroup
+	codes2 := make([]int, 2)
+	payloads := []string{
+		`{"amount_paise": 150000, "reason": "Race A"}`,
+		`{"amount_paise": 250000, "reason": "Race B"}`,
+	}
+	for i := 0; i < 2; i++ {
+		wg2.Add(1)
+		go func(idx int) {
+			defer wg2.Done()
+			<-startCh2
+			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewReader([]byte(payloads[idx])))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", idemKey2)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			codes2[idx] = rec.Code
+		}(i)
+	}
+	close(startCh2)
+	wg2.Wait()
+
+	if !((codes2[0] == http.StatusCreated && codes2[1] == http.StatusConflict) ||
+		(codes2[0] == http.StatusConflict && codes2[1] == http.StatusCreated)) {
+		t.Fatalf("expected one 201 Created and one 409 Conflict, got %v", codes2)
 	}
 }
 

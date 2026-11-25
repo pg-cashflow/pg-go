@@ -180,8 +180,9 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		})
 		client.SetBaseOverride(srv.URL)
 
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
-		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
 		if err := dispatcher.DispatchBatch(ctx, batch.ID); err != nil {
 			t.Fatalf("dispatch batch: %v", err)
 		}
@@ -227,8 +228,9 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		})
 		client.SetBaseOverride(srv.URL)
 
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
-		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil {
 			t.Fatal("expected error on 5xx, got nil")
@@ -257,8 +259,9 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			ClientSecret: "csec",
 			FundsourceID: "fund_01",
 		})
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
-		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil || !strings.Contains(err.Error(), "requires provider verification") {
 			t.Fatalf("expected error containing 'requires provider verification', got: %v", err)
@@ -279,8 +282,9 @@ func TestLivePayoutDispatcher(t *testing.T) {
 			ClientSecret: "csec",
 			FundsourceID: "fund_01",
 		})
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
-		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
 		err := dispatcher.DispatchBatch(ctx, batch.ID)
 		if err == nil || !strings.Contains(err.Error(), "requires provider verification") {
 			t.Fatalf("expected error containing 'requires provider verification', got: %v", err)
@@ -395,8 +399,9 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE payout_approval_snapshots SET signature = 'tampered_signature_hex' WHERE batch_id = $1`, batch2.ID); err != nil {
 			t.Fatalf("tamper signature: %v", err)
 		}
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
-		dispatcher.SetApprovalSigningKeys(approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
 		err = dispatcher.DispatchBatch(ctx, batch2.ID)
 		if err == nil || !strings.Contains(err.Error(), "signature verification failed") {
 			t.Fatalf("expected signature verification failure, got: %v", err)

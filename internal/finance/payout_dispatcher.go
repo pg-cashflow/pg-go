@@ -24,14 +24,13 @@ type PayoutBatchDispatcher interface {
 
 // PayoutDispatcher handles the Cashfree Transfers V2 batch transfer lifecycle.
 type PayoutDispatcher struct {
-	repo                *postgres.PayoutRepo
-	client              *cashfree.PayoutClient
-	fundsourceID        string
-	encryptionKey       []byte
-	keyRing             *crypto.KeyRing
-	approvalSigningKeys map[string][]byte
-	approvalKeyRing     *crypto.ApprovalKeyRing
-	alerter             PayoutProtectAlerter
+	repo            *postgres.PayoutRepo
+	client          *cashfree.PayoutClient
+	fundsourceID    string
+	encryptionKey   []byte
+	keyRing         *crypto.KeyRing
+	approvalKeyRing *crypto.ApprovalKeyRing
+	alerter         PayoutProtectAlerter
 }
 
 // NewPayoutDispatcher creates a new PayoutDispatcher.
@@ -53,17 +52,9 @@ func (d *PayoutDispatcher) SetKeyRing(kr *crypto.KeyRing) {
 	d.keyRing = kr
 }
 
-// SetApprovalSigningKeys sets the dedicated HMAC signing keys for verifying approved batch snapshots.
-func (d *PayoutDispatcher) SetApprovalSigningKeys(keys map[string][]byte) {
-	d.approvalSigningKeys = keys
-}
-
 // SetApprovalKeyRing sets the unified versioned ApprovalKeyRing for verifying approved batch snapshots.
 func (d *PayoutDispatcher) SetApprovalKeyRing(kr *crypto.ApprovalKeyRing) {
 	d.approvalKeyRing = kr
-	if kr != nil {
-		d.approvalSigningKeys = kr.VerificationKeys()
-	}
 }
 
 // SetAlerter configures the notification alerter for stuck or pending Cashfree approvals.
@@ -74,14 +65,13 @@ func (d *PayoutDispatcher) SetAlerter(a PayoutProtectAlerter) {
 // WithRepo returns a copy of PayoutDispatcher configured with an alternative PayoutRepo (e.g. maintenance pool for background jobs).
 func (d *PayoutDispatcher) WithRepo(repo *postgres.PayoutRepo) *PayoutDispatcher {
 	return &PayoutDispatcher{
-		repo:                repo,
-		client:              d.client,
-		fundsourceID:        d.fundsourceID,
-		encryptionKey:       d.encryptionKey,
-		keyRing:             d.keyRing,
-		approvalSigningKeys: d.approvalSigningKeys,
-		approvalKeyRing:     d.approvalKeyRing,
-		alerter:             d.alerter,
+		repo:            repo,
+		client:          d.client,
+		fundsourceID:    d.fundsourceID,
+		encryptionKey:   d.encryptionKey,
+		keyRing:         d.keyRing,
+		approvalKeyRing: d.approvalKeyRing,
+		alerter:         d.alerter,
 	}
 }
 
@@ -128,10 +118,14 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
 
 	// Verification Gate: Verify immutable approval snapshot and HMAC signature before outbound dispatch
-	if len(d.approvalSigningKeys) == 0 {
+	if d.approvalKeyRing == nil {
 		return errors.New("payout dispatcher: approval signing keys not configured; refusing to dispatch unverified batch")
 	}
-	snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, d.approvalSigningKeys)
+	verificationKeys := d.approvalKeyRing.VerificationKeys()
+	if len(verificationKeys) == 0 {
+		return errors.New("payout dispatcher: approval signing keys not configured; refusing to dispatch unverified batch")
+	}
+	snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, verificationKeys)
 	if err != nil {
 		return fmt.Errorf("payout dispatcher: approval integrity failed: %w", err)
 	}

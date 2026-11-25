@@ -940,3 +940,66 @@ func TestWebhookAPIVersion_DefaultIs2026_01_01(t *testing.T) {
 		t.Fatalf("expected default WebhookAPIVersion to be 2026-01-01, got %q", cfg.WebhookAPIVersion)
 	}
 }
+
+func TestLoad_StrictVersionedApprovalKeysAndStagingDispatch(t *testing.T) {
+	restoreEnv := func(k string, old string, had bool) {
+		if had {
+			_ = os.Setenv(k, old)
+		} else {
+			_ = os.Unsetenv(k)
+		}
+	}
+	envKeys := []string{
+		"APP_ENV", "DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"PAYOUT_APPROVAL_KEYS", "PAYOUT_APPROVAL_SECRET", "PAYOUT_APPROVAL_ACTIVE_KID",
+		"CF_PAYOUT_DISPATCH_ENABLED", "CF_PAYOUT_AUTO_DISPATCH_ENABLED",
+	}
+	saved := make(map[string]struct {
+		v  string
+		ok bool
+	})
+	for _, k := range envKeys {
+		v, ok := os.LookupEnv(k)
+		saved[k] = struct {
+			v  string
+			ok bool
+		}{v, ok}
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, s := range saved {
+			restoreEnv(k, s.v, s.ok)
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+
+	// 1. Malformed PAYOUT_APPROVAL_KEYS (missing colon) must fail
+	_ = os.Setenv("PAYOUT_APPROVAL_KEYS", "v1_without_colon")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for malformed PAYOUT_APPROVAL_KEYS")
+	}
+
+	// 2. Duplicate KID in PAYOUT_APPROVAL_KEYS must fail
+	_ = os.Setenv("PAYOUT_APPROVAL_KEYS", "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for duplicate KID in PAYOUT_APPROVAL_KEYS")
+	}
+
+	// 3. Staging with dispatch enabled requires payout approval keys
+	_ = os.Unsetenv("PAYOUT_APPROVAL_KEYS")
+	_ = os.Setenv("APP_ENV", "staging")
+	_ = os.Setenv("CF_PAYOUT_DISPATCH_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when staging has CF_PAYOUT_DISPATCH_ENABLED=true without approval keys")
+	}
+
+	// 4. Staging with dispatch enabled and valid key succeeds
+	_ = os.Setenv("PAYOUT_APPROVAL_KEYS", "v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected staging with valid approval keys to succeed, got: %v", err)
+	}
+}
