@@ -1003,3 +1003,71 @@ func TestLoad_StrictVersionedApprovalKeysAndStagingDispatch(t *testing.T) {
 		t.Fatalf("expected staging with valid approval keys to succeed, got: %v", err)
 	}
 }
+
+func TestLoad_ProductionRequiresHTTPSFrontendURLWhenPGEnabled(t *testing.T) {
+	keys := []string{
+		"DATABASE_URL", "JWT_SECRET", "OTP_HMAC_SECRET", "MAGIC_LINK_HMAC_SECRET",
+		"APP_ENV", "FIREBASE_PROJECT_ID", "PAYOUT_ENCRYPTION_SECRET", "PAYOUT_CHECKSUM_SECRET",
+		"PAYOUT_APPROVAL_SECRET", "SMTP_HOST", "TRUSTED_PROXIES",
+		"CASHFREE_PG_APP_ID", "CASHFREE_PG_SECRET_KEY", "PUBLIC_APP_URL", "FRONTEND_URL",
+	}
+	prev := make(map[string]struct {
+		v  string
+		ok bool
+	}, len(keys))
+	for _, k := range keys {
+		v, ok := os.LookupEnv(k)
+		prev[k] = struct {
+			v  string
+			ok bool
+		}{v: v, ok: ok}
+		_ = os.Unsetenv(k)
+	}
+	defer func() {
+		for k, s := range prev {
+			if s.ok {
+				_ = os.Setenv(k, s.v)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		}
+	}()
+
+	_ = os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	_ = os.Setenv("JWT_SECRET", "jwt-secret-min-32-chars-long-abc")
+	_ = os.Setenv("OTP_HMAC_SECRET", "otp-secret-min-32-chars-long-abc")
+	_ = os.Setenv("MAGIC_LINK_HMAC_SECRET", "magic-secret-min-32-chars-long-abc")
+	_ = os.Setenv("APP_ENV", "production")
+	_ = os.Setenv("FIREBASE_PROJECT_ID", "firebase-project-id")
+	_ = os.Setenv("PAYOUT_ENCRYPTION_SECRET", "payout-enc-secret-32-chars-long!!")
+	_ = os.Setenv("PAYOUT_CHECKSUM_SECRET", "checksum-secret-min-32-chars-long-abc")
+	_ = os.Setenv("PAYOUT_APPROVAL_SECRET", "approval-secret-min-32-chars-long-abc")
+	_ = os.Setenv("SMTP_HOST", "smtp.example.com")
+	_ = os.Setenv("TRUSTED_PROXIES", "127.0.0.1")
+	_ = os.Setenv("CASHFREE_PG_APP_ID", "cf_app_prod")
+	_ = os.Setenv("CASHFREE_PG_SECRET_KEY", "cf_sec_prod")
+
+	badURLs := []string{
+		"",
+		"http://app.example.com",
+		"https://localhost:3000",
+		"https://127.0.0.1",
+		"https://user:pass@app.example.com",
+		"https://app.example.com/#frag",
+	}
+	for _, bad := range badURLs {
+		if bad == "" {
+			_ = os.Unsetenv("PUBLIC_APP_URL")
+		} else {
+			_ = os.Setenv("PUBLIC_APP_URL", bad)
+		}
+		if _, err := Load(); err == nil {
+			t.Fatalf("expected error for PUBLIC_APP_URL=%q in production with PG enabled", bad)
+		}
+	}
+
+	_ = os.Setenv("PUBLIC_APP_URL", "https://app.example.com")
+	if _, err := Load(); err != nil {
+		t.Fatalf("expected valid https PUBLIC_APP_URL to succeed, got: %v", err)
+	}
+}

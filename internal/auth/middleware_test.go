@@ -704,3 +704,63 @@ func TestRequirePlatformOps(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthoritativeMutations_BypassTokenVersionCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "middleware-authoritative-test-secret"
+	ResetTokenVersionCache()
+	defer ResetTokenVersionCache()
+
+	propID := uuid.New()
+	user := &domain.User{
+		ID:           uuid.New(),
+		Phone:        "+919999900010",
+		Role:         domain.RoleOwner,
+		PropertyID:   &propID,
+		TokenVersion: 1,
+	}
+	token, err := IssueAccessToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	// Prime the in-memory token version cache with version 1, then bump DB to version 2.
+	setCachedTokenVersion(user.ID, 1)
+	users := &mockUserLookup{
+		user: &domain.User{
+			ID:           user.ID,
+			Phone:        user.Phone,
+			Role:         domain.RoleOwner,
+			PropertyID:   &propID,
+			TokenVersion: 2,
+		},
+	}
+
+	r := gin.New()
+	authMW := RequireOwner(secret, users)
+	r.POST("/api/owner/kyc/:id/approve", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.POST("/api/owner/join-requests/:id/activate", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.PUT("/api/owner/managers/:id/capabilities", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.POST("/api/owner/slot-invites", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodPost, "/api/owner/kyc/" + uuid.NewString() + "/approve"},
+		{http.MethodPost, "/api/owner/join-requests/" + uuid.NewString() + "/activate"},
+		{http.MethodPut, "/api/owner/managers/" + uuid.NewString() + "/capabilities"},
+		{http.MethodPost, "/api/owner/slot-invites"},
+	}
+
+	for _, tc := range cases {
+		setCachedTokenVersion(user.ID, 1) // re-prime stale cache for each path
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: expected 403 Forbidden on revoked token version despite stale cache, got %d", tc.method, tc.path, w.Code)
+		}
+	}
+}

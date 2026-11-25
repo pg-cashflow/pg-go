@@ -115,10 +115,8 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 		if err != nil {
 			return nil, fmt.Errorf("cashfree payout: cannot verify existing beneficiary: %w", err)
 		}
-		statusOK := strings.EqualFold(existing.Status, "VERIFIED") || strings.EqualFold(existing.Status, "ACTIVE")
-		if existing.BeneficiaryID != req.BeneficiaryID || !statusOK ||
-			!sameBeneficiaryInstrument(existing.Instrument, req.BeneficiaryInstrument) {
-			return nil, fmt.Errorf("cashfree payout: existing beneficiary differs from requested instrument or is not VERIFIED/ACTIVE")
+		if err := ValidateBeneficiaryReady(req.BeneficiaryID, req.BeneficiaryInstrument, existing); err != nil {
+			return nil, err
 		}
 		return existing, nil
 	}
@@ -148,7 +146,43 @@ func (c *PayoutClient) CreateBeneficiary(ctx context.Context, req CreateBenefici
 	if err := json.Unmarshal(bodyBytes, &out); err != nil {
 		return nil, fmt.Errorf("cashfree payout: unmarshal beneficiary response: %w", err)
 	}
+	if err := ValidateBeneficiaryReady(req.BeneficiaryID, req.BeneficiaryInstrument, &out); err != nil {
+		if out.BeneficiaryID != "" && out.BeneficiaryID != req.BeneficiaryID {
+			return nil, err
+		}
+		switch strings.ToUpper(strings.TrimSpace(out.Status)) {
+		case "INVALID", "CANCELLED", "FAILED", "DELETED":
+			return nil, err
+		}
+		// 2xx create may return INITIATED or omit instrument details; read back from provider before allowing payout.
+		existing, getErr := c.GetBeneficiary(ctx, req.BeneficiaryID)
+		if getErr != nil {
+			return nil, fmt.Errorf("cashfree payout: beneficiary readiness read-back failed: %w", getErr)
+		}
+		if readyErr := ValidateBeneficiaryReady(req.BeneficiaryID, req.BeneficiaryInstrument, existing); readyErr != nil {
+			return nil, readyErr
+		}
+		return existing, nil
+	}
 	return &out, nil
+}
+
+// ValidateBeneficiaryReady verifies that a Cashfree Beneficiary V2 response matches
+// the expected beneficiary ID, bank/VPA instrument, and is in VERIFIED state.
+func ValidateBeneficiaryReady(expectedID string, expectedInst BeneficiaryInstrumentDetails, resp *BeneficiaryResponse) error {
+	if resp == nil {
+		return fmt.Errorf("cashfree payout: empty beneficiary response")
+	}
+	if resp.BeneficiaryID != expectedID {
+		return fmt.Errorf("cashfree payout: beneficiary_id mismatch (got %q, want %q)", resp.BeneficiaryID, expectedID)
+	}
+	if !sameBeneficiaryInstrument(resp.Instrument, expectedInst) {
+		return fmt.Errorf("cashfree payout: beneficiary instrument mismatch for %q", expectedID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(resp.Status), "VERIFIED") {
+		return fmt.Errorf("cashfree payout: beneficiary %q is not VERIFIED (status=%q)", expectedID, resp.Status)
+	}
+	return nil
 }
 
 // GetBeneficiary retrieves the current provider state; never invent status or bank details.

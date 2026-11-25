@@ -331,6 +331,11 @@ func Load() (*Config, error) {
 	if (cfAppID != "" || cfSecret != "") && strings.TrimSpace(cfg.CashfreeWebhookSecret) == "" {
 		return nil, fmt.Errorf("CASHFREE_PG_SECRET_KEY is required whenever Cashfree PG is enabled (any environment)")
 	}
+	if cfg.AppEnv == "production" && (cfAppID != "" || cfSecret != "") {
+		if err := validateProductionFrontendURL(cfg.FrontendURL); err != nil {
+			return nil, err
+		}
+	}
 	if cfg.WebhookTimestampToleranceSec <= 0 {
 		return nil, fmt.Errorf("WEBHOOK_TIMESTAMP_TOLERANCE_SEC must be greater than 0 (got %d)", cfg.WebhookTimestampToleranceSec)
 	}
@@ -553,6 +558,34 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func validateProductionFrontendURL(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fmt.Errorf("PUBLIC_APP_URL (or FRONTEND_URL) is required in production when Cashfree PG is enabled")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("invalid PUBLIC_APP_URL: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("PUBLIC_APP_URL must use https in production (got %q)", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("PUBLIC_APP_URL must not contain embedded credentials")
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("PUBLIC_APP_URL must not contain a URL fragment")
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return fmt.Errorf("PUBLIC_APP_URL must include a valid host")
+	}
+	if isLoopbackHost(host) || host == "0.0.0.0" {
+		return fmt.Errorf("PUBLIC_APP_URL must not point to localhost or loopback in production (got %q)", host)
+	}
+	return nil
 }
 
 func loadPayoutPublicKeyPEM() string {

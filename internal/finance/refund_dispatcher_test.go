@@ -478,3 +478,75 @@ func TestRefundGatewayDispatcher_DuplicateCreateResolvesViaStatusLookup(t *testi
 		t.Errorf("expected reconcile to the gateway status, got %v", repo.reconcileLog)
 	}
 }
+
+func TestRefundGatewayDispatcher_408Recovery(t *testing.T) {
+	t.Run("408 followed by found SUCCESS adopts gateway state", func(t *testing.T) {
+		refID := uuid.New()
+		repo := newInitiatedRefundRepo(refID)
+		cf := &fetchingCFRefundClient{
+			createResults: []error{&cashfree.APIError{StatusCode: http.StatusRequestTimeout, Status: "408 Request Timeout"}},
+			fetchResp: &cashfree.RefundDetails{
+				CFRefundID:   "cf_408_ok",
+				RefundID:     "rf_test_123",
+				OrderID:      "order_123",
+				RefundStatus: "SUCCESS",
+				AmountPaise:  50000,
+			},
+		}
+		d := NewRefundGatewayDispatcher(repo, cf)
+		if err := d.DispatchRefund(context.Background(), refID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(cf.createKeys) != 1 || cf.createKeys[0] != domain.CashfreeRefundIdempotencyKey(refID) {
+			t.Fatalf("expected 1 create with deterministic key, got %v", cf.createKeys)
+		}
+		if cf.fetchCalls != 1 {
+			t.Fatalf("expected 1 status fetch after 408, got %d", cf.fetchCalls)
+		}
+		saved := repo.refunds[refID]
+		if saved.Status != "succeeded" || saved.CFRefundID == nil || *saved.CFRefundID != "cf_408_ok" {
+			t.Fatalf("expected succeeded/cf_408_ok, got %s/%v", saved.Status, saved.CFRefundID)
+		}
+	})
+
+	t.Run("408 followed by 404 escalates to needs_review and preserves reservation", func(t *testing.T) {
+		refID := uuid.New()
+		repo := newInitiatedRefundRepo(refID)
+		cf := &fetchingCFRefundClient{
+			createResults: []error{&cashfree.APIError{StatusCode: http.StatusRequestTimeout, Status: "408 Request Timeout"}},
+			fetchErr:      &cashfree.APIError{StatusCode: http.StatusNotFound, Status: "404 Not Found"},
+		}
+		d := NewRefundGatewayDispatcher(repo, cf)
+		if err := d.DispatchRefund(context.Background(), refID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cf.fetchCalls != 1 {
+			t.Fatalf("expected 1 status fetch after 408, got %d", cf.fetchCalls)
+		}
+		if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "needs_review" {
+			t.Fatalf("expected needs_review (not failed), got %v", repo.reconcileLog)
+		}
+	})
+
+	t.Run("408 followed by PENDING adopts pending", func(t *testing.T) {
+		refID := uuid.New()
+		repo := newInitiatedRefundRepo(refID)
+		cf := &fetchingCFRefundClient{
+			createResults: []error{&cashfree.APIError{StatusCode: http.StatusRequestTimeout, Status: "408 Request Timeout"}},
+			fetchResp: &cashfree.RefundDetails{
+				CFRefundID:   "cf_408_pend",
+				RefundID:     "rf_test_123",
+				OrderID:      "order_123",
+				RefundStatus: "PENDING",
+				AmountPaise:  50000,
+			},
+		}
+		d := NewRefundGatewayDispatcher(repo, cf)
+		if err := d.DispatchRefund(context.Background(), refID); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(repo.reconcileLog) != 1 || repo.reconcileLog[0] != "pending" {
+			t.Fatalf("expected pending, got %v", repo.reconcileLog)
+		}
+	})
+}

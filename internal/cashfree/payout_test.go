@@ -89,7 +89,11 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(BeneficiaryResponse{
 				BeneficiaryID:   "bene_123",
 				BeneficiaryName: "Jane Doe",
-				Status:          "ACTIVE",
+				Status:          "VERIFIED",
+				Instrument: BeneficiaryInstrumentDetails{
+					BankAccountNumber: "1234567890",
+					BankIFSC:          "HDFC0001234",
+				},
 			})
 		}))
 		defer srv.Close()
@@ -112,8 +116,49 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}
-		if resp.BeneficiaryID != "bene_123" || resp.Status != "ACTIVE" {
+		if resp.BeneficiaryID != "bene_123" || resp.Status != "VERIFIED" {
 			t.Fatalf("unexpected response: %+v", resp)
+		}
+	})
+
+	t.Run("201_initiated_triggers_readback_and_fails_when_still_initiated", func(t *testing.T) {
+		getCalls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodPost && r.URL.Path == "/beneficiary" {
+				w.WriteHeader(http.StatusCreated)
+				_ = json.NewEncoder(w).Encode(BeneficiaryResponse{
+					BeneficiaryID: "bene_init",
+					Status:        "INITIATED",
+					Instrument:    BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"},
+				})
+				return
+			}
+			if r.Method == http.MethodGet && r.URL.Path == "/beneficiary" {
+				getCalls++
+				_ = json.NewEncoder(w).Encode(BeneficiaryResponse{
+					BeneficiaryID: "bene_init",
+					Status:        "INITIATED",
+					Instrument:    BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"},
+				})
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+
+		client := NewPayoutClient(PayoutConfig{ClientID: "test_cid", ClientSecret: "test_sec", FundsourceID: "fund_01"})
+		client.SetBaseOverride(srv.URL)
+		_, err := client.CreateBeneficiary(context.Background(), CreateBeneficiaryRequest{
+			BeneficiaryID:         "bene_init",
+			BeneficiaryName:       "Jane Doe",
+			BeneficiaryInstrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"},
+		})
+		if err == nil {
+			t.Fatal("expected INITIATED beneficiary to be rejected")
+		}
+		if getCalls != 1 {
+			t.Fatalf("expected 1 read-back call for INITIATED beneficiary, got %d", getCalls)
 		}
 	})
 
@@ -125,13 +170,14 @@ func TestCreateBeneficiaryV2(t *testing.T) {
 		wantOK      bool
 		wantGET     bool
 	}{
-		{name: "matching_active", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
+		{name: "matching_verified", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
 		{name: "matching_verified_lower_code", code: "beneficiary_already_exists", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
 		{name: "matching_verified_id_exists_code", code: "beneficiary_id_already_exists", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantOK: true, wantGET: true},
-		{name: "different_bank", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "0000000000", BankIFSC: "HDFC0001234"}}, wantGET: true},
-		{name: "different_ifsc", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "ICIC0001234"}}, wantGET: true},
+		{name: "active_not_verified", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantGET: true},
+		{name: "different_bank", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "0000000000", BankIFSC: "HDFC0001234"}}, wantGET: true},
+		{name: "different_ifsc", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "ICIC0001234"}}, wantGET: true},
 		{name: "inactive", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "bene_existing", Status: "PENDING", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantGET: true},
-		{name: "id_mismatch", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "other", Status: "ACTIVE", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantGET: true},
+		{name: "id_mismatch", code: "BENEFICIARY_ALREADY_EXISTS", fetched: BeneficiaryResponse{BeneficiaryID: "other", Status: "VERIFIED", Instrument: BeneficiaryInstrumentDetails{BankAccountNumber: "1234567890", BankIFSC: "HDFC0001234"}}, wantGET: true},
 		{name: "provider_get_failure", code: "BENEFICIARY_ALREADY_EXISTS", fetchStatus: http.StatusInternalServerError, wantGET: true},
 		{name: "unknown_conflict", code: "SOME_OTHER_CONFLICT"},
 		{name: "missing_error_code"},

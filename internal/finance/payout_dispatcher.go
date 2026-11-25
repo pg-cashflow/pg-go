@@ -80,18 +80,19 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	if d.client == nil {
 		return fmt.Errorf("payout client not configured")
 	}
-
-	if d.repo != nil {
-		acquired, unlock, lockErr := d.repo.TryLockBatchDispatch(ctx, batchID)
-		if lockErr != nil {
-			return fmt.Errorf("payout dispatcher: lock batch %s: %w", batchID, lockErr)
-		}
-		if !acquired {
-			slog.Info("payout dispatcher: batch already being dispatched by another worker, skipping", "batch_id", batchID)
-			return nil
-		}
-		defer unlock()
+	if d.repo == nil {
+		return fmt.Errorf("payout dispatcher: repository not configured")
 	}
+
+	acquired, unlock, lockErr := d.repo.TryLockBatchDispatch(ctx, batchID)
+	if lockErr != nil {
+		return fmt.Errorf("payout dispatcher: lock batch %s: %w", batchID, lockErr)
+	}
+	if !acquired {
+		slog.Info("payout dispatcher: batch already being dispatched by another worker, skipping", "batch_id", batchID)
+		return nil
+	}
+	defer unlock()
 
 	batch, err := d.repo.GetBatchByID(ctx, batchID)
 	if err != nil {
@@ -467,8 +468,11 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 		return fmt.Errorf("payee %s has neither account number nor upi vpa", payee.ID)
 	}
 
-	_, err := d.client.CreateBeneficiary(ctx, req)
-	return err
+	beneResp, err := d.client.CreateBeneficiary(ctx, req)
+	if err != nil {
+		return err
+	}
+	return cashfree.ValidateBeneficiaryReady(req.BeneficiaryID, req.BeneficiaryInstrument, beneResp)
 }
 
 func (d *PayoutDispatcher) reconcileBatchStatus(

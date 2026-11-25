@@ -711,6 +711,10 @@ func (h *Handlers) commitPayoutItem(
 					slog.Error("payout webhook conflicts with terminal local status; reconciliation required",
 						"item_id", item.ID, "event", evtType, "local_status", res.PriorStatus, "incoming_status", status)
 				}
+				if res != nil && res.Committed && h.Finance != nil && h.LedgerOutboxRepo == nil &&
+					(status == domain.PayoutSucceeded || status == domain.PayoutReversed) {
+					return fmt.Errorf("ledger outbox repo unavailable")
+				}
 				return nil
 			}
 		}

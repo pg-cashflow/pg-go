@@ -151,7 +151,13 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Path == "/beneficiary" {
-				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{Status: "ACTIVE"})
+				var req cashfree.CreateBeneficiaryRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{
+					BeneficiaryID: req.BeneficiaryID,
+					Status:        "VERIFIED",
+					Instrument:    req.BeneficiaryInstrument,
+				})
 				return
 			}
 			if r.URL.Path == "/transfers/batch" {
@@ -206,7 +212,13 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Path == "/beneficiary" {
-				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{Status: "ACTIVE"})
+				var req cashfree.CreateBeneficiaryRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{
+					BeneficiaryID: req.BeneficiaryID,
+					Status:        "VERIFIED",
+					Instrument:    req.BeneficiaryInstrument,
+				})
 				return
 			}
 			if r.URL.Path == "/transfers/batch" {
@@ -367,7 +379,13 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Path == "/beneficiary" {
-				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{Status: "ACTIVE"})
+				var req cashfree.CreateBeneficiaryRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{
+					BeneficiaryID: req.BeneficiaryID,
+					Status:        "VERIFIED",
+					Instrument:    req.BeneficiaryInstrument,
+				})
 				return
 			}
 			if r.URL.Path == "/transfers/batch" {
@@ -560,5 +578,18 @@ func TestCleanBeneficiaryPhone(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("CleanBeneficiaryPhone(%q) = %q, want %q", tc.input, got, tc.expected)
 		}
+	}
+}
+
+func TestPayoutDispatcher_NilRepoReturnsError(t *testing.T) {
+	client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+		ClientID:     "cid",
+		ClientSecret: "sec",
+		FundsourceID: "fund_01",
+	})
+	d := NewPayoutDispatcher(nil, client, "fund_01", nil, nil)
+	err := d.DispatchBatch(context.Background(), uuid.New())
+	if err == nil || !strings.Contains(err.Error(), "repository not configured") {
+		t.Fatalf("expected repository not configured error, got %v", err)
 	}
 }

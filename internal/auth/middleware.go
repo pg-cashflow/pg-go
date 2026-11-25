@@ -134,8 +134,13 @@ func RequireTenant(jwtSecret string, tenantRepo TenantRepository, users UserLook
 			return
 		}
 		tenantID := *claims.TenantID
-		tenant, ok := getCachedTenant(tenantID)
-		if !ok {
+		forceAuthoritative := c.GetBool("auth.authoritative") || isFinancialMutation(c)
+		var tenant *domain.Tenant
+		var cacheHit bool
+		if !forceAuthoritative {
+			tenant, cacheHit = getCachedTenant(tenantID)
+		}
+		if !cacheHit {
 			var err error
 			tenant, err = tenantRepo.GetByID(c.Request.Context(), tenantID)
 			if err != nil {
@@ -454,9 +459,9 @@ func sweepExpiredCaches(now time.Time) {
 	activeFamilyMu.Unlock()
 }
 
-// isFinancialMutation returns true if the incoming HTTP request executes a money-moving
-// or security-critical state mutation (payments, refunds, payouts, expenses, capital,
-// tie-outs, tenant departure/vacation).
+// isFinancialMutation returns true if the incoming HTTP request executes a money-moving,
+// identity/KYC, membership, role, or access-control state mutation that must bypass
+// process-local positive auth caches and validate against the live database.
 func isFinancialMutation(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
@@ -473,7 +478,20 @@ func isFinancialMutation(c *gin.Context) bool {
 		strings.Contains(p, "/vacate") ||
 		strings.Contains(p, "/capital") ||
 		strings.Contains(p, "/expenses") ||
-		strings.Contains(p, "/budgets")
+		strings.Contains(p, "/budgets") ||
+		strings.Contains(p, "/kyc") ||
+		strings.Contains(p, "/join-requests/") ||
+		strings.Contains(p, "/managers") ||
+		strings.Contains(p, "/slot-invites") ||
+		strings.Contains(p, "/waitlist/") ||
+		strings.Contains(p, "/staff") ||
+		strings.Contains(p, "/auth/revoke-sessions") ||
+		strings.Contains(p, "/auth/sessions") ||
+		strings.Contains(p, "/properties/") ||
+		strings.Contains(p, "/tenants/") ||
+		strings.Contains(p, "/departures/") ||
+		strings.Contains(p, "/settlements/") ||
+		strings.Contains(p, "/bank-accounts")
 }
 
 // SetAuthoritativeAuth forces the authentication middleware to perform a live, authoritative

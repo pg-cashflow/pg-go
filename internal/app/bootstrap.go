@@ -213,6 +213,12 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}
 	if strings.TrimSpace(cfg.FrontendURL) != "" {
 		cfCfg.ReturnURL = strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/") + "/payment/return?order_id={order_id}"
+	} else if strings.EqualFold(strings.TrimSpace(cfg.AppEnv), "production") && cfCfg.Enabled() {
+		if !appPoolSameAsMaint {
+			appPool.Close()
+		}
+		maintPool.Close()
+		return nil, fmt.Errorf("PUBLIC_APP_URL is required in production when Cashfree PG is enabled")
 	} else {
 		baseURL := "http://localhost:8080"
 		if addr := strings.TrimSpace(cfg.HTTPAddr); addr != "" {

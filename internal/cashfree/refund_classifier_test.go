@@ -57,3 +57,40 @@ func TestIsRefundDuplicateError(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyRefundGatewayError_408IsAmbiguous(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want RefundGatewayDisposition
+	}{
+		{
+			name: "408 request timeout is ambiguous",
+			err:  &APIError{StatusCode: http.StatusRequestTimeout, Status: "408 Request Timeout"},
+			want: RefundAmbiguousFailure,
+		},
+		{
+			name: "400 bad request is definitive failure",
+			err:  &APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request", Body: `{"message":"invalid amount"}`},
+			want: RefundDefinitiveFailure,
+		},
+		{
+			name: "429 rate limit is ambiguous",
+			err:  &APIError{StatusCode: http.StatusTooManyRequests, Status: "429 Too Many Requests"},
+			want: RefundAmbiguousFailure,
+		},
+		{
+			name: "502 bad gateway is ambiguous",
+			err:  &APIError{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway"},
+			want: RefundAmbiguousFailure,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyRefundGatewayError(tt.err); got != tt.want {
+				t.Errorf("ClassifyRefundGatewayError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

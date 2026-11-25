@@ -31,9 +31,11 @@ func ClassifyRefundGatewayError(err error) RefundGatewayDisposition {
 		if apiErr.StatusCode < 400 || apiErr.StatusCode >= 500 {
 			return RefundAmbiguousFailure
 		}
-		// 429 Too Many Requests, 409 Conflict, and auth failures (401/403) must not release reservations.
+		// 408 Request Timeout, 429 Too Many Requests, 409 Conflict, and auth failures (401/403)
+		// must not release reservations. 408 is an ambiguous timeout (provider may have accepted);
 		// 401/403 indicate gateway credential/IP configuration errors, NOT refund business rejection.
-		if apiErr.StatusCode == http.StatusTooManyRequests ||
+		if apiErr.StatusCode == http.StatusRequestTimeout ||
+			apiErr.StatusCode == http.StatusTooManyRequests ||
 			apiErr.StatusCode == http.StatusConflict ||
 			apiErr.StatusCode == http.StatusUnauthorized ||
 			apiErr.StatusCode == http.StatusForbidden {

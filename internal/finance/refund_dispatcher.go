@@ -198,12 +198,13 @@ type RefundStatusFetcher interface {
 	FetchRefundStatus(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error)
 }
 
-// isServerOrTransportError reports errors that mean "outcome unknown / not created",
-// as opposed to rate limits, auth or idempotency conflicts, which never justify a new key.
+// isServerOrTransportError reports errors that mean "outcome unknown / not created"
+// (5xx, 408 Request Timeout, or transport/network errors), as opposed to rate limits,
+// auth or idempotency conflicts, which never justify a new key.
 func isServerOrTransportError(err error) bool {
 	var apiErr *cashfree.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode >= 500
+		return apiErr.StatusCode >= 500 || apiErr.StatusCode == http.StatusRequestTimeout
 	}
 	return true
 }
