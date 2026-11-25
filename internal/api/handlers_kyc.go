@@ -326,7 +326,7 @@ func (h *Handlers) TenantKYCUpload(c *gin.Context) {
 		return
 	default:
 		c.Header("Retry-After", "5")
-		apierr.RespondServerErr(c, http.StatusServiceUnavailable, "system is processing high upload volume; please retry in a few seconds", apierr.CodeInternalError)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "system is processing high upload volume; please retry in a few seconds"})
 		return
 	}
 

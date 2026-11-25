@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -95,8 +96,8 @@ func (c *Client) GetOrderSettlements(ctx context.Context, orderID string) ([]Ord
 		return nil, fmt.Errorf("%w: empty order_id", ErrSettlementNotFound)
 	}
 
-	url := fmt.Sprintf("%s/orders/%s/settlements", c.endpoint(), trimmed)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqURL := fmt.Sprintf("%s/orders/%s/settlements", c.endpoint(), url.PathEscape(trimmed))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}

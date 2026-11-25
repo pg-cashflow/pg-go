@@ -687,6 +687,83 @@ func TestTenantKYCUpload_RateLimit_BurstEnforced(t *testing.T) {
 	}
 }
 
+func TestTenantKYCUpload_ConcurrencySemaphore_Backpressure503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tenant := &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
+
+	h := &Handlers{
+		Deps: Deps{
+			KYCSvc:                    &fakeKYCSvc{},
+			KYCUploadConcurrencyLimit: 1, // Only 1 concurrent upload allowed
+		},
+	}
+	// Pre-fill the 1-slot semaphore to simulate full capacity
+	sem := h.getUploadSem()
+	sem <- struct{}{}
+	defer func() { <-sem }()
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, tenant)
+		c.Next()
+	})
+	r.POST("/api/tenant/kyc/upload", h.TenantKYCUpload)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("document_type", "aadhaar")
+	part, _ := writer.CreateFormFile("file", "aadhaar.jpg")
+	_, _ = part.Write([]byte("fake image bytes"))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable under saturated upload semaphore, got %d", w.Code)
+	}
+	if w.Header().Get("Retry-After") != "5" {
+		t.Errorf("expected Retry-After 5, got %q", w.Header().Get("Retry-After"))
+	}
+}
+
+func TestTenantKYCUpload_RejectsMultipleFiles(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tenant := &domain.Tenant{ID: uuid.New(), PropertyID: uuid.New()}
+
+	h := &Handlers{
+		Deps: Deps{
+			KYCSvc: &fakeKYCSvc{},
+		},
+	}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(auth.ContextTenantKey, tenant)
+		c.Next()
+	})
+	r.POST("/api/tenant/kyc/upload", h.TenantKYCUpload)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("document_type", "aadhaar")
+	part1, _ := writer.CreateFormFile("file", "aadhaar1.jpg")
+	_, _ = part1.Write([]byte("fake image bytes 1"))
+	part2, _ := writer.CreateFormFile("extra_file", "aadhaar2.jpg")
+	_, _ = part2.Write([]byte("fake image bytes 2"))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tenant/kyc/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request when multiple files are sent, got %d", w.Code)
+	}
+}
+
 func kycTestOwnerRouter(svc KYCService, propertyID, ownerUserID uuid.UUID) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

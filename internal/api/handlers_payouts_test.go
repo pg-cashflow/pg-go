@@ -19,6 +19,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/config"
+	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -1209,7 +1210,11 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 		FundsourceID: "fund_01",
 	})
 	cfPayoutClient.SetBaseOverride(srv.URL)
+	keyRing, _ := crypto.NewApprovalKeyRing("v1", map[string][]byte{
+		"v1": []byte("pg_payout_approval_test_key_32b!"),
+	})
 	dispatcher := finance.NewPayoutDispatcher(payoutRepo, cfPayoutClient, "fund_01")
+	dispatcher.SetApprovalKeyRing(keyRing)
 
 	// Insert Payee directly
 	payeeID := uuid.New()
@@ -1248,10 +1253,11 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	currentUserID := ownerID
 	h := &Handlers{
 		Deps: Deps{
-			Pool:                 pool,
-			PayoutRepo:           payoutRepo,
-			PayoutDispatcher:     dispatcher,
-			PayoutChecksumSecret: "test_secret_must_be_at_least_32_bytes_long_ok",
+			Pool:                  pool,
+			PayoutRepo:            payoutRepo,
+			PayoutDispatcher:      dispatcher,
+			PayoutApprovalKeyRing: keyRing,
+			PayoutChecksumSecret:  "test_secret_must_be_at_least_32_bytes_long_ok",
 			UserStore: &mockDualControlUserStore{
 				owners: []domain.User{{ID: ownerID}, {ID: checkerOwnerID}},
 			},

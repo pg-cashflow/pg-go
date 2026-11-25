@@ -374,3 +374,23 @@ func TestParseSettlementWebhook_MissingAmount(t *testing.T) {
 		})
 	}
 }
+
+func TestGetOrderSettlements_PathEscaping(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/orders/order%2Fspecial+id/settlements" {
+			t.Fatalf("expected path /orders/order%%2Fspecial+id/settlements, got %s", r.URL.EscapedPath())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"cf_settlement_id":"s1","cf_payment_id":"p1","order_id":"order/special+id","order_amount":100.00,"settlement_amount":98.00,"status":"SUCCESS"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{AppID: "id", SecretKey: "secret", Env: "sandbox"}).WithBaseURL(server.URL)
+	recs, err := client.GetOrderSettlements(context.Background(), "order/special+id")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(recs) != 1 || recs[0].CFSettlementID != "s1" {
+		t.Fatalf("unexpected records: %+v", recs)
+	}
+}

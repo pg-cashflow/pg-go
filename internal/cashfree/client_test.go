@@ -530,3 +530,65 @@ func TestTerminateOrderReturnsProviderConfirmedTerminalState(t *testing.T) {
 		t.Fatalf("expected provider-confirmed TERMINATED state, got %#v", order)
 	}
 }
+
+func TestCashfree_URLPathEscaping(t *testing.T) {
+	recordedPaths := make(map[string]bool)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recordedPaths[r.URL.RawPath] = true
+		if r.URL.RawPath == "" {
+			recordedPaths[r.URL.Path] = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		escapedPath := r.URL.EscapedPath()
+		switch {
+		case r.Method == http.MethodGet && escapedPath == "/orders/order%2Fspecial+id/payments":
+			_, _ = w.Write([]byte(`{"payments":[{"cf_payment_id":"123","payment_status":"SUCCESS","payment_amount":"100.00"}]}`))
+		case r.Method == http.MethodGet && escapedPath == "/orders/order%2Fspecial+id":
+			_, _ = w.Write([]byte(`{"cf_order_id":"1","order_id":"order/special+id","order_status":"PAID","order_amount":"100.00"}`))
+		case r.Method == http.MethodGet && escapedPath == "/orders/order%2Fspecial+id/refunds/ref%2Fspecial+id":
+			_, _ = w.Write([]byte(`{"cf_refund_id":"r1","refund_id":"ref/special+id","order_id":"order/special+id","refund_status":"SUCCESS","refund_amount":"100.00"}`))
+		case r.Method == http.MethodPut && escapedPath == "/orders/order%2Fspecial+id/refunds/ref%2Fspecial+id":
+			_, _ = w.Write([]byte(`{"cf_refund_id":"r1","refund_id":"ref/special+id","order_id":"order/special+id","refund_status":"CANCELLED","refund_amount":"100.00"}`))
+		case r.Method == http.MethodPost && escapedPath == "/orders/order%2Fspecial+id/refunds":
+			_, _ = w.Write([]byte(`{"cf_refund_id":"r1","refund_id":"ref/special+id","order_id":"order/special+id","refund_status":"SUCCESS","refund_amount":"100.00"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewClient(Config{AppID: "id", SecretKey: "secret", Env: "sandbox"}).WithBaseURL(server.URL)
+	ctx := context.Background()
+	specialOrderID := "order/special+id"
+	specialRefundID := "ref/special+id"
+
+	// 1. FetchSuccessfulPayment
+	cfID, _, _, ok, err := client.FetchSuccessfulPayment(ctx, specialOrderID)
+	if err != nil || !ok || cfID != "123" {
+		t.Fatalf("FetchSuccessfulPayment failed: ok=%v, cfID=%s, err=%v", ok, cfID, err)
+	}
+
+	// 2. GetOrder
+	order, err := client.GetOrder(ctx, specialOrderID)
+	if err != nil || order.OrderStatus != "PAID" {
+		t.Fatalf("GetOrder failed: order=%+v, err=%v", order, err)
+	}
+
+	// 3. FetchRefundStatus
+	refund, err := client.FetchRefundStatus(ctx, specialOrderID, specialRefundID)
+	if err != nil || refund.RefundStatus != "SUCCESS" {
+		t.Fatalf("FetchRefundStatus failed: refund=%+v, err=%v", refund, err)
+	}
+
+	// 4. CancelRefund
+	cancelled, err := client.CancelRefund(ctx, specialOrderID, specialRefundID, "test remarks")
+	if err != nil || cancelled.RefundStatus != "CANCELLED" {
+		t.Fatalf("CancelRefund failed: cancelled=%+v, err=%v", cancelled, err)
+	}
+
+	// 5. CreateRefund
+	created, err := client.CreateRefund(ctx, specialOrderID, specialRefundID, 10000, "test refund", "idem-1")
+	if err != nil || created.RefundStatus != "SUCCESS" {
+		t.Fatalf("CreateRefund failed: created=%+v, err=%v", created, err)
+	}
+}
