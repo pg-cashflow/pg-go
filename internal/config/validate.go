@@ -193,9 +193,11 @@ func (c *Config) ValidateForRealDeployment() error {
 		if frontendURL == "" {
 			errs = append(errs, "PUBLIC_APP_URL (or FRONTEND_URL) is required in production")
 		} else {
-			u, err := url.ParseRequestURI(frontendURL)
-			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
-				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTPS URL with no credentials or fragment in production (got %q)", c.FrontendURL))
+			u, err := url.Parse(frontendURL)
+			if err != nil || u.Scheme != "https" || u.Host == "" {
+				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTPS URL in production (got %q)", c.FrontendURL))
+			} else if u.User != nil || u.Fragment != "" || strings.Contains(frontendURL, "#") {
+				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must not contain credentials or a fragment in production (got %q)", c.FrontendURL))
 			}
 		}
 		// In production, split-origin deployment is prohibited because SameSite=Strict cookies
@@ -207,7 +209,7 @@ func (c *Config) ValidateForRealDeployment() error {
 			}
 		}
 	} else if frontendURL != "" {
-		u, err := url.ParseRequestURI(frontendURL)
+		u, err := url.Parse(frontendURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTP or HTTPS URL (got %q)", c.FrontendURL))
 		}

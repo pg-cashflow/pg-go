@@ -467,6 +467,7 @@ func isFinancialMutation(c *gin.Context) bool {
 		return false
 	}
 	m := c.Request.Method
+	p := c.Request.URL.Path
 	if m == http.MethodGet {
 		return strings.Contains(p, "/kyc/") ||
 			strings.HasSuffix(p, "/id-photo") ||
@@ -475,7 +476,6 @@ func isFinancialMutation(c *gin.Context) bool {
 	if m != http.MethodPost && m != http.MethodPut && m != http.MethodPatch && m != http.MethodDelete {
 		return false
 	}
-	p := c.Request.URL.Path
 	return strings.Contains(p, "/finance/") ||
 		strings.Contains(p, "/pay") ||
 		strings.Contains(p, "/payouts/") ||
