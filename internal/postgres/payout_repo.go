@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,10 +34,22 @@ type DepartureMirrorer interface {
 }
 
 type PayoutRepo struct {
-	pool     *pgxpool.Pool
-	db       DBTX
-	mirrorer DepartureMirrorer
-	outbox   *LedgerOutboxRepo
+	pool                      *pgxpool.Pool
+	db                        DBTX
+	mirrorer                  DepartureMirrorer
+	outbox                    *LedgerOutboxRepo
+	dispatchLeaseTTL          time.Duration
+	dispatchHeartbeatInterval time.Duration
+}
+
+// SetDispatchLeaseTimings overrides the default 120s lease TTL and 40s heartbeat interval (primarily for tests).
+func (r *PayoutRepo) SetDispatchLeaseTimings(ttl, heartbeat time.Duration) {
+	if ttl > 0 {
+		r.dispatchLeaseTTL = ttl
+	}
+	if heartbeat > 0 {
+		r.dispatchHeartbeatInterval = heartbeat
+	}
 }
 
 var ErrNoUnbatchedPayoutItems = errors.New("no unbatched pending payout items found")
@@ -555,7 +568,7 @@ func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UU
 	if pid, ok := requestscope.PropertyIDFromContext(ctx); ok && pid != uuid.Nil {
 		_, _ = r.db.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.current_property_id', $1, true)", pid.String())
 	}
-	rows, err := r.db.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
+	rows, err := r.db.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT $2`, batchID, domain.MaxPayoutBatchItems)
 	if err != nil {
 		return nil, err
 	}
@@ -573,14 +586,14 @@ func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UU
 
 const batchCols = `id, property_id, batch_number, format_type, status,
 	total_amount_paise, item_count, created_by, approved_by, approved_at,
-	file_checksum, notes, created_at, updated_at`
+	file_checksum, notes, dispatch_fence_generation, created_at, updated_at`
 
 func scanBatch(row pgx.Row) (*domain.PayoutBatch, error) {
 	var b domain.PayoutBatch
 	err := row.Scan(
 		&b.ID, &b.PropertyID, &b.BatchNumber, &b.FormatType, &b.Status,
 		&b.TotalAmountPaise, &b.ItemCount, &b.CreatedBy, &b.ApprovedBy, &b.ApprovedAt,
-		&b.FileChecksum, &b.Notes, &b.CreatedAt, &b.UpdatedAt,
+		&b.FileChecksum, &b.Notes, &b.DispatchFenceGeneration, &b.CreatedAt, &b.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -650,7 +663,7 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		}
 	}
 
-	// Lock all pending unbatched items for this property
+	// Lock up to MaxPayoutBatchItems pending unbatched items for this property deterministically.
 	rows, err := tx.Query(ctx, `
 		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
 		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
@@ -658,7 +671,9 @@ func (r *PayoutRepo) CreateBatchFromUnbatchedItems(
 		FROM payout_items pi
 		JOIN payout_payees pp ON pp.id = pi.payee_id
 		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending' AND pp.is_verified = TRUE
-		ORDER BY pi.id ASC FOR UPDATE OF pi`, propertyID,
+		ORDER BY pi.created_at ASC, pi.id ASC
+		FOR UPDATE OF pi SKIP LOCKED
+		LIMIT $2`, propertyID, domain.MaxPayoutBatchItems,
 	)
 	if err != nil {
 		return nil, nil, err
@@ -790,53 +805,187 @@ func (r *PayoutRepo) ApproveBatch(ctx context.Context, batchID, approverID uuid.
 	return b, nil
 }
 
-// TryLockBatchDispatch attempts to acquire a distributed resource lease for a payout batch dispatch.
-// Returns false if another worker or goroutine is currently dispatching the batch.
-// Maintains a heartbeat renewal every 40s while active to prevent lease expiry during long batch runs.
-func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID) (bool, func(), error) {
+// PayoutDispatchLease represents an active, fenced dispatch lease for a payout batch.
+// Ctx is cancelled immediately if heartbeat renewal fails or lease ownership is lost.
+type PayoutDispatchLease struct {
+	BatchID    uuid.UUID
+	Generation int64
+	Lease      *ResourceLease
+	Ctx        context.Context
+	Unlock     func()
+}
+
+// TryLockBatchDispatch attempts to acquire a distributed resource lease for a payout batch dispatch,
+// atomically increments payout_batches.dispatch_fence_generation, and returns a lease-owned context
+// that is cancelled immediately when heartbeat renewal fails or ownership cannot be confirmed.
+func (r *PayoutRepo) TryLockBatchDispatch(ctx context.Context, batchID uuid.UUID) (*PayoutDispatchLease, bool, error) {
 	if r.pool == nil {
-		return false, nil, errors.New("payout repo: pool is not configured")
-	}
-	manager := NewResourceLeaseManager(r.pool)
-	lease, acquired, err := manager.TryAcquireLease(ctx, "payout_batch", batchID.String(), "payout-dispatcher", 120*time.Second)
-	if err != nil {
-		return false, nil, fmt.Errorf("try payout batch lease lock: %w", err)
-	}
-	if !acquired {
-		return false, func() {}, nil
+		return nil, false, errors.New("payout repo: pool is not configured")
 	}
 
+	ttl := r.dispatchLeaseTTL
+	if ttl <= 0 {
+		ttl = 120 * time.Second
+	}
+	heartbeatInterval := r.dispatchHeartbeatInterval
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 40 * time.Second
+	}
+
+	manager := NewResourceLeaseManager(r.pool)
+	lease, acquired, err := manager.TryAcquireLease(ctx, "payout_batch", batchID.String(), "payout-dispatcher", ttl)
+	if err != nil {
+		return nil, false, fmt.Errorf("try payout batch lease lock: %w", err)
+	}
+	if !acquired {
+		return nil, false, nil
+	}
+
+	// Atomically bind lease token and increment monotonic fencing generation on payout_batches.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		_ = manager.ReleaseLease(context.Background(), lease)
+		return nil, false, fmt.Errorf("begin fence increment tx: %w", err)
+	}
+	valid, valErr := manager.ValidateLeaseTx(ctx, tx, lease)
+	if valErr != nil || !valid {
+		_ = tx.Rollback(ctx)
+		_ = manager.ReleaseLease(context.Background(), lease)
+		if valErr != nil {
+			return nil, false, fmt.Errorf("validate acquired batch lease: %w", valErr)
+		}
+		return nil, false, nil
+	}
+	var fenceGen int64
+	err = tx.QueryRow(ctx, `
+		UPDATE payout_batches
+		SET dispatch_fence_generation = dispatch_fence_generation + 1,
+		    dispatch_lease_token = $2,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING dispatch_fence_generation`,
+		batchID, lease.LeaseToken,
+	).Scan(&fenceGen)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		_ = manager.ReleaseLease(context.Background(), lease)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, domain.ErrNotFound
+		}
+		return nil, false, fmt.Errorf("increment batch dispatch fence generation: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		_ = manager.ReleaseLease(context.Background(), lease)
+		return nil, false, fmt.Errorf("commit batch dispatch fence generation: %w", err)
+	}
+
+	leaseCtx, leaseCancel := context.WithCancel(ctx)
 	stopHeartbeat := make(chan struct{})
 	heartbeatDone := make(chan struct{})
 
 	go func() {
 		defer close(heartbeatDone)
-		ticker := time.NewTicker(40 * time.Second)
+		ticker := time.NewTicker(heartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-stopHeartbeat:
 				return
+			case <-leaseCtx.Done():
+				return
 			case <-ticker.C:
-				renewCtx, renewCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				renewed, err := manager.RenewLease(renewCtx, lease, 120*time.Second)
-				renewCancel()
+				renewTimeout := 5 * time.Second
+				if ttl < renewTimeout {
+					renewTimeout = ttl
+				}
+				renewCtx, renewCancel := context.WithTimeout(context.Background(), renewTimeout)
+				renewed, err := manager.RenewLease(renewCtx, lease, ttl)
 				if err != nil || !renewed {
-					slog.Warn("payout batch lease heartbeat failed; lost lease", "batch_id", batchID, "error", err)
+					renewCancel()
+					leaseCancel()
+					slog.Warn("payout batch lease heartbeat failed; cancelled lease context", "batch_id", batchID, "generation", fenceGen, "error", err)
+					return
+				}
+				var stillOwned int
+				chkErr := r.pool.QueryRow(renewCtx, `
+					SELECT 1 FROM payout_batches
+					WHERE id = $1
+					  AND dispatch_fence_generation = $2
+					  AND dispatch_lease_token = $3`,
+					batchID, fenceGen, lease.LeaseToken,
+				).Scan(&stillOwned)
+				renewCancel()
+				if chkErr != nil || stillOwned != 1 {
+					leaseCancel()
+					slog.Warn("payout batch lease ownership check failed; cancelled lease context", "batch_id", batchID, "generation", fenceGen, "error", chkErr)
 					return
 				}
 			}
 		}
 	}()
 
+	var unlockOnce sync.Once
 	unlock := func() {
-		close(stopHeartbeat)
-		<-heartbeatDone
-		relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = manager.ReleaseLease(relCtx, lease)
+		unlockOnce.Do(func() {
+			leaseCancel()
+			close(stopHeartbeat)
+			<-heartbeatDone
+			relCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = r.pool.Exec(relCtx, `
+				UPDATE payout_batches
+				SET dispatch_lease_token = NULL
+				WHERE id = $1
+				  AND dispatch_fence_generation = $2
+				  AND dispatch_lease_token = $3`,
+				batchID, fenceGen, lease.LeaseToken,
+			)
+			_ = manager.ReleaseLease(relCtx, lease)
+		})
 	}
-	return true, unlock, nil
+
+	return &PayoutDispatchLease{
+		BatchID:    batchID,
+		Generation: fenceGen,
+		Lease:      lease,
+		Ctx:        leaseCtx,
+		Unlock:     unlock,
+	}, true, nil
+}
+
+// verifyDispatchFenceTx verifies inside tx that the worker's lease is active, uncancelled,
+// and matches both resource_leases and payout_batches.dispatch_fence_generation.
+func (r *PayoutRepo) verifyDispatchFenceTx(ctx context.Context, tx pgx.Tx, lease *PayoutDispatchLease) error {
+	if lease == nil || lease.Ctx == nil || lease.Lease == nil {
+		return domain.ErrStaleDispatchLease
+	}
+	if err := lease.Ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
+	}
+	manager := NewResourceLeaseManager(r.pool)
+	valid, err := manager.ValidateLeaseTx(ctx, tx, lease.Lease)
+	if err != nil {
+		return fmt.Errorf("validate dispatch lease: %w", err)
+	}
+	if !valid {
+		return domain.ErrStaleDispatchLease
+	}
+	var owned int
+	err = tx.QueryRow(ctx, `
+		SELECT 1 FROM payout_batches
+		WHERE id = $1
+		  AND dispatch_fence_generation = $2
+		  AND dispatch_lease_token = $3
+		FOR UPDATE`,
+		lease.BatchID, lease.Generation, lease.Lease.LeaseToken,
+	).Scan(&owned)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.ErrStaleDispatchLease
+	}
+	if err != nil {
+		return fmt.Errorf("verify batch dispatch fence: %w", err)
+	}
+	return nil
 }
 
 // InitiateBatchTransferTx atomically transitions an approved batch and its pending items to 'processing'
@@ -1000,6 +1149,116 @@ func (r *PayoutRepo) SetBatchDispatchUnknown(ctx context.Context, batchID uuid.U
 		WHERE id = $1`, batchID, reason,
 	)
 	return err
+}
+
+// SetBatchDispatchUnknownFenced sets batch status to dispatch_unknown only if the worker's
+// dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) SetBatchDispatchUnknownFenced(ctx context.Context, lease *PayoutDispatchLease, reason string) error {
+	if lease == nil {
+		return domain.ErrStaleDispatchLease
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET status = 'dispatch_unknown',
+			    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+			    updated_at = NOW()
+			WHERE id = $1
+			  AND dispatch_fence_generation = $3
+			  AND dispatch_lease_token = $4`,
+			lease.BatchID, reason, lease.Generation, lease.Lease.LeaseToken,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrStaleDispatchLease
+		}
+		return nil
+	})
+}
+
+// UpdatePayoutItemStatusFenced updates a payout item's status only if the worker's
+// dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) UpdatePayoutItemStatusFenced(
+	ctx context.Context,
+	lease *PayoutDispatchLease,
+	itemID uuid.UUID,
+	status domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+) error {
+	if lease == nil {
+		return domain.ErrStaleDispatchLease
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		return r.UpdatePayoutItemStatusTx(ctx, tx, itemID, status, cfTransferID, utr, settledAt, failureReason)
+	})
+}
+
+// ReconcilePayoutItemWithOutboxFenced atomically reconciles a payout item and enqueues outbox events
+// only if the worker's dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) ReconcilePayoutItemWithOutboxFenced(
+	ctx context.Context,
+	lease *PayoutDispatchLease,
+	propertyID, itemID uuid.UUID,
+	amountPaise int64,
+	status domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+) error {
+	if lease == nil {
+		return domain.ErrStaleDispatchLease
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		_, err := r.ReconcilePayoutItemTx(ctx, tx, domain.PayoutReconcileParams{
+			PropertyID:    propertyID,
+			ItemID:        itemID,
+			AmountPaise:   amountPaise,
+			TargetStatus:  status,
+			CFTransferID:  cfTransferID,
+			UTR:           utr,
+			SettledAt:     settledAt,
+			FailureReason: failureReason,
+			Source:        "poller:batch_reconcile",
+		})
+		return err
+	})
+}
+
+// UpdateBatchStatusFromItemsFenced rolls up item statuses onto payout_batches only if the worker's
+// dispatch lease and monotonic fencing generation remain valid.
+func (r *PayoutRepo) UpdateBatchStatusFromItemsFenced(ctx context.Context, lease *PayoutDispatchLease) (*domain.PayoutBatch, error) {
+	if lease == nil {
+		return nil, domain.ErrStaleDispatchLease
+	}
+	var updated *domain.PayoutBatch
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		b, err := r.UpdateBatchStatusFromItemsTx(ctx, tx, lease.BatchID)
+		if err != nil {
+			return err
+		}
+		updated = b
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // RecordBatchRejectionObservation records a rejection event in payout batch notes
@@ -2186,7 +2445,7 @@ func (r *PayoutRepo) ListPayoutItemsByBatchCrossProperty(ctx context.Context, ba
 	defer tx.Rollback(ctx)
 	_, _ = tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', 'true', true)")
 
-	rows, err := tx.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT 500`, batchID)
+	rows, err := tx.Query(ctx, `SELECT `+itemCols+` FROM payout_items WHERE batch_id=$1 ORDER BY id ASC LIMIT $2`, batchID, domain.MaxPayoutBatchItems)
 	if err != nil {
 		return nil, err
 	}

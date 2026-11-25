@@ -122,8 +122,9 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 							*dest[9].(**time.Time) = nil
 							*dest[10].(**string) = nil
 							*dest[11].(**string) = nil
-							*dest[12].(*time.Time) = now
+							*dest[12].(*int64) = 0
 							*dest[13].(*time.Time) = now
+							*dest[14].(*time.Time) = now
 							return nil
 						},
 					}
@@ -283,8 +284,9 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 							*dest[9].(**time.Time) = &now
 							*dest[10].(**string) = nil
 							*dest[11].(**string) = nil
-							*dest[12].(*time.Time) = now
+							*dest[12].(*int64) = 0
 							*dest[13].(*time.Time) = now
+							*dest[14].(*time.Time) = now
 							return nil
 						},
 					}

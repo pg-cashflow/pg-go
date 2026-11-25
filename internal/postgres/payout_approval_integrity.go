@@ -70,14 +70,16 @@ func (r *PayoutRepo) ApproveBatchSigned(
 	var batch domain.PayoutBatch
 	err := tx.QueryRow(ctx, `
 		SELECT id, property_id, batch_number, format_type, status, total_amount_paise,
-		       item_count, created_by, approved_by, approved_at, file_checksum, notes, created_at, updated_at
+		       item_count, created_by, approved_by, approved_at, file_checksum, notes,
+		       dispatch_fence_generation, created_at, updated_at
 		FROM payout_batches
 		WHERE id = $1 AND ($2 = '00000000-0000-0000-0000-000000000000'::uuid OR property_id = $2) AND status = 'draft'
 		FOR UPDATE`, batchID, propertyID,
 	).Scan(
 		&batch.ID, &batch.PropertyID, &batch.BatchNumber, &batch.FormatType, &batch.Status,
 		&batch.TotalAmountPaise, &batch.ItemCount, &batch.CreatedBy, &batch.ApprovedBy,
-		&batch.ApprovedAt, &batch.FileChecksum, &batch.Notes, &batch.CreatedAt, &batch.UpdatedAt,
+		&batch.ApprovedAt, &batch.FileChecksum, &batch.Notes,
+		&batch.DispatchFenceGeneration, &batch.CreatedAt, &batch.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -125,6 +127,9 @@ func (r *PayoutRepo) ApproveBatchSigned(
 
 	if len(items) == 0 {
 		return nil, nil, fmt.Errorf("payout batch %s has no pending items", batchID)
+	}
+	if len(items) > domain.MaxPayoutBatchItems {
+		return nil, nil, fmt.Errorf("%w: batch has %d items, maximum is %d", domain.ErrBatchItemLimitExceeded, len(items), domain.MaxPayoutBatchItems)
 	}
 	if len(items) != batch.ItemCount || calculatedTotal != batch.TotalAmountPaise {
 		return nil, nil, fmt.Errorf("batch item count or amount mismatch: expected %d items totaling %d paise, got %d items totaling %d paise",

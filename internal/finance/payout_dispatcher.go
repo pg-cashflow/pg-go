@@ -84,7 +84,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("payout dispatcher: repository not configured")
 	}
 
-	acquired, unlock, lockErr := d.repo.TryLockBatchDispatch(ctx, batchID)
+	lease, acquired, lockErr := d.repo.TryLockBatchDispatch(ctx, batchID)
 	if lockErr != nil {
 		return fmt.Errorf("payout dispatcher: lock batch %s: %w", batchID, lockErr)
 	}
@@ -92,9 +92,10 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		slog.Info("payout dispatcher: batch already being dispatched by another worker, skipping", "batch_id", batchID)
 		return nil
 	}
-	defer unlock()
+	defer lease.Unlock()
+	leaseCtx := lease.Ctx
 
-	batch, err := d.repo.GetBatchByID(ctx, batchID)
+	batch, err := d.repo.GetBatchByID(leaseCtx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout dispatcher: get batch %s: %w", batchID, err)
 	}
@@ -107,13 +108,19 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	case domain.BatchCompleted, domain.BatchPartiallyFailed, domain.BatchFailed, domain.BatchCancelled:
 		return nil
 	}
+	if batch.ItemCount > domain.MaxPayoutBatchItems {
+		return fmt.Errorf("%w: batch %s item_count=%d exceeds %d", domain.ErrBatchItemLimitExceeded, batch.ID, batch.ItemCount, domain.MaxPayoutBatchItems)
+	}
 
-	items, err := d.repo.ListPayoutItemsByBatch(ctx, batchID)
+	items, err := d.repo.ListPayoutItemsByBatch(leaseCtx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout dispatcher: list items for batch %s: %w", batchID, err)
 	}
 	if len(items) == 0 {
 		return fmt.Errorf("payout dispatcher: batch %s has no items", batchID)
+	}
+	if len(items) > domain.MaxPayoutBatchItems {
+		return fmt.Errorf("%w: batch %s fetched %d items exceeding %d", domain.ErrBatchItemLimitExceeded, batch.ID, len(items), domain.MaxPayoutBatchItems)
 	}
 
 	batchTransferID := fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", ""))
@@ -126,7 +133,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 	if len(verificationKeys) == 0 {
 		return errors.New("payout dispatcher: approval signing keys not configured; refusing to dispatch unverified batch")
 	}
-	snapshot, err := d.repo.VerifyBatchApproval(ctx, batchID, verificationKeys)
+	snapshot, err := d.repo.VerifyBatchApproval(leaseCtx, batchID, verificationKeys)
 	if err != nil {
 		return fmt.Errorf("payout dispatcher: approval integrity failed: %w", err)
 	}
@@ -144,7 +151,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		if _, exists := uniquePayees[it.PayeeID]; exists {
 			continue
 		}
-		payee, err := d.repo.GetPayeeByID(ctx, it.PayeeID)
+		payee, err := d.repo.GetPayeeByID(leaseCtx, it.PayeeID)
 		if err != nil {
 			return fmt.Errorf("payout dispatcher: get payee %s for item %s: %w", it.PayeeID, it.ID, err)
 		}
@@ -199,7 +206,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 
 	// Step 2: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
 	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
-		statusResp, err := d.client.GetBatchTransferStatus(ctx, batchTransferID)
+		statusResp, err := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID)
 		if err == nil {
 			if statusResp == nil || strings.TrimSpace(statusResp.CFBatchTransferID) == "" || strings.TrimSpace(statusResp.BatchTransferID) == "" {
 				return fmt.Errorf("payout dispatcher: malformed batch status response for %s: missing required identifiers", batch.ID)
@@ -210,7 +217,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 				"status", statusResp.Status,
 			)
 			// Successfully queried status: reconcile items and return
-			return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+			return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
 		}
 
 		// If the batch had an ambiguous prior dispatch (dispatch_unknown), we can only proceed
@@ -238,7 +245,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		p := payee
 		beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
 		g.Go(func() error {
-			if err := d.ensureBeneficiary(ctx, p, beneID); err != nil {
+			if err := d.ensureBeneficiary(leaseCtx, p, beneID); err != nil {
 				return fmt.Errorf("register beneficiary %s: %w", beneID, err)
 			}
 			return nil
@@ -292,8 +299,12 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		Transfers:       transferEntries,
 	}
 
+	if err := leaseCtx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
+	}
+
 	// Step 3: Dispatch batch to Cashfree Transfers V2
-	resp, err := d.client.RequestBatchTransfer(ctx, req)
+	resp, err := d.client.RequestBatchTransfer(leaseCtx, req)
 	if err != nil {
 		if errors.Is(err, cashfree.ErrPayoutAuthRejected) {
 			slog.Error("CASHFREE BATCH TRANSFER AUTHENTICATION REJECTED - CONFIGURATION ERROR (NON-RETRYABLE UNTIL CONFIG FIXED)",
@@ -309,7 +320,7 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 				"batch_id", batch.ID,
 				"err", err,
 			)
-			if setErr := d.repo.SetBatchDispatchUnknown(ctx, batch.ID, err.Error()); setErr != nil {
+			if setErr := d.repo.SetBatchDispatchUnknownFenced(leaseCtx, lease, err.Error()); setErr != nil {
 				slog.Error("failed to persist batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
 				return fmt.Errorf("payout dispatcher: persist dispatch_unknown failed: %w (dispatch error: %v)", setErr, err)
 			}
@@ -324,17 +335,21 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 				p := payee
 				beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
 				rg.Go(func() error {
-					return d.ensureBeneficiary(ctx, p, beneID)
+					return d.ensureBeneficiary(leaseCtx, p, beneID)
 				})
 			}
 			if err := rg.Wait(); err != nil {
 				return fmt.Errorf("payout dispatcher: refusing transfer retry: beneficiary validation failed: %w", err)
 			}
 
-			retryResp, retryErr := d.client.RequestBatchTransfer(ctx, req)
+			if err := leaseCtx.Err(); err != nil {
+				return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
+			}
+
+			retryResp, retryErr := d.client.RequestBatchTransfer(leaseCtx, req)
 			if retryErr != nil {
 				if errors.Is(retryErr, cashfree.ErrDispatchUnknown) {
-					if setErr := d.repo.SetBatchDispatchUnknown(ctx, batch.ID, retryErr.Error()); setErr != nil {
+					if setErr := d.repo.SetBatchDispatchUnknownFenced(leaseCtx, lease, retryErr.Error()); setErr != nil {
 						slog.Error("failed to persist retry batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
 						return fmt.Errorf("payout dispatcher: persist dispatch_unknown on retry failed: %w (retry error: %v)", setErr, retryErr)
 					}
@@ -343,12 +358,12 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 			}
 			resp = retryResp
 		} else {
-			if statusResp, sErr := d.client.GetBatchTransferStatus(ctx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
+			if statusResp, sErr := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
 				slog.Info("payout dispatcher: batch already exists at gateway on error; reconciling existing batch status",
 					"batch_id", batch.ID,
 					"cf_batch_id", statusResp.CFBatchTransferID,
 				)
-				return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+				return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
 			}
 			return fmt.Errorf("payout dispatcher: request batch transfer: %w", err)
 		}
@@ -375,34 +390,35 @@ func (d *PayoutDispatcher) PollBatch(ctx context.Context, batchID uuid.UUID) err
 	if d.client == nil {
 		return fmt.Errorf("payout client not configured")
 	}
-	acquired, unlock, err := d.repo.TryLockBatchDispatch(ctx, batchID)
+	lease, acquired, err := d.repo.TryLockBatchDispatch(ctx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout poll: lock batch %s: %w", batchID, err)
 	}
 	if !acquired {
 		return nil
 	}
-	defer unlock()
+	defer lease.Unlock()
+	leaseCtx := lease.Ctx
 
-	batch, err := d.repo.GetBatchByID(ctx, batchID)
+	batch, err := d.repo.GetBatchByID(leaseCtx, batchID)
 	if err != nil || batch == nil {
 		return fmt.Errorf("payout poll: get batch %s: %w", batchID, err)
 	}
 	if batch.Status != domain.BatchProcessing && batch.Status != domain.BatchDispatchUnknown {
 		return nil
 	}
-	items, err := d.repo.ListPayoutItemsByBatch(ctx, batchID)
+	items, err := d.repo.ListPayoutItemsByBatch(leaseCtx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout poll: list items for batch %s: %w", batchID, err)
 	}
-	statusResp, err := d.client.GetBatchTransferStatus(ctx, fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", "")))
+	statusResp, err := d.client.GetBatchTransferStatus(leaseCtx, fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", "")))
 	if err != nil {
 		return fmt.Errorf("payout poll: batch status %s: %w", batchID, err)
 	}
 	if statusResp == nil || statusResp.CFBatchTransferID == "" {
 		return fmt.Errorf("payout poll: batch %s unknown at gateway; manual review required", batchID)
 	}
-	return d.reconcileBatchStatus(ctx, batch, items, statusResp)
+	return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
 }
 
 // PollStaleBatches polls every in-flight batch older than staleAfter. Failures on one batch do not
@@ -477,6 +493,16 @@ func (d *PayoutDispatcher) ensureBeneficiary(ctx context.Context, payee *domain.
 
 func (d *PayoutDispatcher) reconcileBatchStatus(
 	ctx context.Context,
+	batch *domain.PayoutBatch,
+	items []domain.PayoutItem,
+	statusResp *cashfree.BatchTransferStatusResponse,
+) error {
+	return d.reconcileBatchStatusFenced(ctx, nil, batch, items, statusResp)
+}
+
+func (d *PayoutDispatcher) reconcileBatchStatusFenced(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
 	batch *domain.PayoutBatch,
 	items []domain.PayoutItem,
 	statusResp *cashfree.BatchTransferStatusResponse,
@@ -567,7 +593,7 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			continue
 		}
 
-		if err := d.reconcileSingleTransfer(ctx, batch, it, &st); err != nil {
+		if err := d.reconcileSingleTransferFenced(ctx, lease, batch, it, &st); err != nil {
 			return err
 		}
 		seen[incomingID] = struct{}{}
@@ -596,7 +622,7 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 			transferID := DerivePayoutTransferID(it)
 			itemStatus, err := d.client.GetTransferStatus(ctx, transferID)
 			if err == nil && itemStatus != nil {
-				if err := d.reconcileSingleTransfer(ctx, batch, it, itemStatus); err != nil {
+				if err := d.reconcileSingleTransferFenced(ctx, lease, batch, it, itemStatus); err != nil {
 					return err
 				}
 			} else {
@@ -619,6 +645,10 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 
 	// 3. Derive batch status after all available item-level results have been applied.
 	if d.repo != nil {
+		if lease != nil {
+			_, err := d.repo.UpdateBatchStatusFromItemsFenced(ctx, lease)
+			return err
+		}
 		_, err := d.repo.UpdateBatchStatusFromItemsTx(ctx, nil, batch.ID)
 		return err
 	}
@@ -627,6 +657,16 @@ func (d *PayoutDispatcher) reconcileBatchStatus(
 
 func (d *PayoutDispatcher) reconcileSingleTransfer(
 	ctx context.Context,
+	batch *domain.PayoutBatch,
+	it domain.PayoutItem,
+	st *cashfree.TransferStatusItem,
+) error {
+	return d.reconcileSingleTransferFenced(ctx, nil, batch, it, st)
+}
+
+func (d *PayoutDispatcher) reconcileSingleTransferFenced(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
 	batch *domain.PayoutBatch,
 	it domain.PayoutItem,
 	st *cashfree.TransferStatusItem,
@@ -680,7 +720,7 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 		if st.UTR != nil {
 			utr = *st.UTR
 		}
-		if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
+		if err := d.reconcileItemWithOutbox(ctx, lease, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutSucceeded, &cfID, &utr, nil, nil); err != nil {
 			return fmt.Errorf("reconcile payout item succeeded status: %w", err)
 		}
 	case "FAILED":
@@ -692,11 +732,11 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 		if st.StatusCode == "WAIT_TIME_EXCEEDED" {
 			targetStatus = domain.PayoutRetriableFailed
 		}
-		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
+		if err := d.updateItemStatus(ctx, lease, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {
 			return fmt.Errorf("update payout item failed status: %w", err)
 		}
 	case "APPROVAL_PENDING":
-		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
+		if err := d.updateItemStatus(ctx, lease, it.ID, domain.PayoutCashfreeApprovalPending, &cfID, nil, nil, nil); err != nil {
 			return fmt.Errorf("update payout item approval pending status: %w", err)
 		}
 		if d.alerter != nil {
@@ -712,7 +752,7 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 		return nil
 	case "REVERSED":
 		reason := "transfer reversed by bank"
-		if err := d.repo.ReconcilePayoutItemWithOutbox(ctx, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
+		if err := d.reconcileItemWithOutbox(ctx, lease, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
 			return fmt.Errorf("reconcile payout item reversed status: %w", err)
 		}
 	case "REJECTED":
@@ -723,7 +763,7 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 		if reason == "" {
 			reason = "transfer rejected by gateway"
 		}
-		if err := d.repo.UpdatePayoutItemStatusTx(ctx, nil, it.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
+		if err := d.updateItemStatus(ctx, lease, it.ID, domain.PayoutRejected, &cfID, nil, nil, &reason); err != nil {
 			return fmt.Errorf("update payout item rejected status: %w", err)
 		}
 	default:
@@ -734,6 +774,37 @@ func (d *PayoutDispatcher) reconcileSingleTransfer(
 		)
 	}
 	return nil
+}
+
+func (d *PayoutDispatcher) reconcileItemWithOutbox(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
+	propertyID, itemID uuid.UUID,
+	amountPaise int64,
+	status domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+) error {
+	if lease != nil {
+		return d.repo.ReconcilePayoutItemWithOutboxFenced(ctx, lease, propertyID, itemID, amountPaise, status, cfTransferID, utr, settledAt, failureReason)
+	}
+	return d.repo.ReconcilePayoutItemWithOutbox(ctx, propertyID, itemID, amountPaise, status, cfTransferID, utr, settledAt, failureReason)
+}
+
+func (d *PayoutDispatcher) updateItemStatus(
+	ctx context.Context,
+	lease *postgres.PayoutDispatchLease,
+	itemID uuid.UUID,
+	status domain.PayoutItemStatus,
+	cfTransferID, utr *string,
+	settledAt *time.Time,
+	failureReason *string,
+) error {
+	if lease != nil {
+		return d.repo.UpdatePayoutItemStatusFenced(ctx, lease, itemID, status, cfTransferID, utr, settledAt, failureReason)
+	}
+	return d.repo.UpdatePayoutItemStatusTx(ctx, nil, itemID, status, cfTransferID, utr, settledAt, failureReason)
 }
 
 // UnmarshalPayoutBatchPayload extracts batch_id from the ledger outbox payload.

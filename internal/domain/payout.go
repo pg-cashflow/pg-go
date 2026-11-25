@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -133,21 +134,33 @@ const (
 	BatchCancelled       PayoutBatchStatus = "cancelled"
 )
 
+// MaxPayoutBatchItems is the maximum number of items permitted in a single payout batch
+// across creation, approval, and dispatch.
+const MaxPayoutBatchItems = 500
+
+var (
+	// ErrBatchItemLimitExceeded is returned when a payout batch exceeds MaxPayoutBatchItems.
+	ErrBatchItemLimitExceeded = errors.New("payout batch exceeds maximum allowed item count")
+	// ErrStaleDispatchLease is returned when a worker attempts a mutation with an expired or superseded lease/generation.
+	ErrStaleDispatchLease = errors.New("payout dispatch lease is stale or lost")
+)
+
 type PayoutBatch struct {
-	ID               uuid.UUID         `json:"id"`
-	PropertyID       uuid.UUID         `json:"property_id"`
-	BatchNumber      string            `json:"batch_number"`
-	FormatType       string            `json:"format_type"` // instruction_sheet
-	Status           PayoutBatchStatus `json:"status"`
-	TotalAmountPaise int64             `json:"total_amount_paise"`
-	ItemCount        int               `json:"item_count"`
-	CreatedBy        uuid.UUID         `json:"created_by"`
-	ApprovedBy       *uuid.UUID        `json:"approved_by,omitempty"`
-	ApprovedAt       *time.Time        `json:"approved_at,omitempty"`
-	FileChecksum     *string           `json:"file_checksum,omitempty"`
-	Notes            *string           `json:"notes,omitempty"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	ID                      uuid.UUID         `json:"id"`
+	PropertyID              uuid.UUID         `json:"property_id"`
+	BatchNumber             string            `json:"batch_number"`
+	FormatType              string            `json:"format_type"` // instruction_sheet
+	Status                  PayoutBatchStatus `json:"status"`
+	TotalAmountPaise        int64             `json:"total_amount_paise"`
+	ItemCount               int               `json:"item_count"`
+	CreatedBy               uuid.UUID         `json:"created_by"`
+	ApprovedBy              *uuid.UUID        `json:"approved_by,omitempty"`
+	ApprovedAt              *time.Time        `json:"approved_at,omitempty"`
+	FileChecksum            *string           `json:"file_checksum,omitempty"`
+	Notes                   *string           `json:"notes,omitempty"`
+	DispatchFenceGeneration int64             `json:"dispatch_fence_generation"`
+	CreatedAt               time.Time         `json:"created_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
 }
 
 type PayoutItemStatus string
