@@ -534,7 +534,7 @@ func TestEnsureCashfree_PassesPersistedIdempotencyKey(t *testing.T) {
 }
 
 func TestCollector_MinOrderAmount_RejectsBeforeClaim(t *testing.T) {
-	cf := &stubCF{session: "sess_never"}
+	cf := &stubCF{}
 	mgr := &recoveringIntentMgr{}
 	svc := New(mgr, cf)
 
@@ -545,7 +545,7 @@ func TestCollector_MinOrderAmount_RejectsBeforeClaim(t *testing.T) {
 	if !errors.Is(err, ErrAmountBelowMinimum) {
 		t.Fatalf("expected ErrAmountBelowMinimum, got: %v", err)
 	}
-	if mgr.claimed != nil {
-		t.Fatalf("expected no intent claim for amount < 100 paise")
+	if cf.n != 0 || mgr.claimed != nil {
+		t.Fatalf("expected no Cashfree call or intent claim for amount < 100 paise")
 	}
 }
