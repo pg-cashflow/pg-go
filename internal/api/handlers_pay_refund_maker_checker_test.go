@@ -22,6 +22,7 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -1086,7 +1087,7 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 	if err != nil {
 		testutil.FailOnSkipIfDBRequired(t, "config load failed")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
@@ -1120,23 +1121,25 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 	defer func() { _, _ = pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, ownerID) }()
 
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO tenants (id, property_id, name, phone, status)
-		VALUES ($1, $2, 'Race Tenant', $3, 'active')`,
+		INSERT INTO tenants (id, property_id, name, phone, room_number, rent_amount, due_day, status)
+		VALUES ($1, $2, 'Race Tenant', $3, '101', 1000000, 5, 'active')`,
 		tenantID, propID, fmt.Sprintf("+91%010d", (time.Now().UnixNano()+1)%10000000000)); err != nil {
 		t.Fatalf("insert tenant: %v", err)
 	}
 
+	dueCode := uuid.New().String()[:8]
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO dues (id, property_id, tenant_id, period_label, kind, amount_paise, due_date, status)
-		VALUES ($1, $2, $3, '2026-11', 'rent', 1000000, CURRENT_DATE, 'paid')`,
-		dueID, propID, tenantID); err != nil {
+		INSERT INTO dues (id, due_code, property_id, tenant_id, amount, original_amount, status, due_date, kind, period_start, period_end)
+		VALUES ($1, $2, $3, $4, 0, 1000000, 'paid', '2026-11-05', 'rent', '2026-11-01', '2026-12-01')`,
+		dueID, dueCode, propID, tenantID); err != nil {
 		t.Fatalf("insert due: %v", err)
 	}
 
+	cfPaymentID := "cf_pay_race_" + uuid.New().String()[:8]
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO payments (id, property_id, due_id, tenant_id, amount_paise, method, provider, status, paid_at)
-		VALUES ($1, $2, $3, $4, 1000000, 'upi_cashfree', 'cashfree', 'paid', NOW())`,
-		paymentID, propID, dueID, tenantID); err != nil {
+		INSERT INTO payments (id, property_id, tenant_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
+		VALUES ($1, $2, $3, 1000000, 'cashfree', 'cashfree', $4, $4, NOW())`,
+		paymentID, propID, tenantID, cfPaymentID); err != nil {
 		t.Fatalf("insert payment: %v", err)
 	}
 
@@ -1155,6 +1158,7 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: ownerID, PropertyID: &propID, Role: domain.RoleOwner})
+		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), propID))
 		c.Next()
 	})
 	r.POST("/owner/payments/:id/refund/requests", h.OwnerCreateRefundRequest)

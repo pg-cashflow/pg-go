@@ -1576,10 +1576,10 @@ func TestTenantKYCUpload_HeapUnderMaxConcurrency(t *testing.T) {
 	gateCh := make(chan struct{})
 
 	svc := &fakeKYCSvc{
-		uploadFn: func(_ context.Context, _ uuid.UUID, _ string, file io.Reader, _, _ string) (*domain.KYCVerification, error) {
+		uploadFn: func(_ context.Context, _ uuid.UUID, file io.Reader, _, _, _ string) (*domain.KYCVerification, error) {
 			_, _ = io.ReadAll(io.LimitReader(file, fileSize+1))
 			<-gateCh // Hold all 8 slots active simultaneously to measure peak concurrent heap
-			return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusPendingManual}, nil
+			return &domain.KYCVerification{ID: uuid.New(), Status: domain.KYCStatusPending}, nil
 		},
 	}
 
@@ -1599,8 +1599,8 @@ func TestTenantKYCUpload_HeapUnderMaxConcurrency(t *testing.T) {
 			defer wg.Done()
 			var body bytes.Buffer
 			mw := multipart.NewWriter(&body)
-			_ = mw.WriteField("doc_type", "aadhaar")
-			fw, _ := mw.CreateFormFile("document", fmt.Sprintf("doc-%d.jpg", idx))
+			_ = mw.WriteField("document_type", "aadhaar")
+			fw, _ := mw.CreateFormFile("file", fmt.Sprintf("doc-%d.jpg", idx))
 			_, _ = fw.Write(payload)
 			_ = mw.Close()
 
