@@ -194,8 +194,8 @@ func (c *Config) ValidateForRealDeployment() error {
 			errs = append(errs, "PUBLIC_APP_URL (or FRONTEND_URL) is required in production")
 		} else {
 			u, err := url.ParseRequestURI(frontendURL)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTPS URL in production (got %q)", c.FrontendURL))
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
+				errs = append(errs, fmt.Sprintf("PUBLIC_APP_URL (or FRONTEND_URL) must be a valid absolute HTTPS URL with no credentials or fragment in production (got %q)", c.FrontendURL))
 			}
 		}
 		// In production, split-origin deployment is prohibited because SameSite=Strict cookies

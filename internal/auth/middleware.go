@@ -467,6 +467,11 @@ func isFinancialMutation(c *gin.Context) bool {
 		return false
 	}
 	m := c.Request.Method
+	if m == http.MethodGet {
+		return strings.Contains(p, "/kyc/") ||
+			strings.HasSuffix(p, "/id-photo") ||
+			strings.HasSuffix(p, "/export")
+	}
 	if m != http.MethodPost && m != http.MethodPut && m != http.MethodPatch && m != http.MethodDelete {
 		return false
 	}

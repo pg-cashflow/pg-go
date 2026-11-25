@@ -742,6 +742,9 @@ func TestAuthoritativeMutations_BypassTokenVersionCache(t *testing.T) {
 	r.POST("/api/owner/join-requests/:id/activate", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
 	r.PUT("/api/owner/managers/:id/capabilities", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
 	r.POST("/api/owner/slot-invites", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.GET("/api/owner/kyc/:id/document", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.GET("/api/owner/tenants/:id/id-photo", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
+	r.GET("/api/owner/payouts/batches/:id/export", authMW, func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	cases := []struct {
 		method string
@@ -751,6 +754,9 @@ func TestAuthoritativeMutations_BypassTokenVersionCache(t *testing.T) {
 		{http.MethodPost, "/api/owner/join-requests/" + uuid.NewString() + "/activate"},
 		{http.MethodPut, "/api/owner/managers/" + uuid.NewString() + "/capabilities"},
 		{http.MethodPost, "/api/owner/slot-invites"},
+		{http.MethodGet, "/api/owner/kyc/" + uuid.NewString() + "/document"},
+		{http.MethodGet, "/api/owner/tenants/" + uuid.NewString() + "/id-photo"},
+		{http.MethodGet, "/api/owner/payouts/batches/" + uuid.NewString() + "/export"},
 	}
 
 	for _, tc := range cases {

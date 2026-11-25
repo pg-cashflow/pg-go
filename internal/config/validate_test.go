@@ -760,3 +760,33 @@ func TestValidateForRealDeployment_KYCDocCryptoKey(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateForRealDeployment_PublicAppURLRejectsCredsAndFragment(t *testing.T) {
+	base := func(u string) *Config {
+		cfg := validConfig()
+		cfg.AppEnv = "production"
+		cfg.MetricsSecret = "metrics-secret-min-16-chars"
+		cfg.FrontendURL = u
+		cfg.CORSAllowedOrigins = nil
+		return cfg
+	}
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"embedded credentials", "https://user:pass@app.pgcashflow.com"},
+		{"fragment", "https://app.pgcashflow.com/#section"},
+		{"http scheme", "http://app.pgcashflow.com"},
+		{"missing host", "https://"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.url).ValidateForRealDeployment()
+			if err == nil || !strings.Contains(err.Error(), "PUBLIC_APP_URL") {
+				t.Fatalf("expected PUBLIC_APP_URL error for %q, got: %v", tc.url, err)
+			}
+		})
+	}
+}
