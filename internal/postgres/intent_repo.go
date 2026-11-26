@@ -48,6 +48,10 @@ func (r *PaymentIntentRepo) Create(ctx context.Context, p *domain.PaymentIntent)
 	if p.IdempotencyKey == uuid.Nil {
 		p.IdempotencyKey = uuid.New()
 	}
+	var propID *uuid.UUID
+	if p.PropertyID != uuid.Nil {
+		propID = &p.PropertyID
+	}
 	var dueID *uuid.UUID
 	if p.DueID != uuid.Nil {
 		dueID = &p.DueID
@@ -55,7 +59,7 @@ func (r *PaymentIntentRepo) Create(ctx context.Context, p *domain.PaymentIntent)
 	return r.db.QueryRow(ctx, `
 		INSERT INTO payment_intents (property_id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-		p.PropertyID, dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt, p.IdempotencyKey,
+		propID, dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt, p.IdempotencyKey,
 	).Scan(&p.ID)
 }
 

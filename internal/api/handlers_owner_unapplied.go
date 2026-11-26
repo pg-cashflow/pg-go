@@ -384,7 +384,12 @@ func (h *Handlers) processRefundUnappliedReceipt(c *gin.Context, pid, uid uuid.U
 	}
 
 	// Single-owner threshold evaluation for high-value refunds
-	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	effectiveLimit, policyErr := h.getRefundSingleOwnerThreshold(ctx, pid)
+	if policyErr != nil {
+		slog.Error("failed to resolve refund approval policy", "property_id", pid, "receipt_id", receiptID, "error", policyErr)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund approval policy is temporarily unavailable"})
+		return
+	}
 	_, singleOwnerAllowed := domain.EvaluateRefundThreshold(receipt.AmountPaise, effectiveLimit, h.AppEnv)
 	if !singleOwnerAllowed {
 		apierr.RespondClientErr(c, http.StatusForbidden, "refund exceeds single-owner authorization limit; dual owner approval required via refund approval requests", apierr.CodeRefundDualControlRequired)

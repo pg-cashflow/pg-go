@@ -232,6 +232,7 @@ func TestE2E_FullFeatureLifecycleJourney(t *testing.T) {
 	exp := time.Now().Add(1 * time.Hour)
 	intent := &domain.PaymentIntent{
 		ID:              uuid.New(),
+		PropertyID:      propID,
 		DueID:           dueID,
 		Provider:        "cashfree",
 		ProviderOrderID: cfOrderID,

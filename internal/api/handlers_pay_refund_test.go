@@ -459,6 +459,9 @@ func setupRefundRouter(h *Handlers, propID, userID uuid.UUID) *gin.Engine {
 		h.UserStore = &refundStepUpUserStore{owners: []domain.User{*owner}, user: owner}
 		h.Auth = &refundStepUpAuthService{validOTP: "123456"}
 	}
+	if h.OnboardingSettings == nil {
+		h.OnboardingSettings = &stubOnboardingSettingsStore{}
+	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.POST("/api/owner/payments/:id/refund", func(c *gin.Context) {

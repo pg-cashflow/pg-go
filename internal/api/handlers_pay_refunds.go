@@ -1335,7 +1335,12 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 	}
 
 	// Threshold evaluation for maker-checker and high-value authorization
-	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	effectiveLimit, policyErr := h.getRefundSingleOwnerThreshold(ctx, pid)
+	if policyErr != nil {
+		slog.Error("failed to resolve refund approval policy", "property_id", pid, "payment_id", p.ID, "error", policyErr)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund approval policy is temporarily unavailable"})
+		return nil, policyErr
+	}
 	_, singleOwnerAllowed := domain.EvaluateRefundThreshold(req.AmountPaise, effectiveLimit, h.AppEnv)
 	if !singleOwnerAllowed {
 		apierr.RespondClientErr(c, http.StatusForbidden, "refund exceeds single-owner authorization limit; dual owner approval required via refund approval requests", apierr.CodeRefundDualControlRequired)

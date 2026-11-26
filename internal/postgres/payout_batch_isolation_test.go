@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -108,26 +109,7 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 			name: "GetBatchByID routes through r.db",
 			action: func(repo *PayoutRepo, mockDB *mockPayoutDB) error {
 				mockDB.queryRowFn = func(ctx context.Context, sql string, args ...any) pgx.Row {
-					return &mockPayoutRow{
-						scanFn: func(dest ...any) error {
-							*dest[0].(*uuid.UUID) = batchID
-							*dest[1].(*uuid.UUID) = propID
-							*dest[2].(*string) = "BATCH-001"
-							*dest[3].(*string) = "bank_neft"
-							*dest[4].(*domain.PayoutBatchStatus) = domain.BatchDraft
-							*dest[5].(*int64) = 500000
-							*dest[6].(*int) = 1
-							*dest[7].(*uuid.UUID) = uuid.New()
-							*dest[8].(**uuid.UUID) = nil
-							*dest[9].(**time.Time) = nil
-							*dest[10].(**string) = nil
-							*dest[11].(**string) = nil
-							*dest[12].(*int64) = 0
-							*dest[13].(*time.Time) = now
-							*dest[14].(*time.Time) = now
-							return nil
-						},
-					}
+					return newMockBatchRow(batchID, propID, domain.BatchDraft, nil, nil, now)
 				}
 				b, err := repo.GetBatchByID(ctx, batchID)
 				if err != nil {
@@ -135,6 +117,12 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 				}
 				if b.ID != batchID {
 					t.Fatalf("expected batch id %s, got %s", batchID, b.ID)
+				}
+				if b.PropertyID != propID || b.BatchNumber != "BATCH-001" || b.DispatchAttemptCount != 0 || !b.CreatedAt.Equal(now) || !b.UpdatedAt.Equal(now) {
+					t.Fatalf("unexpected batch fields: %+v", b)
+				}
+				if b.ApprovedBy != nil || b.DispatchAttemptOpenedAt != nil || b.DispatchLastReconciledAt != nil || b.DispatchReviewRequiredAt != nil {
+					t.Fatalf("expected nil nullable fields, got %+v", b)
 				}
 				return nil
 			},
@@ -270,26 +258,7 @@ func TestPayoutRepo_ScopedDBRouting(t *testing.T) {
 			action: func(repo *PayoutRepo, mockDB *mockPayoutDB) error {
 				approverID := uuid.New()
 				mockDB.queryRowFn = func(ctx context.Context, sql string, args ...any) pgx.Row {
-					return &mockPayoutRow{
-						scanFn: func(dest ...any) error {
-							*dest[0].(*uuid.UUID) = batchID
-							*dest[1].(*uuid.UUID) = propID
-							*dest[2].(*string) = "BATCH-001"
-							*dest[3].(*string) = "bank_neft"
-							*dest[4].(*domain.PayoutBatchStatus) = domain.BatchApproved
-							*dest[5].(*int64) = 500000
-							*dest[6].(*int) = 1
-							*dest[7].(*uuid.UUID) = uuid.New()
-							*dest[8].(**uuid.UUID) = &approverID
-							*dest[9].(**time.Time) = &now
-							*dest[10].(**string) = nil
-							*dest[11].(**string) = nil
-							*dest[12].(*int64) = 0
-							*dest[13].(*time.Time) = now
-							*dest[14].(*time.Time) = now
-							return nil
-						},
-					}
+					return newMockBatchRow(batchID, propID, domain.BatchApproved, &approverID, &now, now)
 				}
 				b, err := repo.ApproveBatch(ctx, batchID, approverID)
 				if err != nil {
@@ -343,5 +312,36 @@ func TestPayoutRepo_ConstructorCompatibility(t *testing.T) {
 	r3 := r2.WithScopedDB(mockDB2)
 	if r3.db != mockDB2 {
 		t.Fatal("expected r3.db to equal mockDB2")
+	}
+}
+
+func newMockBatchRow(batchID, propID uuid.UUID, status domain.PayoutBatchStatus, approverID *uuid.UUID, approvedAt *time.Time, now time.Time) *mockPayoutRow {
+	return &mockPayoutRow{
+		scanFn: func(dest ...any) error {
+			if len(dest) != 20 {
+				return fmt.Errorf("expected 20 scan destinations, got %d", len(dest))
+			}
+			*dest[0].(*uuid.UUID) = batchID
+			*dest[1].(*uuid.UUID) = propID
+			*dest[2].(*string) = "BATCH-001"
+			*dest[3].(*string) = "bank_neft"
+			*dest[4].(*domain.PayoutBatchStatus) = status
+			*dest[5].(*int64) = 500000
+			*dest[6].(*int) = 1
+			*dest[7].(*uuid.UUID) = uuid.New()
+			*dest[8].(**uuid.UUID) = approverID
+			*dest[9].(**time.Time) = approvedAt
+			*dest[10].(**string) = nil
+			*dest[11].(**string) = nil
+			*dest[12].(*int64) = 0
+			*dest[13].(**time.Time) = nil
+			*dest[14].(*int) = 0
+			*dest[15].(*int16) = 0
+			*dest[16].(**time.Time) = nil
+			*dest[17].(**time.Time) = nil
+			*dest[18].(*time.Time) = now
+			*dest[19].(*time.Time) = now
+			return nil
+		},
 	}
 }
