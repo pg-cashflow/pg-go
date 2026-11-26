@@ -673,6 +673,20 @@ func (h *Handlers) commitPayoutItem(
 	settledAt *time.Time,
 	failureReason *string,
 ) bool {
+	// Fail closed before RecordProcessedEvent or any status mutation when finance mirroring
+	// is active for a settlement/reversal transition without a transaction-backed reconciler.
+	if h.Finance != nil && (status == domain.PayoutSucceeded || status == domain.PayoutReversed) {
+		decision := domain.EvaluatePayoutTransition(item.Status, status)
+		if decision.EnqueueSettlement || decision.EnqueueReversal {
+			if _, ok := repo.(PayoutOutboxReconciler); !ok || h.Pool == nil {
+				slog.Error("payout webhook requires transaction-backed outbox reconciler when finance mirroring is active",
+					"item_id", item.ID, "event", evtType, "target_status", status)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "transaction-backed payout reconciler unavailable"})
+				return false
+			}
+		}
+	}
+
 	var conflict bool
 	run := func(tx pgx.Tx) error {
 		var first bool

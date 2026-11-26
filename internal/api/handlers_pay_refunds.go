@@ -1286,7 +1286,7 @@ func (h *Handlers) executePaymentRefund(c *gin.Context, pid, uid, paymentID uuid
 		return nil, errors.New("invalid provider")
 	}
 
-	// Eligibility window check (PG Cashflow operational window, within Cashfree's six-month PG limit)
+	// Eligibility window check (PG Cashflow 120-day operational window)
 	now := time.Now().UTC()
 	paymentTime := p.CreatedAt
 	if !p.MatchedAt.IsZero() {

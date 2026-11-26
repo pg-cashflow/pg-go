@@ -16,6 +16,6 @@ ingress:
   - hostname: pg.yourdomain.com
     service: http://127.0.0.1:8080
     originRequest:
-      noTLSVerify: true
+      noTLSVerify: false
       connectTimeout: 10s
   - service: http_status:404

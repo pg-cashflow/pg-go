@@ -347,11 +347,12 @@ func TestCashfreeWebhook_RejectsEmptyOrNonINRCurrency(t *testing.T) {
 }
 
 type stubGatewayRepo struct {
-	webhookEvents []*domain.WebhookEvent
-	deadLettered  bool
-	lastStatus    string
-	lastReason    string
-	refunds       map[string]*domain.GatewayRefund
+	webhookEvents        []*domain.WebhookEvent
+	deadLettered         bool
+	lastStatus           string
+	lastReason           string
+	refunds              map[string]*domain.GatewayRefund
+	recordProcessedCount int
 }
 
 func (s *stubGatewayRepo) Create(context.Context, *domain.Payment) error { return nil }
@@ -365,6 +366,7 @@ func (s *stubGatewayRepo) GetByCFPaymentID(context.Context, string) (*domain.Pay
 	return nil, nil
 }
 func (s *stubGatewayRepo) RecordProcessedEvent(context.Context, string, string, string, string) (bool, error) {
+	s.recordProcessedCount++
 	return true, nil
 }
 func (s *stubGatewayRepo) DeleteProcessedEvent(context.Context, string, string, string) error {

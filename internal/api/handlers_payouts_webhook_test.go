@@ -996,10 +996,11 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 			},
 		}
 		finSvc := finance.NewService(&failingJournalStore{}, nil)
+		gwStub := &stubGatewayRepo{}
 		h := &Handlers{
 			Deps: Deps{
 				CashfreePayoutWebhookSecret: secret,
-				GatewayPaymentRepo:          &stubGatewayRepo{},
+				GatewayPaymentRepo:          gwStub,
 				PayoutWebhookRepo:           mock,
 				Finance:                     finSvc,
 				LedgerOutboxRepo:            nil, // forces outbox failure
@@ -1016,6 +1017,9 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 		if updateCalled {
 			t.Fatal("expected status update NOT to be called when outbox fallback fails")
+		}
+		if gwStub.recordProcessedCount != 0 {
+			t.Fatalf("expected RecordProcessedEvent NOT to be called on fail-closed preflight, got %d", gwStub.recordProcessedCount)
 		}
 	})
 
