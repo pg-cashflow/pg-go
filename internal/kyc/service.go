@@ -1259,31 +1259,21 @@ func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDS
 		normName := domain.NormalizeName(doc.Name)
 		identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, normName, canonicalDOB, doc.Gender, doc.MaskedUID)
 
-		// STRICT NAME-MISMATCH INVARIANT:
-		// If name does NOT match, do NOT auto-verify. Route to pending_manual_review!
-		if nameMismatch {
-			ocrJSON, _ := json.Marshal(map[string]any{
-				"document_type": "aadhaar",
-				"source":        "digilocker",
-				"name":          doc.Name,
-				"dob":           doc.DOB,
-				"gender":        doc.Gender,
-				"masked_uid":    doc.MaskedUID,
-				"name_mismatch": true,
-			})
-			return s.repo.SubmitManualReviewTx(ctx, v.ID, doc.MaskedUID, identityHash, string(ocrJSON), "", doc.PhotoBytes, "image/jpeg", actor, "aadhaar")
-		}
-
-		now := time.Now().UTC()
-		var expiresAt time.Time
-		if s.cfg.VerificationValidityDays > 0 {
-			expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
-		}
-		return s.repo.CompleteVerificationTx(ctx,
-			v.ID, doc.MaskedUID, identityHash, isDedupable,
-			s.cfg.HashKeyVersion, nil, false, doc.PhotoBytes,
-			now, expiresAt, majorityDate, actor,
-		)
+		// ADR-005 INVARIANT: All verification methods (including DigiLocker) require
+		// explicit manual owner review. Route every successful DigiLocker retrieval to
+		// pending_manual_review with provider evidence attached; never auto-verify.
+		_ = isDedupable
+		_ = majorityDate
+		ocrJSON, _ := json.Marshal(map[string]any{
+			"document_type": "aadhaar",
+			"source":        "digilocker",
+			"name":          doc.Name,
+			"dob":           doc.DOB,
+			"gender":        doc.Gender,
+			"masked_uid":    doc.MaskedUID,
+			"name_mismatch": nameMismatch,
+		})
+		return s.repo.SubmitManualReviewTx(ctx, v.ID, doc.MaskedUID, identityHash, string(ocrJSON), "", doc.PhotoBytes, "image/jpeg", actor, "aadhaar")
 	}
 
 	return v, nil

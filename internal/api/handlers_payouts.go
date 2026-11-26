@@ -1021,7 +1021,8 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 	)
 
 	// Automated Payout Dispatch: if automated payout dispatcher is active AND payout_auto_dispatch
-	// is enabled in the property's operational settings, automatically initiate batch transfer and dispatch inline with background outbox fallback.
+	// is enabled in the property's operational settings, initiate the batch transfer transaction
+	// and let the durable ledger outbox worker own dispatch.
 	if h.PayoutDispatcher != nil {
 		autoDispatch := false
 		if st, err := h.getPropertySettings(c.Request.Context(), pid); err == nil && st != nil {
@@ -1030,18 +1031,6 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		if autoDispatch {
 			if updatedBatch, _, err := repo.InitiateBatchTransferTx(c.Request.Context(), batchID); err == nil {
 				approvedBatch = updatedBatch
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-					defer cancel()
-					pctx := requestscope.WithPropertyID(ctx, pid)
-					if dErr := h.PayoutDispatcher.DispatchBatch(pctx, batchID); dErr != nil {
-						slog.Warn("auto-dispatch payout batch transfer failed inline, relying on ledger outbox worker",
-							"batch_id", batchID,
-							"property_id", pid,
-							"err", dErr,
-						)
-					}
-				}()
 			} else {
 				slog.Error("failed to initiate auto-dispatch transfer for approved batch", "batch_id", batchID, "err", err)
 			}

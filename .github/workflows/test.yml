@@ -44,7 +44,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: env.HAS_PAT == 'true'
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: pg-react/package-lock.json
 

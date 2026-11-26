@@ -1895,7 +1895,7 @@ func TestProcessDigiLockerCallback_All5Events(t *testing.T) {
 	}
 }
 
-func TestProcessDigiLockerCallback_SuccessWithMatchingName_AutoVerifies(t *testing.T) {
+func TestProcessDigiLockerCallback_SuccessWithMatchingName_RoutesToManualReview(t *testing.T) {
 	tenantID := uuid.New()
 	verifID := uuid.New()
 	vendorRef := "cf_dgl_success_1"
@@ -1929,11 +1929,21 @@ func TestProcessDigiLockerCallback_SuccessWithMatchingName_AutoVerifies(t *testi
 	if err != nil {
 		t.Fatalf("unexpected callback error: %v", err)
 	}
-	if v.Status != domain.KYCStatusVerified {
-		t.Fatalf("expected status verified on matching name, got %s", v.Status)
+	if v.Status != domain.KYCStatusPendingManualReview {
+		t.Fatalf("expected status pending_manual_review on matching name per ADR-005, got %s", v.Status)
+	}
+	if v.NameMismatch {
+		t.Errorf("expected NameMismatch false when name matches")
 	}
 	if v.MaskedUID == nil || *v.MaskedUID != "xxxxxxxx8888" {
 		t.Errorf("expected masked uid xxxxxxxx8888, got %v", v.MaskedUID)
+	}
+	canPay, payErr := svc.CanTenantPay(context.Background(), tenantID)
+	if payErr != nil {
+		t.Fatalf("unexpected CanTenantPay error: %v", payErr)
+	}
+	if canPay {
+		t.Fatalf("expected CanTenantPay to return false while KYC is pending_manual_review")
 	}
 }
 
