@@ -1,11 +1,10 @@
 [Unit]
-Description=Run pg-app KYC expiry daily at 03:00 IST
+Description=Run pg-app KYC expiry and DigiLocker reconciliation every 5 minutes
 
 [Timer]
-# 03:00 IST = 21:30 UTC previous day
-OnCalendar=*-*-* 21:30:00 UTC
+OnCalendar=*:0/5
 Persistent=true
-RandomizedDelaySec=30
+RandomizedDelaySec=15
 
 [Install]
 WantedBy=timers.target

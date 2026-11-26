@@ -902,18 +902,21 @@ func (r *KYCRepo) ExpireStalePendingVerifications(ctx context.Context, cutoff ti
 		ctx,
 		cutoff,
 		string(domain.KYCStatusPending),
+		"created_at",
 		"expired by TTL reaper",
 		"pending_verification_expired",
 	)
 }
 
 // ExpireStaleManualReviews expires pending_manual_review verifications past their TTL cutoff
-// inside per-tenant transactions, scrubs source PII, and appends one audit entry per transitioned row.
+// (measured from updated_at when the verification entered manual review) inside per-tenant
+// transactions, scrubs source PII, and appends one audit entry per transitioned row.
 func (r *KYCRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time) (int64, error) {
 	return r.expireStaleVerifications(
 		ctx,
 		cutoff,
 		string(domain.KYCStatusPendingManualReview),
+		"updated_at",
 		"expired by manual review TTL reaper",
 		"manual_review_expired",
 	)
@@ -922,14 +925,17 @@ func (r *KYCRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time
 func (r *KYCRepo) expireStaleVerifications(
 	ctx context.Context,
 	cutoff time.Time,
-	fromStatus, failureReason, auditAction string,
+	fromStatus, timeCol, failureReason, auditAction string,
 ) (int64, error) {
-	rows, err := r.pool.Query(ctx, `
+	if timeCol != "created_at" && timeCol != "updated_at" {
+		return 0, fmt.Errorf("kyc: invalid expiry time column %q", timeCol)
+	}
+	rows, err := r.pool.Query(ctx, fmt.Sprintf(`
 		SELECT id, tenant_id
 		FROM kyc_verification
-		WHERE status = $1 AND created_at <= $2
+		WHERE status = $1 AND %s <= $2
 		ORDER BY tenant_id, id
-	`, fromStatus, cutoff)
+	`, timeCol), fromStatus, cutoff)
 	if err != nil {
 		return 0, fmt.Errorf("kyc: query stale %s verifications: %w", fromStatus, err)
 	}
@@ -2028,9 +2034,8 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 		}
 		updated = t
 
-		// 3. Cryptographic audit log chaining
-		detail := fmt.Sprintf("guardian_name=%s|guardian_phone=%s|relation=%s|ref_id=%s",
-			guardianName, guardianPhone, relation, refID)
+		// 3. Cryptographic audit log chaining (omit guardian name/phone PII from audit hash input)
+		detail := fmt.Sprintf("relation=%s|ref_id=%s", relation, refID)
 		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "guardian_consent_recorded", detail, now)
 	})
 

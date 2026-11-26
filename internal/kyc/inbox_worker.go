@@ -376,6 +376,11 @@ func (w *KYCInboxWorker) executeItem(ctx context.Context, tx pgx.Tx, item *KYCIn
 		return nil
 	}
 
+	if verification.Status == domain.KYCStatusPendingManualReview {
+		// Pending owner review must not be overwritten by later provider callbacks.
+		return nil
+	}
+
 	return w.store.ApplyVerificationWebhookTx(ctx, tx, verification, webhookStatus)
 }
 

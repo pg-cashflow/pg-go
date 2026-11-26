@@ -12,7 +12,7 @@ This directory contains the production `systemd` service and timer definitions f
 | `pg-financial-summary` | Daily | 23:45 IST | `18:15 UTC` | Generates daily owner financial digests and tie-outs |
 | `pg-gamification-cycle` | Monthly | 1st @ 01:00 IST | `*-*-01 19:30 UTC` | Monthly gamification tier recalculation, streaks, badges |
 | `pg-kpi-snapshot` | Daily | 02:00 IST | `20:30 UTC` (prev) | Captures daily occupancy, revenue, and collection KPIs |
-| `pg-kyc-expiry` | Daily | 03:00 IST | `21:30 UTC` (prev) | Checks minor-to-major age transitions and expiring KYC records |
+| `pg-kyc-expiry` | Every 5 min | `*:0/5` | `*:0/5` | Checks DigiLocker reconciliation (5–15 min window), manual-review/consent TTLs, and lapsed KYC records |
 | `pg-reminder` | Daily | 09:00 IST | `03:30 UTC` | Dispatches rent reminders (D-3, D-0, D+1, D+7) with catch-up window |
 | `pg-slot-invite-expiry` | Every 15 min | `*:05,20,35,50` | `*:05,20,35,50` | Marks open expired slot invites and releases reserved bed occupancy |
 | `pg-waitlist-offer-expiry` | Every 15 min | `*:10,25,40,55` | `*:10,25,40,55` | Expires pending waitlist offers past deadline and advances to next waiter |

@@ -719,7 +719,7 @@ func runBackgroundWorkers(ctx context.Context, bg backgroundConfig) {
 				} else if expPending > 0 {
 					bg.logger.Info("kyc stale pending verification purge complete", "expired", expPending)
 				}
-				if expReviews, err := bg.kycRepo.ExpireStaleManualReviews(ctx, now.Add(-30*24*time.Hour)); err != nil {
+				if expReviews, err := bg.kycRepo.ExpireStaleManualReviews(ctx, now.Add(-48*time.Hour)); err != nil {
 					bg.logger.Error("kyc stale manual review purge failed", "err", err)
 				} else if expReviews > 0 {
 					bg.logger.Info("kyc stale manual review purge complete", "expired", expReviews)

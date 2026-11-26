@@ -491,12 +491,12 @@ Production Aadhaar identity verification compliant with DPDP Act 2023. Gated by 
    - Single-file submission (`file`) accepts either an **e-Aadhaar PDF** (which contains full details) or an **Aadhaar Front card image** (or full card scan).
    - If a tenant uploads an Aadhaar Back image alone (`AADHAAR_BACK`) that lacks name/DOB, the endpoint rejects the request with HTTP 422 `kyc.ocr_failed` ("demographic details missing; front side or full e-Aadhaar PDF required").
 4. **Identity Hash & Key Rotation Specification**:
-   - **Purpose**: Detect multi-account registration and duplicate tenant fraud platform-wide across all properties without persisting raw 12-digit UID numbers.
+   - **Purpose**: Detect duplicate tenant identity registrations within the property scope enforced by `pgapp_app` RLS without persisting raw 12-digit UID numbers.
    - **Inputs**: Unicode NFC normalized lowercase full name (`NormalizeName`), canonical ISO `YYYY-MM-DD` DOB (or `YYYY-01-01` if year only), uppercase gender (`M`, `F`, `T`), and masked UID last-4 digits (`masked_uid`).
    - **Algorithm**: `HMAC-SHA256(IDENTITY_SECRET, "name|dob|gender|masked_uid")`.
    - **Key Versioning**: Tracked via `hash_key_version SMALLINT NOT NULL DEFAULT 1` on `kyc_verification`. If `IDENTITY_SECRET` is rotated in the future, new records use bumped key versions while historical records remain tied to their version.
    - **Privacy Invariant**: The raw UID is never persisted or hashed. The raw HMAC is never returned in client JSON responses (`duplicate_detected: boolean` flag only).
-   - **Index & Collision Behavior**: Backed by partial unique index `idx_kyc_dedup_hash` on `kyc_verification(identity_hash)` where `status = 'verified'` AND `is_dedupable = TRUE`. Detection flags `duplicate_detected = TRUE` without blocking completion; owners can review and clear false positives via `POST /api/owner/tenants/:id/kyc/clear-duplicate`.
+   - **Index & Collision Behavior**: Backed by non-unique partial lookup index `idx_kyc_dedup_hash` on `kyc_verification(identity_hash)` where `status = 'verified'` AND `is_dedupable = TRUE` (distinct from the per-tenant unique index `idx_kyc_one_active_per_tenant`). Detection flags `duplicate_detected = TRUE` without blocking completion; owners can review and clear false positives via `POST /api/owner/tenants/:id/kyc/clear-duplicate`.
 5. **Network-Before-Transaction (ADR-004)**: Upstream network calls to Cashfree (DigiLocker session creation, Smart OCR upload, document fetch) are executed **before** opening DB write transactions to prevent connection pool exhaustion.
 6. **Reconciliation & 1-Hour Consent Expiry**:
    - A tenant verification session remains `status='pending'` in `pg-go` until the document is successfully fetched or permanently fails.

@@ -211,37 +211,20 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 		}
 
 		if status == "SUCCESS" || status == "AUTHENTICATED" || status == "VERIFIED" {
-			// To satisfy chk_kyc_verified_fields, status='verified' requires:
-			// verified_at, expires_at, identity_hash, and masked_uid to NOT be NULL.
-			if v.IdentityHash == nil || v.MaskedUID == nil || *v.IdentityHash == "" || *v.MaskedUID == "" {
-				tag, err := targetTx.Exec(ctx, `
-					UPDATE kyc_verification
-					SET status = 'pending_manual_review',
-					    updated_at = $2
-					WHERE id = $1 AND status NOT IN ('verified', 'rejected', 'revoked', 'expired')
-				`, v.ID, now)
-				if err != nil {
-					return fmt.Errorf("kyc inbox: update verification pending_manual_review: %w", err)
-				}
-				if tag.RowsAffected() > 0 {
-					_ = r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_manual_review", "missing credentials routed to manual review", now)
-				}
-				return nil
-			}
-
+			// ADR-005 invariant: provider callbacks must route to pending_manual_review, never auto-verify.
 			tag, err := targetTx.Exec(ctx, `
 				UPDATE kyc_verification
-				SET status = 'verified',
-				    verified_at = COALESCE(verified_at, $2),
-				    expires_at = COALESCE(expires_at, $2 + INTERVAL '365 days'),
+				SET status = 'pending_manual_review',
 				    updated_at = $2
-				WHERE id = $1 AND status NOT IN ('verified', 'rejected', 'revoked', 'expired')
+				WHERE id = $1 AND status NOT IN ('pending_manual_review', 'verified', 'rejected', 'revoked', 'expired')
 			`, v.ID, now)
 			if err != nil {
-				return fmt.Errorf("kyc inbox: update verification verified: %w", err)
+				return fmt.Errorf("kyc inbox: update verification pending_manual_review: %w", err)
 			}
 			if tag.RowsAffected() > 0 {
-				_ = r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_verified", "verified by inbox worker", now)
+				if auditErr := r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_manual_review", "provider callback routed to manual review", now); auditErr != nil {
+					return fmt.Errorf("kyc inbox: append manual review audit log: %w", auditErr)
+				}
 			}
 			return nil
 		}
@@ -251,13 +234,15 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 				UPDATE kyc_verification
 				SET status = 'failed',
 				    updated_at = $2
-				WHERE id = $1 AND status NOT IN ('verified', 'rejected', 'revoked', 'expired')
+				WHERE id = $1 AND status NOT IN ('pending_manual_review', 'verified', 'rejected', 'revoked', 'expired')
 			`, v.ID, now)
 			if err != nil {
 				return fmt.Errorf("kyc inbox: update verification failed: %w", err)
 			}
 			if tag.RowsAffected() > 0 {
-				_ = r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_failed", "failed by inbox worker", now)
+				if auditErr := r.kycRepo.appendAuditLogTx(ctx, targetTx, v.TenantID, "cashfree:webhook_worker", "verification_failed", "failed by inbox worker", now); auditErr != nil {
+					return fmt.Errorf("kyc inbox: append failed audit log: %w", auditErr)
+				}
 			}
 			return nil
 		}
