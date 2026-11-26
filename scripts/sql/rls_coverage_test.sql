@@ -35,7 +35,7 @@ BEGIN
     INSERT INTO _rls_checks VALUES ('roles_nobypassrls_verified');
 END $$;
 
--- 2. Verify 13 Core Tables Have RLS Enabled and Forced
+-- 2. Verify 15 Core Tables Have RLS Enabled and Forced
 DO $$
 DECLARE
     tbl text;

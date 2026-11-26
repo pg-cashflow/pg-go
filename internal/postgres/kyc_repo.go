@@ -895,43 +895,107 @@ func (r *KYCRepo) ListAuditLogsByTenant(ctx context.Context, tenantID uuid.UUID)
 	return logs, rows.Err()
 }
 
-// ExpireStalePendingVerifications batch expires pending verifications past their TTL cutoff.
+// ExpireStalePendingVerifications expires pending verifications past their TTL cutoff
+// inside per-tenant transactions and appends one audit entry per transitioned row.
 func (r *KYCRepo) ExpireStalePendingVerifications(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE kyc_verification
-		SET status = 'expired',
-			document_bytes = NULL,
-			attested_photo_bytes = NULL,
-			photo_stored = FALSE,
-			failure_reason = 'expired by TTL reaper',
-			updated_at = NOW()
-		WHERE status = 'pending' AND created_at <= $1
-	`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("kyc: expire stale verifications: %w", err)
-	}
-	return tag.RowsAffected(), nil
+	return r.expireStaleVerifications(
+		ctx,
+		cutoff,
+		string(domain.KYCStatusPending),
+		"expired by TTL reaper",
+		"pending_verification_expired",
+	)
 }
 
-// ExpireStaleManualReviews batch expires pending_manual_review verifications past their TTL cutoff,
-// nulling document_bytes, document_url, and ocr_data to prevent indefinite PII retention.
+// ExpireStaleManualReviews expires pending_manual_review verifications past their TTL cutoff
+// inside per-tenant transactions, scrubs source PII, and appends one audit entry per transitioned row.
 func (r *KYCRepo) ExpireStaleManualReviews(ctx context.Context, cutoff time.Time) (int64, error) {
-	tag, err := r.pool.Exec(ctx, `
-		UPDATE kyc_verification
-		SET status = 'expired',
-			document_bytes = NULL,
-			document_url = NULL,
-			ocr_data = NULL,
-			attested_photo_bytes = NULL,
-			photo_stored = FALSE,
-			failure_reason = 'expired by manual review TTL reaper',
-			updated_at = NOW()
-		WHERE status = 'pending_manual_review' AND created_at <= $1
-	`, cutoff)
+	return r.expireStaleVerifications(
+		ctx,
+		cutoff,
+		string(domain.KYCStatusPendingManualReview),
+		"expired by manual review TTL reaper",
+		"manual_review_expired",
+	)
+}
+
+func (r *KYCRepo) expireStaleVerifications(
+	ctx context.Context,
+	cutoff time.Time,
+	fromStatus, failureReason, auditAction string,
+) (int64, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, tenant_id
+		FROM kyc_verification
+		WHERE status = $1 AND created_at <= $2
+		ORDER BY tenant_id, id
+	`, fromStatus, cutoff)
 	if err != nil {
-		return 0, fmt.Errorf("kyc: expire stale manual reviews: %w", err)
+		return 0, fmt.Errorf("kyc: query stale %s verifications: %w", fromStatus, err)
 	}
-	return tag.RowsAffected(), nil
+	defer rows.Close()
+
+	type staleItem struct {
+		id       uuid.UUID
+		tenantID uuid.UUID
+	}
+	var items []staleItem
+	for rows.Next() {
+		var item staleItem
+		if err := rows.Scan(&item.id, &item.tenantID); err != nil {
+			return 0, fmt.Errorf("kyc: scan stale %s verification: %w", fromStatus, err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("kyc: iterate stale %s verifications: %w", fromStatus, err)
+	}
+
+	now := time.Now().UTC()
+	var count int64
+	for _, item := range items {
+		err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+			var exists int
+			if err := tx.QueryRow(ctx, `SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE`, item.tenantID).Scan(&exists); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil
+				}
+				return fmt.Errorf("lock tenant %s: %w", item.tenantID, err)
+			}
+
+			tag, err := tx.Exec(ctx, `
+				UPDATE kyc_verification
+				SET status = 'expired',
+					document_bytes = NULL,
+					document_content_type = NULL,
+					document_url = NULL,
+					ocr_data = NULL,
+					attested_photo_bytes = NULL,
+					photo_stored = FALSE,
+					failure_reason = $3,
+					updated_at = $4
+				WHERE id = $1 AND status = $2
+			`, item.id, fromStatus, failureReason, now)
+			if err != nil {
+				return fmt.Errorf("expire verification %s: %w", item.id, err)
+			}
+			if tag.RowsAffected() == 0 {
+				return nil
+			}
+
+			detail := fmt.Sprintf("verification_id=%s", item.id)
+			if err := r.appendAuditLogTx(ctx, tx, item.tenantID, "system_reaper", auditAction, detail, now); err != nil {
+				return fmt.Errorf("append %s audit log: %w", auditAction, err)
+			}
+
+			count++
+			return nil
+		})
+		if err != nil {
+			return count, fmt.Errorf("kyc: expire stale %s verification for tenant %s: %w", fromStatus, item.tenantID, err)
+		}
+	}
+	return count, nil
 }
 
 // ListPendingDigiLockerForReconciliation returns in-flight DigiLocker verification sessions
