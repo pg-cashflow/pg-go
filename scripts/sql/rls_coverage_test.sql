@@ -220,6 +220,32 @@ BEGIN
     INSERT INTO _rls_checks VALUES ('budgets_update_verified');
 END $$;
 
+-- 7. Verify payment intent parents are scoped directly by their authoritative property_id.
+DO $$
+DECLARE
+    policy_expression TEXT;
+    check_expression TEXT;
+BEGIN
+    SELECT pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid)
+    INTO policy_expression, check_expression
+    FROM pg_policy
+    WHERE polname = 'payment_intents_app'
+      AND polrelid = 'payment_intents'::regclass;
+
+    IF policy_expression IS NULL
+       OR check_expression IS NULL
+       OR position('property_id' IN policy_expression) = 0
+       OR position('dues' IN policy_expression) > 0
+       OR position('property_id' IN check_expression) = 0
+       OR position('dues' IN check_expression) > 0 THEN
+        RAISE EXCEPTION
+            'FAIL: payment_intents_app must use payment_intents.property_id directly for USING and WITH CHECK; using=%, check=%',
+            policy_expression, check_expression;
+    END IF;
+
+    INSERT INTO _rls_checks VALUES ('payment_intent_parent_property_rls_verified');
+END $$;
+
 SELECT count(*) AS passed_checks FROM _rls_checks;
 
 ROLLBACK;

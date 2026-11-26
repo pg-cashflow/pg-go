@@ -524,14 +524,16 @@ func (h *Handlers) AuthLogout(c *gin.Context) {
 			)
 		}
 	}
-	h.clearRefreshCookie(c)
 	if revokeErr != nil {
-		c.JSON(http.StatusAccepted, gin.H{
+		// Keep the HttpOnly refresh cookie so the browser can retry revocation.
+		// Clearing it here would strand a still-valid token family after a DB outage.
+		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"ok":      false,
-			"warning": "local session cleared; remote session revocation failed",
+			"warning": "local session cleared; remote session revocation is pending",
 		})
 		return
 	}
+	h.clearRefreshCookie(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

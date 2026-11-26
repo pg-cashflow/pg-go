@@ -103,9 +103,16 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("payout dispatcher: batch %s not found", batchID)
 	}
 
-	// Idempotency: If batch already reached terminal status, safe no-op
+	// Idempotency: If batch already reached terminal status, safe no-op.
 	switch batch.Status {
 	case domain.BatchCompleted, domain.BatchPartiallyFailed, domain.BatchFailed, domain.BatchCancelled:
+		return nil
+	}
+	if batch.DispatchReviewRequiredAt != nil {
+		slog.Warn("payout dispatcher: batch is parked for manual review; automatic dispatch is disabled",
+			"batch_id", batch.ID, "status_checks", batch.DispatchReconciliationAttempts)
+		// Treat this as a completed outbox command. The durable review marker is the operational
+		// work item; retrying the outbox event cannot resolve provider ambiguity safely.
 		return nil
 	}
 	if batch.ItemCount > domain.MaxPayoutBatchItems {
@@ -204,37 +211,42 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		}
 	}
 
-	// Step 2: Ambiguity Resolver — if batch is in dispatch_unknown or processing, query Cashfree status first!
-	if batch.Status == domain.BatchDispatchUnknown || batch.Status == domain.BatchProcessing {
-		statusResp, err := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID)
-		if err == nil {
-			if statusResp == nil || strings.TrimSpace(statusResp.CFBatchTransferID) == "" || strings.TrimSpace(statusResp.BatchTransferID) == "" {
-				return fmt.Errorf("payout dispatcher: malformed batch status response for %s: missing required identifiers", batch.ID)
+	// Step 2: Reconcile only batches with a durable open dispatch attempt. A newly initiated
+	// processing batch has no marker and is safe to submit for the first time. Existing in-flight
+	// rows are backfilled by migration 135 because their historical POST position is unknowable.
+	if batch.Status == domain.BatchDispatchUnknown || batch.DispatchAttemptOpenedAt != nil {
+		statusResp, statusErr := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID)
+		if statusErr != nil {
+			reviewRequired, recordErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, statusErr.Error())
+			if recordErr != nil {
+				return fmt.Errorf("payout dispatcher: status lookup failed (%v) and reconciliation outcome could not be persisted: %w", statusErr, recordErr)
 			}
-			slog.Info("cashfree batch transfer recovered via status poll",
-				"batch_id", batch.ID,
-				"cf_batch_id", statusResp.CFBatchTransferID,
-				"status", statusResp.Status,
-			)
-			// Successfully queried status: reconcile items and return
-			return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
-		}
-
-		// If the batch had an ambiguous prior dispatch (dispatch_unknown), we can only proceed
-		// if the provider definitively confirms the batch does not exist (ErrBatchNotFound).
-		// Any other error (network timeout, 5xx, malformed response) leaves prior execution unresolved.
-		if batch.Status == domain.BatchDispatchUnknown {
-			if !errors.Is(err, cashfree.ErrBatchNotFound) {
-				return fmt.Errorf("payout dispatcher: batch %s has unresolved prior dispatch; reconciliation required: %w", batch.ID, err)
+			if reviewRequired {
+				slog.Error("payout dispatcher: automatic reconciliation exhausted; manual review required", "batch_id", batch.ID)
 			}
+			return fmt.Errorf("payout dispatcher: batch %s has an open prior dispatch attempt; refusing resubmission after status lookup failure: %w", batch.ID, statusErr)
 		}
+		if statusResp == nil || strings.TrimSpace(statusResp.CFBatchTransferID) == "" || strings.TrimSpace(statusResp.BatchTransferID) != batchTransferID {
+			malformedErr := fmt.Errorf("malformed batch status response for %s: missing or mismatched identifiers", batch.ID)
+			reviewRequired, recordErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, malformedErr.Error())
+			if recordErr != nil {
+				return fmt.Errorf("payout dispatcher: %v; persist reconciliation failure: %w", malformedErr, recordErr)
+			}
+			if reviewRequired {
+				slog.Error("payout dispatcher: automatic reconciliation exhausted; manual review required", "batch_id", batch.ID)
+			}
+			return fmt.Errorf("payout dispatcher: %w", malformedErr)
+		}
+		slog.Info("cashfree batch transfer recovered via durable status poll",
+			"batch_id", batch.ID,
+			"cf_batch_id", statusResp.CFBatchTransferID,
+			"status", statusResp.Status,
+		)
+		return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
+	}
 
-		// For batches currently in processing (e.g. freshly initiated in local DB), a 404/ErrBatchNotFound
-		// is expected since the batch has not yet been dispatched to Cashfree. If the status lookup failed
-		// with a non-404 error (e.g. client auth/network transport failure), fail closed before attempting dispatch.
-		if batch.Status == domain.BatchProcessing && !errors.Is(err, cashfree.ErrBatchNotFound) {
-			return fmt.Errorf("payout dispatcher: cannot verify batch status before dispatch: %w", err)
-		}
+	if batch.Status != domain.BatchProcessing {
+		return fmt.Errorf("payout dispatcher: batch %s is in unsupported dispatch state %q", batch.ID, batch.Status)
 	}
 
 	// Step 3: Register / verify beneficiaries with Cashfree Transfers V2
@@ -303,69 +315,105 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
 	}
 
-	// Step 3: Dispatch batch to Cashfree Transfers V2
+	// Commit a durable pre-dispatch marker before the outbound POST. If the process dies after
+	// this commit (including before opening the socket), the next worker must reconcile, not resend.
+	if err := d.repo.OpenBatchDispatchAttemptFenced(leaseCtx, lease); err != nil {
+		return fmt.Errorf("payout dispatcher: persist pre-dispatch marker: %w", err)
+	}
+
+	// Step 4: Dispatch batch to Cashfree Transfers V2.
 	resp, err := d.client.RequestBatchTransfer(leaseCtx, req)
 	if err != nil {
-		if errors.Is(err, cashfree.ErrPayoutAuthRejected) {
-			slog.Error("CASHFREE BATCH TRANSFER AUTHENTICATION REJECTED - CONFIGURATION ERROR (NON-RETRYABLE UNTIL CONFIG FIXED)",
-				"batch_id", batch.ID,
-				"err", err,
-			)
-			// Non-retryable configuration error: leave batch in approved/pending_dispatch, do not alter batch or ledger status
+		// These typed responses prove the request was rejected before a batch was accepted.
+		// Clear only the current open attempt; the durable attempt counter remains for audit.
+		if errors.Is(err, cashfree.ErrPayoutAuthRejected) || errors.Is(err, cashfree.ErrPayoutNotConfigured) {
+			if clearErr := d.repo.ClearBatchDispatchAttemptFenced(leaseCtx, lease, err.Error()); clearErr != nil {
+				return fmt.Errorf("payout dispatcher: clear definitively rejected dispatch attempt: %w (provider error: %v)", clearErr, err)
+			}
 			return err
 		}
 
 		if errors.Is(err, cashfree.ErrDispatchUnknown) {
 			slog.Error("CASHFREE BATCH TRANSFER DISPATCH AMBIGUOUS - TRANSITIONING TO dispatch_unknown",
-				"batch_id", batch.ID,
-				"err", err,
-			)
+				"batch_id", batch.ID, "err", err)
 			if setErr := d.repo.SetBatchDispatchUnknownFenced(leaseCtx, lease, err.Error()); setErr != nil {
-				slog.Error("failed to persist batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
 				return fmt.Errorf("payout dispatcher: persist dispatch_unknown failed: %w (dispatch error: %v)", setErr, err)
 			}
 			return err
 		}
 
 		if errors.Is(err, cashfree.ErrBeneficiaryNotFound) {
-			// One retry after re-registering beneficiaries with bounded concurrency
+			// Cashfree's explicit beneficiary-not-found response is a definitive rejection.
+			// Re-open a fresh marker only after beneficiary repair and immediately before retry.
+			if clearErr := d.repo.ClearBatchDispatchAttemptFenced(leaseCtx, lease, err.Error()); clearErr != nil {
+				return fmt.Errorf("payout dispatcher: clear beneficiary-rejected attempt: %w (provider error: %v)", clearErr, err)
+			}
 			var rg errgroup.Group
 			rg.SetLimit(8)
 			for _, payee := range uniquePayees {
 				p := payee
 				beneID := cashfree.DeriveBeneficiaryID(p.ID, p.AccountNumberHash)
-				rg.Go(func() error {
-					return d.ensureBeneficiary(leaseCtx, p, beneID)
-				})
+				rg.Go(func() error { return d.ensureBeneficiary(leaseCtx, p, beneID) })
 			}
 			if err := rg.Wait(); err != nil {
 				return fmt.Errorf("payout dispatcher: refusing transfer retry: beneficiary validation failed: %w", err)
 			}
-
 			if err := leaseCtx.Err(); err != nil {
 				return fmt.Errorf("%w: %v", domain.ErrStaleDispatchLease, err)
 			}
-
+			if err := d.repo.OpenBatchDispatchAttemptFenced(leaseCtx, lease); err != nil {
+				return fmt.Errorf("payout dispatcher: persist retry pre-dispatch marker: %w", err)
+			}
 			retryResp, retryErr := d.client.RequestBatchTransfer(leaseCtx, req)
 			if retryErr != nil {
-				if errors.Is(retryErr, cashfree.ErrDispatchUnknown) {
+				if errors.Is(retryErr, cashfree.ErrPayoutAuthRejected) || errors.Is(retryErr, cashfree.ErrPayoutNotConfigured) || errors.Is(retryErr, cashfree.ErrBeneficiaryNotFound) {
+					if clearErr := d.repo.ClearBatchDispatchAttemptFenced(leaseCtx, lease, retryErr.Error()); clearErr != nil {
+						return fmt.Errorf("payout dispatcher: clear definitively rejected retry attempt: %w (provider error: %v)", clearErr, retryErr)
+					}
+				} else if errors.Is(retryErr, cashfree.ErrDispatchUnknown) {
 					if setErr := d.repo.SetBatchDispatchUnknownFenced(leaseCtx, lease, retryErr.Error()); setErr != nil {
-						slog.Error("failed to persist retry batch dispatch_unknown status", "batch_id", batch.ID, "err", setErr)
-						return fmt.Errorf("payout dispatcher: persist dispatch_unknown on retry failed: %w (retry error: %v)", setErr, retryErr)
+						return fmt.Errorf("payout dispatcher: persist retry dispatch_unknown failed: %w (retry error: %v)", setErr, retryErr)
+					}
+				} else {
+					statusResp, statusErr := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID)
+					if statusErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" && statusResp.BatchTransferID == batchTransferID {
+						return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
+					}
+					reason := retryErr.Error()
+					if statusErr != nil {
+						reason += "; status lookup: " + statusErr.Error()
+					}
+					if statusErr == nil {
+						reason += "; status lookup returned malformed response"
+					}
+					if _, recErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, reason); recErr != nil {
+						return fmt.Errorf("payout dispatcher: retry failed (%v); persist reconciliation failure: %w", retryErr, recErr)
 					}
 				}
-				return fmt.Errorf("payout dispatcher: retry batch transfer after bene register: %w", retryErr)
+				return fmt.Errorf("payout dispatcher: retry batch transfer after beneficiary repair: %w", retryErr)
 			}
 			resp = retryResp
 		} else {
-			if statusResp, sErr := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID); sErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" {
-				slog.Info("payout dispatcher: batch already exists at gateway on error; reconciling existing batch status",
-					"batch_id", batch.ID,
-					"cf_batch_id", statusResp.CFBatchTransferID,
-				)
+			statusResp, statusErr := d.client.GetBatchTransferStatus(leaseCtx, batchTransferID)
+			if statusErr == nil && statusResp != nil && statusResp.CFBatchTransferID != "" && statusResp.BatchTransferID == batchTransferID {
+				slog.Info("payout dispatcher: batch exists at gateway after POST error; reconciling", "batch_id", batch.ID, "cf_batch_id", statusResp.CFBatchTransferID)
 				return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
 			}
-			return fmt.Errorf("payout dispatcher: request batch transfer: %w", err)
+			reason := err.Error()
+			if statusErr != nil {
+				reason += "; status lookup: " + statusErr.Error()
+			}
+			if statusErr == nil {
+				reason += "; status lookup returned malformed response"
+			}
+			reviewRequired, recErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, reason)
+			if recErr != nil {
+				return fmt.Errorf("payout dispatcher: request failed (%v); persist reconciliation failure: %w", err, recErr)
+			}
+			if reviewRequired {
+				slog.Error("payout dispatcher: automatic reconciliation exhausted; manual review required", "batch_id", batch.ID)
+			}
+			return fmt.Errorf("payout dispatcher: request batch transfer failed and status remains unresolved: %w", err)
 		}
 	}
 
@@ -385,7 +433,8 @@ type StaleBatchLister interface {
 }
 
 // PollBatch refreshes an in-flight batch from Cashfree's batch status endpoint and reconciles items.
-// It NEVER creates a new transfer: on any lookup failure it returns an error and leaves state as is.
+// It NEVER creates a new transfer. Failed lookups are counted durably; after five, the batch is
+// parked for manual review and excluded from automated polling.
 func (d *PayoutDispatcher) PollBatch(ctx context.Context, batchID uuid.UUID) error {
 	if d.client == nil {
 		return fmt.Errorf("payout client not configured")
@@ -407,16 +456,35 @@ func (d *PayoutDispatcher) PollBatch(ctx context.Context, batchID uuid.UUID) err
 	if batch.Status != domain.BatchProcessing && batch.Status != domain.BatchDispatchUnknown {
 		return nil
 	}
+	if batch.DispatchReviewRequiredAt != nil {
+		return fmt.Errorf("payout poll: batch %s requires manual review: %w", batchID, domain.ErrBatchDispatchManualReview)
+	}
+	if batch.Status == domain.BatchProcessing && batch.DispatchAttemptOpenedAt == nil {
+		// The outbox dispatcher has not committed a pre-dispatch marker yet. No provider request is
+		// known to exist, so this batch is not eligible for status polling.
+		return nil
+	}
 	items, err := d.repo.ListPayoutItemsByBatch(leaseCtx, batchID)
 	if err != nil {
 		return fmt.Errorf("payout poll: list items for batch %s: %w", batchID, err)
 	}
 	statusResp, err := d.client.GetBatchTransferStatus(leaseCtx, fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", "")))
 	if err != nil {
+		reviewRequired, recordErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, err.Error())
+		if recordErr != nil {
+			return fmt.Errorf("payout poll: status lookup failed (%v); persist reconciliation failure: %w", err, recordErr)
+		}
+		if reviewRequired {
+			slog.Error("payout poll: automatic reconciliation exhausted; manual review required", "batch_id", batchID)
+		}
 		return fmt.Errorf("payout poll: batch status %s: %w", batchID, err)
 	}
-	if statusResp == nil || statusResp.CFBatchTransferID == "" {
-		return fmt.Errorf("payout poll: batch %s unknown at gateway; manual review required", batchID)
+	if statusResp == nil || statusResp.CFBatchTransferID == "" || statusResp.BatchTransferID != fmt.Sprintf("pgo_%s", strings.ReplaceAll(batch.ID.String(), "-", "")) {
+		malformedErr := errors.New("malformed batch status response: missing or mismatched batch identifiers")
+		if _, recordErr := d.repo.RecordBatchDispatchReconciliationFailureFenced(leaseCtx, lease, malformedErr.Error()); recordErr != nil {
+			return fmt.Errorf("payout poll: %v; persist reconciliation failure: %w", malformedErr, recordErr)
+		}
+		return fmt.Errorf("payout poll: batch %s: %w", batchID, malformedErr)
 	}
 	return d.reconcileBatchStatusFenced(leaseCtx, lease, batch, items, statusResp)
 }
@@ -507,6 +575,14 @@ func (d *PayoutDispatcher) reconcileBatchStatusFenced(
 	items []domain.PayoutItem,
 	statusResp *cashfree.BatchTransferStatusResponse,
 ) error {
+	if statusResp == nil {
+		return errors.New("payout batch reconcile: nil Cashfree batch status response")
+	}
+	if lease != nil && d.repo != nil {
+		if err := d.repo.MarkBatchDispatchReconciliationSuccessFenced(ctx, lease); err != nil {
+			return fmt.Errorf("payout batch reconcile: mark provider status lookup successful: %w", err)
+		}
+	}
 	expectedTransferMap := make(map[string]domain.PayoutItem, len(items))
 	for _, it := range items {
 		expectedID := DerivePayoutTransferID(it)

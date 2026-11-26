@@ -586,14 +586,18 @@ func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UU
 
 const batchCols = `id, property_id, batch_number, format_type, status,
 	total_amount_paise, item_count, created_by, approved_by, approved_at,
-	file_checksum, notes, dispatch_fence_generation, created_at, updated_at`
+	file_checksum, notes, dispatch_fence_generation, dispatch_attempt_opened_at,
+	dispatch_attempt_count, dispatch_reconciliation_attempts, dispatch_last_reconciled_at,
+	dispatch_review_required_at, created_at, updated_at`
 
 func scanBatch(row pgx.Row) (*domain.PayoutBatch, error) {
 	var b domain.PayoutBatch
 	err := row.Scan(
 		&b.ID, &b.PropertyID, &b.BatchNumber, &b.FormatType, &b.Status,
 		&b.TotalAmountPaise, &b.ItemCount, &b.CreatedBy, &b.ApprovedBy, &b.ApprovedAt,
-		&b.FileChecksum, &b.Notes, &b.DispatchFenceGeneration, &b.CreatedAt, &b.UpdatedAt,
+		&b.FileChecksum, &b.Notes, &b.DispatchFenceGeneration, &b.DispatchAttemptOpenedAt,
+		&b.DispatchAttemptCount, &b.DispatchReconciliationAttempts, &b.DispatchLastReconciledAt,
+		&b.DispatchReviewRequiredAt, &b.CreatedAt, &b.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1117,8 +1121,11 @@ func (r *PayoutRepo) ListStaleInFlightBatchIDs(ctx context.Context, olderThan ti
 	}
 	rows, err := r.db.Query(ctx, `
 		SELECT id FROM payout_batches
-		WHERE status IN ('processing', 'dispatch_unknown') AND updated_at < $1
-		ORDER BY updated_at ASC
+		WHERE status IN ('processing', 'dispatch_unknown')
+		  AND dispatch_attempt_opened_at IS NOT NULL
+		  AND dispatch_review_required_at IS NULL
+		  AND COALESCE(dispatch_last_reconciled_at, updated_at) < $1
+		ORDER BY COALESCE(dispatch_last_reconciled_at, updated_at) ASC, updated_at ASC
 		LIMIT $2`, olderThan, limit)
 	if err != nil {
 		return nil, err
@@ -1133,6 +1140,165 @@ func (r *PayoutRepo) ListStaleInFlightBatchIDs(ctx context.Context, olderThan ti
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// OpenBatchDispatchAttemptFenced persists the pre-dispatch marker before the Cashfree POST.
+// Once open, no worker may submit again until a typed provider response proves non-acceptance.
+func (r *PayoutRepo) OpenBatchDispatchAttemptFenced(ctx context.Context, lease *PayoutDispatchLease) error {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET dispatch_attempt_opened_at = NOW(),
+			    dispatch_attempt_count = dispatch_attempt_count + 1,
+			    dispatch_reconciliation_attempts = 0,
+			    dispatch_last_reconciled_at = NULL,
+			    dispatch_review_required_at = NULL,
+			    updated_at = NOW()
+			WHERE id = $1
+			  AND status = 'processing'
+			  AND dispatch_attempt_opened_at IS NULL
+			  AND dispatch_review_required_at IS NULL
+			  AND dispatch_fence_generation = $2
+			  AND dispatch_lease_token = $3`,
+			lease.BatchID, lease.Generation, lease.Lease.LeaseToken,
+		)
+		if err != nil {
+			return fmt.Errorf("open payout dispatch attempt: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrBatchDispatchAttemptAlreadyOpened
+		}
+		return nil
+	})
+}
+
+// ClearBatchDispatchAttemptFenced clears an open attempt only after a typed provider response
+// that proves the batch POST was rejected and not accepted for processing. Attempt history remains.
+func (r *PayoutRepo) ClearBatchDispatchAttemptFenced(ctx context.Context, lease *PayoutDispatchLease, reason string) error {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET dispatch_attempt_opened_at = NULL,
+			    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+			    updated_at = NOW()
+			WHERE id = $1
+			  AND status = 'processing'
+			  AND dispatch_attempt_opened_at IS NOT NULL
+			  AND dispatch_fence_generation = $3
+			  AND dispatch_lease_token = $4`,
+			lease.BatchID, "Cashfree definitively rejected dispatch: "+reason, lease.Generation, lease.Lease.LeaseToken,
+		)
+		if err != nil {
+			return fmt.Errorf("clear rejected payout dispatch attempt: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrBatchDispatchAttemptAlreadyOpened
+		}
+		return nil
+	})
+}
+
+// RecordBatchDispatchReconciliationFailureFenced records one failed provider status lookup.
+// After the bounded limit, it sets dispatch_review_required_at and automatic polling stops.
+func (r *PayoutRepo) RecordBatchDispatchReconciliationFailureFenced(
+	ctx context.Context,
+	lease *PayoutDispatchLease,
+	reason string,
+) (bool, error) {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return false, err
+	}
+	var reviewRequired bool
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		var reviewAt *time.Time
+		err := tx.QueryRow(ctx, `
+			UPDATE payout_batches
+			SET status = 'dispatch_unknown',
+			    dispatch_reconciliation_attempts = LEAST(
+			        dispatch_reconciliation_attempts + 1,
+			        $5::smallint
+			    ),
+			    dispatch_last_reconciled_at = NOW(),
+			    dispatch_review_required_at = CASE
+			        WHEN dispatch_reconciliation_attempts + 1 >= $5::smallint
+			        THEN COALESCE(dispatch_review_required_at, NOW())
+			        ELSE dispatch_review_required_at
+			    END,
+			    notes = CASE WHEN notes IS NULL OR notes = '' THEN $2 ELSE notes || '; ' || $2 END,
+			    updated_at = NOW()
+			WHERE id = $1
+		  AND status IN ('processing', 'dispatch_unknown')
+		  AND (dispatch_attempt_opened_at IS NOT NULL OR status = 'dispatch_unknown')
+		  AND dispatch_review_required_at IS NULL
+		  AND dispatch_fence_generation = $3
+		  AND dispatch_lease_token = $4
+			RETURNING dispatch_review_required_at`,
+			lease.BatchID, "Cashfree status reconciliation failed: "+reason,
+			lease.Generation, lease.Lease.LeaseToken, domain.MaxPayoutDispatchReconciliationAttempts,
+		).Scan(&reviewAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A review marker may already have been set by an earlier attempt.
+			var existing *time.Time
+			if lookupErr := tx.QueryRow(ctx, `SELECT dispatch_review_required_at FROM payout_batches WHERE id=$1`, lease.BatchID).Scan(&existing); lookupErr != nil {
+				return lookupErr
+			}
+			reviewRequired = existing != nil
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("record payout dispatch reconciliation failure: %w", err)
+		}
+		reviewRequired = reviewAt != nil
+		return nil
+	})
+	return reviewRequired, err
+}
+
+// MarkBatchDispatchReconciliationSuccessFenced resets consecutive lookup failures after a valid
+// provider status response. It does not clear the durable dispatch-attempt marker.
+func (r *PayoutRepo) MarkBatchDispatchReconciliationSuccessFenced(ctx context.Context, lease *PayoutDispatchLease) error {
+	if err := checkDispatchLeasePrecondition(lease); err != nil {
+		return err
+	}
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := r.verifyDispatchFenceTx(ctx, tx, lease); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE payout_batches
+			SET dispatch_reconciliation_attempts = 0,
+			    dispatch_last_reconciled_at = NOW(),
+			    updated_at = NOW()
+			WHERE id = $1
+			  AND dispatch_attempt_opened_at IS NOT NULL
+			  AND dispatch_review_required_at IS NULL
+			  AND dispatch_fence_generation = $2
+			  AND dispatch_lease_token = $3`,
+			lease.BatchID, lease.Generation, lease.Lease.LeaseToken,
+		)
+		if err != nil {
+			return fmt.Errorf("mark payout dispatch reconciliation success: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrStaleDispatchLease
+		}
+		return nil
+	})
 }
 
 // SetBatchDispatchUnknown sets batch status to dispatch_unknown on ambiguous 5xx or transport timeouts.

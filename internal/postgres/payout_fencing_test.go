@@ -44,6 +44,18 @@ func TestFencedMutations_RejectNilOrCancelledLease(t *testing.T) {
 			if err := repo.SetBatchDispatchUnknownFenced(context.Background(), tc.lease, "timeout"); !errors.Is(err, domain.ErrStaleDispatchLease) {
 				t.Fatalf("SetBatchDispatchUnknownFenced: expected ErrStaleDispatchLease, got %v", err)
 			}
+			if err := repo.OpenBatchDispatchAttemptFenced(context.Background(), tc.lease); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("OpenBatchDispatchAttemptFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
+			if err := repo.ClearBatchDispatchAttemptFenced(context.Background(), tc.lease, "rejected"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("ClearBatchDispatchAttemptFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
+			if _, err := repo.RecordBatchDispatchReconciliationFailureFenced(context.Background(), tc.lease, "404"); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("RecordBatchDispatchReconciliationFailureFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
+			if err := repo.MarkBatchDispatchReconciliationSuccessFenced(context.Background(), tc.lease); !errors.Is(err, domain.ErrStaleDispatchLease) {
+				t.Fatalf("MarkBatchDispatchReconciliationSuccessFenced: expected ErrStaleDispatchLease, got %v", err)
+			}
 			if err := repo.UpdatePayoutItemStatusFenced(context.Background(), tc.lease, itemID, domain.PayoutFailed, nil, nil, nil, nil); !errors.Is(err, domain.ErrStaleDispatchLease) {
 				t.Fatalf("UpdatePayoutItemStatusFenced: expected ErrStaleDispatchLease, got %v", err)
 			}

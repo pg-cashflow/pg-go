@@ -34,16 +34,27 @@ type RejectRefundRequestBody struct {
 }
 
 // getRefundSingleOwnerThreshold resolves the effective single-owner refund authorization threshold.
-// Checks property-level onboarding settings first; falls back to account-level configured default.
-func (h *Handlers) getRefundSingleOwnerThreshold(ctx context.Context, pid uuid.UUID) *int64 {
-	if h.OnboardingSettings != nil {
-		if s, err := h.OnboardingSettings.Get(ctx, pid); err == nil && s != nil {
-			if s.SingleOwnerRefundThresholdPaise != nil {
-				return s.SingleOwnerRefundThresholdPaise
-			}
-		}
+// It falls back only when the property row or property threshold is not configured.
+// Infrastructure errors must never lower the approval requirement.
+func (h *Handlers) getRefundSingleOwnerThreshold(ctx context.Context, pid uuid.UUID) (*int64, error) {
+	if h.OnboardingSettings == nil {
+		return nil, errors.New("refund approval policy store is unavailable")
 	}
-	return h.SingleOwnerRefundThresholdPaise
+
+	s, err := h.OnboardingSettings.Get(ctx, pid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return h.SingleOwnerRefundThresholdPaise, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load property refund approval policy: %w", err)
+	}
+	if s == nil {
+		return nil, errors.New("property refund approval policy is empty")
+	}
+	if s.SingleOwnerRefundThresholdPaise != nil {
+		return s.SingleOwnerRefundThresholdPaise, nil
+	}
+	return h.SingleOwnerRefundThresholdPaise, nil
 }
 
 // OwnerCreateRefundRequest handles POST /owner/payments/:id/refund/requests.
@@ -143,8 +154,14 @@ func (h *Handlers) executeCreateRefundRequest(c *gin.Context, role string) {
 		return
 	}
 
-	// Evaluate policy threshold
-	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	// Evaluate the live policy. Do not create an approval request when the policy
+	// store is unavailable; falling back here could weaken maker-checker controls.
+	effectiveLimit, policyErr := h.getRefundSingleOwnerThreshold(ctx, pid)
+	if policyErr != nil {
+		slog.Error("failed to resolve refund approval policy", "property_id", pid, "error", policyErr)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund approval policy is temporarily unavailable"})
+		return
+	}
 	requiredApprovals, _ := domain.EvaluateRefundThreshold(body.AmountPaise, effectiveLimit, h.AppEnv)
 
 	req := &domain.RefundApprovalRequest{
@@ -337,7 +354,12 @@ func (h *Handlers) OwnerApproveRefundRequest(c *gin.Context) {
 	}
 
 	requiredApprovals := req.RequiredApprovals
-	effectiveLimit := h.getRefundSingleOwnerThreshold(ctx, pid)
+	effectiveLimit, policyErr := h.getRefundSingleOwnerThreshold(ctx, pid)
+	if policyErr != nil {
+		slog.Error("failed to resolve refund approval policy", "property_id", pid, "request_id", requestID, "error", policyErr)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "refund approval policy is temporarily unavailable"})
+		return
+	}
 	latestRequired, _ := domain.EvaluateRefundThreshold(req.AmountPaise, effectiveLimit, h.AppEnv)
 	if latestRequired > requiredApprovals {
 		requiredApprovals = latestRequired

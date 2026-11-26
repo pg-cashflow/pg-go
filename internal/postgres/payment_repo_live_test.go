@@ -35,6 +35,11 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 			t.Fatalf("failed to apply migration %s SQL: %v", mFile, err)
 		}
 	}
+	// Apply migrations added after the legacy setup files. The repository now
+	// requires payment_intents.property_id (migration 134).
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
 
 	payRepo := NewPaymentRepo(pool)
 
@@ -212,6 +217,28 @@ func TestLivePostgresMigration020AndRepository(t *testing.T) {
 	err = intentRepo.CreateWithDues(ctx, mIntent1, []uuid.UUID{dueMulti1, dueMulti2}, []int64{550000, 550000})
 	if err != nil {
 		t.Fatalf("CreateWithDues for first multi-due intent: %v", err)
+	}
+	if mIntent1.PropertyID != propID {
+		t.Fatalf("multi-due parent property_id = %s, want owning property %s", mIntent1.PropertyID, propID)
+	}
+
+	// Payment-to-order resolution must follow the parent-child due link when
+	// the parent itself has due_id = NULL.
+	multiDuePaymentID := uuid.New()
+	multiDueCFPaymentID := "cf_multi_" + uuid.New().String()[:12]
+	_, err = pool.Exec(ctx, `
+		INSERT INTO payments (id, property_id, tenant_id, due_id, amount, matched_by, provider, provider_payment_id, cf_payment_id, created_at)
+		VALUES ($1, $2, $3, $4, 550000, 'cashfree', 'cashfree', $5, $5, NOW())
+	`, multiDuePaymentID, propID, tenantID, dueMulti1, multiDueCFPaymentID)
+	if err != nil {
+		t.Fatalf("insert payment for multi-due order resolution: %v", err)
+	}
+	resolvedOrderID, err := payRepo.GetPaymentOrderID(ctx, multiDuePaymentID)
+	if err != nil {
+		t.Fatalf("resolve multi-due provider order id: %v", err)
+	}
+	if resolvedOrderID != mIntent1.ProviderOrderID {
+		t.Fatalf("multi-due provider order id = %q, want %q", resolvedOrderID, mIntent1.ProviderOrderID)
 	}
 
 	// Second concurrent multi-due intent trying to cover dueMulti2 (overlapping due)

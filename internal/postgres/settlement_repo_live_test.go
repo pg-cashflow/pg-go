@@ -19,6 +19,10 @@ func TestLivePostgresSettlementAntiRegressionAndReplay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
+
 	// Ensure migration 026 is applied
 	m26Path := filepath.Join("..", "..", "migrations", "026_gateway_settlements_and_recon.sql")
 	m26SQL, err := os.ReadFile(m26Path)

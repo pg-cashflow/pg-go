@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -146,9 +147,10 @@ func TestRequireSameOrigin(t *testing.T) {
 	})
 }
 
-// TestAuthLogoutClearsOnRevokeError ensures AuthLogout returns 202 Accepted and clears
-// the cookie when RevokeSession fails (truthful reporting of partial revocation failure).
-func TestAuthLogoutClearsOnRevokeError(t *testing.T) {
+// TestAuthLogoutRetainsCookieOnRevokeError ensures failed revocation remains retryable.
+// The browser clears its local session, but the HttpOnly refresh cookie must remain
+// until the server confirms that the token family has been revoked.
+func TestAuthLogoutRetainsCookieOnRevokeError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	r := gin.New()
@@ -167,12 +169,31 @@ func TestAuthLogoutClearsOnRevokeError(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 Accepted from AuthLogout on revocation error, got %d", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable from AuthLogout on revocation error, got %d", w.Code)
+	}
+	if cookie := w.Header().Get("Set-Cookie"); cookie != "" {
+		t.Fatalf("refresh cookie must remain available for a revocation retry, got Set-Cookie %q", cookie)
+	}
+}
+
+func TestAuthLogoutClearsCookieAfterSuccessfulRevocation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &Handlers{Deps: Deps{AppEnv: "test", Auth: &stubAuthService{}}}
+	r.POST("/auth/logout", h.AuthLogout)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: RefreshCookieName, Value: "some-token"})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after successful revocation, got %d", w.Code)
 	}
 	cookie := w.Header().Get("Set-Cookie")
-	if cookie == "" {
-		t.Fatal("expected Set-Cookie header to clear the refresh cookie")
+	if cookie == "" || !strings.Contains(cookie, "Max-Age=0") {
+		t.Fatalf("expected refresh cookie to be expired after successful revocation, got %q", cookie)
 	}
 }
 

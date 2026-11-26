@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,29 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		t.Fatalf("initiate batch transfer: %v", err)
 	}
 
+	newProcessingBatch := func(t *testing.T, prefix string) *domain.PayoutBatch {
+		t.Helper()
+		it := &domain.PayoutItem{
+			PayeeID: payee1.ID, ReferenceNumber: prefix + "-" + uuid.NewString()[:8],
+			AmountPaise: 10000, Purpose: "Dispatch reconciliation test", Status: domain.PayoutPending,
+		}
+		if err := payoutRepo.CreatePayoutItem(ctx, it); err != nil {
+			t.Fatalf("create %s item: %v", prefix, err)
+		}
+		b, _, err := payoutRepo.CreateBatchFromUnbatchedItems(ctx, propID, ownerID, prefix+"-"+uuid.NewString()[:8], []byte("secret"), nil)
+		if err != nil {
+			t.Fatalf("create %s batch: %v", prefix, err)
+		}
+		if _, _, err := payoutRepo.ApproveBatchSigned(ctx, propID, b.ID, ownerID, signingKey, "v1"); err != nil {
+			t.Fatalf("approve %s batch: %v", prefix, err)
+		}
+		b, _, err = payoutRepo.InitiateBatchTransferTx(ctx, b.ID)
+		if err != nil {
+			t.Fatalf("initiate %s batch: %v", prefix, err)
+		}
+		return b
+	}
+
 	t.Run("DispatchBatch_Success", func(t *testing.T) {
 		var receivedTransfers []cashfree.BatchTransferEntry
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +220,13 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		if len(receivedTransfers) != 2 {
 			t.Fatalf("expected 2 transfers sent to cashfree, got %d", len(receivedTransfers))
 		}
+		reloaded, err := payoutRepo.GetBatchByID(ctx, batch.ID)
+		if err != nil {
+			t.Fatalf("reload successful dispatch batch: %v", err)
+		}
+		if reloaded.DispatchAttemptOpenedAt == nil || reloaded.DispatchAttemptCount != 1 {
+			t.Fatalf("expected durable pre-dispatch marker before POST, got opened_at=%v count=%d", reloaded.DispatchAttemptOpenedAt, reloaded.DispatchAttemptCount)
+		}
 		amountMap := make(map[string]string)
 		for _, tr := range receivedTransfers {
 			amountMap[tr.TransferID] = tr.TransferAmount.String()
@@ -209,6 +240,7 @@ func TestLivePayoutDispatcher(t *testing.T) {
 	})
 
 	t.Run("DispatchBatch_5xx_Transitions_To_dispatch_unknown", func(t *testing.T) {
+		ambiguousBatch := newProcessingBatch(t, "BATCH-5XX")
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			if r.URL.Path == "/beneficiary" {
@@ -243,17 +275,201 @@ func TestLivePayoutDispatcher(t *testing.T) {
 		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
 		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
 		dispatcher.SetApprovalKeyRing(approvalRing)
-		err := dispatcher.DispatchBatch(ctx, batch.ID)
+		err := dispatcher.DispatchBatch(ctx, ambiguousBatch.ID)
 		if err == nil {
 			t.Fatal("expected error on 5xx, got nil")
 		}
 
-		reloadedBatch, err := payoutRepo.GetBatchByID(ctx, batch.ID)
+		reloadedBatch, err := payoutRepo.GetBatchByID(ctx, ambiguousBatch.ID)
 		if err != nil {
 			t.Fatalf("get batch: %v", err)
 		}
 		if reloadedBatch.Status != domain.BatchDispatchUnknown {
 			t.Fatalf("expected batch status 'dispatch_unknown', got '%s'", reloadedBatch.Status)
+		}
+		if reloadedBatch.DispatchAttemptOpenedAt == nil || reloadedBatch.DispatchAttemptCount != 1 {
+			t.Fatalf("expected open pre-dispatch marker after ambiguous POST, got opened_at=%v count=%d", reloadedBatch.DispatchAttemptOpenedAt, reloadedBatch.DispatchAttemptCount)
+		}
+	})
+
+	t.Run("DispatchAuthRejected_ClearsOpenAttemptForSafeRetry", func(t *testing.T) {
+		authBatch := newProcessingBatch(t, "BATCH-AUTH-REJECT")
+		var postCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/beneficiary" {
+				var req cashfree.CreateBeneficiaryRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{BeneficiaryID: req.BeneficiaryID, Status: "VERIFIED", Instrument: req.BeneficiaryInstrument})
+				return
+			}
+			if r.URL.Path == "/transfers/batch" && r.Method == http.MethodPost {
+				postCount++
+				http.Error(w, `{"code":"AUTHENTICATION_FAILED"}`, http.StatusUnauthorized)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{ClientID: "cid", ClientSecret: "csec", FundsourceID: "fund_01"})
+		client.SetBaseOverride(srv.URL)
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
+		if err := dispatcher.DispatchBatch(ctx, authBatch.ID); err == nil {
+			t.Fatal("expected provider authentication rejection")
+		}
+		reloaded, err := payoutRepo.GetBatchByID(ctx, authBatch.ID)
+		if err != nil {
+			t.Fatalf("reload auth-rejected batch: %v", err)
+		}
+		if reloaded.Status != domain.BatchProcessing || reloaded.DispatchAttemptOpenedAt != nil || reloaded.DispatchAttemptCount != 1 {
+			t.Fatalf("expected known rejection to clear only the open marker, got status=%s opened_at=%v count=%d", reloaded.Status, reloaded.DispatchAttemptOpenedAt, reloaded.DispatchAttemptCount)
+		}
+		if postCount != 1 {
+			t.Fatalf("expected one auth-rejected POST, got %d", postCount)
+		}
+	})
+
+	t.Run("DispatchUnknown_404_DoesNotResubmit", func(t *testing.T) {
+		// Use a separate batch so this test can reproduce the ambiguous-write
+		// sequence without changing the fixture used by the other subtests.
+		unknownItem := &domain.PayoutItem{
+			PayeeID:         payee1.ID,
+			ReferenceNumber: "REF-UNKNOWN-" + uuid.New().String()[:8],
+			AmountPaise:     10000,
+			Purpose:         "Ambiguous dispatch test",
+			Status:          domain.PayoutPending,
+		}
+		if err := payoutRepo.CreatePayoutItem(ctx, unknownItem); err != nil {
+			t.Fatalf("create unknown-state payout item: %v", err)
+		}
+		unknownBatch, _, err := payoutRepo.CreateBatchFromUnbatchedItems(ctx, propID, ownerID, "BATCH-UNKNOWN-"+uuid.New().String()[:8], []byte("secret"), nil)
+		if err != nil {
+			t.Fatalf("create unknown-state batch: %v", err)
+		}
+		if _, _, err := payoutRepo.ApproveBatchSigned(ctx, propID, unknownBatch.ID, ownerID, signingKey, "v1"); err != nil {
+			t.Fatalf("approve unknown-state batch: %v", err)
+		}
+		if _, _, err := payoutRepo.InitiateBatchTransferTx(ctx, unknownBatch.ID); err != nil {
+			t.Fatalf("initiate unknown-state batch: %v", err)
+		}
+
+		var postCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Path == "/beneficiary" {
+				var req cashfree.CreateBeneficiaryRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				_ = json.NewEncoder(w).Encode(cashfree.BeneficiaryResponse{
+					BeneficiaryID: req.BeneficiaryID,
+					Status:        "VERIFIED",
+					Instrument:    req.BeneficiaryInstrument,
+				})
+				return
+			}
+			if r.URL.Path == "/transfers/batch" {
+				if r.Method == http.MethodGet {
+					http.NotFound(w, r)
+					return
+				}
+				postCount++
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		defer srv.Close()
+
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{
+			ClientID: "cid", ClientSecret: "csec", FundsourceID: "fund_01",
+		})
+		client.SetBaseOverride(srv.URL)
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
+
+		if err := dispatcher.DispatchBatch(ctx, unknownBatch.ID); err == nil {
+			t.Fatal("expected first dispatch to become ambiguous after provider 5xx")
+		}
+		reloaded, err := payoutRepo.GetBatchByID(ctx, unknownBatch.ID)
+		if err != nil {
+			t.Fatalf("reload ambiguous batch: %v", err)
+		}
+		if reloaded.Status != domain.BatchDispatchUnknown {
+			t.Fatalf("expected dispatch_unknown after ambiguous provider response, got %q", reloaded.Status)
+		}
+
+		if err := dispatcher.DispatchBatch(ctx, unknownBatch.ID); err == nil {
+			t.Fatal("expected unresolved batch to remain blocked after provider status 404")
+		}
+		if postCount != 1 {
+			t.Fatalf("ambiguous batch was submitted %d times; expected exactly one POST", postCount)
+		}
+	})
+
+	t.Run("PreDispatchMarker_CrashWindow404NeverResubmits_ThenEscalates", func(t *testing.T) {
+		crashBatch := newProcessingBatch(t, "BATCH-CRASH-WINDOW")
+		lease, acquired, err := payoutRepo.TryLockBatchDispatch(ctx, crashBatch.ID)
+		if err != nil || !acquired {
+			t.Fatalf("acquire batch lease: acquired=%v err=%v", acquired, err)
+		}
+		if err := payoutRepo.OpenBatchDispatchAttemptFenced(lease.Ctx, lease); err != nil {
+			lease.Unlock()
+			t.Fatalf("persist pre-dispatch marker: %v", err)
+		}
+		lease.Unlock() // Simulates process death after marker commit and before the POST.
+
+		var getCount, postCount int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/transfers/batch" {
+				http.NotFound(w, r)
+				return
+			}
+			if r.Method == http.MethodGet {
+				getCount++
+				http.NotFound(w, r) // Eventual-consistency window: cannot prove the POST was not accepted.
+				return
+			}
+			postCount++
+			http.Error(w, "unexpected duplicate submission", http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+		client := cashfree.NewPayoutClient(cashfree.PayoutConfig{ClientID: "cid", ClientSecret: "csec", FundsourceID: "fund_01"})
+		client.SetBaseOverride(srv.URL)
+		dispatcher := NewPayoutDispatcher(payoutRepo, client, "fund_01", encKey)
+		approvalRing, _ := crypto.NewApprovalKeyRing("v1", approvalKeys)
+		dispatcher.SetApprovalKeyRing(approvalRing)
+
+		for i := int16(0); i < domain.MaxPayoutDispatchReconciliationAttempts; i++ {
+			if err := dispatcher.DispatchBatch(ctx, crashBatch.ID); err == nil {
+				t.Fatalf("expected unresolved status lookup failure on attempt %d", i+1)
+			}
+		}
+		reloaded, err := payoutRepo.GetBatchByID(ctx, crashBatch.ID)
+		if err != nil {
+			t.Fatalf("reload crash-window batch: %v", err)
+		}
+		if reloaded.Status != domain.BatchDispatchUnknown {
+			t.Fatalf("expected dispatch_unknown, got %q", reloaded.Status)
+		}
+		if reloaded.DispatchAttemptOpenedAt == nil || reloaded.DispatchAttemptCount != 1 {
+			t.Fatalf("expected one durable open attempt, got opened_at=%v count=%d", reloaded.DispatchAttemptOpenedAt, reloaded.DispatchAttemptCount)
+		}
+		if reloaded.DispatchReconciliationAttempts != domain.MaxPayoutDispatchReconciliationAttempts || reloaded.DispatchReviewRequiredAt == nil {
+			t.Fatalf("expected bounded attempts and manual-review marker, got attempts=%d review_at=%v", reloaded.DispatchReconciliationAttempts, reloaded.DispatchReviewRequiredAt)
+		}
+		if err := dispatcher.PollBatch(ctx, crashBatch.ID); !errors.Is(err, domain.ErrBatchDispatchManualReview) {
+			t.Fatalf("expected poller to refuse a manual-review batch, got %v", err)
+		}
+		if err := dispatcher.DispatchBatch(ctx, crashBatch.ID); err != nil {
+			t.Fatalf("manual-review batch should be acknowledged without automatic work: %v", err)
+		}
+		if getCount != int(domain.MaxPayoutDispatchReconciliationAttempts) {
+			t.Fatalf("expected exactly %d status lookups, got %d", domain.MaxPayoutDispatchReconciliationAttempts, getCount)
+		}
+		if postCount != 0 {
+			t.Fatalf("crash-window recovery sent %d duplicate POSTs; expected zero", postCount)
 		}
 	})
 

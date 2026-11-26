@@ -138,29 +138,41 @@ const (
 // across creation, approval, and dispatch.
 const MaxPayoutBatchItems = 500
 
+// MaxPayoutDispatchReconciliationAttempts bounds automatic provider status polling before manual review.
+const MaxPayoutDispatchReconciliationAttempts int16 = 5
+
 var (
 	// ErrBatchItemLimitExceeded is returned when a payout batch exceeds MaxPayoutBatchItems.
 	ErrBatchItemLimitExceeded = errors.New("payout batch exceeds maximum allowed item count")
 	// ErrStaleDispatchLease is returned when a worker attempts a mutation with an expired or superseded lease/generation.
 	ErrStaleDispatchLease = errors.New("payout dispatch lease is stale or lost")
+	// ErrBatchDispatchAttemptAlreadyOpened prevents a second POST while a prior dispatch may have reached the provider.
+	ErrBatchDispatchAttemptAlreadyOpened = errors.New("payout batch dispatch attempt is already open")
+	// ErrBatchDispatchManualReview prevents automatic work after bounded reconciliation is exhausted.
+	ErrBatchDispatchManualReview = errors.New("payout batch dispatch requires manual review")
 )
 
 type PayoutBatch struct {
-	ID                      uuid.UUID         `json:"id"`
-	PropertyID              uuid.UUID         `json:"property_id"`
-	BatchNumber             string            `json:"batch_number"`
-	FormatType              string            `json:"format_type"` // instruction_sheet
-	Status                  PayoutBatchStatus `json:"status"`
-	TotalAmountPaise        int64             `json:"total_amount_paise"`
-	ItemCount               int               `json:"item_count"`
-	CreatedBy               uuid.UUID         `json:"created_by"`
-	ApprovedBy              *uuid.UUID        `json:"approved_by,omitempty"`
-	ApprovedAt              *time.Time        `json:"approved_at,omitempty"`
-	FileChecksum            *string           `json:"file_checksum,omitempty"`
-	Notes                   *string           `json:"notes,omitempty"`
-	DispatchFenceGeneration int64             `json:"dispatch_fence_generation"`
-	CreatedAt               time.Time         `json:"created_at"`
-	UpdatedAt               time.Time         `json:"updated_at"`
+	ID                             uuid.UUID         `json:"id"`
+	PropertyID                     uuid.UUID         `json:"property_id"`
+	BatchNumber                    string            `json:"batch_number"`
+	FormatType                     string            `json:"format_type"` // instruction_sheet
+	Status                         PayoutBatchStatus `json:"status"`
+	TotalAmountPaise               int64             `json:"total_amount_paise"`
+	ItemCount                      int               `json:"item_count"`
+	CreatedBy                      uuid.UUID         `json:"created_by"`
+	ApprovedBy                     *uuid.UUID        `json:"approved_by,omitempty"`
+	ApprovedAt                     *time.Time        `json:"approved_at,omitempty"`
+	FileChecksum                   *string           `json:"file_checksum,omitempty"`
+	Notes                          *string           `json:"notes,omitempty"`
+	DispatchFenceGeneration        int64             `json:"dispatch_fence_generation"`
+	DispatchAttemptOpenedAt        *time.Time        `json:"dispatch_attempt_opened_at,omitempty"`
+	DispatchAttemptCount           int               `json:"dispatch_attempt_count"`
+	DispatchReconciliationAttempts int16             `json:"dispatch_reconciliation_attempts"`
+	DispatchLastReconciledAt       *time.Time        `json:"dispatch_last_reconciled_at,omitempty"`
+	DispatchReviewRequiredAt       *time.Time        `json:"dispatch_review_required_at,omitempty"`
+	CreatedAt                      time.Time         `json:"created_at"`
+	UpdatedAt                      time.Time         `json:"updated_at"`
 }
 
 type PayoutItemStatus string

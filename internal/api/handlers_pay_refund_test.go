@@ -1523,6 +1523,9 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(migrationBytes)); err != nil {
 		t.Fatalf("failed to apply migration 020: %v", err)
 	}
+	if err := postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
 
 	propID := uuid.New()
 	userID := uuid.New()
@@ -1610,9 +1613,9 @@ func TestLivePostgres_OwnerRefundPayment_LockHierarchy(t *testing.T) {
 
 	// Seed Payment Intent
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payment_intents (id, provider, provider_order_id, amount_paise, status, cf_payment_id)
-		VALUES ($1, 'cashfree', $2, 1100000, 'paid', $3)
-	`, uuid.New(), cfOrderID, cfPaymentID)
+		INSERT INTO payment_intents (id, property_id, provider, provider_order_id, amount_paise, status, cf_payment_id)
+		VALUES ($1, $2, 'cashfree', $3, 1100000, 'paid', $4)
+	`, uuid.New(), propID, cfOrderID, cfPaymentID)
 	if err != nil {
 		t.Fatalf("seed payment intent: %v", err)
 	}
@@ -1779,6 +1782,9 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 	if err == nil {
 		_, _ = pool.Exec(ctx, string(m22Bytes))
 	}
+	if err := postgres.Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
 
 	propID := uuid.New()
 	userID := uuid.New()
@@ -1849,9 +1855,9 @@ func TestLivePostgres_OwnerRefundPayment_GuardA_Rejection(t *testing.T) {
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO payment_intents (id, provider, provider_order_id, amount_paise, status, cf_payment_id)
-		VALUES ($1, 'cashfree', $2, 550000, 'paid', $3)
-	`, uuid.New(), cfOrderID, cfPaymentID)
+		INSERT INTO payment_intents (id, property_id, provider, provider_order_id, amount_paise, status, cf_payment_id)
+		VALUES ($1, $2, 'cashfree', $3, 550000, 'paid', $4)
+	`, uuid.New(), propID, cfOrderID, cfPaymentID)
 	if err != nil {
 		t.Fatalf("seed payment intent: %v", err)
 	}

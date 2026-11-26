@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,10 @@ func TestLivePaymentIntentQuarantineRequiresProviderConfirmation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply current migrations: %v", err)
+	}
 
 	propertyID := uuid.New()
 	tenantID := uuid.New()
@@ -69,9 +74,9 @@ func TestLivePaymentIntentQuarantineRequiresProviderConfirmation(t *testing.T) {
 		t.Fatalf("seed multi-due set: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, expires_at)
-		VALUES ($1, NULL, 'cashfree', $2, 12500, 'created', NOW() + INTERVAL '10 minutes')`,
-		intentID, orderID,
+		INSERT INTO payment_intents (id, property_id, due_id, provider, provider_order_id, amount_paise, status, expires_at)
+		VALUES ($1, $3, NULL, 'cashfree', $2, 12500, 'created', NOW() + INTERVAL '10 minutes')`,
+		intentID, orderID, propertyID,
 	); err != nil {
 		t.Fatalf("seed multi-due payment intent: %v", err)
 	}

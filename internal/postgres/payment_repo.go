@@ -401,11 +401,11 @@ func (r *PaymentRepo) RecordUnmatchedReceipt(ctx context.Context, orderID, payme
 		)
 		SELECT
 			'cashfree', $1, $2, $2,
-			pi.id, linked.due_id, linked.property_id, linked.tenant_id,
+			pi.id, linked.due_id, pi.property_id, linked.tenant_id,
 			$4, $5, $6, 'held', NOW(), NOW()
 		FROM (SELECT 1) AS dummy
 		LEFT JOIN LATERAL (
-			SELECT id, due_id FROM payment_intents
+			SELECT id, due_id, property_id FROM payment_intents
 			WHERE (id = $3 OR ($3 IS NULL AND provider_order_id = $1))
 			ORDER BY created_at DESC LIMIT 1
 		) pi ON true
@@ -1373,7 +1373,15 @@ func (r *PaymentRepo) GetPaymentOrderID(ctx context.Context, paymentID uuid.UUID
 			 JOIN payment_intents pi ON (
 				 (p.cf_payment_id IS NOT NULL AND pi.cf_payment_id = p.cf_payment_id)
 				 OR (p.provider_payment_id IS NOT NULL AND pi.cf_payment_id = p.provider_payment_id)
-				 OR (p.due_id IS NOT NULL AND pi.due_id = p.due_id)
+				 OR (p.due_id IS NOT NULL AND (
+					 pi.due_id = p.due_id
+					 OR EXISTS (
+						 SELECT 1
+						 FROM payment_intent_dues pid
+						 WHERE pid.payment_intent_id = pi.id
+						   AND pid.due_id = p.due_id
+					 )
+				 ))
 			 )
 			 WHERE p.id = $1 
 			 ORDER BY pi.created_at DESC 

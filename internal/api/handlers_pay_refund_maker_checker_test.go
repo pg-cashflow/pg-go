@@ -30,6 +30,7 @@ type mockPhase4ApprovalStore struct {
 	mu               sync.Mutex
 	requests         map[uuid.UUID]*domain.RefundApprovalRequest
 	dispatchCalls    int
+	approvalCalls    int
 	failDispatch     bool
 	conflictOnCreate bool
 	createCalls      int
@@ -134,6 +135,7 @@ func (m *mockPhase4ApprovalStore) RecordApprovalAtomic(
 ) (*domain.RefundApprovalRequest, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.approvalCalls++
 
 	req, ok := m.requests[requestID]
 	if !ok {
@@ -306,6 +308,7 @@ func TestPhase4_MakerCannotPerformProhibitedSelfApproval(t *testing.T) {
 		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
 		UserStore:          users,
 		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{},
 		Auth:               &refundStepUpAuthService{validOTP: "123456"},
 	}}
 
@@ -378,6 +381,7 @@ func TestPhase4_TwoDistinctOwnersCanApproveHighValueRefund(t *testing.T) {
 		TenantStore:                     &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
 		UserStore:                       users,
 		RefundApprovalRepo:              approvalStore,
+		OnboardingSettings:              &stubOnboardingSettingsStore{},
 		Auth:                            &refundStepUpAuthService{validOTP: "123456"},
 		SingleOwnerRefundThresholdPaise: &thresh,
 	}}
@@ -475,6 +479,7 @@ func TestPhase4_OneOwnerCannotSatisfyBothApprovals(t *testing.T) {
 		TenantStore:                     &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
 		UserStore:                       users,
 		RefundApprovalRepo:              approvalStore,
+		OnboardingSettings:              &stubOnboardingSettingsStore{},
 		Auth:                            &refundStepUpAuthService{validOTP: "123456"},
 		SingleOwnerRefundThresholdPaise: &thresh,
 	}}
@@ -546,6 +551,7 @@ func TestPhase4_RevokedUsersCannotApprove(t *testing.T) {
 		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
 		UserStore:          users,
 		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{},
 		Auth:               &refundStepUpAuthService{validOTP: "123456"},
 	}}
 
@@ -604,6 +610,7 @@ func TestPhase4_CrossPropertyApprovalIsRejected(t *testing.T) {
 		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propA}},
 		UserStore:          users,
 		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{},
 		Auth:               &refundStepUpAuthService{validOTP: "123456"},
 	}}
 
@@ -1019,6 +1026,7 @@ func TestCreateRefundApprovalRequest_AtomicConflict_ReplayAndConflict(t *testing
 		GatewayPaymentRepo: payments,
 		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: pid}},
 		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{},
 	}}
 
 	r := gin.New()
@@ -1152,6 +1160,7 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 		GatewayPaymentRepo: payRepo,
 		TenantStore:        tenantRepo,
 		RefundApprovalRepo: refundApprovalRepo,
+		OnboardingSettings: postgres.NewOnboardingSettingsRepo(pool),
 	}}
 
 	gin.SetMode(gin.TestMode)
@@ -1239,3 +1248,155 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 	}
 }
 
+func TestRefundRequestDoesNotCreateWhenPolicyStoreFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propertyID := uuid.New()
+	makerID := uuid.New()
+	tenantID := uuid.New()
+	paymentID := uuid.New()
+	payments := newMockRefundPaymentRepo()
+	payments.payments[paymentID] = &domain.Payment{ID: paymentID, TenantID: tenantID, Amount: 100000, Provider: "cashfree"}
+	approvalStore := newMockPhase4ApprovalStore()
+	settingsErr := errors.New("settings database unavailable")
+
+	h := &Handlers{Deps: Deps{
+		GatewayPaymentRepo: payments,
+		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propertyID}},
+		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{get: func(context.Context, uuid.UUID) (*domain.PropertyOnboardingSettings, error) {
+			return nil, settingsErr
+		}},
+	}}
+	r := gin.New()
+	r.POST("/owner/payments/:id/refund/requests", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: makerID, PropertyID: &propertyID, Role: domain.RoleOwner})
+		h.OwnerCreateRefundRequest(c)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/payments/%s/refund/requests", paymentID), bytes.NewBufferString(`{"amount_paise":50000,"reason":"Customer cancellation"}`))
+	req.Header.Set("Idempotency-Key", "policy-store-outage")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when refund policy cannot be loaded, got %d: %s", w.Code, w.Body.String())
+	}
+	if approvalStore.createCalls != 0 {
+		t.Fatalf("refund approval request was created %d times despite policy-store failure", approvalStore.createCalls)
+	}
+}
+
+func TestGetRefundSingleOwnerThresholdFailsClosedOnSettingsErrors(t *testing.T) {
+	propertyID := uuid.New()
+	accountDefault := int64(250000)
+	databaseErr := errors.New("database connection lost")
+
+	t.Run("database error does not use account fallback", func(t *testing.T) {
+		h := &Handlers{Deps: Deps{
+			SingleOwnerRefundThresholdPaise: &accountDefault,
+			OnboardingSettings: &stubOnboardingSettingsStore{get: func(context.Context, uuid.UUID) (*domain.PropertyOnboardingSettings, error) {
+				return nil, databaseErr
+			}},
+		}}
+		limit, err := h.getRefundSingleOwnerThreshold(context.Background(), propertyID)
+		if err == nil || !errors.Is(err, databaseErr) {
+			t.Fatalf("expected wrapped database error, got limit=%v err=%v", limit, err)
+		}
+		if limit != nil {
+			t.Fatalf("database error must not return a fallback limit, got %d", *limit)
+		}
+	})
+
+	t.Run("missing property row uses account fallback", func(t *testing.T) {
+		h := &Handlers{Deps: Deps{
+			SingleOwnerRefundThresholdPaise: &accountDefault,
+			OnboardingSettings: &stubOnboardingSettingsStore{get: func(context.Context, uuid.UUID) (*domain.PropertyOnboardingSettings, error) {
+				return nil, pgx.ErrNoRows
+			}},
+		}}
+		limit, err := h.getRefundSingleOwnerThreshold(context.Background(), propertyID)
+		if err != nil || limit == nil || *limit != accountDefault {
+			t.Fatalf("expected account default %d, got limit=%v err=%v", accountDefault, limit, err)
+		}
+	})
+
+	t.Run("configured property threshold overrides account fallback", func(t *testing.T) {
+		propertyLimit := int64(100000)
+		h := &Handlers{Deps: Deps{
+			SingleOwnerRefundThresholdPaise: &accountDefault,
+			OnboardingSettings: &stubOnboardingSettingsStore{get: func(context.Context, uuid.UUID) (*domain.PropertyOnboardingSettings, error) {
+				return &domain.PropertyOnboardingSettings{PropertyID: propertyID, SingleOwnerRefundThresholdPaise: &propertyLimit}, nil
+			}},
+		}}
+		limit, err := h.getRefundSingleOwnerThreshold(context.Background(), propertyID)
+		if err != nil || limit == nil || *limit != propertyLimit {
+			t.Fatalf("expected property threshold %d, got limit=%v err=%v", propertyLimit, limit, err)
+		}
+	})
+
+	t.Run("nil property threshold uses account fallback", func(t *testing.T) {
+		h := &Handlers{Deps: Deps{
+			SingleOwnerRefundThresholdPaise: &accountDefault,
+			OnboardingSettings:              &stubOnboardingSettingsStore{},
+		}}
+		limit, err := h.getRefundSingleOwnerThreshold(context.Background(), propertyID)
+		if err != nil || limit == nil || *limit != accountDefault {
+			t.Fatalf("expected account fallback %d, got limit=%v err=%v", accountDefault, limit, err)
+		}
+	})
+}
+
+func TestRefundApprovalDoesNotRecordWhenPolicyStoreFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	propertyID := uuid.New()
+	makerID := uuid.New()
+	checkerID := uuid.New()
+	tenantID := uuid.New()
+	paymentID := uuid.New()
+	requestID := uuid.New()
+
+	users := newPhase4UserStore()
+	users.users[makerID] = &domain.User{ID: makerID, Phone: "+919000000011", TokenVersion: 1}
+	users.users[checkerID] = &domain.User{ID: checkerID, Phone: "+919000000012", TokenVersion: 1}
+	users.owners[propertyID] = []domain.User{*users.users[makerID], *users.users[checkerID]}
+
+	payments := newMockRefundPaymentRepo()
+	payments.payments[paymentID] = &domain.Payment{ID: paymentID, TenantID: tenantID, Amount: 100000, Provider: "cashfree"}
+	approvalStore := newMockPhase4ApprovalStore()
+	req := &domain.RefundApprovalRequest{
+		ID: requestID, PropertyID: propertyID, PaymentID: paymentID, TenantID: tenantID,
+		AmountPaise: 50000, Reason: "Customer cancellation", RequestedBy: makerID,
+		Status: domain.RefundApprovalPending, RequiredApprovals: 2,
+		MaterialHash: domain.ComputeRefundMaterialHash(propertyID, paymentID, tenantID, 50000, "Customer cancellation"),
+	}
+	if err := approvalStore.CreateRequest(context.Background(), req); err != nil {
+		t.Fatalf("seed refund approval request: %v", err)
+	}
+
+	settingsErr := errors.New("settings database unavailable")
+	h := &Handlers{Deps: Deps{
+		GatewayPaymentRepo: payments,
+		TenantStore:        &mockRefundTenantStore{t: &domain.Tenant{ID: tenantID, PropertyID: propertyID}},
+		UserStore:          users,
+		RefundApprovalRepo: approvalStore,
+		OnboardingSettings: &stubOnboardingSettingsStore{get: func(context.Context, uuid.UUID) (*domain.PropertyOnboardingSettings, error) {
+			return nil, settingsErr
+		}},
+	}}
+	r := gin.New()
+	r.POST("/owner/refund-requests/:id/approve", func(c *gin.Context) {
+		c.Set(auth.ContextClaimsKey, &auth.Claims{UserID: checkerID, PropertyID: &propertyID, Role: domain.RoleOwner})
+		h.OwnerApproveRefundRequest(c)
+	})
+
+	request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/owner/refund-requests/%s/approve", requestID), bytes.NewBufferString(`{}`))
+	response := httptest.NewRecorder()
+	r.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when refund approval policy cannot be loaded, got %d: %s", response.Code, response.Body.String())
+	}
+	if approvalStore.approvalCalls != 0 {
+		t.Fatalf("approval was recorded %d times while policy store was unavailable", approvalStore.approvalCalls)
+	}
+}

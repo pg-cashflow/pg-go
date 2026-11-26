@@ -19,13 +19,13 @@ func NewPaymentIntentRepo(db DBTX) *PaymentIntentRepo { return &PaymentIntentRep
 
 func (r *PaymentIntentRepo) WithTx(tx pgx.Tx) *PaymentIntentRepo { return &PaymentIntentRepo{db: tx} }
 
-const intentCols = `id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key`
+const intentCols = `id, property_id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key`
 
 func scanIntent(row pgx.Row) (*domain.PaymentIntent, error) {
 	var p domain.PaymentIntent
 	var dueID *uuid.UUID
 	var idemKey *uuid.UUID
-	err := row.Scan(&p.ID, &dueID, &p.Provider, &p.ProviderOrderID, &p.PaymentSessionID, &p.AmountPaise, &p.Status, &p.ExpiresAt, &p.CFPaymentID, &p.CreatedAt, &p.UpdatedAt, &idemKey)
+	err := row.Scan(&p.ID, &p.PropertyID, &dueID, &p.Provider, &p.ProviderOrderID, &p.PaymentSessionID, &p.AmountPaise, &p.Status, &p.ExpiresAt, &p.CFPaymentID, &p.CreatedAt, &p.UpdatedAt, &idemKey)
 	if err != nil {
 		return nil, err
 	}
@@ -53,9 +53,9 @@ func (r *PaymentIntentRepo) Create(ctx context.Context, p *domain.PaymentIntent)
 		dueID = &p.DueID
 	}
 	return r.db.QueryRow(ctx, `
-		INSERT INTO payment_intents (due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-		dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt, p.IdempotencyKey,
+		INSERT INTO payment_intents (property_id, due_id, provider, provider_order_id, payment_session_id, amount_paise, status, expires_at, cf_payment_id, created_at, updated_at, idempotency_key)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+		p.PropertyID, dueID, p.Provider, p.ProviderOrderID, p.PaymentSessionID, p.AmountPaise, p.Status, p.ExpiresAt, p.CFPaymentID, p.CreatedAt, p.UpdatedAt, p.IdempotencyKey,
 	).Scan(&p.ID)
 }
 
@@ -128,6 +128,19 @@ func (r *PaymentIntentRepo) RecencyForDue(ctx context.Context, dueID uuid.UUID) 
 
 func (r *PaymentIntentRepo) CreateWithDues(ctx context.Context, p *domain.PaymentIntent, dueIDs []uuid.UUID, amounts []int64) error {
 	insertAll := func(repo *PaymentIntentRepo) error {
+		if p.PropertyID == uuid.Nil {
+			if len(dueIDs) == 0 {
+				return errors.New("payment intent creation requires at least one due or an explicit property ID")
+			}
+			if err := repo.db.QueryRow(ctx, `
+				SELECT MIN(property_id::TEXT)::UUID
+				FROM dues
+				WHERE id = ANY($1::UUID[])
+				HAVING COUNT(DISTINCT property_id) = 1
+				   AND COUNT(DISTINCT id) = CARDINALITY($1::UUID[])`, dueIDs).Scan(&p.PropertyID); err != nil {
+				return fmt.Errorf("resolve payment intent property from dues: %w", err)
+			}
+		}
 		if err := repo.Create(ctx, p); err != nil {
 			return err
 		}
@@ -326,7 +339,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 			existing, err = scanIntent(row)
 		} else {
 			row := txRepo.db.QueryRow(ctx, `
-				SELECT pi.id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at, pi.idempotency_key
+				SELECT pi.id, pi.property_id, pi.due_id, pi.provider, pi.provider_order_id, pi.payment_session_id, pi.amount_paise, pi.status, pi.expires_at, pi.cf_payment_id, pi.created_at, pi.updated_at, pi.idempotency_key
 				FROM payment_intents pi
 				JOIN (
 					SELECT payment_intent_id, array_agg(due_id ORDER BY due_id) as intent_dues
@@ -459,6 +472,7 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		}
 		newIntent := &domain.PaymentIntent{
 			ID:              newID,
+			PropertyID:      scopedPropertyID,
 			Provider:        "cashfree",
 			ProviderOrderID: orderID,
 			AmountPaise:     totalAmountPaise,
@@ -492,9 +506,9 @@ func (r *PaymentIntentRepo) ClaimInitiatingIntent(
 		}
 
 		_, err = txRepo.db.Exec(ctx, `
-			INSERT INTO payment_intents (id, due_id, provider, provider_order_id, amount_paise, status, created_at, updated_at, idempotency_key)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			newID, parentDueID, "cashfree", orderID, totalAmountPaise, domain.IntentInitiating, now, now, idempotencyKey,
+			INSERT INTO payment_intents (id, property_id, due_id, provider, provider_order_id, amount_paise, status, created_at, updated_at, idempotency_key)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			newID, scopedPropertyID, parentDueID, "cashfree", orderID, totalAmountPaise, domain.IntentInitiating, now, now, idempotencyKey,
 		)
 		if err != nil {
 			var pgErr *pgconn.PgError
