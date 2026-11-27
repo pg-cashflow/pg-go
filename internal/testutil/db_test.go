@@ -21,21 +21,24 @@ func (m *mockTB) Skip(args ...any) {
 }
 
 func TestRequireDB_WhenUnsetAndRequireDB(t *testing.T) {
-	origURL := os.Getenv("DATABASE_URL")
+	origURL := os.Getenv("TEST_DATABASE_URL")
+	origAppURL := os.Getenv("DATABASE_URL")
 	origReq := os.Getenv("REQUIRE_DB")
 	defer func() {
-		os.Setenv("DATABASE_URL", origURL)
+		os.Setenv("TEST_DATABASE_URL", origURL)
+		os.Setenv("DATABASE_URL", origAppURL)
 		os.Setenv("REQUIRE_DB", origReq)
 	}()
 
-	os.Unsetenv("DATABASE_URL")
+	os.Unsetenv("TEST_DATABASE_URL")
+	os.Setenv("DATABASE_URL", "postgres://app:pass@prod:5432/appdb")
 	os.Setenv("REQUIRE_DB", "1")
 
 	mock := &mockTB{}
 	RequireDB(mock)
 
 	if !mock.failed {
-		t.Fatalf("expected test to fail when REQUIRE_DB=1 and DATABASE_URL is empty")
+		t.Fatalf("expected test to fail when REQUIRE_DB=1 and TEST_DATABASE_URL is empty (even if DATABASE_URL is set)")
 	}
 	if mock.skipped {
 		t.Fatalf("did not expect test to skip when REQUIRE_DB=1")
@@ -43,14 +46,14 @@ func TestRequireDB_WhenUnsetAndRequireDB(t *testing.T) {
 }
 
 func TestRequireDB_WhenUnsetAndNoRequireDB(t *testing.T) {
-	origURL := os.Getenv("DATABASE_URL")
+	origURL := os.Getenv("TEST_DATABASE_URL")
 	origReq := os.Getenv("REQUIRE_DB")
 	defer func() {
-		os.Setenv("DATABASE_URL", origURL)
+		os.Setenv("TEST_DATABASE_URL", origURL)
 		os.Setenv("REQUIRE_DB", origReq)
 	}()
 
-	os.Unsetenv("DATABASE_URL")
+	os.Unsetenv("TEST_DATABASE_URL")
 	os.Unsetenv("REQUIRE_DB")
 
 	mock := &mockTB{}
@@ -65,15 +68,15 @@ func TestRequireDB_WhenUnsetAndNoRequireDB(t *testing.T) {
 }
 
 func TestRequireDB_WhenSet(t *testing.T) {
-	origURL := os.Getenv("DATABASE_URL")
+	origURL := os.Getenv("TEST_DATABASE_URL")
 	origReq := os.Getenv("REQUIRE_DB")
 	defer func() {
-		os.Setenv("DATABASE_URL", origURL)
+		os.Setenv("TEST_DATABASE_URL", origURL)
 		os.Setenv("REQUIRE_DB", origReq)
 	}()
 
-	expected := "postgres://user:pass@localhost:5432/db"
-	os.Setenv("DATABASE_URL", expected)
+	expected := "postgres://user:pass@localhost:5432/pg_test"
+	os.Setenv("TEST_DATABASE_URL", expected)
 	os.Setenv("REQUIRE_DB", "1")
 
 	mock := &mockTB{}
@@ -83,7 +86,7 @@ func TestRequireDB_WhenSet(t *testing.T) {
 		t.Fatalf("got %q, want %q", url, expected)
 	}
 	if mock.failed || mock.skipped {
-		t.Fatalf("did not expect test to fail or skip when DATABASE_URL is set")
+		t.Fatalf("did not expect test to fail or skip when TEST_DATABASE_URL is set")
 	}
 }
 

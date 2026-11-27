@@ -7,17 +7,17 @@ import (
 )
 
 // RequireDB ensures that if REQUIRE_DB=1 is set, the test fails immediately
-// via t.Fatalf if DATABASE_URL is missing. If REQUIRE_DB is not set, it calls t.Skip.
-// Returns the valid database URL.
+// via t.Fatalf if TEST_DATABASE_URL is missing. If REQUIRE_DB is not set, it calls t.Skip.
+// Never falls back to DATABASE_URL so live tests cannot accidentally target a non-test DB.
 func RequireDB(t testing.TB) string {
 	t.Helper()
-	dbURL := os.Getenv("DATABASE_URL")
+	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
 		if os.Getenv("REQUIRE_DB") == "1" {
-			t.Fatalf("REQUIRE_DB=1 but DATABASE_URL is missing or empty")
+			t.Fatalf("REQUIRE_DB=1 but TEST_DATABASE_URL is missing or empty")
 			return ""
 		}
-		t.Skip("DATABASE_URL not set, skipping live database test")
+		t.Skip("TEST_DATABASE_URL not set, skipping live database test")
 		return ""
 	}
 	return dbURL
