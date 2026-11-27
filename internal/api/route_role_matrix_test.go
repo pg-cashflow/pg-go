@@ -93,7 +93,8 @@ func classifyRoute(path string) (routeClass, bool) {
 	// Protected exceptions that sit under otherwise-public prefixes.
 	// Shared, role-agnostic routes. A pending-join token carries role=tenant, and
 	// CONTRACT.md grants these to "any authenticated role", so it is included.
-	case path == "/api/auth/revoke-sessions", path == "/api/auth/sessions", path == "/api/auth/sessions/:id":
+	case path == "/api/auth/revoke-sessions", path == "/api/auth/sessions", path == "/api/auth/sessions/:id",
+		path == "/api/auth/identities", path == "/api/auth/identities/link", path == "/api/auth/identities/merge":
 		return routeClass{allowed: allow(callerOwner, callerManager, callerTenant, callerPendingJoin)}, true
 	case path == "/api/join/me", path == "/api/join",
 		path == "/api/join/waitlist", path == "/api/join/waitlist/accept":

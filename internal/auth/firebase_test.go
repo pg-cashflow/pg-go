@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/sms"
 )
@@ -213,24 +214,17 @@ func TestVerifyFirebaseConvergencePhoneAndGoogle(t *testing.T) {
 
 	// Step 1: Owner logs in via Phone OTP
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: phoneUID, phone: phone})
-	_, u1, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
 	if err != nil {
 		t.Fatalf("phone login: %v", err)
 	}
 
-	// Step 2: Owner logs in later via Google (same email)
+	// Step 2: Owner logs in later via Google (same email, different UID) -> must require explicit merge
+	// rather than silently overwriting the Phone UID and locking out Phone logins.
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: googleUID, email: email, emailVerified: true})
-	_, u2, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token2", "")
-	if err != nil {
-		t.Fatalf("google login: %v", err)
-	}
-
-	// Step 3: Verify both resolved to the EXACT SAME user record (anti-divergence)
-	if u1.ID != u2.ID {
-		t.Fatalf("divergence! User 1 id=%s != User 2 id=%s", u1.ID, u2.ID)
-	}
-	if u2.FirebaseUID == nil || *u2.FirebaseUID != googleUID {
-		t.Fatalf("expected updated firebase uid %s, got %+v", googleUID, u2.FirebaseUID)
+	_, _, err = svc.VerifyFirebaseAndIssueToken(context.Background(), "token2", "")
+	if !errors.Is(err, ErrIdentityMergeRequired) {
+		t.Fatalf("expected ErrIdentityMergeRequired on divergent Google UID, got: %v", err)
 	}
 }
 
@@ -273,15 +267,14 @@ func TestMultiPropertyOwnerConsistentBinding(t *testing.T) {
 		t.Fatalf("phone login: %v", err)
 	}
 
-	// Google login
+	// Google login with unlinked UID requires explicit merge, keeping phone user's PropertyID intact
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "uid-google", email: email, emailVerified: true})
-	_, uGoogle, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token2", "")
-	if err != nil {
-		t.Fatalf("google login: %v", err)
+	_, _, err = svc.VerifyFirebaseAndIssueToken(context.Background(), "token2", "")
+	if !errors.Is(err, ErrIdentityMergeRequired) {
+		t.Fatalf("expected ErrIdentityMergeRequired, got: %v", err)
 	}
-
-	if *uPhone.PropertyID != pid1 || *uGoogle.PropertyID != pid1 {
-		t.Fatalf("inconsistent property binding: phone=%v, google=%v, expected=%v", uPhone.PropertyID, uGoogle.PropertyID, pid1)
+	if *uPhone.PropertyID != pid1 {
+		t.Fatalf("inconsistent property binding: phone=%v, expected=%v", uPhone.PropertyID, pid1)
 	}
 }
 
@@ -297,8 +290,8 @@ func (c *conflictUsersStub) Create(ctx context.Context, u *domain.User) error {
 		_ = c.stubUsers.Create(ctx, u)
 		return nil
 	}
-	// Simulated concurrent insert: duplicate key error
-	return errors.New("duplicate key value violates unique constraint")
+	// Simulated concurrent insert: Postgres 23505 unique_violation on firebase_uid
+	return &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_firebase_uid"}
 }
 
 func TestVerifyFirebaseProvisioningInsertConflictEmail(t *testing.T) {
@@ -311,18 +304,16 @@ func TestVerifyFirebaseProvisioningInsertConflictEmail(t *testing.T) {
 	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, props, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "race-uid", email: email, emailVerified: true})
 
-	_, u1, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
+	// F1: Email-only conflict without FirebaseUID must NOT silently log in as existing email user
 	u2 := &domain.User{Email: email}
 	err = svc.safeCreateUser(context.Background(), u2)
-	if err != nil {
-		t.Fatalf("safeCreateUser failed on email conflict: %v", err)
-	}
-	if u2.ID != u1.ID {
-		t.Fatalf("expected resolved user id %s, got %s", u1.ID, u2.ID)
+	if err == nil {
+		t.Fatalf("expected error on email conflict without firebase_uid, got nil")
 	}
 }
 
@@ -336,18 +327,16 @@ func TestVerifyFirebaseProvisioningInsertConflictPhone(t *testing.T) {
 	svc := NewService(&stubOTP{}, users, stubTenantsNone{}, props, sms.NoopGateway{}, "otp-secret", "jwt-secret-long-enough")
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "race-phone-uid", phone: phone})
 
-	_, u1, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
+	_, _, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token1", "")
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
+	// F1: Phone-only conflict without FirebaseUID must NOT silently log in as existing phone user
 	u2 := &domain.User{Phone: phone}
 	err = svc.safeCreateUser(context.Background(), u2)
-	if err != nil {
-		t.Fatalf("safeCreateUser failed on phone conflict: %v", err)
-	}
-	if u2.ID != u1.ID {
-		t.Fatalf("expected resolved user id %s, got %s", u1.ID, u2.ID)
+	if err == nil {
+		t.Fatalf("expected error on phone conflict without firebase_uid, got nil")
 	}
 }
 
@@ -536,17 +525,11 @@ func TestVerifyFirebaseReLinkGuards(t *testing.T) {
 		t.Fatalf("expected ErrAccountReLinkDenied, got %v", err)
 	}
 
-	// 2. Real owner signs in with Google (matching verified email) -> succeeds and bumps token version
+	// 2. Different Google UID matching verified email -> requires explicit merge (no silent UID overwrite)
 	svc.SetFirebaseVerifier(stubFirebaseVerifier{uid: "uid-new-google", email: email, emailVerified: true})
-	token, u, err := svc.VerifyFirebaseAndIssueToken(context.Background(), "token-google", "")
-	if err != nil {
-		t.Fatalf("expected success with verified email, got %v", err)
-	}
-	if token == "" || u == nil {
-		t.Fatal("expected valid token and user")
-	}
-	if u.TokenVersion <= 1 {
-		t.Fatalf("expected token version to be bumped, got %d", u.TokenVersion)
+	_, _, err = svc.VerifyFirebaseAndIssueToken(context.Background(), "token-google", "")
+	if !errors.Is(err, ErrIdentityMergeRequired) {
+		t.Fatalf("expected ErrIdentityMergeRequired, got %v", err)
 	}
 }
 

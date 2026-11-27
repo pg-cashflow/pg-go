@@ -141,6 +141,8 @@ var AllCodes = []Code{
 	CodeAuthNoPropertyScope,
 	CodeAuthNoDeliveryChannel,
 	CodeAuthEndpointDisabled,
+	CodeAuthIdentityMergeRequired,
+	CodeAuthIdentityAlreadyLinked,
 
 	CodeJoinInvalidInvite,
 	CodeJoinNoPendingRequest,

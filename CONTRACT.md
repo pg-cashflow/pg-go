@@ -48,6 +48,8 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `auth.noPropertyScope`          | 403         | Auth        | Missing required property scope                                                  |
 | `auth.noDeliveryChannel`        | 422         | Auth        | No delivery channel available for payout approval                                |
 | `auth.endpointDisabled`         | 410         | Auth        | Legacy authentication endpoint is permanently retired                            |
+| `auth.identityMergeRequired`    | 409         | Auth        | Account already exists for email; explicit authenticated link/merge is required   |
+| `auth.identityAlreadyLinked`    | 409         | Auth        | Sign-in method is already linked to another account                               |
 | `join.invalidInvite`            | 404         | Join        | Invalid invite code                                                              |
 | `join.noPendingRequest`         | 404         | Join        | No pending join request found                                                    |
 | `join.notFound`                 | 404         | Join        | Join request not found                                                           |
@@ -987,6 +989,8 @@ Validation & error responses:
 | **Auth**        | `auth.noPropertyScope`          | 403         | Claims do not contain a valid property scope                                                  |
 | **Auth**        | `auth.noDeliveryChannel`        | 422         | No delivery channel available for payout approval                                             |
 | **Auth**        | `auth.endpointDisabled`         | 410         | Legacy authentication endpoint is permanently retired                                         |
+| **Auth**        | `auth.identityMergeRequired`    | 409         | Account already exists for email; explicit authenticated link/merge is required                |
+| **Auth**        | `auth.identityAlreadyLinked`    | 409         | Sign-in method is already linked to another account                                            |
 | **Join**        | `join.invalidInvite`            | 404         | Invite code not found for join request                                                        |
 | **Join**        | `join.noPendingRequest`         | 404         | No pending join request found for tenant                                                      |
 | **Join**        | `join.notFound`                 | 404         | Join request record not found                                                                 |

@@ -207,7 +207,7 @@ func TestAuthoritativeAuthWiredOnSensitiveRoutes_F2(t *testing.T) {
 	}
 
 	// 1. Warm the positive token-version cache with an ordinary read
-	req1 := httptest.NewRequest(http.MethodGet, "/api/owner/properties", nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	req1.Header.Set("Authorization", "Bearer "+tok)
 	r.ServeHTTP(httptest.NewRecorder(), req1)
 	if userRepo.calls != 1 {
@@ -215,7 +215,7 @@ func TestAuthoritativeAuthWiredOnSensitiveRoutes_F2(t *testing.T) {
 	}
 
 	// 2. Second ordinary read uses cache (0 new DB calls)
-	req2 := httptest.NewRequest(http.MethodGet, "/api/owner/properties", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/notifications", nil)
 	req2.Header.Set("Authorization", "Bearer "+tok)
 	r.ServeHTTP(httptest.NewRecorder(), req2)
 	if userRepo.calls != 1 {
