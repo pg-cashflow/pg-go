@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -35,10 +34,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/collector"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
 	"github.com/pg-cashflow/pg-go/internal/finance"
@@ -72,23 +69,10 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	if testing.Short() {
 		t.Skip("skipping live database test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed")
-	}
-
-	u, err := url.Parse(cfg.DatabaseURL)
-	if err != nil || strings.TrimPrefix(u.Path, "/") != "pg_test" {
-		t.Fatalf("SAFETY CHECK: live test harness requires disposable database 'pg_test', got %q", u.Path)
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("cannot connect to Postgres: %v", err))
 	}

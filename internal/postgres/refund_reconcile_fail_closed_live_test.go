@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 )
 
@@ -16,8 +15,6 @@ import (
 // rejects and completely rolls back any refund on an applied payment where the due allocations
 // do not cover the refund amount exactly (Invariant INV-017).
 func TestLivePostgresRefundReconcile_FailClosedOnShortfall(t *testing.T) {
-	_ = godotenv.Load(".env")
-	_ = godotenv.Load("../../.env")
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -143,8 +140,6 @@ func TestLivePostgresRefundReconcile_FailClosedOnShortfall(t *testing.T) {
 // TestLivePostgresRefundReconcile_ExactMatchCommitsSuccess verifies that ReconcileRefundTransition
 // successfully commits when the payment due allocations match the refund amount exactly.
 func TestLivePostgresRefundReconcile_ExactMatchCommitsSuccess(t *testing.T) {
-	_ = godotenv.Load(".env")
-	_ = godotenv.Load("../../.env")
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -249,8 +244,6 @@ func TestLivePostgresRefundReconcile_ExactMatchCommitsSuccess(t *testing.T) {
 // TestLivePostgresRefundReconcile_UnappliedPaymentSucceedsWithZeroDues verifies that
 // reconciling a refund on an unapplied payment succeeds without requiring due allocations.
 func TestLivePostgresRefundReconcile_UnappliedPaymentSucceedsWithZeroDues(t *testing.T) {
-	_ = godotenv.Load(".env")
-	_ = godotenv.Load("../../.env")
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -328,8 +321,6 @@ func TestLivePostgresRefundReconcile_UnappliedPaymentSucceedsWithZeroDues(t *tes
 // fails (injected via cancelled context during execution), ReconcileRefundTransition fails closed
 // and commits zero state mutations or ledger events.
 func TestLivePostgresRefundReconcile_QueryErrorFailsClosed(t *testing.T) {
-	_ = godotenv.Load(".env")
-	_ = godotenv.Load("../../.env")
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -426,8 +417,6 @@ func TestLivePostgresRefundReconcile_QueryErrorFailsClosed(t *testing.T) {
 // cannot be locked (e.g. held by another concurrent transaction), ReconcileRefundTransition
 // fails closed upon lock timeout and commits zero state mutations or ledger entries.
 func TestLivePostgresRefundReconcile_TargetDueLockTimeoutFailsClosed(t *testing.T) {
-	_ = godotenv.Load(".env")
-	_ = godotenv.Load("../../.env")
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()

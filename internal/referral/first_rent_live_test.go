@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
@@ -22,16 +20,10 @@ func setupLivePool(t *testing.T, timeout time.Duration) *pgxpool.Pool {
 		t.Skip("skipping live test in -short mode")
 		return nil
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed")
-		return nil
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipfIfDBRequired(t, "postgres connect: %v", err)
 		return nil

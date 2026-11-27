@@ -11,25 +11,18 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestLivePostgresGateA_AnchorBatches verifies C-08, C-09, C-10, C-05, and C-11 on live PostgreSQL.
 func TestLivePostgresGateA_AnchorBatches(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	pool, err := NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}

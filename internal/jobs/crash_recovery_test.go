@@ -11,8 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -28,13 +26,8 @@ func TestGate07_CrashRecovery_BillingCycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping crash recovery live DB test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -180,8 +173,7 @@ func TestGate07_CrashRecovery_OutboxWorkerInterrupted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping crash recovery live DB test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -23,8 +22,7 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 	if testing.Short() {
 		testutil.FailOnSkipIfDBRequired(t, "skipping physical backup/restore test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	findTool := func(name, winPath string) string {
 		if p, err := exec.LookPath(name); err == nil {
@@ -71,23 +69,26 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 
 	// Step 2: Prepare Isolated Restore Database
 	restoreDBName := "pg_go_restore_verify"
-	adminURL := os.Getenv("DATABASE_ADMIN_URL")
-	restoreDBURL := ""
-	if parsed, err := url.Parse(dbURL); err == nil {
-		if adminURL == "" {
-			adminParsed := *parsed
-			adminParsed.Path = "/postgres"
-			adminURL = adminParsed.String()
-		}
-		restoreParsed := *parsed
-		restoreParsed.Path = "/" + restoreDBName
-		restoreDBURL = restoreParsed.String()
-	} else {
-		if adminURL == "" {
-			adminURL = "postgres://postgres@localhost:5432/postgres?sslmode=disable"
-		}
-		restoreDBURL = "postgres://postgres@localhost:5432/" + restoreDBName + "?sslmode=disable"
+	if err := testutil.ValidateLiveTestDB(restoreDBName, 170000, os.Getenv("TEST_DATABASE_ALLOWLIST"), "pg_go_restore_verify"); err != nil {
+		t.Fatal(err)
 	}
+	adminURL := strings.TrimSpace(os.Getenv("TEST_DATABASE_ADMIN_URL"))
+	restoreDBURL := ""
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
+	}
+	if adminURL == "" {
+		adminParsed := *parsed
+		adminParsed.Path = "/postgres"
+		adminURL = adminParsed.String()
+	}
+	if err := testutil.ValidateLiveTestServerVersion(ctx, adminURL); err != nil {
+		t.Fatalf("admin connection failed live test safety check: %v", err)
+	}
+	restoreParsed := *parsed
+	restoreParsed.Path = "/" + restoreDBName
+	restoreDBURL = restoreParsed.String()
 
 	// Recreate restore DB
 	_ = exec.Command(psqlPath, adminURL, "-c", fmt.Sprintf("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';", restoreDBName)).Run()
@@ -117,6 +118,9 @@ func TestPhysicalBackupAndRestoreVerification(t *testing.T) {
 		t.Fatalf("connect to restored db: %v", err)
 	}
 	defer restorePool.Close()
+	if err := testutil.ValidateLiveTestPool(ctx, restorePool, "pg_go_restore_verify"); err != nil {
+		t.Fatalf("restored db failed live test safety check: %v", err)
+	}
 
 	// Query 1: Verify core tables exist
 	var tablesCount int

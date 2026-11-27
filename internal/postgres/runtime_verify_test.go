@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -17,8 +16,7 @@ func TestLivePostgreSQL_SessionTimeouts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Postgres test in -short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

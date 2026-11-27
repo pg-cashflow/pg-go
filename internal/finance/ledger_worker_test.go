@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
@@ -222,18 +220,12 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in -short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres (%v), skipping live test", err)
 	}
@@ -455,18 +447,12 @@ func TestLiveLedgerOutboxWorkerAndReconciliation(t *testing.T) {
 }
 
 func TestLedgerOutboxWorker_PayoutDispatcherUnconfiguredDoesNotDeadLetter(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipfIfDBRequired(t, "cannot connect to Postgres: %v", err)
 	}

@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -155,13 +153,8 @@ func TestGate12_JobBinariesIdempotentLiveRun(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow exec CLI test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	cronBinaries := []string{
 		"daily-rollup",
@@ -211,13 +204,8 @@ func TestGate12_CashfreePollDormantWhenUnconfigured(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow exec CLI test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	cmdPath := filepath.Join("..", "..", "cmd", "cashfree-poll")
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
@@ -255,13 +243,8 @@ func TestGate12_MigrateExecution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow exec CLI test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	cmdPath := filepath.Join("..", "..", "cmd", "migrate")
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -341,13 +324,8 @@ func TestGate12_ServerGracefulShutdown(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow exec CLI test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	serverBin := getOrBuildServer(t)
 	testPort := getFreePort(t)

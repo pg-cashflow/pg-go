@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
 // TestLiveRoleGrantsAndImmutability (Ticket R6, Track R, ADR-030)
@@ -24,7 +23,6 @@ import (
 //
 // 4. pgapp_worker can perform valid writes across all 9 job families.
 func TestLiveRoleGrantsAndImmutability(t *testing.T) {
-	testutil.RequireDB(t)
 	pool, _ := setupLiveTestPool(t, 45*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()

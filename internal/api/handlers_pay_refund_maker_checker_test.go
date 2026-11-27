@@ -16,10 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/apierr"
 	"github.com/pg-cashflow/pg-go/internal/auth"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
 	"github.com/pg-cashflow/pg-go/internal/requestscope"
@@ -1088,17 +1086,11 @@ func TestLivePostgres_RefundIdempotencyRace(t *testing.T) {
 	if testing.Short() {
 		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres refund race test in -short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	pool, err := postgres.NewPool(ctx, cfg.DatabaseURL)
+	pool, err := postgres.NewPool(ctx, dbURL)
 	if err != nil {
 		testutil.FailOnSkipfIfDBRequired(t, "postgres connect failed: %v", err)
 	}

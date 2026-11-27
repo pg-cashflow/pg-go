@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
 )
 
@@ -204,8 +203,7 @@ func TestNewClusterFromEnv_MissingURL(t *testing.T) {
 }
 
 func TestNewClusterFromEnv_LiveDB(t *testing.T) {
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -24,7 +24,7 @@ func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping physical crash test in -short mode")
 	}
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -223,7 +223,7 @@ func TestPhysicalCrashSafety_LivePostgresExecution(t *testing.T) {
 // 4. Worker retry creates zero duplicate lines in PostgreSQL.
 // 5. Net double-entry balance is strictly 0 paise.
 func TestPhysicalCrashSafety_DepartureSettlement_LivePostgres(t *testing.T) {
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

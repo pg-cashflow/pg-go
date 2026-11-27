@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/events"
@@ -27,15 +26,8 @@ import (
 
 // setupWebhookTestDB bootstraps a live PostgreSQL connection and returns a cleanup func.
 func setupWebhookTestDB(t *testing.T, propID uuid.UUID) (*pgxpool.Pool, *config.Config, func()) {
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, fmt.Sprintf("config load failed: %v", err))
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

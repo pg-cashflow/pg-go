@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -24,8 +23,7 @@ func TestLivePostgres_PolicyExceededErrorIdentity(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live test in -short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

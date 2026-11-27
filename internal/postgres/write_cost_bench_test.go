@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/csv"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
@@ -27,20 +25,11 @@ func TestWriteBenchmark_FairAB(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "skipping write benchmark in short mode")
 	}
 
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	requireDisposableDB(t, dbURL)
 
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config load failed: %v", err)
-	}
-
 	ctx := context.Background()
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	pool, err := NewPool(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -226,20 +215,11 @@ func TestWriteBenchmark_RealBankCSVImport(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "skipping bank CSV import benchmark in short mode")
 	}
 
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	requireDisposableDB(t, dbURL)
 
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config load failed: %v", err)
-	}
-
 	ctx := context.Background()
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	pool, err := NewPool(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}

@@ -16,8 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/joho/godotenv"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/search"
 	"github.com/pg-cashflow/pg-go/internal/testutil"
@@ -69,21 +67,13 @@ func TestPerformanceStressReport(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "Skipping realistic performance gate test in short mode")
 	}
 
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	requireDisposableDB(t, dbURL)
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config load failed: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	pool, err := NewPool(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("database connect failed: %v", err)
 	}
@@ -558,21 +548,13 @@ func TestPerformanceGateStrictTarget(t *testing.T) {
 		testutil.FailOnSkipIfDBRequired(t, "Skipping strict production performance gate test in short mode")
 	}
 
-	_ = godotenv.Load("../../.env")
-	_ = godotenv.Load("../.env")
-	_ = godotenv.Load(".env")
-	dbURL := testutil.RequireDB(t)
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
 	requireDisposableDB(t, dbURL)
-
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config load failed: %v", err)
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	pool, err := NewPool(ctx, cfg.DatabaseURL)
+	pool, err := NewPool(ctx, dbURL)
 	if err != nil {
 		t.Fatalf("database connect failed: %v", err)
 	}

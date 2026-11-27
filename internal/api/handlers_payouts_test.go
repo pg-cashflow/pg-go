@@ -15,10 +15,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/joho/godotenv"
 	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
-	"github.com/pg-cashflow/pg-go/internal/config"
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/finance"
@@ -68,13 +66,8 @@ func TestLivePayoutsAndDeparturesHTTPFlow(t *testing.T) {
 	if testing.Short() {
 		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
@@ -1143,13 +1136,8 @@ func TestPayoutAutoDispatchOnApproval(t *testing.T) {
 	if testing.Short() {
 		testutil.FailOnSkipIfDBRequired(t, "skipping live postgres test in short mode")
 	}
-	_ = godotenv.Load("../../.env")
-	testutil.RequireDB(t)
-
-	cfg, err := config.Load()
-	if err != nil {
-		testutil.FailOnSkipIfDBRequired(t, "config load failed, skipping live Postgres test")
-	}
+	dbURL := testutil.RequireValidatedDB(t, 15*time.Second)
+	cfg := testutil.LoadTestConfig(t, dbURL, 15*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
