@@ -24,9 +24,10 @@ import (
 // single-slot uniqueness rule.
 type fakeTx struct {
 	// Rows keyed by (projectID+":"+firebaseUID).
-	rows      map[string]fakeIdentityRow
-	snapshot  map[string]fakeIdentityRow
-	userTable map[uuid.UUID]bool // user IDs that exist
+	rows         map[string]fakeIdentityRow
+	snapshot     map[string]fakeIdentityRow
+	userTable    map[uuid.UUID]string // userID -> legacy firebase_uid
+	userSnapshot map[uuid.UUID]string
 
 	// Counts for assertions.
 	commitCount   int
@@ -41,12 +42,16 @@ type fakeIdentityRow struct {
 func newFakeTx(users ...uuid.UUID) *fakeTx {
 	f := &fakeTx{
 		rows:      make(map[string]fakeIdentityRow),
-		userTable: make(map[uuid.UUID]bool),
+		userTable: make(map[uuid.UUID]string),
 	}
 	for _, u := range users {
-		f.userTable[u] = true
+		f.userTable[u] = ""
 	}
 	return f
+}
+
+func (f *fakeTx) setUserFirebaseUID(userID uuid.UUID, firebaseUID string) {
+	f.userTable[userID] = firebaseUID
 }
 
 func (f *fakeTx) addIdentityRow(projectID, firebaseUID string, userID uuid.UUID, status string) {
@@ -110,11 +115,16 @@ func (f *fakeTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comman
 		return pgconn.NewCommandTag("INSERT 0 1"), nil
 	}
 
-	// UPDATE users SET firebase_uid ... WHERE id=$1
+	// UPDATE users SET firebase_uid = COALESCE(NULLIF(firebase_uid, ''), $2) WHERE id = $1
 	if len(args) == 2 {
 		userID, ok := args[0].(uuid.UUID)
 		if ok {
-			if f.userTable[userID] {
+			existingUID, exists := f.userTable[userID]
+			if exists {
+				newUID, _ := args[1].(string)
+				if existingUID == "" {
+					f.userTable[userID] = newUID
+				}
 				return pgconn.NewCommandTag("UPDATE 1"), nil
 			}
 			return pgconn.NewCommandTag("UPDATE 0"), nil
@@ -132,6 +142,10 @@ func (f *fakeTx) takeSnapshot() {
 	for k, v := range f.rows {
 		f.snapshot[k] = v
 	}
+	f.userSnapshot = make(map[uuid.UUID]string, len(f.userTable))
+	for k, v := range f.userTable {
+		f.userSnapshot[k] = v
+	}
 }
 
 func (f *fakeTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) { return nil, nil }
@@ -145,6 +159,12 @@ func (f *fakeTx) Rollback(_ context.Context) error {
 		f.rows = make(map[string]fakeIdentityRow, len(f.snapshot))
 		for k, v := range f.snapshot {
 			f.rows[k] = v
+		}
+	}
+	if f.userSnapshot != nil {
+		f.userTable = make(map[uuid.UUID]string, len(f.userSnapshot))
+		for k, v := range f.userSnapshot {
+			f.userTable[k] = v
 		}
 	}
 	return nil
@@ -208,6 +228,27 @@ func TestLinkUserIdentity_NewUser_CommitsTransaction(t *testing.T) {
 	if row, ok := tx.rows[key]; !ok || row.userID != userID {
 		t.Errorf("expected identity row for user %s, got %+v", userID, tx.rows[key])
 	}
+	if tx.userTable[userID] != "uid-abc" {
+		t.Errorf("expected legacy users.firebase_uid to be %q, got %q", "uid-abc", tx.userTable[userID])
+	}
+}
+
+func TestLinkUserIdentity_ExistingLegacyUID_PreservedOnCommit(t *testing.T) {
+	userID := uuid.New()
+	tx := newFakeTx(userID)
+	tx.setUserFirebaseUID(userID, "legacy-uid-1")
+	pool := &fakePool{tx: tx}
+
+	repo := &UserRepo{db: pool}
+	if err := repo.LinkUserIdentity(context.Background(), userID, "proj1", "uid-new", "firebase", "signup"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tx.userTable[userID] != "legacy-uid-1" {
+		t.Errorf("expected existing legacy firebase_uid %q to be preserved, got %q", "legacy-uid-1", tx.userTable[userID])
+	}
+	if row, ok := tx.rows["proj1:uid-new"]; !ok || row.userID != userID {
+		t.Errorf("expected new identity row for user %s, got %+v", userID, tx.rows["proj1:uid-new"])
+	}
 }
 
 func TestLinkUserIdentity_AlreadyLinkedToAnotherUser_ReturnsError(t *testing.T) {
@@ -265,6 +306,12 @@ func TestLinkUserIdentity_ConcurrentConflictOnInsert_ReturnsError(t *testing.T) 
 	if err == nil {
 		t.Fatal("expected error on concurrent INSERT conflict, got nil")
 	}
+	if tx.rollbackCount == 0 {
+		t.Errorf("expected rollback on concurrent INSERT conflict, got 0")
+	}
+	if tx.userTable[userID] != "" {
+		t.Errorf("expected legacy users.firebase_uid to be rolled back to empty, got %q", tx.userTable[userID])
+	}
 }
 
 // conflictOnInsertTx wraps fakeTx but reports 0 rows on INSERT to simulate
@@ -307,6 +354,9 @@ func TestLinkUserIdentity_AuditInsertFails_RollsBack(t *testing.T) {
 	}
 	if _, exists := tx.rows["proj3:uid-audit-fail"]; exists {
 		t.Errorf("expected identity row to be rolled back when audit insert fails")
+	}
+	if tx.userTable[userID] != "" {
+		t.Errorf("expected legacy users.firebase_uid to be rolled back to empty, got %q", tx.userTable[userID])
 	}
 }
 

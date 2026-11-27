@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -31,15 +32,21 @@ type outboxRow struct {
 }
 
 type fakeOutboxDB struct {
-	rows map[int64]*outboxRow
+	rows        map[int64]*outboxRow
+	lastClaimSQL string
 }
 
 func newFakeOutboxDB() *fakeOutboxDB {
 	return &fakeOutboxDB{rows: make(map[int64]*outboxRow)}
 }
 
+func normalizeSQL(sql string) string {
+	return strings.ToLower(strings.Join(strings.Fields(sql), " "))
+}
+
 func (f *fakeOutboxDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	if strings.Contains(sql, "SET lease_token = NULL") && strings.Contains(sql, "next_retry_at = $2") {
+	norm := normalizeSQL(sql)
+	if strings.Contains(norm, "set lease_token = null") && strings.Contains(norm, "next_retry_at = $2") {
 		id := args[0].(int64)
 		nextRetryAt := args[1].(time.Time)
 		r, ok := f.rows[id]
@@ -47,6 +54,9 @@ func (f *fakeOutboxDB) Exec(_ context.Context, sql string, args ...any) (pgconn.
 			return pgconn.NewCommandTag("UPDATE 0"), nil
 		}
 		if len(args) == 3 {
+			if !strings.Contains(norm, "lease_token = $3") {
+				return pgconn.CommandTag{}, fmt.Errorf("SQL contract violation in RescheduleLease: missing lease_token = $3 guard")
+			}
 			tok := args[2].(uuid.UUID)
 			if r.leaseToken == nil || *r.leaseToken != tok {
 				return pgconn.NewCommandTag("UPDATE 0"), nil
@@ -65,7 +75,20 @@ func (f *fakeOutboxDB) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, e
 }
 
 func (f *fakeOutboxDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
-	if strings.Contains(sql, "UPDATE ledger_outbox_events") && strings.Contains(sql, "SET lease_token = $2") {
+	norm := normalizeSQL(sql)
+	if strings.Contains(norm, "update ledger_outbox_events") && strings.Contains(norm, "set lease_token = $2") {
+		f.lastClaimSQL = norm
+		requiredPredicates := []string{
+			"processed_at is null",
+			"failed_at is null",
+			"(lease_expires_at is null or lease_expires_at <= $4)",
+			"(next_retry_at is null or next_retry_at <= $4)",
+		}
+		for _, pred := range requiredPredicates {
+			if !strings.Contains(norm, pred) {
+				return &fakeOutboxRow{err: fmt.Errorf("SQL contract violation in ClaimEvent: missing %q", pred)}
+			}
+		}
 		id := args[0].(int64)
 		leaseToken := args[1].(uuid.UUID)
 		leaseExpiry := args[2].(time.Time)
