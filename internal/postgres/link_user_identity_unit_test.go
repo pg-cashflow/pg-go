@@ -25,6 +25,7 @@ import (
 type fakeTx struct {
 	// Rows keyed by (projectID+":"+firebaseUID).
 	rows      map[string]fakeIdentityRow
+	snapshot  map[string]fakeIdentityRow
 	userTable map[uuid.UUID]bool // user IDs that exist
 
 	// Counts for assertions.
@@ -56,7 +57,16 @@ func (f *fakeTx) addIdentityRow(projectID, firebaseUID string, userID uuid.UUID,
 
 type fakePool struct{ tx pgx.Tx }
 
-func (p *fakePool) Begin(_ context.Context) (pgx.Tx, error) { return p.tx, nil }
+func (p *fakePool) Begin(_ context.Context) (pgx.Tx, error) {
+	if ft, ok := p.tx.(*fakeTx); ok {
+		ft.takeSnapshot()
+	} else if af, ok := p.tx.(*auditFailTx); ok {
+		af.fakeTx.takeSnapshot()
+	} else if ci, ok := p.tx.(*conflictOnInsertTx); ok {
+		ci.fakeTx.takeSnapshot()
+	}
+	return p.tx, nil
+}
 
 // QueryRow implements DBTX.QueryRow on the pool level (not used directly).
 func (p *fakePool) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row { return nil }
@@ -117,9 +127,25 @@ func (f *fakeTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comman
 	return pgconn.NewCommandTag("OK 1"), nil
 }
 
+func (f *fakeTx) takeSnapshot() {
+	f.snapshot = make(map[string]fakeIdentityRow, len(f.rows))
+	for k, v := range f.rows {
+		f.snapshot[k] = v
+	}
+}
+
 func (f *fakeTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) { return nil, nil }
 func (f *fakeTx) Commit(_ context.Context) error                                { f.commitCount++; return nil }
-func (f *fakeTx) Rollback(_ context.Context) error                              { f.rollbackCount++; return nil }
+func (f *fakeTx) Rollback(_ context.Context) error {
+	f.rollbackCount++
+	if f.snapshot != nil {
+		f.rows = make(map[string]fakeIdentityRow, len(f.snapshot))
+		for k, v := range f.snapshot {
+			f.rows[k] = v
+		}
+	}
+	return nil
+}
 
 // pgx.Tx interface stubs (unused paths):
 func (f *fakeTx) Begin(_ context.Context) (pgx.Tx, error) { return f, nil }
@@ -275,6 +301,9 @@ func TestLinkUserIdentity_AuditInsertFails_RollsBack(t *testing.T) {
 	}
 	if tx.rollbackCount == 0 {
 		t.Errorf("expected rollback when audit insert fails, got 0")
+	}
+	if _, exists := tx.rows["proj3:uid-audit-fail"]; exists {
+		t.Errorf("expected identity row to be rolled back when audit insert fails")
 	}
 }
 

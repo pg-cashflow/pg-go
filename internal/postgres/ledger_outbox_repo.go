@@ -162,6 +162,7 @@ func (r *LedgerOutboxRepo) ClaimEvent(ctx context.Context, id int64, leaseDurati
 		  AND processed_at IS NULL
 		  AND failed_at IS NULL
 		  AND (lease_expires_at IS NULL OR lease_expires_at <= $4)
+		  AND (next_retry_at IS NULL OR next_retry_at <= $4)
 		RETURNING id, event_type, property_id, source_id, payload, idempotency_key,
 		          attempt_count, max_attempts, last_error, next_retry_at, created_at, processed_at, failed_at`,
 		id, leaseToken, leaseExpiry, now,
@@ -291,8 +292,14 @@ func (r *LedgerOutboxRepo) RescheduleLease(ctx context.Context, id int64, leaseT
 		query += ` AND lease_token = $3`
 		args = append(args, leaseToken)
 	}
-	_, err := r.db.Exec(ctx, query, args...)
-	return err
+	res, err := r.db.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if leaseToken != uuid.Nil && res.RowsAffected() == 0 {
+		return fmt.Errorf("outbox event %d lease expired or superseded", id)
+	}
+	return nil
 }
 
 // LockAndFetchEventTx locks the event row with FOR UPDATE SKIP LOCKED inside the worker's transaction.
