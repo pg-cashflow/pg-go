@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/pg-cashflow/pg-go/internal/domain"
@@ -22,23 +21,9 @@ func (h *Handlers) tenantPayability(ctx context.Context, t *domain.Tenant) (bool
 	age := t.AgeStatus(time.Now().UTC())
 	switch age {
 	case domain.AgeStateMinor:
-		// Minor requires verified guardian consent (DigiLocker or OTP verified)
+		// Minor requires explicit reviewer-approved guardian consent (guardian_consent_verified_at != nil).
+		// Submission method/reference is audit metadata; approval timestamp is the single source of truth.
 		if t.GuardianConsentVerifiedAt == nil {
-			return false, "GUARDIAN_CONSENT_REQUIRED"
-		}
-		isVerified := false
-		if t.GuardianConsentMethod != nil {
-			m := *t.GuardianConsentMethod
-			if m == "digilocker_verified" || m == "otp_verified" {
-				isVerified = true
-			}
-		} else if t.GuardianKYCReferenceID != nil {
-			ref := *t.GuardianKYCReferenceID
-			if strings.HasPrefix(ref, "guard_dgl_") || strings.HasPrefix(ref, "cf_dgl_") || strings.HasPrefix(ref, "guard_otp_") {
-				isVerified = true
-			}
-		}
-		if !isVerified {
 			return false, "GUARDIAN_CONSENT_REQUIRED"
 		}
 	case domain.AgeStateUnknown:

@@ -1726,7 +1726,8 @@ func (r *KYCRepo) ApproveManualReviewTx(
 				DOB string `json:"dob"`
 			}
 			if err := json.Unmarshal([]byte(*existing.OCRData), &ocrPayload); err == nil && ocrPayload.DOB != "" {
-				if canonicalDOB, _, err := domain.NormalizeDOB(ocrPayload.DOB); err == nil {
+				// F-03: Never calculate majority_date from year-only or incomplete DOBs (isDedupable=false).
+				if canonicalDOB, isDedupable, err := domain.NormalizeDOB(ocrPayload.DOB); err == nil && isDedupable {
 					if md, err := domain.MajorityDateFromDOB(canonicalDOB); err == nil {
 						majorityDate = md
 					}

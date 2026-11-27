@@ -289,12 +289,13 @@ func (s *Service) MultiDuePayIntent(ctx context.Context, dues []*domain.Due, pro
 	}
 
 	if prop.PaymentMode == domain.PaymentModeCashfree && s.cashfree != nil && customerPhone != "" {
-		session, err := s.ensureCashfreeMultiDue(ctx, dues, totalAmountPaise, customerPhone)
+		res, err := s.ensureCashfreeMultiDue(ctx, dues, totalAmountPaise, customerPhone)
 		if err != nil {
 			return nil, err
 		}
 		out.Mode = domain.PaymentModeCashfree
-		out.PaymentSessionID = session
+		out.OrderID = res.orderID
+		out.PaymentSessionID = res.sessionID
 		out.VPA = ""
 		out.UPILink = ""
 		out.QRPNGURL = ""
@@ -307,7 +308,12 @@ func (s *Service) MultiDuePayIntent(ctx context.Context, dues []*domain.Due, pro
 	return out, nil
 }
 
-func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (string, error) {
+type cashfreeMultiDueResult struct {
+	orderID   string
+	sessionID string
+}
+
+func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (cashfreeMultiDueResult, error) {
 	var sb strings.Builder
 	sb.WriteString("multi:")
 	for _, d := range dues {
@@ -320,17 +326,17 @@ func (s *Service) ensureCashfreeMultiDue(ctx context.Context, dues []*domain.Due
 		return s.doEnsureCashfreeMultiDue(ctx, dues, totalAmountPaise, customerPhone)
 	})
 	if err != nil {
-		return "", err
+		return cashfreeMultiDueResult{}, err
 	}
-	return res.(string), nil
+	return res.(cashfreeMultiDueResult), nil
 }
 
-func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (string, error) {
+func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.Due, totalAmountPaise int64, customerPhone string) (cashfreeMultiDueResult, error) {
 	if totalAmountPaise < cashfree.MinOrderAmountPaise {
-		return "", ErrAmountBelowMinimum
+		return cashfreeMultiDueResult{}, ErrAmountBelowMinimum
 	}
 	if _, pErr := cashfree.NormalizeCustomerPhone(customerPhone); pErr != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidCustomerPhone, pErr)
+		return cashfreeMultiDueResult{}, fmt.Errorf("%w: %v", ErrInvalidCustomerPhone, pErr)
 	}
 	minRemaining := 10 * time.Minute
 	dueIDs := make([]uuid.UUID, len(dues))
@@ -346,10 +352,10 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 		note := fmt.Sprintf("PG-%s-BATCH-%d", dues[0].DueCode, len(dues))
 		claimed, isReused, isInFlight, err := mgr.ClaimInitiatingIntent(ctx, tenantID, dueIDs, amounts, totalAmountPaise, orderID, minRemaining)
 		if err != nil {
-			return "", err
+			return cashfreeMultiDueResult{}, err
 		}
 		if isReused && claimed != nil && claimed.PaymentSessionID != nil {
-			return *claimed.PaymentSessionID, nil
+			return cashfreeMultiDueResult{orderID: claimed.ProviderOrderID, sessionID: *claimed.PaymentSessionID}, nil
 		}
 		if isInFlight && claimed != nil {
 			for i := 0; i < 15; i++ {
@@ -357,7 +363,7 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 				polled, pErr := mgr.GetByID(ctx, claimed.ID)
 				if pErr == nil && polled != nil {
 					if polled.Status == domain.IntentCreated && polled.PaymentSessionID != nil {
-						return *polled.PaymentSessionID, nil
+						return cashfreeMultiDueResult{orderID: polled.ProviderOrderID, sessionID: *polled.PaymentSessionID}, nil
 					}
 					if polled.Status == domain.IntentFailed || polled.Status == domain.IntentSuperseded {
 						break
@@ -366,23 +372,23 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 			}
 			existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
 			if gErr != nil || existingOrder == nil {
-				return "", ErrCashfreeOrderPending
+				return cashfreeMultiDueResult{}, ErrCashfreeOrderPending
 			}
 			switch existingOrder.OrderStatus {
 			case "ACTIVE":
 				if existingOrder.PaymentSessionID != "" {
 					if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
-						return existingOrder.PaymentSessionID, nil
+						return cashfreeMultiDueResult{orderID: claimed.ProviderOrderID, sessionID: existingOrder.PaymentSessionID}, nil
 					}
 				}
-				return "", ErrCashfreeOrderPending
+				return cashfreeMultiDueResult{}, ErrCashfreeOrderPending
 			case "EXPIRED", "TERMINATED":
 				_ = mgr.TransitionFailed(ctx, claimed.ID)
-				return "", ErrCashfreeOrderExpired
+				return cashfreeMultiDueResult{}, ErrCashfreeOrderExpired
 			case "PAID":
-				return "", ErrCashfreeOrderPending
+				return cashfreeMultiDueResult{}, ErrCashfreeOrderPending
 			default:
-				return "", ErrCashfreeOrderPending
+				return cashfreeMultiDueResult{}, ErrCashfreeOrderPending
 			}
 		}
 
@@ -399,16 +405,16 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 					existingOrder, gErr := s.cashfree.GetOrder(ctx, claimed.ProviderOrderID)
 					if gErr == nil && existingOrder != nil && existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
 						if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
-							return existingOrder.PaymentSessionID, nil
+							return cashfreeMultiDueResult{orderID: claimed.ProviderOrderID, sessionID: existingOrder.PaymentSessionID}, nil
 						}
 					}
 					_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
-					return "", err
+					return cashfreeMultiDueResult{}, err
 				}
 				// 2. Authoritative client request validation rejections on Create Order
 				if apiErr.StatusCode == 400 || apiErr.StatusCode == 422 {
 					_ = mgr.TransitionFailed(ctx, claimed.ID)
-					return "", err
+					return cashfreeMultiDueResult{}, err
 				}
 			}
 
@@ -416,27 +422,27 @@ func (s *Service) doEnsureCashfreeMultiDue(ctx context.Context, dues []*domain.D
 			if gErr == nil && existingOrder != nil {
 				if existingOrder.OrderStatus == "ACTIVE" && existingOrder.PaymentSessionID != "" {
 					if trErr := mgr.TransitionCreated(ctx, claimed.ID, existingOrder.PaymentSessionID, existingOrder.ExpiresAt); trErr == nil {
-						return existingOrder.PaymentSessionID, nil
+						return cashfreeMultiDueResult{orderID: claimed.ProviderOrderID, sessionID: existingOrder.PaymentSessionID}, nil
 					}
 				}
 				if existingOrder.OrderStatus == "EXPIRED" || existingOrder.OrderStatus == "TERMINATED" {
 					_ = mgr.TransitionFailed(ctx, claimed.ID)
-					return "", err
+					return cashfreeMultiDueResult{}, err
 				}
 			}
 			// Ambiguous outcome: do NOT mark failed on 404. Preserve dispatch_unknown for recovery.
 			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
-			return "", err
+			return cashfreeMultiDueResult{}, err
 		}
 		if err := mgr.TransitionCreated(ctx, claimed.ID, session, exp); err != nil {
 			_ = mgr.TransitionDispatchUnknown(ctx, claimed.ID)
-			return "", err
+			return cashfreeMultiDueResult{}, err
 		}
-		return session, nil
+		return cashfreeMultiDueResult{orderID: claimed.ProviderOrderID, sessionID: session}, nil
 	}
 
 	// The same atomic claim contract is mandatory for multi-due checkout.
-	return "", ErrAtomicPaymentIntentManagerRequired
+	return cashfreeMultiDueResult{}, ErrAtomicPaymentIntentManagerRequired
 }
 
 func PNGURL(role string, dueID uuid.UUID) string {

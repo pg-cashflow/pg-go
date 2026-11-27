@@ -111,7 +111,7 @@ func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time
 	if j.InboxPurger != nil {
 		purgedInbox, err = j.InboxPurger.PurgeProcessedInbox(ctx, KYCInboxRetention)
 		if err != nil {
-			slog.Warn("kyc job: purge processed kyc_webhook_inbox failed", "err", err)
+			return fmt.Errorf("kyc job: purge processed kyc_webhook_inbox: %w", err)
 		}
 	}
 

@@ -257,19 +257,35 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 }
 
 // PurgeProcessedInbox deletes processed kyc_webhook_inbox rows older than olderThan
-// to enforce bounded retention of operational webhook metadata.
+// in bounded batches (SKIP LOCKED) to avoid long locks or unbounded WAL spikes.
+// Unresolved, processing, failed, and dead-letter rows are never touched.
 func (r *KYCInboxRepo) PurgeProcessedInbox(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
 		olderThan = 30 * 24 * time.Hour
 	}
 	cutoff := time.Now().UTC().Add(-olderThan)
-	tag, err := r.pool.Exec(ctx, `
-		DELETE FROM kyc_webhook_inbox
-		WHERE processing_status = 'processed'
-		  AND processed_at IS NOT NULL
-		  AND processed_at < $1`, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("kyc inbox: purge processed: %w", err)
+	const batchSize = 2000
+	var totalDeleted int64
+	for {
+		tag, err := r.pool.Exec(ctx, `
+			DELETE FROM kyc_webhook_inbox
+			WHERE id IN (
+				SELECT id FROM kyc_webhook_inbox
+				WHERE processing_status = 'processed'
+				  AND processed_at IS NOT NULL
+				  AND processed_at < $1
+				ORDER BY processed_at ASC
+				LIMIT $2
+				FOR UPDATE SKIP LOCKED
+			)`, cutoff, batchSize)
+		if err != nil {
+			return totalDeleted, fmt.Errorf("kyc inbox: purge processed: %w", err)
+		}
+		n := tag.RowsAffected()
+		totalDeleted += n
+		if n < batchSize {
+			break
+		}
 	}
-	return tag.RowsAffected(), nil
+	return totalDeleted, nil
 }

@@ -143,6 +143,7 @@ type PayIntent struct {
 	// (e.g. PAID, WAIVED, KYC_REQUIRED, GUARDIAN_CONSENT_REQUIRED,
 	// AGE_VERIFICATION_REQUIRED, NO_OPEN_DUES, TEMPORARILY_UNAVAILABLE).
 	AvailabilityStatus string      `json:"availability_status,omitempty"`
+	OrderID            string      `json:"order_id,omitempty"`
 	PaymentSessionID   string      `json:"payment_session_id,omitempty"`
 	DueCount           int         `json:"due_count,omitempty"`
 	DueIDs             []uuid.UUID `json:"due_ids,omitempty"`

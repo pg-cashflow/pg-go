@@ -286,9 +286,12 @@ func (s *Service) VerifySecureQR(ctx context.Context, tenantID uuid.UUID, rawQR,
 	if dobStr == "" {
 		dobStr = data.YOB // year-only fallback
 	}
-	canonicalDOB, _, _ := domain.NormalizeDOB(dobStr)
+	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(dobStr)
 	name := domain.NormalizeName(data.Name)
-	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
+	var identityHash string
+	if isDedupable {
+		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, data.Gender, data.UIDLast4)
+	}
 
 	// 6. Pre-check active verification status under tenant scope
 	active, err := s.repo.GetActiveVerificationByTenant(ctx, tenantID)
@@ -495,9 +498,11 @@ func (s *Service) VerifyDocument(
 		if resp.IsTampered {
 			nameMismatch = true
 		}
-		canonicalDOB, _, _ := domain.NormalizeDOB(resp.DOB)
+		canonicalDOB, isDedupable, _ := domain.NormalizeDOB(resp.DOB)
 		name := domain.NormalizeName(resp.Name)
-		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
+		if isDedupable {
+			identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
+		}
 		maskedUID = resp.MaskedUID
 		// Clear temporary OCR identity strings (name, dob, gender) immediately after comparison
 		// and hash derivation so raw PII is not persisted in v.OCRData.
@@ -506,6 +511,7 @@ func (s *Service) VerifyDocument(
 		resp.Gender = ""
 		ocrBytes, _ = json.Marshal(map[string]any{
 			"document_type":        normDocType,
+			"dob_exact":            isDedupable,
 			"masked_uid":           resp.MaskedUID,
 			"qr_status":            resp.QRStatus,
 			"name_mismatch":        nameMismatch,
@@ -1279,11 +1285,12 @@ func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDS
 
 		canonicalDOB, isDedupable, _ := domain.NormalizeDOB(doc.DOB)
 		var majorityDate *time.Time
+		var identityHash string
 		if isDedupable {
 			majorityDate, _ = domain.MajorityDateFromDOB(canonicalDOB)
+			normName := domain.NormalizeName(doc.Name)
+			identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, normName, canonicalDOB, doc.Gender, doc.MaskedUID)
 		}
-		normName := domain.NormalizeName(doc.Name)
-		identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, normName, canonicalDOB, doc.Gender, doc.MaskedUID)
 
 		// ADR-005 INVARIANT: All verification methods (including DigiLocker) require
 		// explicit manual owner review. Route every successful DigiLocker retrieval to

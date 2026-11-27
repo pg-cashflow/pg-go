@@ -127,6 +127,10 @@ func (c *Config) ValidateForRealDeployment() error {
 	if (kycAppID != "" && kycSecret == "") || (kycAppID == "" && kycSecret != "") {
 		errs = append(errs, "both CASHFREE_KYC_APP_ID and CASHFREE_KYC_SECRET_KEY must be provided")
 	}
+	isProdKYC := c.AppEnv == "production" || strings.EqualFold(strings.TrimSpace(c.CashfreeEnv), "production")
+	if kycAppID != "" && isProdKYC && !strings.EqualFold(strings.TrimSpace(c.CashfreeKYCAuthMode), "signature") {
+		errs = append(errs, "CASHFREE_KYC_AUTH_MODE must be 'signature' in production when Cashfree KYC is enabled (IP allow-list mode is disallowed)")
+	}
 	if strings.EqualFold(c.CashfreeKYCAuthMode, "signature") {
 		if strings.TrimSpace(c.CashfreeKYCPublicKeyPEM) == "" {
 			errs = append(errs, "CASHFREE_KYC_PUBLIC_KEY is required when CASHFREE_KYC_AUTH_MODE is 'signature'")
@@ -161,6 +165,10 @@ func (c *Config) ValidateForRealDeployment() error {
 			errs = append(errs, "CF_PAYOUT_FUNDSOURCE_ID is required whenever CF_PAYOUT_CLIENT_ID is set (Cashfree Transfers V2 requires debit fund source)")
 		}
 		authMode := strings.ToLower(strings.TrimSpace(c.CashfreePayoutAuthMode))
+		isProdPayout := c.AppEnv == "production" || strings.EqualFold(strings.TrimSpace(c.CashfreePayoutEnv), "production")
+		if isProdPayout && authMode != "signature" {
+			errs = append(errs, "CF_PAYOUT_AUTH_MODE must be 'signature' in production when Cashfree Payouts is enabled (IP allow-list mode is disallowed)")
+		}
 		if authMode == "" {
 			errs = append(errs, "CF_PAYOUT_AUTH_MODE is required whenever CF_PAYOUT_CLIENT_ID is set (must be 'signature' or 'ip')")
 		} else if authMode != "signature" && authMode != "ip" {

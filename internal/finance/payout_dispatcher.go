@@ -17,6 +17,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// ErrPayoutBatchLeaseBusy indicates another worker currently holds the batch dispatch lease.
+// Outbox workers must release/reschedule the event without acknowledging success or consuming retries.
+var ErrPayoutBatchLeaseBusy = errors.New("payout dispatcher: batch lease held by another worker")
+
 // PayoutBatchDispatcher defines the worker interface for dispatching approved payout batches to Cashfree.
 type PayoutBatchDispatcher interface {
 	DispatchBatch(ctx context.Context, batchID uuid.UUID) error
@@ -89,8 +93,8 @@ func (d *PayoutDispatcher) DispatchBatch(ctx context.Context, batchID uuid.UUID)
 		return fmt.Errorf("payout dispatcher: lock batch %s: %w", batchID, lockErr)
 	}
 	if !acquired {
-		slog.Info("payout dispatcher: batch already being dispatched by another worker, skipping", "batch_id", batchID)
-		return nil
+		slog.Info("payout dispatcher: batch already being dispatched by another worker, deferring outbox ack", "batch_id", batchID)
+		return ErrPayoutBatchLeaseBusy
 	}
 	defer lease.Unlock()
 	leaseCtx := lease.Ctx
