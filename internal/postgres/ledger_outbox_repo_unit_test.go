@@ -100,7 +100,7 @@ func (r *fakeOutboxRow) Scan(dest ...any) error {
 	*dest[1].(*string) = r.row.eventType
 	*dest[2].(*uuid.UUID) = r.row.propertyID
 	*dest[3].(*uuid.UUID) = r.row.sourceID
-	*dest[4].(*[]byte) = r.row.payload
+	*dest[4].(*json.RawMessage) = r.row.payload
 	*dest[5].(*string) = r.row.idempotencyKey
 	*dest[6].(*int) = r.row.attemptCount
 	*dest[7].(*int) = r.row.maxAttempts

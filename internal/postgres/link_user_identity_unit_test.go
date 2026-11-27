@@ -137,6 +137,9 @@ func (f *fakeTx) takeSnapshot() {
 func (f *fakeTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) { return nil, nil }
 func (f *fakeTx) Commit(_ context.Context) error                                { f.commitCount++; return nil }
 func (f *fakeTx) Rollback(_ context.Context) error {
+	if f.commitCount > 0 {
+		return nil
+	}
 	f.rollbackCount++
 	if f.snapshot != nil {
 		f.rows = make(map[string]fakeIdentityRow, len(f.snapshot))
