@@ -33,6 +33,8 @@
 
 -- ── 1. NOINHERIT membership for maintenance and worker roles ─────────────────
 
+SET lock_timeout = '5s';
+
 DO $$
 BEGIN
     -- Re-grant the pgapp_app membership to pgapp_maintenance with INHERIT FALSE.
