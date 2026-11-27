@@ -2,8 +2,11 @@ package domain
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"math"
 	"math/big"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -135,12 +138,22 @@ type PaymentOption struct {
 	Dues        []DueSummary      `json:"dues"`
 }
 
+// ErrDueAmountOverflow indicates that the sum of open due amounts exceeds int64 paise bounds.
+var ErrDueAmountOverflow = errors.New("due total amount overflows int64 paise")
+
 // CalculatePaymentOptions takes all dues for a tenant, filters open (pending/partial) dues,
-// sorts them FIFO (by DueDate ASC, PeriodStart ASC, ID ASC), and returns discrete payment options:
-// - 1 open due: 1 option ("Pay Due")
-// - 2 open dues: 2 options ("Oldest Due", "Clear All (2 Dues)")
-// - 3+ open dues: 3 options ("Oldest Due", "Oldest 2 Dues", "Clear All (N Dues)")
+// sorts them FIFO (by DueDate ASC, PeriodStart ASC, ID ASC) in O(n log n), and returns discrete payment options.
 func CalculatePaymentOptions(dues []*Due) []PaymentOption {
+	opts, err := CalculatePaymentOptionsChecked(dues)
+	if err != nil {
+		return []PaymentOption{}
+	}
+	return opts
+}
+
+// CalculatePaymentOptionsChecked computes FIFO payment options in O(n log n) and returns
+// ErrDueAmountOverflow if summing open due amounts would overflow int64 paise.
+func CalculatePaymentOptionsChecked(dues []*Due) ([]PaymentOption, error) {
 	var open []*Due
 	for _, d := range dues {
 		if d != nil && (d.Status == DueStatusPending || d.Status == DueStatusPartial) && d.Amount > 0 {
@@ -148,31 +161,28 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 		}
 	}
 	if len(open) == 0 {
-		return []PaymentOption{}
+		return []PaymentOption{}, nil
 	}
 
-	// Sort FIFO: oldest due_date first, then period_start, then ID
-	for i := 0; i < len(open)-1; i++ {
-		for j := i + 1; j < len(open); j++ {
-			swap := false
-			if !open[i].DueDate.Equal(open[j].DueDate) {
-				swap = open[i].DueDate.After(open[j].DueDate)
-			} else if !open[i].PeriodStart.Equal(open[j].PeriodStart) {
-				swap = open[i].PeriodStart.After(open[j].PeriodStart)
-			} else {
-				swap = open[i].ID.String() > open[j].ID.String()
-			}
-			if swap {
-				open[i], open[j] = open[j], open[i]
-			}
+	// Sort FIFO: oldest due_date first, then period_start, then ID in O(n log n)
+	sort.Slice(open, func(i, j int) bool {
+		if !open[i].DueDate.Equal(open[j].DueDate) {
+			return open[i].DueDate.Before(open[j].DueDate)
 		}
-	}
+		if !open[i].PeriodStart.Equal(open[j].PeriodStart) {
+			return open[i].PeriodStart.Before(open[j].PeriodStart)
+		}
+		return open[i].ID.String() < open[j].ID.String()
+	})
 
-	toSummaries := func(list []*Due) ([]uuid.UUID, []DueSummary, int64) {
+	toSummaries := func(list []*Due) ([]uuid.UUID, []DueSummary, int64, error) {
 		ids := make([]uuid.UUID, len(list))
 		sums := make([]DueSummary, len(list))
 		var total int64
 		for i, d := range list {
+			if d.Amount > math.MaxInt64-total {
+				return nil, nil, 0, ErrDueAmountOverflow
+			}
 			ids[i] = d.ID
 			sums[i] = DueSummary{
 				ID:          d.ID,
@@ -183,12 +193,15 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 			}
 			total += d.Amount
 		}
-		return ids, sums, total
+		return ids, sums, total, nil
 	}
 
 	n := len(open)
 	if n == 1 {
-		ids, sums, total := toSummaries(open[:1])
+		ids, sums, total, err := toSummaries(open[:1])
+		if err != nil {
+			return nil, err
+		}
 		return []PaymentOption{
 			{
 				OptionType:  OptionOldest1,
@@ -198,12 +211,18 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 				DueIDs:      ids,
 				Dues:        sums,
 			},
-		}
+		}, nil
 	}
 
 	if n == 2 {
-		ids1, sums1, total1 := toSummaries(open[:1])
-		idsAll, sumsAll, totalAll := toSummaries(open)
+		ids1, sums1, total1, err := toSummaries(open[:1])
+		if err != nil {
+			return nil, err
+		}
+		idsAll, sumsAll, totalAll, err := toSummaries(open)
+		if err != nil {
+			return nil, err
+		}
 		return []PaymentOption{
 			{
 				OptionType:  OptionOldest1,
@@ -221,13 +240,22 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 				DueIDs:      idsAll,
 				Dues:        sumsAll,
 			},
-		}
+		}, nil
 	}
 
 	// 3 or more open dues
-	ids1, sums1, total1 := toSummaries(open[:1])
-	ids2, sums2, total2 := toSummaries(open[:2])
-	idsAll, sumsAll, totalAll := toSummaries(open)
+	ids1, sums1, total1, err := toSummaries(open[:1])
+	if err != nil {
+		return nil, err
+	}
+	ids2, sums2, total2, err := toSummaries(open[:2])
+	if err != nil {
+		return nil, err
+	}
+	idsAll, sumsAll, totalAll, err := toSummaries(open)
+	if err != nil {
+		return nil, err
+	}
 	return []PaymentOption{
 		{
 			OptionType:  OptionOldest1,
@@ -253,7 +281,7 @@ func CalculatePaymentOptions(dues []*Due) []PaymentOption {
 			DueIDs:      idsAll,
 			Dues:        sumsAll,
 		},
-	}
+	}, nil
 }
 
 // RecomputeDueStatusMath is the canonical single-source-of-truth status and remaining amount derivation.

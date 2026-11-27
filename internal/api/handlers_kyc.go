@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -785,6 +786,86 @@ func (h *Handlers) OwnerRecordGuardianConsent(c *gin.Context) {
 		"ok":     true,
 		"tenant": tenantResponse(updatedTenant),
 	})
+}
+
+type guardianConsentReviewer interface {
+	ApproveGuardianConsent(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, actor string) (*domain.Tenant, error)
+	RejectGuardianConsent(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.Tenant, error)
+}
+
+type rejectGuardianConsentBody struct {
+	Reason string `json:"reason" binding:"required"`
+}
+
+// OwnerApproveGuardianConsent handles POST /api/owner/tenants/:id/kyc/guardian-consent/approve.
+func (h *Handlers) OwnerApproveGuardianConsent(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	reviewer, ok := svc.(guardianConsentReviewer)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "guardian consent review not supported"})
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	updatedTenant, err := reviewer.ApproveGuardianConsent(c.Request.Context(), tenantID, propertyID, claims.UserID, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "tenant": tenantResponse(updatedTenant)})
+}
+
+// OwnerRejectGuardianConsent handles POST /api/owner/tenants/:id/kyc/guardian-consent/reject.
+func (h *Handlers) OwnerRejectGuardianConsent(c *gin.Context) {
+	svc := h.kycSvcOrErr(c)
+	if svc == nil {
+		return
+	}
+	reviewer, ok := svc.(guardianConsentReviewer)
+	if !ok {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "guardian consent review not supported"})
+		return
+	}
+	propertyID, ok := propertyIDFromClaims(c)
+	if !ok {
+		return
+	}
+	tenantID, ok := ParseUUIDParam(c, "id")
+	if !ok {
+		return
+	}
+	var body rejectGuardianConsentBody
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Reason) == "" {
+		apierr.RespondBindErr(c, "rejection reason is required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	actor := fmt.Sprintf("owner:%s", claims.UserID)
+	updatedTenant, err := reviewer.RejectGuardianConsent(c.Request.Context(), tenantID, propertyID, claims.UserID, body.Reason, actor)
+	if err != nil {
+		respondErr(c, kycClientErr(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "tenant": tenantResponse(updatedTenant)})
 }
 
 // OwnerTenantKYCPhoto handles GET /api/owner/tenants/:id/kyc/photo.

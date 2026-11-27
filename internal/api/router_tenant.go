@@ -39,14 +39,18 @@ func registerTenantRoutes(tenant, tenantAuth *gin.RouterGroup, h *Handlers) {
 	tenant.GET("/refund-account", h.TenantGetRefundAccount)
 	tenantAuth.POST("/refund-account", h.TenantIDRateLimit(5.0/60, 3), h.TenantRegisterRefundAccount)
 
+	// Order verification routes remain accessible without the new-payment KYC gate:
+	// an already-created payment order must stay reconcilable if KYC status changes
+	// while the tenant is at Cashfree checkout. Auth and ownership checks still apply.
+	tenantAuth.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
+	tenantAuth.POST("/payments/orders/:order_id/verify", h.TenantOrderPayVerify)
+
 	// Payment routes enforce mandatory platform-wide KYC verification + authoritative auth
 	payGated := tenantAuth.Group("", h.RequireKYCIfPolicyEnforced())
 	payGated.GET("/dues/:id/qr", h.TenantDueQR)
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	payGated.GET("/dues/:id/pay", h.TenantDuePay)
 	payGated.POST("/dues/:id/pay", h.TenantDuePay)
-	payGated.POST("/dues/:id/pay/verify", h.TenantDuePayVerify)
-	payGated.POST("/payments/orders/:order_id/verify", h.TenantOrderPayVerify)
 	payGated.POST("/dues/:id/reports", h.TenantSubmitReport)
 
 	// --- gated: requires the KYC onboarding gate (default-deny) ---

@@ -90,7 +90,8 @@ func main() {
 			VerificationValidityDays: cfg.KYCVerificationValidityDays,
 		})
 	}
-	job := jobs.NewKYCExpiryJob(repo).WithPoller(poller)
+	inboxRepo := postgres.NewKYCInboxRepo(pool, repo)
+	job := jobs.NewKYCExpiryJob(repo).WithPoller(poller).WithInboxPurger(inboxRepo)
 
 	now := time.Now().UTC()
 	// TTL for pending sessions is set to 24h to safely exceed Cashfree's max webhook retry

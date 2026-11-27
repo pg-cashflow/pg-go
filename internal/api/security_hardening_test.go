@@ -133,3 +133,78 @@ func TestMaxBodyBytes(t *testing.T) {
 		t.Errorf("expected 413 Request Entity Too Large, got %d", w.Code)
 	}
 }
+
+// TestNoStoreAPI verifies that the NoStoreAPI middleware sets the required
+// Cache-Control, Pragma and Expires headers on every response — including
+// error responses — so private API payloads are never stored by browsers,
+// CDNs or shared proxies.
+func TestNoStoreAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"200 success", http.StatusOK},
+		{"400 bad request", http.StatusBadRequest},
+		{"401 unauthorized", http.StatusUnauthorized},
+		{"403 forbidden", http.StatusForbidden},
+		{"404 not found", http.StatusNotFound},
+		{"500 internal error", http.StatusInternalServerError},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.Use(NoStoreAPI())
+			r.GET("/api/test", func(c *gin.Context) {
+				c.JSON(tc.status, gin.H{"ok": true})
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			cc := w.Header().Get("Cache-Control")
+			if !strings.Contains(cc, "no-store") {
+				t.Errorf("status %d: expected Cache-Control to contain no-store, got %q", tc.status, cc)
+			}
+			if !strings.Contains(cc, "private") {
+				t.Errorf("status %d: expected Cache-Control to contain private, got %q", tc.status, cc)
+			}
+			if got := w.Header().Get("Pragma"); got != "no-cache" {
+				t.Errorf("status %d: expected Pragma: no-cache, got %q", tc.status, got)
+			}
+			if got := w.Header().Get("Expires"); got != "0" {
+				t.Errorf("status %d: expected Expires: 0, got %q", tc.status, got)
+			}
+		})
+	}
+}
+
+// TestNoStoreAPI_APIGroupOnly verifies that NoStoreAPI is wired to the /api
+// group and does not affect static-asset or landing-page routes.
+func TestNoStoreAPI_APIGroupOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+
+	// Simulate: /api group gets NoStoreAPI; root does not.
+	api := r.Group("/api", NoStoreAPI())
+	api.GET("/data", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	r.GET("/landing", func(c *gin.Context) { c.String(http.StatusOK, "public") })
+
+	// /api/data must have no-store.
+	req1 := httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+	if cc := w1.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("/api route: expected Cache-Control no-store, got %q", cc)
+	}
+
+	// /landing must NOT have Cache-Control set by NoStoreAPI.
+	req2 := httptest.NewRequest(http.MethodGet, "/landing", nil)
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	if cc := w2.Header().Get("Cache-Control"); strings.Contains(cc, "no-store") {
+		t.Errorf("/landing route: expected no Cache-Control no-store, got %q", cc)
+	}
+}

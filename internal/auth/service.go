@@ -169,14 +169,16 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 		return "", "", nil
 	}
 
-	// Check if user has an email on file:
+	guardianSMSOnly := strings.HasPrefix(purpose, "guardian_consent:")
+
+	// Check if user has an email on file (skipped for guardian SMS-only OTP):
 	var userEmail string
-	if s.users != nil {
+	if !guardianSMSOnly && s.users != nil {
 		if u, err := s.users.GetByPhone(ctx, phone); err == nil && u != nil {
 			userEmail = strings.TrimSpace(u.Email)
 		}
 	}
-	if userEmail == "" && s.properties != nil {
+	if !guardianSMSOnly && userEmail == "" && s.properties != nil {
 		if p, err := s.properties.GetByOwnerPhone(ctx, phone); err == nil && p != nil {
 			userEmail = strings.TrimSpace(p.OwnerEmail)
 		}
@@ -198,8 +200,14 @@ func (s *Service) RequestStepUpOTPWithChannel(ctx context.Context, phone, purpos
 	channel := "sms"
 	destination := phone
 
-	// If SMS is not available, or purpose is payout approval and email is configured, prioritize email.
-	if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && mailAvailable {
+	// Guardian consent OTP must use SMS to the guardian phone only — never email fallback.
+	if guardianSMSOnly {
+		if !smsAvailable {
+			return "", "", ErrNoDeliveryChannel
+		}
+		channel = "sms"
+		destination = phone
+	} else if (!smsAvailable || purpose == "payout_approval") && userEmail != "" && mailAvailable {
 		channel = "email"
 		destination = userEmail
 	} else if smsAvailable {
@@ -658,7 +666,9 @@ func (s *Service) safeCreateUser(ctx context.Context, u *domain.User) error {
 	err := s.users.Create(ctx, u)
 	if err == nil {
 		if u.FirebaseUID != nil && *u.FirebaseUID != "" {
-			_ = s.linkIdentity(ctx, u.ID, FirebaseIdentity{UID: *u.FirebaseUID, Provider: "firebase"}, "signup")
+			if lerr := s.linkIdentity(ctx, u.ID, FirebaseIdentity{UID: *u.FirebaseUID, Provider: "firebase"}, "signup"); lerr != nil {
+				return fmt.Errorf("link user identity: %w", lerr)
+			}
 		}
 		return nil
 	}
@@ -721,6 +731,9 @@ func (s *Service) LinkIdentity(ctx context.Context, userID uuid.UUID, idToken st
 	if ident.UID == "" {
 		return ErrInvalidFirebaseToken
 	}
+	if ident.AuthTime.IsZero() || time.Since(ident.AuthTime) > 10*time.Minute {
+		return ErrStaleAuthToken
+	}
 	if existing, err := s.users.GetByFirebaseUID(ctx, ident.UID); err == nil && existing.ID != userID {
 		return ErrIdentityAlreadyLinked
 	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -760,6 +773,10 @@ func (s *Service) MergeIdentity(ctx context.Context, currentUserID uuid.UUID, cu
 
 	var sourceUserID uuid.UUID
 	if existing, err := s.users.GetByFirebaseUID(ctx, secIdent.UID); err == nil {
+		if existing.ID != currentUserID {
+			// Identity-only merge must not orphan another user's properties, tenants, or ledger history.
+			return ErrIdentityAlreadyLinked
+		}
 		sourceUserID = existing.ID
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("lookup secondary identity: %w", err)

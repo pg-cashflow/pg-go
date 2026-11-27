@@ -769,14 +769,16 @@ func (d *PayoutDispatcher) reconcileSingleTransferFenced(
 	}
 
 	cfID := st.CFTransferID
-	switch st.Status {
+	status := strings.ToUpper(strings.TrimSpace(st.Status))
+	statusCode := strings.ToUpper(strings.TrimSpace(st.StatusCode))
+	switch status {
 	case "SUCCESS":
 		// Cashfree Transfers V2: Transfer is settled only when status is SUCCESS and status_code is COMPLETED.
-		if !strings.EqualFold(st.StatusCode, "COMPLETED") {
+		if statusCode != "COMPLETED" {
 			slog.Warn("payout batch reconcile: status is SUCCESS but status_code is not COMPLETED; keeping pending",
 				"transfer_id", st.TransferID,
-				"status", st.Status,
-				"status_code", st.StatusCode,
+				"status", status,
+				"status_code", statusCode,
 			)
 			return nil
 		}
@@ -802,10 +804,10 @@ func (d *PayoutDispatcher) reconcileSingleTransferFenced(
 	case "FAILED":
 		reason := st.StatusDescription
 		if reason == "" {
-			reason = st.StatusCode
+			reason = statusCode
 		}
 		targetStatus := domain.PayoutFailed
-		if st.StatusCode == "WAIT_TIME_EXCEEDED" {
+		if statusCode == "WAIT_TIME_EXCEEDED" {
 			targetStatus = domain.PayoutRetriableFailed
 		}
 		if err := d.updateItemStatus(ctx, lease, it.ID, targetStatus, &cfID, nil, nil, &reason); err != nil {

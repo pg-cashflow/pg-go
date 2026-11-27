@@ -8,7 +8,7 @@ import (
 )
 
 func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFunc) {
-	api := r.Group("/api")
+	api := r.Group("/api", NoStoreAPI())
 	api.GET("/healthz", health)
 	api.GET("/healthz/workers", workerHealthHandler(d.WorkerHealth))
 	api.GET("/metrics", metricsAuth(d.JWTSecret, d.MetricsSecret), h.Metrics)

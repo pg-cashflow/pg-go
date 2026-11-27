@@ -24,12 +24,21 @@ type DigiLockerPoller interface {
 	PollDigiLockerStatus(ctx context.Context, tenantID uuid.UUID, actor string) (*domain.KYCVerification, error)
 }
 
+// KYCInboxPurger purges processed kyc_webhook_inbox rows older than the retention window.
+type KYCInboxPurger interface {
+	PurgeProcessedInbox(ctx context.Context, olderThan time.Duration) (int64, error)
+}
+
+// KYCInboxRetention is the retention window for processed kyc_webhook_inbox rows (30 days).
+const KYCInboxRetention = 30 * 24 * time.Hour
+
 // KYCExpiryJob sweeps and expires stale pending verifications and lapsed verified records,
 // clearing active profile PII (tenants.aadhaar_last4) to enforce the zero-stale-PII policy,
 // and reconciles in-flight DigiLocker sessions to prevent dropped webhooks from stalling tenants.
 type KYCExpiryJob struct {
-	Repo   KYCExpiryRepo
-	Poller DigiLockerPoller
+	Repo        KYCExpiryRepo
+	Poller      DigiLockerPoller
+	InboxPurger KYCInboxPurger
 }
 
 func NewKYCExpiryJob(repo KYCExpiryRepo) *KYCExpiryJob {
@@ -38,6 +47,11 @@ func NewKYCExpiryJob(repo KYCExpiryRepo) *KYCExpiryJob {
 
 func (j *KYCExpiryJob) WithPoller(poller DigiLockerPoller) *KYCExpiryJob {
 	j.Poller = poller
+	return j
+}
+
+func (j *KYCExpiryJob) WithInboxPurger(purger KYCInboxPurger) *KYCExpiryJob {
+	j.InboxPurger = purger
 	return j
 }
 
@@ -93,12 +107,21 @@ func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time
 		}
 	}
 
+	var purgedInbox int64
+	if j.InboxPurger != nil {
+		purgedInbox, err = j.InboxPurger.PurgeProcessedInbox(ctx, KYCInboxRetention)
+		if err != nil {
+			slog.Warn("kyc job: purge processed kyc_webhook_inbox failed", "err", err)
+		}
+	}
+
 	slog.Info("kyc expiry sweep completed",
 		"stale_pending_expired", stalePending,
 		"lapsed_verified_expired", lapsed,
 		"stale_manual_expired", staleManual,
 		"digilocker_consent_expired", consentExpired,
 		"digilocker_reconciled", reconciledCount,
+		"inbox_purged", purgedInbox,
 	)
 	return nil
 }

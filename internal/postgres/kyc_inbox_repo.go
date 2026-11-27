@@ -255,3 +255,21 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 	}
 	return WithinTx(ctx, r.pool, apply)
 }
+
+// PurgeProcessedInbox deletes processed kyc_webhook_inbox rows older than olderThan
+// to enforce bounded retention of operational webhook metadata.
+func (r *KYCInboxRepo) PurgeProcessedInbox(ctx context.Context, olderThan time.Duration) (int64, error) {
+	if olderThan <= 0 {
+		olderThan = 30 * 24 * time.Hour
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	tag, err := r.pool.Exec(ctx, `
+		DELETE FROM kyc_webhook_inbox
+		WHERE processing_status = 'processed'
+		  AND processed_at IS NOT NULL
+		  AND processed_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("kyc inbox: purge processed: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

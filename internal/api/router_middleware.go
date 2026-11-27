@@ -134,7 +134,23 @@ func isTrustedProxyPeer(remoteAddr string, trusted []string) bool {
 	return false
 }
 
-// RequireSameOrigin rejects state-mutating requests whose Origin header does
+// NoStoreAPI sets Cache-Control: no-store on every response from the /api
+// group, including error responses. This prevents browsers, CDNs, and shared
+// proxies from caching private API payloads. It is applied at the router-group
+// level so individual handlers do not need to set cache headers themselves.
+//
+// Setting no-cache and must-revalidate in addition to no-store is belt-and-
+// braces for older user agents and intermediate caches that may interpret
+// no-store loosely. Pragma and Expires are included for HTTP/1.0 compat.
+func NoStoreAPI() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
+		c.Next()
+	}
+}
+
 // not match the server's own host. It is a defense-in-depth layer behind
 // SameSite=Strict cookies; it does not replace them.
 //

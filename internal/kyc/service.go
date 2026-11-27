@@ -499,11 +499,13 @@ func (s *Service) VerifyDocument(
 		name := domain.NormalizeName(resp.Name)
 		identityHash = domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, resp.Gender, resp.MaskedUID)
 		maskedUID = resp.MaskedUID
+		// Clear temporary OCR identity strings (name, dob, gender) immediately after comparison
+		// and hash derivation so raw PII is not persisted in v.OCRData.
+		resp.Name = ""
+		resp.DOB = ""
+		resp.Gender = ""
 		ocrBytes, _ = json.Marshal(map[string]any{
 			"document_type":        normDocType,
-			"name":                 resp.Name,
-			"dob":                  resp.DOB,
-			"gender":               resp.Gender,
 			"masked_uid":           resp.MaskedUID,
 			"qr_status":            resp.QRStatus,
 			"name_mismatch":        nameMismatch,
@@ -1060,8 +1062,32 @@ func (s *Service) ClearDuplicateFlag(ctx context.Context, verificationID uuid.UU
 }
 
 // RecordGuardianConsent records guardian details and cryptographic audit log for a tenant.
+// KYC-07: Both OTP and manual evidence submissions enter pending manual review.
 func (s *Service) RecordGuardianConsent(ctx context.Context, tenantID uuid.UUID, guardianName, guardianPhone, relation, refID string, actor string) (*domain.Tenant, error) {
 	return s.repo.RecordGuardianConsentTx(ctx, tenantID, guardianName, guardianPhone, relation, refID, actor)
+}
+
+type guardianConsentReviewRepo interface {
+	ApproveGuardianConsentTx(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, actor string) (*domain.Tenant, error)
+	RejectGuardianConsentTx(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.Tenant, error)
+}
+
+// ApproveGuardianConsent marks a minor's pending guardian consent submission as verified after manual review.
+func (s *Service) ApproveGuardianConsent(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, actor string) (*domain.Tenant, error) {
+	r, ok := s.repo.(guardianConsentReviewRepo)
+	if !ok {
+		return nil, errors.New("kyc service: repository does not support guardian consent approval")
+	}
+	return r.ApproveGuardianConsentTx(ctx, tenantID, propertyID, reviewerID, actor)
+}
+
+// RejectGuardianConsent rejects a minor's pending guardian consent submission.
+func (s *Service) RejectGuardianConsent(ctx context.Context, tenantID, propertyID, reviewerID uuid.UUID, reason, actor string) (*domain.Tenant, error) {
+	r, ok := s.repo.(guardianConsentReviewRepo)
+	if !ok {
+		return nil, errors.New("kyc service: repository does not support guardian consent rejection")
+	}
+	return r.RejectGuardianConsentTx(ctx, tenantID, propertyID, reviewerID, reason, actor)
 }
 
 // InitiateDigiLockerVerification begins a Cashfree Secure ID DigiLocker consent flow.

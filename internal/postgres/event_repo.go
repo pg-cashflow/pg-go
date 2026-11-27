@@ -168,15 +168,42 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 }
 
 func (r *UserRepo) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error) {
-	u, err := scanUser(r.db.QueryRow(ctx, `
-		SELECT u.id, u.phone, u.email, u.role, u.tenant_id, u.property_id, u.firebase_uid,
-		       u.token_version, u.locale, u.theme, u.disabled_at, u.profile, u.created_at, u.last_login_at
+	var status string
+	var u domain.User
+	var phone, email, profile sql.NullString
+	err := r.db.QueryRow(ctx, `
+		SELECT ui.status,
+		       u.id, u.phone, u.email, u.role, u.tenant_id, u.property_id, u.firebase_uid,
+		       u.token_version, u.created_at, u.last_login_at, u.disabled_at, COALESCE(u.profile, 'custom')
 		FROM user_identities ui
 		JOIN users u ON u.id = ui.user_id
-		WHERE ui.firebase_uid = $1 AND ui.status = 'active'
-		LIMIT 1`, firebaseUID))
+		WHERE ui.firebase_uid = $1
+		ORDER BY (ui.status = 'active') DESC, ui.created_at DESC
+		LIMIT 1`, firebaseUID).Scan(
+		&status,
+		&u.ID, &phone, &email, &u.Role, &u.TenantID, &u.PropertyID, &u.FirebaseUID,
+		&u.TokenVersion, &u.CreatedAt, &u.LastLoginAt, &u.DisabledAt, &profile,
+	)
 	if err == nil {
-		return u, nil
+		if status != "active" {
+			// Revoked identity must NOT fall back to legacy users.firebase_uid.
+			return nil, pgx.ErrNoRows
+		}
+		if phone.Valid {
+			u.Phone = phone.String
+		}
+		if email.Valid {
+			u.Email = email.String
+		}
+		if profile.Valid {
+			u.Profile = profile.String
+		} else {
+			u.Profile = "custom"
+		}
+		if u.TokenVersion < 1 {
+			u.TokenVersion = 1
+		}
+		return &u, nil
 	}
 	if err != pgx.ErrNoRows {
 		return nil, err
@@ -219,6 +246,12 @@ func (r *UserRepo) ListUserIdentities(ctx context.Context, userID uuid.UUID) ([]
 
 // LinkUserIdentity records an external Firebase UID for userID without overwriting any existing
 // different user's mapping or silently replacing users.firebase_uid.
+//
+// All mutations run inside a single serialisable transaction so concurrent linking
+// attempts on the same (project, uid) pair cannot both succeed. The INSERT after
+// ON CONFLICT DO NOTHING is validated: if zero rows were inserted it means a
+// revoked row (or a row for another user) already occupies the slot, which is an
+// error rather than a silent success.
 func (r *UserRepo) LinkUserIdentity(ctx context.Context, userID uuid.UUID, projectID, firebaseUID, provider, linkMethod string) error {
 	if provider == "" {
 		provider = "firebase"
@@ -226,49 +259,102 @@ func (r *UserRepo) LinkUserIdentity(ctx context.Context, userID uuid.UUID, proje
 	if linkMethod == "" {
 		linkMethod = "firebase_link"
 	}
+
+	// Acquire a transaction so the read-check and write are atomic.
+	type beginner interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}
+	var tx pgx.Tx
+	var err error
+	if b, ok := r.db.(beginner); ok {
+		tx, err = b.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("link identity: begin tx: %w", err)
+		}
+		defer tx.Rollback(ctx) //nolint:errcheck
+	} else if t, ok := r.db.(pgx.Tx); ok {
+		tx = t
+	} else {
+		return fmt.Errorf("link identity: requires pool or tx")
+	}
+
+	// Lock any existing row for this (project, uid) pair regardless of status.
 	var existingOwner uuid.UUID
-	err := r.db.QueryRow(ctx, `
-		SELECT user_id FROM user_identities
-		WHERE firebase_project_id = $1 AND firebase_uid = $2 AND status = 'active'`,
+	var existingStatus string
+	err = tx.QueryRow(ctx, `
+		SELECT user_id, status FROM user_identities
+		WHERE firebase_project_id = $1 AND firebase_uid = $2
+		FOR UPDATE`,
 		projectID, firebaseUID,
-	).Scan(&existingOwner)
+	).Scan(&existingOwner, &existingStatus)
+
 	if err == nil {
+		// Row exists. If it belongs to a different user it cannot be reused.
 		if existingOwner != userID {
 			return fmt.Errorf("identity already linked to another user")
 		}
-		_, err = r.db.Exec(ctx, `
+		if existingStatus == "revoked" {
+			// A deliberately revoked row must not silently re-activate.
+			return fmt.Errorf("identity has been revoked and cannot be re-linked automatically")
+		}
+		// Touch last_authenticated_at for our own active row and commit.
+		if _, err = tx.Exec(ctx, `
 			UPDATE user_identities SET last_authenticated_at = NOW()
-			WHERE firebase_project_id = $1 AND firebase_uid = $2`, projectID, firebaseUID)
-		return err
+			WHERE firebase_project_id = $1 AND firebase_uid = $2`,
+			projectID, firebaseUID); err != nil {
+			return fmt.Errorf("link identity: touch auth ts: %w", err)
+		}
+		if b, ok := r.db.(beginner); ok {
+			_ = b
+			return tx.Commit(ctx)
+		}
+		return nil
 	}
 	if err != pgx.ErrNoRows {
-		return err
+		return fmt.Errorf("link identity: check existing: %w", err)
 	}
 
-	tag, err := r.db.Exec(ctx, `
+	// No row exists yet. Update the legacy firebase_uid column only if it is
+	// currently empty (COALESCE guard prevents overwriting an existing value).
+	tag, err := tx.Exec(ctx, `
 		UPDATE users
 		SET firebase_uid = COALESCE(NULLIF(firebase_uid, ''), $2)
 		WHERE id = $1`,
 		userID, firebaseUID)
 	if err != nil {
-		return err
+		return fmt.Errorf("link identity: update legacy uid: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("user not found %s", userID)
+		return fmt.Errorf("link identity: user not found %s", userID)
 	}
 
-	_, err = r.db.Exec(ctx, `
+	// Insert the canonical identity row. ON CONFLICT DO NOTHING is kept as a
+	// safety net for a hypothetical concurrent insert on the same connection,
+	// but we validate that a row was actually written.
+	tag, err = tx.Exec(ctx, `
 		INSERT INTO user_identities (user_id, firebase_project_id, firebase_uid, provider, status, link_method, last_authenticated_at)
 		VALUES ($1, $2, $3, $4, 'active', $5, NOW())
 		ON CONFLICT (firebase_project_id, firebase_uid) DO NOTHING`,
 		userID, projectID, firebaseUID, provider, linkMethod)
 	if err != nil {
-		return err
+		return fmt.Errorf("link identity: insert: %w", err)
 	}
-	_, _ = r.db.Exec(ctx, `
+	if tag.RowsAffected() == 0 {
+		// The unique slot was claimed between our FOR UPDATE check and the INSERT.
+		// This should be impossible under a serialisable transaction but we fail
+		// loudly rather than silently treating a potential takeover as success.
+		return fmt.Errorf("link identity: insert conflicted — concurrent linking detected for (project=%s uid=%s)", projectID, firebaseUID)
+	}
+
+	// Append-only audit event. Failure here must not block the link itself.
+	_, _ = tx.Exec(ctx, `
 		INSERT INTO user_identity_audit_events (user_id, actor_user_id, event_type, firebase_project_id, firebase_uid, metadata)
 		VALUES ($1, $1, 'identity_linked', $2, $3, jsonb_build_object('provider', $4::text, 'link_method', $5::text))`,
 		userID, projectID, firebaseUID, provider, linkMethod)
+
+	if _, ok := r.db.(beginner); ok {
+		return tx.Commit(ctx)
+	}
 	return nil
 }
 

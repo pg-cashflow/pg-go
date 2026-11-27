@@ -85,9 +85,9 @@ func (r *stubF1UserRepo) LinkFirebaseUID(_ context.Context, userID uuid.UUID, fi
 	return nil
 }
 
-func (r *stubF1UserRepo) TouchLogin(_ context.Context, _ uuid.UUID) error             { return nil }
-func (r *stubF1UserRepo) IncrementTokenVersion(_ context.Context, _ uuid.UUID) error  { return nil }
-func (r *stubF1UserRepo) SetPropertyID(_ context.Context, _, _ uuid.UUID) error       { return nil }
+func (r *stubF1UserRepo) TouchLogin(_ context.Context, _ uuid.UUID) error            { return nil }
+func (r *stubF1UserRepo) IncrementTokenVersion(_ context.Context, _ uuid.UUID) error { return nil }
+func (r *stubF1UserRepo) SetPropertyID(_ context.Context, _, _ uuid.UUID) error      { return nil }
 
 func (r *stubF1UserRepo) ListUserIdentities(_ context.Context, userID uuid.UUID) ([]UserIdentity, error) {
 	return r.identitiesByID[userID], nil
@@ -220,15 +220,19 @@ type stubF3RefreshRepo struct {
 	rt *domain.RefreshToken
 }
 
-func (s *stubF3RefreshRepo) StoreRefreshToken(_ context.Context, _ *domain.RefreshToken) error { return nil }
+func (s *stubF3RefreshRepo) StoreRefreshToken(_ context.Context, _ *domain.RefreshToken) error {
+	return nil
+}
 func (s *stubF3RefreshRepo) GetRefreshTokenByHash(_ context.Context, _ string) (*domain.RefreshToken, error) {
 	return s.rt, nil
 }
-func (s *stubF3RefreshRepo) RevokeRefreshToken(_ context.Context, _ uuid.UUID) error           { return nil }
-func (s *stubF3RefreshRepo) RevokeFamily(_ context.Context, _ uuid.UUID) error                 { return nil }
-func (s *stubF3RefreshRepo) RevokeFamilyByUser(_ context.Context, _, _ uuid.UUID) error        { return nil }
-func (s *stubF3RefreshRepo) RevokeAllExceptFamily(_ context.Context, _, _ uuid.UUID) error     { return nil }
-func (s *stubF3RefreshRepo) RevokeUserTokens(_ context.Context, _ uuid.UUID) error             { return nil }
+func (s *stubF3RefreshRepo) RevokeRefreshToken(_ context.Context, _ uuid.UUID) error    { return nil }
+func (s *stubF3RefreshRepo) RevokeFamily(_ context.Context, _ uuid.UUID) error          { return nil }
+func (s *stubF3RefreshRepo) RevokeFamilyByUser(_ context.Context, _, _ uuid.UUID) error { return nil }
+func (s *stubF3RefreshRepo) RevokeAllExceptFamily(_ context.Context, _, _ uuid.UUID) error {
+	return nil
+}
+func (s *stubF3RefreshRepo) RevokeUserTokens(_ context.Context, _ uuid.UUID) error { return nil }
 func (s *stubF3RefreshRepo) ListActiveSessions(_ context.Context, _ uuid.UUID) ([]domain.ActiveSession, error) {
 	return nil, nil
 }

@@ -497,6 +497,13 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		logger.Warn("CF_PAYOUT_DISPATCH_ENABLED or CF_PAYOUT_AUTO_DISPATCH_ENABLED is true but Cashfree Payout credentials are not configured")
 	}
 
+	var cfCashfreeClient api.CashfreeClient
+	var cfBankVerifier api.BankAccountVerifier
+	if cfClient != nil {
+		cfCashfreeClient = cfClient
+		cfBankVerifier = cfClient
+	}
+
 	if userRepo == nil {
 		return nil, errors.New("bootstrap: user repository must not be nil")
 	}
@@ -554,8 +561,8 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		CashfreeSecret:                  cfg.CashfreeWebhookSecret,
 		CashfreeSecrets:                 cfg.CashfreeWebhookSecrets,
 		CashfreeEnv:                     cfg.CashfreeEnv,
-		CashfreeClient:                  cfClient,
-		BankVerifier:                    cfClient,
+		CashfreeClient:                  cfCashfreeClient,
+		BankVerifier:                    cfBankVerifier,
 		AuthTenantRepo:                  tenantRepo,
 		AuthUserRepo:                    userRepo,
 		OutboxEvents:                    outboxRepo,

@@ -2010,23 +2010,20 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 			return fmt.Errorf("kyc: lock tenant for guardian consent: %w", err)
 		}
 
-		// 2. Update tenant guardian fields: set verified_at only for OTP verified flows
-		var verifiedAt *time.Time
-		if strings.HasPrefix(refID, "guard_otp_") {
-			verifiedAt = &now
-		}
-
+		// 2. Update tenant guardian fields: KYC-07 requires mandatory manual review for
+		// both guardian phone OTP (guard_otp_*) and manual evidence reference_id.
+		// guardian_consent_verified_at stays NULL until explicit reviewer approval.
 		row := tx.QueryRow(ctx, `
 			UPDATE tenants
 			SET guardian_name = $2,
 			    guardian_phone = $3,
 			    guardian_relation = $4,
 			    guardian_kyc_reference_id = $5,
-			    guardian_consent_verified_at = $6,
-			    updated_at = $7
+			    guardian_consent_verified_at = NULL,
+			    updated_at = $6
 			WHERE id = $1
 			RETURNING `+tenantCols,
-			tenantID, guardianName, guardianPhone, relation, refID, verifiedAt, now,
+			tenantID, guardianName, guardianPhone, relation, refID, now,
 		)
 		t, err := scanTenant(row)
 		if err != nil {
@@ -2035,8 +2032,102 @@ func (r *KYCRepo) RecordGuardianConsentTx(
 		updated = t
 
 		// 3. Cryptographic audit log chaining (omit guardian name/phone PII from audit hash input)
-		detail := fmt.Sprintf("relation=%s|ref_id=%s", relation, refID)
+		detail := fmt.Sprintf("relation=%s|ref_id=%s|status=pending_manual_review", relation, refID)
 		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "guardian_consent_recorded", detail, now)
+	})
+
+	return updated, err
+}
+
+// ApproveGuardianConsentTx marks a pending guardian consent submission as verified
+// after explicit manual review by an owner/reviewer.
+func (r *KYCRepo) ApproveGuardianConsentTx(
+	ctx context.Context,
+	tenantID, propertyID, reviewerID uuid.UUID,
+	actor string,
+) (*domain.Tenant, error) {
+	now := time.Now().UTC()
+	var updated *domain.Tenant
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var refID *string
+		err := tx.QueryRow(ctx, `
+			SELECT guardian_kyc_reference_id
+			FROM tenants
+			WHERE id = $1 AND property_id = $2
+			FOR UPDATE`, tenantID, propertyID).Scan(&refID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lock tenant for guardian approval: %w", err)
+		}
+		if refID == nil || strings.TrimSpace(*refID) == "" {
+			return fmt.Errorf("kyc: no pending guardian consent submission")
+		}
+
+		row := tx.QueryRow(ctx, `
+			UPDATE tenants
+			SET guardian_consent_verified_at = $2,
+			    updated_at = $2
+			WHERE id = $1
+			RETURNING `+tenantCols, tenantID, now)
+		t, err := scanTenant(row)
+		if err != nil {
+			return fmt.Errorf("kyc: approve guardian consent: %w", err)
+		}
+		updated = t
+
+		detail := fmt.Sprintf("reviewer=%s|ref_id=%s", reviewerID, *refID)
+		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "guardian_consent_approved", detail, now)
+	})
+
+	return updated, err
+}
+
+// RejectGuardianConsentTx rejects a pending guardian consent submission, clearing
+// verification eligibility and recording an immutable audit entry.
+func (r *KYCRepo) RejectGuardianConsentTx(
+	ctx context.Context,
+	tenantID, propertyID, reviewerID uuid.UUID,
+	reason, actor string,
+) (*domain.Tenant, error) {
+	now := time.Now().UTC()
+	var updated *domain.Tenant
+
+	err := WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		var refID *string
+		err := tx.QueryRow(ctx, `
+			SELECT guardian_kyc_reference_id
+			FROM tenants
+			WHERE id = $1 AND property_id = $2
+			FOR UPDATE`, tenantID, propertyID).Scan(&refID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrVerificationNotFound
+			}
+			return fmt.Errorf("kyc: lock tenant for guardian rejection: %w", err)
+		}
+
+		row := tx.QueryRow(ctx, `
+			UPDATE tenants
+			SET guardian_consent_verified_at = NULL,
+			    guardian_kyc_reference_id = NULL,
+			    updated_at = $2
+			WHERE id = $1
+			RETURNING `+tenantCols, tenantID, now)
+		t, err := scanTenant(row)
+		if err != nil {
+			return fmt.Errorf("kyc: reject guardian consent: %w", err)
+		}
+		updated = t
+
+		prevRef := ""
+		if refID != nil {
+			prevRef = *refID
+		}
+		detail := fmt.Sprintf("reviewer=%s|prev_ref=%s|reason=%s", reviewerID, prevRef, strings.TrimSpace(reason))
+		return r.appendAuditLogTx(ctx, tx, tenantID, actor, "guardian_consent_rejected", detail, now)
 	})
 
 	return updated, err

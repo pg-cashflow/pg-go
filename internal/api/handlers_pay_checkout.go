@@ -389,17 +389,28 @@ func (h *Handlers) TenantOrderPayVerify(c *gin.Context) {
 		return
 	}
 
-	// Ownership verification: Verify intent's dues belong strictly to this authenticated tenant or owner property
+	// Ownership verification: Verify intent's dues belong strictly to this authenticated tenant or owner property.
+	// Deduplicate legacy intent.DueID and normalized snapshot entries, and fail closed if snapshot read errors.
+	seenDue := make(map[uuid.UUID]struct{})
 	var targetDueIDs []uuid.UUID
-	if intent.DueID != uuid.Nil {
-		targetDueIDs = append(targetDueIDs, intent.DueID)
-	}
-	if snapshot, sErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID); sErr == nil && len(snapshot) > 0 {
-		for _, sn := range snapshot {
-			if sn.DueID != uuid.Nil {
-				targetDueIDs = append(targetDueIDs, sn.DueID)
-			}
+	addDueID := func(id uuid.UUID) {
+		if id == uuid.Nil {
+			return
 		}
+		if _, ok := seenDue[id]; ok {
+			return
+		}
+		seenDue[id] = struct{}{}
+		targetDueIDs = append(targetDueIDs, id)
+	}
+	addDueID(intent.DueID)
+	snapshot, sErr := h.IntentStore.GetDuesSnapshot(c.Request.Context(), intent.ID)
+	if sErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "unable to verify linked dues"})
+		return
+	}
+	for _, sn := range snapshot {
+		addDueID(sn.DueID)
 	}
 
 	if len(targetDueIDs) == 0 {
@@ -487,7 +498,11 @@ func (h *Handlers) TenantDuePayBatch(c *gin.Context) {
 	for i := range allDues {
 		ptrList[i] = &allDues[i]
 	}
-	options := domain.CalculatePaymentOptions(ptrList)
+	options, err := domain.CalculatePaymentOptionsChecked(ptrList)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "total due amount exceeds supported limit"})
+		return
+	}
 	if len(options) == 0 {
 		c.JSON(http.StatusOK, domain.PayIntent{
 			Mode:               domain.PaymentModeManual,

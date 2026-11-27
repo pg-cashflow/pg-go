@@ -100,8 +100,8 @@ func main() {
 		}
 
 		type item struct {
-			id       uuid.UUID
-			docBytes []byte
+			id         uuid.UUID
+			docBytes   []byte
 			photoBytes []byte
 		}
 		var batch []item

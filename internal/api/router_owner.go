@@ -154,6 +154,8 @@ func registerOwnerRoutes(owner, ownerAuth *gin.RouterGroup, h *Handlers) {
 	ownerAuth.POST("/tenants/:id/kyc/clear-duplicate", h.OwnerClearDuplicateKYC)
 	ownerAuth.POST("/tenants/:id/kyc/guardian-consent", h.OwnerRecordGuardianConsent)
 	ownerAuth.POST("/tenants/:id/kyc/guardian-consent/request-otp", userOrIPRateLimit(3.0/60, 3), h.OwnerRequestGuardianConsentOTP)
+	ownerAuth.POST("/tenants/:id/kyc/guardian-consent/approve", h.OwnerApproveGuardianConsent)
+	ownerAuth.POST("/tenants/:id/kyc/guardian-consent/reject", h.OwnerRejectGuardianConsent)
 	ownerAuth.GET("/kyc/queue", h.OwnerKYCReviewQueue)
 	ownerAuth.GET("/kyc/:id/document", h.OwnerKYCDocument)
 	ownerAuth.POST("/kyc/:id/approve", h.OwnerKYCApprove)

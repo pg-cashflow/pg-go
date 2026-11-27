@@ -24,7 +24,6 @@ import (
 	"github.com/pg-cashflow/pg-go/internal/crypto"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
-	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 // ---------------------------------------------------------------------
@@ -1020,9 +1019,10 @@ func (h *Handlers) OwnerApprovePayoutBatch(c *gin.Context) {
 		"approval_mode", approvalMode,
 	)
 
-	// Automated Payout Dispatch: if automated payout dispatcher is active AND payout_auto_dispatch
-	// is enabled in the property's operational settings, initiate the batch transfer transaction
-	// and let the durable ledger outbox worker own dispatch.
+	// Auto-dispatch: if payout_auto_dispatch is enabled for this property,
+	// initiate the batch transfer transaction so the durable outbox worker
+	// picks it up. The worker is the sole dispatcher (Decision 4); this call
+	// only enqueues the outbox event and transitions the batch to 'processing'.
 	if h.PayoutDispatcher != nil {
 		autoDispatch := false
 		if st, err := h.getPropertySettings(c.Request.Context(), pid); err == nil && st != nil {
@@ -1307,22 +1307,10 @@ func (h *Handlers) OwnerDispatchPayoutBatch(c *gin.Context) {
 		return
 	}
 
-	// Trigger inline dispatch if dispatcher is available (fast path)
-	if h.PayoutDispatcher != nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			pctx := requestscope.WithPropertyID(ctx, pid)
-			if dErr := h.PayoutDispatcher.DispatchBatch(pctx, batchID); dErr != nil {
-				slog.Warn("inline payout batch dispatch failed, relying on ledger outbox worker",
-					"batch_id", batchID,
-					"property_id", pid,
-					"err", dErr,
-				)
-			}
-		}()
-	}
-
+	// The durable outbox worker is the sole dispatcher. The outbox event was
+	// enqueued by InitiateBatchTransferTx above; the worker will claim it via
+	// lease fencing. No inline goroutine is started here: a fire-and-forget
+	// goroutine racing the worker violated Decision 4 (single dispatcher).
 	c.JSON(http.StatusOK, gin.H{
 		"batch": updatedBatch,
 		"items": items,
