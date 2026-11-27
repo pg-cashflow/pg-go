@@ -259,3 +259,41 @@ func (c *conflictOnInsertTx) Query(ctx context.Context, sql string, args ...any)
 func (c *conflictOnInsertTx) Begin(ctx context.Context) (pgx.Tx, error) {
 	return c.fakeTx.Begin(ctx)
 }
+
+func TestLinkUserIdentity_AuditInsertFails_RollsBack(t *testing.T) {
+	userID := uuid.New()
+	tx := newFakeTx(userID)
+	pool := &fakePool{tx: &auditFailTx{fakeTx: tx}}
+
+	repo := &UserRepo{db: pool}
+	err := repo.LinkUserIdentity(context.Background(), userID, "proj3", "uid-audit-fail", "firebase", "firebase_link")
+	if err == nil {
+		t.Fatal("expected error when audit insert fails, got nil")
+	}
+	if tx.commitCount != 0 {
+		t.Errorf("expected 0 commits when audit insert fails, got %d", tx.commitCount)
+	}
+	if tx.rollbackCount == 0 {
+		t.Errorf("expected rollback when audit insert fails, got 0")
+	}
+}
+
+type auditFailTx struct{ *fakeTx }
+
+func (a *auditFailTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if len(args) == 5 && len(a.fakeTx.rows) > 0 {
+		// Second 5-arg Exec in LinkUserIdentity is INSERT INTO user_identity_audit_events
+		return pgconn.CommandTag{}, errors.New("simulated audit table failure")
+	}
+	return a.fakeTx.Exec(ctx, sql, args...)
+}
+
+func (a *auditFailTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return a.fakeTx.QueryRow(ctx, sql, args...)
+}
+func (a *auditFailTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return a.fakeTx.Query(ctx, sql, args...)
+}
+func (a *auditFailTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	return a.fakeTx.Begin(ctx)
+}

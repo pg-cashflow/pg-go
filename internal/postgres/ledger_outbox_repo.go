@@ -277,6 +277,24 @@ func (r *LedgerOutboxRepo) ReleaseLease(ctx context.Context, id int64, leaseToke
 	return err
 }
 
+// RescheduleLease releases a lease and sets next_retry_at to a future timestamp without
+// incrementing attempt_count or marking failure (used on payout batch lease contention).
+func (r *LedgerOutboxRepo) RescheduleLease(ctx context.Context, id int64, leaseToken uuid.UUID, nextRetryAt time.Time) error {
+	query := `
+		UPDATE ledger_outbox_events
+		SET lease_token = NULL,
+		    lease_expires_at = NULL,
+		    next_retry_at = $2
+		WHERE id = $1`
+	args := []any{id, nextRetryAt}
+	if leaseToken != uuid.Nil {
+		query += ` AND lease_token = $3`
+		args = append(args, leaseToken)
+	}
+	_, err := r.db.Exec(ctx, query, args...)
+	return err
+}
+
 // LockAndFetchEventTx locks the event row with FOR UPDATE SKIP LOCKED inside the worker's transaction.
 func (r *LedgerOutboxRepo) LockAndFetchEventTx(ctx context.Context, tx pgx.Tx, id int64) (*domain.LedgerOutboxEvent, error) {
 	var evt domain.LedgerOutboxEvent

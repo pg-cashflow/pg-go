@@ -37,6 +37,7 @@ var (
 	ErrCashfreeUnavailable   = errors.New("kyc: verification unavailable — cashfree is not configured")
 	ErrInvalidAadhaarNumber  = errors.New("kyc: invalid aadhaar number — must be 12 digits and satisfy Verhoeff checksum")
 	ErrInvalidConsentPurpose = errors.New("kyc: invalid or unsupported consent purpose")
+	ErrAadhaarOTPDisabled    = errors.New("kyc: aadhaar otp is disabled under ADR-005")
 )
 
 // PermanentError is an interface implemented by errors that represent an
@@ -838,127 +839,8 @@ func (s *Service) CompleteAadhaarOTP(
 	refID, otp string,
 	actor string,
 ) (*domain.KYCVerification, error) {
-	leaseToken, locked, err := s.acquireLease(ctx, tenantID, 60*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: acquire in-flight lock: %w", err)
-	}
-	if !locked {
-		return nil, domain.ErrVerificationInProgress
-	}
-	defer func() {
-		s.releaseLease(ctx, tenantID, leaseToken)
-	}()
-
-	vendorRefID := fmt.Sprintf("cf_aadhaar_otp_%s", refID)
-	pending, err := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
-	if err != nil {
-		return nil, fmt.Errorf("kyc service: find aadhaar verification: %w", err)
-	}
-	if pending == nil || pending.TenantID != tenantID {
-		return nil, domain.ErrVerificationNotFound
-	}
-	if pending.Status != domain.KYCStatusPending {
-		return nil, domain.ErrVerificationNotPending
-	}
-
-	if s.cashfree == nil {
-		return nil, ErrCashfreeUnavailable
-	}
-
-	res, err := s.cashfree.VerifyAadhaarOTP(ctx, refID, otp)
-	if err != nil {
-		var httpStatus int
-		var msg string
-		var apiErr *cashfree.APIError
-		if errors.As(err, &apiErr) {
-			httpStatus = apiErr.StatusCode
-			msg = apiErr.Body
-		} else {
-			msg = err.Error()
-		}
-		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, httpStatus, msg, actor, err)
-		if fail.Class == cashfree.FailureTerminal || fail.Class == cashfree.FailureSystemFault {
-			_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
-		}
-		return nil, fail
-	}
-
-	// Fail closed unless status == "VALID", before reading any demographic identity data
-	if res == nil || !strings.EqualFold(strings.TrimSpace(res.Status), "VALID") {
-		statusStr := "UNKNOWN"
-		msg := ""
-		if res != nil {
-			statusStr = res.Status
-			msg = res.Message
-			if msg == "" {
-				msg = res.Status
-			}
-		}
-		underlying := fmt.Errorf("aadhaar otp verification not valid: status=%s, message=%s", statusStr, msg)
-		fail := s.classifyAndRecordAadhaarFailure(ctx, tenantID, &pending.ID, 200, msg, actor, underlying)
-		if fail.Class == cashfree.FailureTerminal || fail.Class == cashfree.FailureSystemFault {
-			_ = s.repo.FailVerificationTx(ctx, pending.ID, fail.ReasonCode, actor, leaseToken)
-		}
-		return nil, fail
-	}
-
-	canonicalDOB, isDedupable, _ := domain.NormalizeDOB(res.DOB)
-	// KYC-06: Year-only DOB (isDedupable=false) must not establish adulthood on January 1.
-	var majorityDate *time.Time
-	if isDedupable {
-		var mdErr error
-		majorityDate, mdErr = domain.MajorityDateFromDOB(canonicalDOB)
-		if mdErr != nil {
-			slog.Warn("kyc: unparseable dob received from aadhaar otp", "tenant_id", tenantID, "err", mdErr)
-			return nil, &AadhaarVerifyFailure{
-				ReasonCode: "INVALID_DOB_FORMAT",
-				Retryable:  false,
-				Underlying: mdErr,
-			}
-		}
-	}
-	name := domain.NormalizeName(res.Name)
-	identityHash := domain.ComputeIdentityHash(s.cfg.IdentitySecret, name, canonicalDOB, res.Gender, res.MaskedUID)
-
-	tenantName, _ := s.repo.GetTenantName(ctx, tenantID)
-	nameMismatch := !domain.IsNameMatch(tenantName, res.Name)
-
-	now := time.Now().UTC()
-	var expiresAt time.Time
-	if s.cfg.VerificationValidityDays > 0 {
-		expiresAt = now.AddDate(0, 0, s.cfg.VerificationValidityDays)
-	}
-
-	// AUTO-VERIFIED: Government authenticated via direct UIDAI OTP
-	var verified *domain.KYCVerification
-	var completeErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		verified, completeErr = s.repo.CompleteVerificationTx(ctx,
-			pending.ID, res.MaskedUID, identityHash, isDedupable,
-			s.cfg.HashKeyVersion, nil, nameMismatch, res.PhotoBytes,
-			now, expiresAt, majorityDate, actor, leaseToken,
-		)
-		if completeErr == nil {
-			break
-		}
-		if errors.Is(completeErr, domain.ErrVerificationNotPending) {
-			current, checkErr := s.repo.GetVerificationByVendorRefID(ctx, vendorRefID)
-			if checkErr == nil && current != nil && current.Status == domain.KYCStatusVerified {
-				return current, nil
-			}
-		}
-		slog.Warn("kyc: CompleteVerificationTx failed, retrying",
-			"verification_id", pending.ID,
-			"attempt", attempt+1,
-			"err", completeErr,
-		)
-		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
-	}
-	if completeErr != nil {
-		return nil, fmt.Errorf("kyc service: complete aadhaar otp: %w", completeErr)
-	}
-
-	return verified, nil
+	// ADR-005: Aadhaar OTP is disabled platform-wide; fail closed even on direct service calls.
+	return nil, ErrAadhaarOTPDisabled
 }
 
 // ListPendingReviews returns pending manual reviews for a property.

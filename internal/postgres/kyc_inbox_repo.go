@@ -256,8 +256,8 @@ func (r *KYCInboxRepo) ApplyVerificationWebhookTx(ctx context.Context, tx pgx.Tx
 	return WithinTx(ctx, r.pool, apply)
 }
 
-// PurgeProcessedInbox deletes processed kyc_webhook_inbox rows older than olderThan
-// in bounded batches (SKIP LOCKED) to avoid long locks or unbounded WAL spikes.
+// PurgeProcessedInbox deletes terminal ('processed' and 'duplicate') kyc_webhook_inbox rows
+// older than olderThan in bounded batches (SKIP LOCKED) to avoid long locks or WAL spikes.
 // Unresolved, processing, failed, and dead-letter rows are never touched.
 func (r *KYCInboxRepo) PurgeProcessedInbox(ctx context.Context, olderThan time.Duration) (int64, error) {
 	if olderThan <= 0 {
@@ -271,10 +271,11 @@ func (r *KYCInboxRepo) PurgeProcessedInbox(ctx context.Context, olderThan time.D
 			DELETE FROM kyc_webhook_inbox
 			WHERE id IN (
 				SELECT id FROM kyc_webhook_inbox
-				WHERE processing_status = 'processed'
-				  AND processed_at IS NOT NULL
-				  AND processed_at < $1
-				ORDER BY processed_at ASC
+				WHERE (
+					(processing_status = 'processed' AND processed_at IS NOT NULL AND processed_at < $1)
+					OR (processing_status = 'duplicate' AND COALESCE(processed_at, received_at) < $1)
+				)
+				ORDER BY COALESCE(processed_at, received_at) ASC
 				LIMIT $2
 				FOR UPDATE SKIP LOCKED
 			)`, cutoff, batchSize)

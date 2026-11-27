@@ -346,11 +346,13 @@ func (r *UserRepo) LinkUserIdentity(ctx context.Context, userID uuid.UUID, proje
 		return fmt.Errorf("link identity: insert conflicted — concurrent linking detected for (project=%s uid=%s)", projectID, firebaseUID)
 	}
 
-	// Append-only audit event. Failure here must not block the link itself.
-	_, _ = tx.Exec(ctx, `
+	// Append-only audit event. Failure must roll back the entire identity link transaction.
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_identity_audit_events (user_id, actor_user_id, event_type, firebase_project_id, firebase_uid, metadata)
 		VALUES ($1, $1, 'identity_linked', $2, $3, jsonb_build_object('provider', $4::text, 'link_method', $5::text))`,
-		userID, projectID, firebaseUID, provider, linkMethod)
+		userID, projectID, firebaseUID, provider, linkMethod); err != nil {
+		return fmt.Errorf("link identity: append audit event: %w", err)
+	}
 
 	if _, ok := r.db.(beginner); ok {
 		return tx.Commit(ctx)

@@ -173,10 +173,11 @@ func (w *LedgerOutboxWorker) ProcessSingleEvent(ctx context.Context, id int64) e
 		return nil
 	}
 	if errors.Is(dispatchErr, ErrPayoutBatchLeaseBusy) {
-		// Another worker holds the batch dispatch lease; release our outbox lease without
-		// acknowledging success or consuming the retry budget.
-		if rErr := w.repo.ReleaseLease(ctx, evt.ID, leaseToken); rErr != nil {
-			return fmt.Errorf("release outbox lease on busy batch: %w", rErr)
+		// Another worker holds the batch dispatch lease; reschedule with a short jittered delay
+		// without acknowledging success or consuming the retry budget.
+		jitteredNextRetry := time.Now().UTC().Add(5*time.Second + time.Duration(evt.ID%5)*time.Second)
+		if rErr := w.repo.RescheduleLease(ctx, evt.ID, leaseToken, jitteredNextRetry); rErr != nil {
+			return fmt.Errorf("reschedule outbox lease on busy batch: %w", rErr)
 		}
 		return nil
 	}
