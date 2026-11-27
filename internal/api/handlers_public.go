@@ -407,8 +407,12 @@ func (h *Handlers) FirebaseAuth(c *gin.Context) {
 			code = apierr.CodeAuthAccessRevoked
 		case errors.Is(err, auth.ErrAccountReLinkDenied):
 			status = http.StatusForbidden
-			msg = "account re-link denied: owner or manager requires verified Google email match"
+			msg = "account re-link denied: requires verified Google email match"
 			code = apierr.CodeAuthForbidden
+		case errors.Is(err, auth.ErrIdentityMergeRequired):
+			status = http.StatusConflict
+			msg = "an account already exists for this email — sign in with your existing method and link Google from Profile → Security"
+			code = apierr.CodeAuthIdentityMergeRequired
 		}
 		respondErr(c, clientErrWithCode(status, msg, code))
 		return
@@ -579,6 +583,110 @@ func (h *Handlers) DeleteSession(c *gin.Context) {
 	// If the user revoked their currently active session, clear the refresh cookie
 	if claims.FamilyID != nil && *claims.FamilyID == sessionID {
 		h.clearRefreshCookie(c)
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+type authIdentityService interface {
+	ListIdentities(ctx context.Context, userID uuid.UUID) ([]auth.UserIdentity, error)
+	LinkIdentity(ctx context.Context, userID uuid.UUID, idToken string) error
+	MergeIdentity(ctx context.Context, currentUserID uuid.UUID, currentFreshIDToken, secondaryIDToken string) error
+}
+
+// ListAuthIdentities handles GET /api/auth/identities.
+func (h *Handlers) ListAuthIdentities(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	svc, ok := h.Auth.(authIdentityService)
+	if !ok || svc == nil {
+		c.JSON(http.StatusOK, gin.H{"identities": []auth.UserIdentity{}})
+		return
+	}
+	identities, err := svc.ListIdentities(c.Request.Context(), claims.UserID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if identities == nil {
+		identities = []auth.UserIdentity{}
+	}
+	c.JSON(http.StatusOK, gin.H{"identities": identities})
+}
+
+type linkIdentityBody struct {
+	IDToken string `json:"id_token" binding:"required"`
+}
+
+// LinkAuthIdentity handles POST /api/auth/identities/link.
+func (h *Handlers) LinkAuthIdentity(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	var body linkIdentityBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "id_token required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	svc, ok := h.Auth.(authIdentityService)
+	if !ok || svc == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	if err := svc.LinkIdentity(c.Request.Context(), claims.UserID, body.IDToken); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrIdentityAlreadyLinked):
+			respondErr(c, clientErrWithCode(http.StatusConflict, "this sign-in method is already linked to another account", apierr.CodeAuthIdentityAlreadyLinked))
+		case errors.Is(err, auth.ErrInvalidFirebaseToken):
+			respondErr(c, clientErrWithCode(http.StatusUnauthorized, "invalid firebase token", apierr.CodeAuthInvalidFirebaseToken))
+		case errors.Is(err, auth.ErrFirebaseNotConfigured):
+			respondErr(c, clientErrWithCode(http.StatusServiceUnavailable, "firebase auth not configured", apierr.CodeAuthFirebaseNotConfigured))
+		default:
+			respondErr(c, err)
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+type mergeIdentityBody struct {
+	CurrentIDToken   string `json:"current_id_token" binding:"required"`
+	SecondaryIDToken string `json:"secondary_id_token" binding:"required"`
+}
+
+// MergeAuthIdentity handles POST /api/auth/identities/merge.
+func (h *Handlers) MergeAuthIdentity(c *gin.Context) {
+	claims, ok := auth.ClaimsFromContext(c)
+	if !ok {
+		apierr.RespondClientErr(c, http.StatusUnauthorized, "unauthorized", apierr.CodeAuthUnauthorized)
+		return
+	}
+	var body mergeIdentityBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		apierr.RespondBindErr(c, "current_id_token and secondary_id_token required", apierr.CodeRequestInvalidBody)
+		return
+	}
+	svc, ok := h.Auth.(authIdentityService)
+	if !ok || svc == nil {
+		c.JSON(http.StatusInternalServerError, apierr.ErrorEnvelope{Error: "internal error"})
+		return
+	}
+	if err := svc.MergeIdentity(c.Request.Context(), claims.UserID, body.CurrentIDToken, body.SecondaryIDToken); err != nil {
+		switch {
+		case errors.Is(err, auth.ErrStaleAuthToken):
+			respondErr(c, clientErrWithCode(http.StatusUnauthorized, "recent authentication required for both accounts", apierr.CodeAuthInvalidFirebaseToken))
+		case errors.Is(err, auth.ErrInvalidFirebaseToken):
+			respondErr(c, clientErrWithCode(http.StatusUnauthorized, "invalid firebase token", apierr.CodeAuthInvalidFirebaseToken))
+		case errors.Is(err, auth.ErrFirebaseNotConfigured):
+			respondErr(c, clientErrWithCode(http.StatusServiceUnavailable, "firebase auth not configured", apierr.CodeAuthFirebaseNotConfigured))
+		default:
+			respondErr(c, err)
+		}
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

@@ -55,3 +55,17 @@ func (u *User) IsManagerOrOwner() bool {
 func (u *User) IsPlatformOps() bool {
 	return u != nil && u.Role == RolePlatformOps
 }
+
+// UserIdentity represents a verified external Firebase identity linked to a canonical user.
+type UserIdentity struct {
+	ID                  uuid.UUID  `json:"id"`
+	UserID              uuid.UUID  `json:"user_id"`
+	FirebaseProjectID   string     `json:"firebase_project_id"`
+	FirebaseUID         string     `json:"firebase_uid"`
+	Provider            string     `json:"provider"`
+	Status              string     `json:"status"`
+	LinkMethod          string     `json:"link_method"`
+	CreatedAt           time.Time  `json:"created_at"`
+	LinkedAt            time.Time  `json:"linked_at"`
+	LastAuthenticatedAt *time.Time `json:"last_authenticated_at,omitempty"`
+}

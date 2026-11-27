@@ -45,6 +45,17 @@ type UserRepository interface {
 	SetPropertyID(ctx context.Context, userID, propertyID uuid.UUID) error
 }
 
+// UserIdentity is an alias to domain.UserIdentity.
+type UserIdentity = domain.UserIdentity
+
+// UserIdentityRepository is an optional extension of UserRepository for multi-identity
+// mapping (hybrid Phone + Google linking and verified account merge).
+type UserIdentityRepository interface {
+	ListUserIdentities(ctx context.Context, userID uuid.UUID) ([]domain.UserIdentity, error)
+	LinkUserIdentity(ctx context.Context, userID uuid.UUID, projectID, firebaseUID, provider, linkMethod string) error
+	MergeUserIdentity(ctx context.Context, targetUserID, sourceUserID uuid.UUID, projectID, firebaseUID, provider string) error
+}
+
 // OTPRepository is the subset of postgres.OTPRepo used by auth.
 type OTPRepository interface {
 	Create(ctx context.Context, req *postgres.OTPRequest) error

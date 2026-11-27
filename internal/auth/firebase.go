@@ -14,6 +14,8 @@ import (
 // FirebaseIdentity is the verified Firebase Auth identity extracted from an ID token.
 type FirebaseIdentity struct {
 	UID           string
+	ProjectID     string
+	Provider      string
 	Phone         string
 	Email         string
 	EmailVerified bool
@@ -22,7 +24,8 @@ type FirebaseIdentity struct {
 
 // FirebaseVerifier validates Firebase ID tokens and extracts UID + phone/email.
 type FirebaseVerifier struct {
-	client *fbauth.Client
+	client    *fbauth.Client
+	projectID string
 }
 
 // NewFirebaseVerifier initializes Firebase Admin SDK for token verification.
@@ -42,7 +45,7 @@ func NewFirebaseVerifier(ctx context.Context, projectID, credentialsPath string)
 	if err != nil {
 		return nil, fmt.Errorf("firebase auth client: %w", err)
 	}
-	return &FirebaseVerifier{client: client}, nil
+	return &FirebaseVerifier{client: client, projectID: projectID}, nil
 }
 
 // IdentityFromIDToken verifies a Firebase ID token and returns UID plus normalized phone and/or email.
@@ -71,8 +74,15 @@ func (v *FirebaseVerifier) IdentityFromIDToken(ctx context.Context, idToken stri
 		authTime = time.Unix(at, 0).UTC()
 	}
 
+	provider := token.Firebase.SignInProvider
+	if provider == "" {
+		provider = "firebase"
+	}
+
 	return FirebaseIdentity{
 		UID:           token.UID,
+		ProjectID:     v.projectID,
+		Provider:      provider,
 		Phone:         phone,
 		Email:         email,
 		EmailVerified: emailVerified,

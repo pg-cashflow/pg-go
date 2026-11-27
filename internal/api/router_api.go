@@ -25,9 +25,12 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	api.POST("/auth/firebase", sameOrigin, ipRateLimit(120.0/60, 300), h.FirebaseAuth)
 	api.POST("/auth/refresh", sameOrigin, cookieOrIPRateLimit(RefreshCookieName, 30.0/60, 60), h.AuthRefresh)
 	api.POST("/auth/logout", sameOrigin, h.AuthLogout)
-	api.POST("/auth/revoke-sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
-	api.GET("/auth/sessions", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.GetActiveSessions)
-	api.DELETE("/auth/sessions/:id", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.DeleteSession)
+	api.POST("/auth/revoke-sessions", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.RevokeSessions)
+	api.GET("/auth/sessions", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.GetActiveSessions)
+	api.DELETE("/auth/sessions/:id", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.DeleteSession)
+	api.GET("/auth/identities", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.ListAuthIdentities)
+	api.POST("/auth/identities/link", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.LinkAuthIdentity)
+	api.POST("/auth/identities/merge", auth.RequireAuthoritativeAuth(), auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), h.MergeAuthIdentity)
 
 	pending := api.Group("/join", auth.RequirePendingJoin(d.JWTSecret, d.AuthUserRepo))
 	{
@@ -38,15 +41,18 @@ func registerAPIRoutes(r *gin.Engine, d Deps, h *Handlers, health gin.HandlerFun
 	}
 
 	owner := api.Group("/owner", auth.RequireOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
-	registerOwnerRoutes(owner, h)
+	ownerAuth := api.Group("/owner", auth.RequireAuthoritativeAuth(), auth.RequireOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
+	registerOwnerRoutes(owner, ownerAuth, h)
 
 	manager := api.Group("/manager", auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
-	registerManagerRoutes(manager, d, h)
+	managerAuth := api.Group("/manager", auth.RequireAuthoritativeAuth(), auth.RequireManagerOrOwner(d.JWTSecret, d.AuthUserRepo), h.ResolveOwnerPropertyScope())
+	registerManagerRoutes(manager, managerAuth, d, h)
 
 	tenant := api.Group("/tenant", auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
-	registerTenantRoutes(tenant, h)
+	tenantAuth := api.Group("/tenant", auth.RequireAuthoritativeAuth(), auth.RequireTenant(d.JWTSecret, d.AuthTenantRepo, d.AuthUserRepo))
+	registerTenantRoutes(tenant, tenantAuth, h)
 
-	platform := api.Group("/platform", auth.RequirePlatformOps(d.JWTSecret, d.AuthUserRepo))
+	platform := api.Group("/platform", auth.RequireAuthoritativeAuth(), auth.RequirePlatformOps(d.JWTSecret, d.AuthUserRepo))
 	registerPlatformRoutes(platform, h)
 
 	api.GET("/search", auth.RequireOwnerOrManagerOrTenant(d.JWTSecret, d.AuthUserRepo), userOrIPRateLimit(120.0/60, 20), h.Search)

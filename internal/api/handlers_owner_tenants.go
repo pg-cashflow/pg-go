@@ -37,6 +37,19 @@ func (h *Handlers) CreateTenant(c *gin.Context) {
 		apierr.RespondClientErr(c, http.StatusBadRequest, "due_day must be 1–28", apierr.CodeRequestDueDayInvalid)
 		return
 	}
+	if body.Phone != nil && strings.TrimSpace(*body.Phone) != "" {
+		rawPhone := strings.TrimSpace(*body.Phone)
+		if !strings.HasPrefix(rawPhone, "+") && !auth.IsValidIndianMobile(rawPhone) {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "invalid Indian mobile number (must be 10 digits starting with 6–9)", apierr.CodeRequestInvalidBody)
+			return
+		}
+		norm := auth.NormalizePhone(rawPhone)
+		if norm == "" {
+			apierr.RespondClientErr(c, http.StatusBadRequest, "invalid phone number", apierr.CodeRequestInvalidBody)
+			return
+		}
+		body.Phone = &norm
+	}
 	if body.NoticePeriodDays <= 0 {
 		body.NoticePeriodDays = 30
 	}

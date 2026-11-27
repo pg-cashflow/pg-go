@@ -57,3 +57,14 @@ func NormalizePhone(p string) string {
 	// Ambiguous or malformed
 	return ""
 }
+
+// IsValidIndianMobile checks that the normalized phone number is a valid Indian mobile
+// number (+91 followed by 10 digits starting with 6-9).
+func IsValidIndianMobile(p string) bool {
+	norm := NormalizePhone(p)
+	if len(norm) != 13 || !strings.HasPrefix(norm, "+91") {
+		return false
+	}
+	first := norm[3]
+	return first >= '6' && first <= '9'
+}

@@ -26,6 +26,8 @@ const (
 	CodeAuthNoPropertyScope       Code = "auth.noPropertyScope"
 	CodeAuthNoDeliveryChannel     Code = "auth.noDeliveryChannel"
 	CodeAuthEndpointDisabled      Code = "auth.endpointDisabled"
+	CodeAuthIdentityMergeRequired Code = "auth.identityMergeRequired"
+	CodeAuthIdentityAlreadyLinked Code = "auth.identityAlreadyLinked"
 
 	// Join
 	CodeJoinInvalidInvite         Code = "join.invalidInvite"

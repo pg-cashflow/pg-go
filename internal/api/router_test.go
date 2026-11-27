@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/magiclink"
 )
@@ -161,5 +162,75 @@ func TestLegacyAppShellEnabled(t *testing.T) {
 	}
 	if !legacyAppShellEnabled(Deps{AppEnv: ""}) {
 		t.Fatal("expected legacyAppShellEnabled to be true when AppEnv is empty")
+	}
+}
+
+type countingAuthUserRepo struct {
+	user  *domain.User
+	calls int
+}
+
+func (c *countingAuthUserRepo) GetByID(_ context.Context, _ uuid.UUID) (*domain.User, error) {
+	c.calls++
+	return c.user, nil
+}
+
+func (c *countingAuthUserRepo) IsFamilyActive(_ context.Context, _ uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (c *countingAuthUserRepo) IncrementTokenVersion(_ context.Context, _ uuid.UUID) error {
+	return nil
+}
+
+func TestAuthoritativeAuthWiredOnSensitiveRoutes_F2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	secret := "test-secret-key-with-sufficient-length-32"
+	uid := uuid.New()
+	pid := uuid.New()
+	user := &domain.User{
+		ID:           uid,
+		Role:         domain.RoleOwner,
+		PropertyID:   &pid,
+		TokenVersion: 1,
+	}
+	userRepo := &countingAuthUserRepo{user: user}
+	r := NewRouter(Deps{
+		JWTSecret:    secret,
+		AuthUserRepo: userRepo,
+		MagicLink:    &stubRouterMagicLink{},
+	})
+
+	tok, err := auth.IssueAccessToken(secret, user)
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+
+	// 1. Warm the positive token-version cache with an ordinary read
+	req1 := httptest.NewRequest(http.MethodGet, "/api/owner/properties", nil)
+	req1.Header.Set("Authorization", "Bearer "+tok)
+	r.ServeHTTP(httptest.NewRecorder(), req1)
+	if userRepo.calls != 1 {
+		t.Fatalf("expected 1 GetByID call on cold cache, got %d", userRepo.calls)
+	}
+
+	// 2. Second ordinary read uses cache (0 new DB calls)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/owner/properties", nil)
+	req2.Header.Set("Authorization", "Bearer "+tok)
+	r.ServeHTTP(httptest.NewRecorder(), req2)
+	if userRepo.calls != 1 {
+		t.Fatalf("expected cached read to make 0 new GetByID calls, got total %d", userRepo.calls)
+	}
+
+	// 3. Authoritative endpoints (/api/auth/identities, /api/auth/sessions) MUST bypass cache
+	// even though they are GET requests not matching isFinancialMutation()!
+	for _, path := range []string{"/api/auth/identities", "/api/auth/sessions"} {
+		before := userRepo.calls
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		r.ServeHTTP(httptest.NewRecorder(), req)
+		if userRepo.calls != before+1 {
+			t.Fatalf("expected %s to bypass auth cache via RequireAuthoritativeAuth (before=%d, after=%d)", path, before, userRepo.calls)
+		}
 	}
 }

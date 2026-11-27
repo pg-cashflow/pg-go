@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/invite"
 	"github.com/pg-cashflow/pg-go/internal/mailer"
@@ -41,6 +42,8 @@ var (
 	ErrNoCurrentSession      = errors.New("cannot identify current session")
 	ErrAccountReLinkDenied   = errors.New("auth: account re-link denied")
 	ErrAccessRevoked         = errors.New("auth: account disabled or access revoked")
+	ErrIdentityMergeRequired = errors.New("auth: identity merge required")
+	ErrIdentityAlreadyLinked = errors.New("auth: identity already linked to another user")
 )
 
 // RateLimitError conveys the remaining duration until retry is permitted.
@@ -420,11 +423,13 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 					}
 				}
 			}
-			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
+			if err := s.linkIdentity(ctx, user.ID, ident, "signup"); err != nil {
 				return "", nil, fmt.Errorf("link firebase uid: %w", err)
 			}
-			uid := ident.UID
-			user.FirebaseUID = &uid
+			if user.FirebaseUID == nil || *user.FirebaseUID == "" {
+				uid := ident.UID
+				user.FirebaseUID = &uid
+			}
 			return s.finishLogin(ctx, user)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -440,23 +445,17 @@ func (s *Service) VerifyFirebaseAndIssueToken(ctx context.Context, idToken, invi
 		user, err = s.users.GetByEmail(ctx, ident.Email)
 		if err == nil {
 			if user.FirebaseUID != nil && *user.FirebaseUID != "" && *user.FirebaseUID != ident.UID {
-				// Invalidate all prior sessions when linking to a new Firebase UID
-				if err := s.users.IncrementTokenVersion(ctx, user.ID); err != nil {
-					return "", nil, fmt.Errorf("auth: relink token version increment: %w", err)
-				}
-				InvalidateTokenVersionCache(user.ID)
-				user.TokenVersion++
-				if s.refreshRepo != nil {
-					if err := s.refreshRepo.RevokeUserTokens(ctx, user.ID); err != nil {
-						return "", nil, fmt.Errorf("auth: relink session revocation: %w", err)
-					}
-				}
+				// Do not silently overwrite an existing Firebase UID (e.g. Phone UID) on email match,
+				// which would lock out Phone logins. Require explicit authenticated linking/merge.
+				return "", nil, ErrIdentityMergeRequired
 			}
-			if err := s.users.LinkFirebaseUID(ctx, user.ID, ident.UID); err != nil {
+			if err := s.linkIdentity(ctx, user.ID, ident, "signup"); err != nil {
 				return "", nil, fmt.Errorf("link firebase uid: %w", err)
 			}
-			uid := ident.UID
-			user.FirebaseUID = &uid
+			if user.FirebaseUID == nil || *user.FirebaseUID == "" {
+				uid := ident.UID
+				user.FirebaseUID = &uid
+			}
 			return s.finishLogin(ctx, user)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -658,31 +657,118 @@ func (s *Service) createUserForIdentity(ctx context.Context, ident FirebaseIdent
 func (s *Service) safeCreateUser(ctx context.Context, u *domain.User) error {
 	err := s.users.Create(ctx, u)
 	if err == nil {
+		if u.FirebaseUID != nil && *u.FirebaseUID != "" {
+			_ = s.linkIdentity(ctx, u.ID, FirebaseIdentity{UID: *u.FirebaseUID, Provider: "firebase"}, "signup")
+		}
 		return nil
 	}
 
-	// On insert conflict (e.g. concurrent double-click provisioning race),
-	// attempt to fetch the existing user record rather than failing.
-	if u.FirebaseUID != nil && *u.FirebaseUID != "" {
-		if existing, ferr := s.users.GetByFirebaseUID(ctx, *u.FirebaseUID); ferr == nil {
-			*u = *existing
-			return nil
-		}
-	}
-	if u.Email != "" {
-		if existing, ferr := s.users.GetByEmail(ctx, u.Email); ferr == nil {
-			*u = *existing
-			return nil
-		}
-	}
-	if u.Phone != "" {
-		if existing, ferr := s.users.GetByPhone(ctx, u.Phone); ferr == nil {
-			*u = *existing
-			return nil
+	// F1: Only treat Postgres unique_violation (23505) on firebase_uid as a concurrent
+	// double-click provisioning race. Any other DB error (timeout, FK, check, etc.)
+	// must surface as an error rather than logging in as an existing email/phone user.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if u.FirebaseUID != nil && *u.FirebaseUID != "" &&
+			(pgErr.ConstraintName == "" || strings.Contains(pgErr.ConstraintName, "firebase_uid")) {
+			if existing, ferr := s.users.GetByFirebaseUID(ctx, *u.FirebaseUID); ferr == nil {
+				*u = *existing
+				return nil
+			}
 		}
 	}
 
 	return fmt.Errorf("create user: %w", err)
+}
+
+func (s *Service) linkIdentity(ctx context.Context, userID uuid.UUID, ident FirebaseIdentity, linkMethod string) error {
+	if repo, ok := s.users.(UserIdentityRepository); ok {
+		return repo.LinkUserIdentity(ctx, userID, ident.ProjectID, ident.UID, ident.Provider, linkMethod)
+	}
+	return s.users.LinkFirebaseUID(ctx, userID, ident.UID)
+}
+
+// ListIdentities returns all external Firebase identities linked to the user.
+func (s *Service) ListIdentities(ctx context.Context, userID uuid.UUID) ([]UserIdentity, error) {
+	if repo, ok := s.users.(UserIdentityRepository); ok {
+		return repo.ListUserIdentities(ctx, userID)
+	}
+	u, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if u.FirebaseUID == nil || *u.FirebaseUID == "" {
+		return nil, nil
+	}
+	return []UserIdentity{{
+		UserID:      u.ID,
+		FirebaseUID: *u.FirebaseUID,
+		Provider:    "firebase",
+		Status:      "active",
+		LinkMethod:  "backfill",
+	}}, nil
+}
+
+// LinkIdentity attaches a Firebase identity (typically after client-side linkWithCredential)
+// to the currently authenticated user, rejecting if the UID belongs to another user.
+func (s *Service) LinkIdentity(ctx context.Context, userID uuid.UUID, idToken string) error {
+	if s.firebase == nil {
+		return ErrFirebaseNotConfigured
+	}
+	ident, err := s.firebase.IdentityFromIDToken(ctx, idToken)
+	if err != nil {
+		return err
+	}
+	if ident.UID == "" {
+		return ErrInvalidFirebaseToken
+	}
+	if existing, err := s.users.GetByFirebaseUID(ctx, ident.UID); err == nil && existing.ID != userID {
+		return ErrIdentityAlreadyLinked
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("check existing identity: %w", err)
+	}
+	return s.linkIdentity(ctx, userID, ident, "firebase_link")
+}
+
+// MergeIdentity performs an explicit, dual-token-verified merge of a secondary Firebase UID
+// into the currently authenticated canonical user (e.g. when Phone and Google created separate UIDs).
+func (s *Service) MergeIdentity(ctx context.Context, currentUserID uuid.UUID, currentFreshIDToken, secondaryIDToken string) error {
+	if s.firebase == nil {
+		return ErrFirebaseNotConfigured
+	}
+	primaryIdent, err := s.firebase.IdentityFromIDToken(ctx, currentFreshIDToken)
+	if err != nil {
+		return err
+	}
+	if primaryIdent.AuthTime.IsZero() || time.Since(primaryIdent.AuthTime) > 10*time.Minute {
+		return ErrStaleAuthToken
+	}
+	primaryUser, err := s.users.GetByFirebaseUID(ctx, primaryIdent.UID)
+	if err != nil || primaryUser.ID != currentUserID {
+		return ErrInvalidFirebaseToken
+	}
+
+	secIdent, err := s.firebase.IdentityFromIDToken(ctx, secondaryIDToken)
+	if err != nil {
+		return err
+	}
+	if secIdent.AuthTime.IsZero() || time.Since(secIdent.AuthTime) > 10*time.Minute {
+		return ErrStaleAuthToken
+	}
+	if secIdent.UID == "" || secIdent.UID == primaryIdent.UID {
+		return ErrInvalidFirebaseToken
+	}
+
+	var sourceUserID uuid.UUID
+	if existing, err := s.users.GetByFirebaseUID(ctx, secIdent.UID); err == nil {
+		sourceUserID = existing.ID
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("lookup secondary identity: %w", err)
+	}
+
+	if repo, ok := s.users.(UserIdentityRepository); ok {
+		return repo.MergeUserIdentity(ctx, currentUserID, sourceUserID, secIdent.ProjectID, secIdent.UID, secIdent.Provider)
+	}
+	return ErrFirebaseNotConfigured
 }
 
 func setFirebaseUID(u *domain.User, firebaseUID string) {
@@ -788,24 +874,36 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		LastUsedAt: now,
 	}
 
-	// Pre-validate user existence and status before committing rotation transaction
+	// Pre-validate user existence and status before committing rotation transaction,
+	// and reuse the loaded user/tenant after rotation to avoid duplicate DB round trips (F3).
+	var preUser *domain.User
+	var preStatusVerified bool
 	if existingRT, err := s.refreshRepo.GetRefreshTokenByHash(ctx, oldHash); err == nil && existingRT != nil {
-		if preUser, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && preUser != nil {
-			if preUser.IsDisabled() {
+		if u, uerr := s.users.GetByID(ctx, existingRT.UserID); uerr == nil && u != nil {
+			if u.IsDisabled() {
 				if s.refreshRepo != nil {
 					InvalidateFamily(existingRT.FamilyID)
 					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
 				}
 				return "", "", nil, ErrAccessRevoked
 			}
-			if preUser.TenantID != nil && s.tenants != nil {
-				if t, terr := s.tenants.GetByID(ctx, *preUser.TenantID); terr == nil && t != nil && !t.CanSignIn() {
-					if s.refreshRepo != nil {
-						InvalidateFamily(existingRT.FamilyID)
-						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
+			tenantVerified := true
+			if u.TenantID != nil && s.tenants != nil {
+				if t, terr := s.tenants.GetByID(ctx, *u.TenantID); terr == nil && t != nil {
+					if !t.CanSignIn() {
+						if s.refreshRepo != nil {
+							InvalidateFamily(existingRT.FamilyID)
+							_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), existingRT.FamilyID)
+						}
+						return "", "", nil, ErrTenantVacated
 					}
-					return "", "", nil, ErrTenantVacated
+				} else if terr != nil {
+					tenantVerified = false
 				}
+			}
+			if tenantVerified {
+				preUser = u
+				preStatusVerified = true
 			}
 		}
 	}
@@ -827,28 +925,33 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		// The caller MUST NOT update the refresh cookie — the client's existing cookie
 		// is already the valid successor token.
 		if errors.Is(err, domain.ErrGraceWindow) && rotatedRT != nil {
-			user, uerr := s.users.GetByID(ctx, rotatedRT.UserID)
-			if uerr != nil {
-				return "", "", nil, fmt.Errorf("grace-window load user: %w", uerr)
-			}
-			if user.IsDisabled() {
-				if s.refreshRepo != nil {
-					InvalidateFamily(rotatedRT.FamilyID)
-					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+			if preStatusVerified && preUser != nil && preUser.ID == rotatedRT.UserID {
+				user = preUser
+			} else {
+				var uerr error
+				user, uerr = s.users.GetByID(ctx, rotatedRT.UserID)
+				if uerr != nil {
+					return "", "", nil, fmt.Errorf("grace-window load user: %w", uerr)
 				}
-				return "", "", nil, ErrAccessRevoked
-			}
-			if user.TenantID != nil && s.tenants != nil {
-				t, terr := s.tenants.GetByID(ctx, *user.TenantID)
-				if terr != nil {
-					return "", "", nil, fmt.Errorf("grace-window load tenant: %w", terr)
-				}
-				if t != nil && !t.CanSignIn() {
+				if user.IsDisabled() {
 					if s.refreshRepo != nil {
 						InvalidateFamily(rotatedRT.FamilyID)
 						_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 					}
-					return "", "", nil, ErrTenantVacated
+					return "", "", nil, ErrAccessRevoked
+				}
+				if user.TenantID != nil && s.tenants != nil {
+					t, terr := s.tenants.GetByID(ctx, *user.TenantID)
+					if terr != nil {
+						return "", "", nil, fmt.Errorf("grace-window load tenant: %w", terr)
+					}
+					if t != nil && !t.CanSignIn() {
+						if s.refreshRepo != nil {
+							InvalidateFamily(rotatedRT.FamilyID)
+							_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+						}
+						return "", "", nil, ErrTenantVacated
+					}
 				}
 			}
 			accessToken, aerr := IssueAccessTokenWithFamily(s.jwtSecret, user, &rotatedRT.FamilyID)
@@ -862,30 +965,34 @@ func (s *Service) RotateRefreshTokenWithClient(ctx context.Context, plaintextTok
 		return "", "", nil, fmt.Errorf("rotate refresh token: %w", err)
 	}
 
-	user, err = s.users.GetByID(ctx, rotatedRT.UserID)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("load user: %w", err)
-	}
-	if user.IsDisabled() {
-		if s.refreshRepo != nil {
-			InvalidateFamily(rotatedRT.FamilyID)
-			_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
-		}
-		return "", "", nil, ErrAccessRevoked
-	}
-
-	// Verify tenant status if tenant
-	if user.TenantID != nil && s.tenants != nil {
-		t, err := s.tenants.GetByID(ctx, *user.TenantID)
+	if preStatusVerified && preUser != nil && preUser.ID == rotatedRT.UserID {
+		user = preUser
+	} else {
+		user, err = s.users.GetByID(ctx, rotatedRT.UserID)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("load tenant: %w", err)
+			return "", "", nil, fmt.Errorf("load user: %w", err)
 		}
-		if t != nil && !t.CanSignIn() {
+		if user.IsDisabled() {
 			if s.refreshRepo != nil {
 				InvalidateFamily(rotatedRT.FamilyID)
 				_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
 			}
-			return "", "", nil, ErrTenantVacated
+			return "", "", nil, ErrAccessRevoked
+		}
+
+		// Verify tenant status if tenant
+		if user.TenantID != nil && s.tenants != nil {
+			t, err := s.tenants.GetByID(ctx, *user.TenantID)
+			if err != nil {
+				return "", "", nil, fmt.Errorf("load tenant: %w", err)
+			}
+			if t != nil && !t.CanSignIn() {
+				if s.refreshRepo != nil {
+					InvalidateFamily(rotatedRT.FamilyID)
+					_ = s.refreshRepo.RevokeFamily(context.WithoutCancel(ctx), rotatedRT.FamilyID)
+				}
+				return "", "", nil, ErrTenantVacated
+			}
 		}
 	}
 

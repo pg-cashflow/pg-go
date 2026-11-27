@@ -168,6 +168,19 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 }
 
 func (r *UserRepo) GetByFirebaseUID(ctx context.Context, firebaseUID string) (*domain.User, error) {
+	u, err := scanUser(r.db.QueryRow(ctx, `
+		SELECT u.id, u.phone, u.email, u.role, u.tenant_id, u.property_id, u.firebase_uid,
+		       u.token_version, u.locale, u.theme, u.disabled_at, u.profile, u.created_at, u.last_login_at
+		FROM user_identities ui
+		JOIN users u ON u.id = ui.user_id
+		WHERE ui.firebase_uid = $1 AND ui.status = 'active'
+		LIMIT 1`, firebaseUID))
+	if err == nil {
+		return u, nil
+	}
+	if err != pgx.ErrNoRows {
+		return nil, err
+	}
 	return scanUser(r.db.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE firebase_uid=$1`, firebaseUID))
 }
 
@@ -176,15 +189,162 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.User, err
 }
 
 func (r *UserRepo) LinkFirebaseUID(ctx context.Context, userID uuid.UUID, firebaseUID string) error {
+	return r.LinkUserIdentity(ctx, userID, "", firebaseUID, "firebase", "signup")
+}
+
+// ListUserIdentities returns all active/revoked external identities linked to userID.
+func (r *UserRepo) ListUserIdentities(ctx context.Context, userID uuid.UUID) ([]domain.UserIdentity, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, user_id, firebase_project_id, firebase_uid, provider, status, link_method, created_at, linked_at, last_authenticated_at
+		FROM user_identities
+		WHERE user_id = $1
+		ORDER BY created_at ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.UserIdentity
+	for rows.Next() {
+		var ui domain.UserIdentity
+		if err := rows.Scan(
+			&ui.ID, &ui.UserID, &ui.FirebaseProjectID, &ui.FirebaseUID,
+			&ui.Provider, &ui.Status, &ui.LinkMethod, &ui.CreatedAt, &ui.LinkedAt, &ui.LastAuthenticatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, ui)
+	}
+	return out, rows.Err()
+}
+
+// LinkUserIdentity records an external Firebase UID for userID without overwriting any existing
+// different user's mapping or silently replacing users.firebase_uid.
+func (r *UserRepo) LinkUserIdentity(ctx context.Context, userID uuid.UUID, projectID, firebaseUID, provider, linkMethod string) error {
+	if provider == "" {
+		provider = "firebase"
+	}
+	if linkMethod == "" {
+		linkMethod = "firebase_link"
+	}
+	var existingOwner uuid.UUID
+	err := r.db.QueryRow(ctx, `
+		SELECT user_id FROM user_identities
+		WHERE firebase_project_id = $1 AND firebase_uid = $2 AND status = 'active'`,
+		projectID, firebaseUID,
+	).Scan(&existingOwner)
+	if err == nil {
+		if existingOwner != userID {
+			return fmt.Errorf("identity already linked to another user")
+		}
+		_, err = r.db.Exec(ctx, `
+			UPDATE user_identities SET last_authenticated_at = NOW()
+			WHERE firebase_project_id = $1 AND firebase_uid = $2`, projectID, firebaseUID)
+		return err
+	}
+	if err != pgx.ErrNoRows {
+		return err
+	}
+
 	tag, err := r.db.Exec(ctx, `
-		UPDATE users SET firebase_uid=$2
-		WHERE id=$1`,
+		UPDATE users
+		SET firebase_uid = COALESCE(NULLIF(firebase_uid, ''), $2)
+		WHERE id = $1`,
 		userID, firebaseUID)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("user not found %s", userID)
+	}
+
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO user_identities (user_id, firebase_project_id, firebase_uid, provider, status, link_method, last_authenticated_at)
+		VALUES ($1, $2, $3, $4, 'active', $5, NOW())
+		ON CONFLICT (firebase_project_id, firebase_uid) DO NOTHING`,
+		userID, projectID, firebaseUID, provider, linkMethod)
+	if err != nil {
+		return err
+	}
+	_, _ = r.db.Exec(ctx, `
+		INSERT INTO user_identity_audit_events (user_id, actor_user_id, event_type, firebase_project_id, firebase_uid, metadata)
+		VALUES ($1, $1, 'identity_linked', $2, $3, jsonb_build_object('provider', $4::text, 'link_method', $5::text))`,
+		userID, projectID, firebaseUID, provider, linkMethod)
+	return nil
+}
+
+// MergeUserIdentity atomically reassigns a secondary Firebase UID from sourceUserID to targetUserID
+// and records an immutable audit event.
+func (r *UserRepo) MergeUserIdentity(ctx context.Context, targetUserID, sourceUserID uuid.UUID, projectID, firebaseUID, provider string) error {
+	if provider == "" {
+		provider = "firebase"
+	}
+	var err error
+	type beginner interface {
+		Begin(context.Context) (pgx.Tx, error)
+	}
+	var tx pgx.Tx
+	if b, ok := r.db.(beginner); ok {
+		tx, err = b.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin merge identity tx: %w", err)
+		}
+		defer tx.Rollback(ctx)
+	} else if t, ok := r.db.(pgx.Tx); ok {
+		tx = t
+	} else {
+		return fmt.Errorf("merge user identity requires pool or tx")
+	}
+
+	// Lock identity row if present
+	var existingOwner uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT user_id FROM user_identities
+		WHERE firebase_project_id = $1 AND firebase_uid = $2
+		FOR UPDATE`, projectID, firebaseUID).Scan(&existingOwner)
+	if err != nil && err != pgx.ErrNoRows {
+		return fmt.Errorf("lock identity for merge: %w", err)
+	}
+	if err == nil {
+		if _, err := tx.Exec(ctx, `
+			UPDATE user_identities
+			SET user_id = $1, status = 'active', link_method = 'verified_merge', linked_at = NOW(), last_authenticated_at = NOW()
+			WHERE firebase_project_id = $2 AND firebase_uid = $3`,
+			targetUserID, projectID, firebaseUID); err != nil {
+			return fmt.Errorf("reassign user identity: %w", err)
+		}
+	} else {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO user_identities (user_id, firebase_project_id, firebase_uid, provider, status, link_method, last_authenticated_at)
+			VALUES ($1, $2, $3, $4, 'active', 'verified_merge', NOW())`,
+			targetUserID, projectID, firebaseUID, provider); err != nil {
+			return fmt.Errorf("insert merged user identity: %w", err)
+		}
+	}
+
+	// Clear legacy firebase_uid on sourceUserID if it pointed to this UID so it can't shadow.
+	if sourceUserID != uuid.Nil && sourceUserID != targetUserID {
+		if _, err := tx.Exec(ctx, `UPDATE users SET firebase_uid = NULL WHERE id = $1 AND firebase_uid = $2`, sourceUserID, firebaseUID); err != nil {
+			return fmt.Errorf("clear source legacy firebase_uid: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = NOW() WHERE user_id = $1 AND revoked = FALSE`, sourceUserID); err != nil {
+			return fmt.Errorf("revoke source user tokens: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_identity_audit_events (user_id, actor_user_id, event_type, firebase_project_id, firebase_uid, source_user_id, metadata)
+		VALUES ($1, $1, 'identity_merged', $2, $3, NULLIF($4::text, '')::uuid, jsonb_build_object('provider', $5::text))`,
+		targetUserID, projectID, firebaseUID, func() string {
+			if sourceUserID == uuid.Nil {
+				return ""
+			}
+			return sourceUserID.String()
+		}(), provider); err != nil {
+		return fmt.Errorf("audit identity merge: %w", err)
+	}
+
+	if _, ok := r.db.(beginner); ok {
+		return tx.Commit(ctx)
 	}
 	return nil
 }

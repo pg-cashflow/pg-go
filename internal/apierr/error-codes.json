@@ -18,6 +18,8 @@
   "auth.noPropertyScope",
   "auth.noDeliveryChannel",
   "auth.endpointDisabled",
+  "auth.identityMergeRequired",
+  "auth.identityAlreadyLinked",
   "join.invalidInvite",
   "join.noPendingRequest",
   "join.notFound",

@@ -11,24 +11,24 @@ import (
 // dues viewing, payment history, push setup, and lifecycle status.
 //
 // Gated: amenities and auxiliary features requiring KYC onboarding completion.
-func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
+func registerTenantRoutes(tenant, tenantAuth *gin.RouterGroup, h *Handlers) {
 	// --- exempt from the KYC onboarding gate ---
 	tenant.GET("/me", h.TenantMe)
 	tenant.PATCH("/me", h.TenantPatchMe)
 	tenant.GET("/lifecycle", h.TenantLifecycle)
 	tenant.POST("/push/subscribe", h.TenantPushSubscribe)
-	tenant.POST("/aadhaar", h.TenantIDRateLimit(10.0/60, 5), h.TenantAadhaar)
+	tenantAuth.POST("/aadhaar", h.TenantIDRateLimit(10.0/60, 5), h.TenantAadhaar)
 
-	tenant.POST("/kyc/consent", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCConsent)
-	tenant.POST("/kyc/digilocker/init", h.TenantIDRateLimit(10.0/60, 2), h.TenantKYCDigiLockerInit)
-	tenant.GET("/kyc/digilocker/status", tenantIDRateLimit(20.0/60, 5), h.TenantKYCDigiLockerStatus)
-	tenant.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
-	tenant.POST("/kyc/qr/verify", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCSecureQRVerify)
+	tenantAuth.POST("/kyc/consent", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCConsent)
+	tenantAuth.POST("/kyc/digilocker/init", h.TenantIDRateLimit(10.0/60, 2), h.TenantKYCDigiLockerInit)
+	tenantAuth.GET("/kyc/digilocker/status", tenantIDRateLimit(20.0/60, 5), h.TenantKYCDigiLockerStatus)
+	tenantAuth.POST("/kyc/upload", h.TenantIDRateLimit(5.0/60, 2), h.TenantKYCUpload)
+	tenantAuth.POST("/kyc/qr/verify", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCSecureQRVerify)
 	// Disabled by PG Cashflow product policy. Both endpoints return 410 Gone; use /kyc/upload or /kyc/qr/verify.
-	tenant.POST("/kyc/aadhaar/otp/request", ipRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
-	tenant.POST("/kyc/aadhaar/otp/verify", ipRateLimit(10.0/60, domain.AadhaarOTPMaxAttempts), h.TenantKYCAadhaarOTPVerify)
-	tenant.POST("/kyc/revoke", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCRevoke)
-	tenant.GET("/kyc/status", h.TenantKYCStatus)
+	tenantAuth.POST("/kyc/aadhaar/otp/request", ipRateLimit(5.0/60, 2), h.TenantKYCAadhaarOTPRequest)
+	tenantAuth.POST("/kyc/aadhaar/otp/verify", ipRateLimit(10.0/60, domain.AadhaarOTPMaxAttempts), h.TenantKYCAadhaarOTPVerify)
+	tenantAuth.POST("/kyc/revoke", h.TenantIDRateLimit(10.0/60, 5), h.TenantKYCRevoke)
+	tenantAuth.GET("/kyc/status", h.TenantKYCStatus)
 
 	// Financial obligations: viewing dues and payment receipts is accessible
 	// even if KYC has expired or is under review, so tenants can see their balance.
@@ -37,10 +37,10 @@ func registerTenantRoutes(tenant *gin.RouterGroup, h *Handlers) {
 	tenant.GET("/payments", h.TenantPayments)
 	tenant.GET("/payments/:id/receipt", h.TenantPaymentReceipt)
 	tenant.GET("/refund-account", h.TenantGetRefundAccount)
-	tenant.POST("/refund-account", h.TenantIDRateLimit(5.0/60, 3), h.TenantRegisterRefundAccount)
+	tenantAuth.POST("/refund-account", h.TenantIDRateLimit(5.0/60, 3), h.TenantRegisterRefundAccount)
 
-	// Payment routes enforce mandatory platform-wide KYC verification
-	payGated := tenant.Group("", h.RequireKYCIfPolicyEnforced())
+	// Payment routes enforce mandatory platform-wide KYC verification + authoritative auth
+	payGated := tenantAuth.Group("", h.RequireKYCIfPolicyEnforced())
 	payGated.GET("/dues/:id/qr", h.TenantDueQR)
 	payGated.POST("/dues/pay-batch", h.TenantDuePayBatch)
 	payGated.GET("/dues/:id/pay", h.TenantDuePay)
