@@ -509,8 +509,8 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		// with status=SUCCESS and status_code=COMPLETED. Legacy V1 acknowledged=1 is
 		// accepted only when V2 status_code is absent on TRANSFER_SUCCESS.
 		hasExplicitLegacyAck := evtType == "TRANSFER_SUCCESS" &&
-			strings.TrimSpace(data.StatusCode) == "" &&
-			data.Acknowledged != nil && *data.Acknowledged == 1
+			data.Acknowledged != nil && *data.Acknowledged == 1 &&
+			(strings.TrimSpace(data.StatusCode) == "" || strings.EqualFold(data.StatusCode, "COMPLETED"))
 		isV2Completed := evtType == "TRANSFER_ACKNOWLEDGED" && strings.EqualFold(data.StatusCode, "COMPLETED")
 
 		if !strings.EqualFold(data.Status, "SUCCESS") || (!isV2Completed && !hasExplicitLegacyAck) {
@@ -536,7 +536,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 		}
 		if strings.TrimSpace(data.TransferAmount.String()) == "" {
 			slog.Error("payout webhook settlement missing transfer_amount", "item_id", item.ID, "event", evtType)
-			updateWebhookAuditStatus(ctx, audit, evtRecord, "missing_transfer_amount", nil)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "ignored", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -545,7 +545,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			slog.Error("payout webhook settlement amount mismatch; refusing ledger/status mutation",
 				"item_id", item.ID, "expected_paise", item.AmountPaise,
 				"provider_amount", data.TransferAmount.String(), "parse_error", amountErr)
-			updateWebhookAuditStatus(ctx, audit, evtRecord, "amount_mismatch", nil)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "ignored", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -608,7 +608,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 
 		if strings.TrimSpace(data.TransferAmount.String()) == "" {
 			slog.Error("payout webhook reversal missing transfer_amount", "item_id", item.ID, "event", evtType)
-			updateWebhookAuditStatus(ctx, audit, evtRecord, "missing_transfer_amount", nil)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "ignored", nil)
 			c.Status(http.StatusOK)
 			return
 		}
@@ -617,7 +617,7 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			slog.Error("payout webhook reversal amount mismatch; refusing ledger/status mutation",
 				"item_id", item.ID, "expected_paise", item.AmountPaise,
 				"provider_amount", data.TransferAmount.String(), "parse_error", amountErr)
-			updateWebhookAuditStatus(ctx, audit, evtRecord, "amount_mismatch", nil)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "ignored", nil)
 			c.Status(http.StatusOK)
 			return
 		}

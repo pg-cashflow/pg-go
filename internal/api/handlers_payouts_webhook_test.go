@@ -249,8 +249,8 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 		`, sig).Scan(&eventCount); err != nil {
 			t.Fatalf("count webhook_events: %v", err)
 		}
-		if eventCount != 2 {
-			t.Fatalf("expected 2 webhook_events rows for delivery plus replay, got %d", eventCount)
+		if eventCount != 1 {
+			t.Fatalf("expected 1 webhook_events row when replay is suppressed before audit write, got %d", eventCount)
 		}
 		if err := pool.QueryRow(ctx, `
 			SELECT COUNT(*) FROM processed_webhook_events
@@ -319,6 +319,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemA.ID.String(), "-", "")),
 			CFTransferID:      cfTr1,
 			Status:            "REVERSED",
+			TransferAmount:    json.Number("8000.00"),
 			StatusDescription: "Bank returned funds due to closed account",
 		}
 		payload.Data, _ = json.Marshal(data)
@@ -381,6 +382,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemC.ID.String(), "-", "")),
 			CFTransferID:      cfTr3,
 			Status:            "REVERSED",
+			TransferAmount:    json.Number("5000.00"),
 			StatusDescription: "Bank reversal forcing ledger outbox fallback",
 		}
 		payload.Data, _ = json.Marshal(data)
@@ -463,6 +465,7 @@ func TestLivePayoutWebhookFlows(t *testing.T) {
 			TransferID:        fmt.Sprintf("pgo_%s", strings.ReplaceAll(itemD.ID.String(), "-", "")),
 			CFTransferID:      cfTr4,
 			Status:            "REVERSED",
+			TransferAmount:    json.Number("4000.00"),
 			StatusDescription: "Bank reversal with failing outbox",
 		}
 		payload.Data, _ = json.Marshal(data)
@@ -1362,7 +1365,7 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("transfer_acknowledged_with_acknowledged_status_code_settles_processing_item", func(t *testing.T) {
+	t.Run("transfer_acknowledged_with_acknowledged_status_code_does_not_settle", func(t *testing.T) {
 		var gotStatus domain.PayoutItemStatus
 		var gotUTR string
 		mock := &mockPayoutWebhookStore{
@@ -1397,8 +1400,8 @@ func TestPayoutWebhook_UnitScenarios(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
-		if gotStatus != domain.PayoutSucceeded || gotUTR != "UTR-ACK-002" {
-			t.Fatalf("ACK event with ACKNOWLEDGED status_code did not settle payout: status=%q utr=%q", gotStatus, gotUTR)
+		if gotStatus != "" || gotUTR != "" {
+			t.Fatalf("ACK event with non-COMPLETED status_code must not settle payout: status=%q utr=%q", gotStatus, gotUTR)
 		}
 	})
 

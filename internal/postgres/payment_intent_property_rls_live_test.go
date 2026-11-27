@@ -170,3 +170,87 @@ func TestPaymentIntentParentPropertyRLS(t *testing.T) {
 		})
 	}
 }
+
+// TestPaymentIntentDueTenantInvariant verifies migration 136 rejects linking dues
+// from different tenants under the same payment_intent, even within the same property.
+func TestPaymentIntentDueTenantInvariant(t *testing.T) {
+	pool, _ := setupLiveTestPool(t, 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	if err := Migrate(ctx, pool, filepath.Join("..", "..", "migrations")); err != nil {
+		t.Fatalf("apply migrations before tenant invariant test: %v", err)
+	}
+
+	propertyA := uuid.New()
+	tenant1, tenant2 := uuid.New(), uuid.New()
+	dueT1, dueT2 := uuid.New(), uuid.New()
+	intentID := uuid.New()
+	suffix := uuid.NewString()[:8]
+	inviteA := "PT" + suffix
+	ownerPhone := fmt.Sprintf("+917%09d", (time.Now().UnixNano()+10)%1_000_000_000)
+	phone1 := fmt.Sprintf("+919%09d", (time.Now().UnixNano()+11)%1_000_000_000)
+	phone2 := fmt.Sprintf("+918%09d", (time.Now().UnixNano()+12)%1_000_000_000)
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO properties (id, name, address, owner_phone, upi_vpa, owner_name, owner_email, invite_code)
+		VALUES ($1, 'Tenant Invariant PG', 'Address', $2, $3, 'Owner', $4, $5)
+	`, propertyA, ownerPhone, "t-"+suffix+"@upi", "owner-"+suffix+"@example.test", inviteA)
+	if err != nil {
+		t.Fatalf("seed property: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx := context.Background()
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM payment_intents WHERE id = $1`, intentID)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM dues WHERE id IN ($1, $2)`, dueT1, dueT2)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM tenants WHERE id IN ($1, $2)`, tenant1, tenant2)
+		_, _ = pool.Exec(cleanupCtx, `DELETE FROM properties WHERE id = $1`, propertyA)
+	})
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO tenants (id, property_id, name, phone, room_number, rent_amount, due_day, status)
+		VALUES ($1, $3, 'Tenant 1', $4, 'T-1', 10000, 5, 'active'),
+		       ($2, $3, 'Tenant 2', $5, 'T-2', 10000, 5, 'active')
+	`, tenant1, tenant2, propertyA, phone1, phone2)
+	if err != nil {
+		t.Fatalf("seed tenants: %v", err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO dues (id, due_code, property_id, tenant_id, amount, original_amount, status, due_date, kind, period_start, period_end)
+		VALUES ($1, $3, $5, $6, 10000, 10000, 'pending', CURRENT_DATE, 'rent', CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month'),
+		       ($2, $4, $5, $7, 10000, 10000, 'pending', CURRENT_DATE, 'rent', CURRENT_DATE, CURRENT_DATE + INTERVAL '1 month')
+	`, dueT1, dueT2, "T1"+uuid.NewString()[:6], "T2"+uuid.NewString()[:6], propertyA, tenant1, tenant2)
+	if err != nil {
+		t.Fatalf("seed dues: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payment_intents (id, property_id, due_id, provider, provider_order_id, amount_paise, status)
+		VALUES ($1, $2, NULL, 'cashfree', $3, 20000, 'initiating')
+	`, intentID, propertyA, "tenant-inv-"+uuid.NewString()); err != nil {
+		t.Fatalf("insert parent intent: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payment_intent_dues (payment_intent_id, due_id, amount_paise, status)
+		VALUES ($1, $2, 10000, 'initiating')
+	`, intentID, dueT1); err != nil {
+		t.Fatalf("link first tenant due: %v", err)
+	}
+
+	// Same-property, different-tenant child due must be rejected by trg_payment_intent_due_tenant.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO payment_intent_dues (payment_intent_id, due_id, amount_paise, status)
+		VALUES ($1, $2, 10000, 'initiating')
+	`, intentID, dueT2); err == nil {
+		t.Fatal("expected same-property cross-tenant payment_intent_dues insert to fail")
+	}
+
+	// Updating parent due_id to a different tenant's due must also be rejected.
+	if _, err := pool.Exec(ctx, `
+		UPDATE payment_intents SET due_id = $2 WHERE id = $1
+	`, intentID, dueT2); err == nil {
+		t.Fatal("expected updating payment_intents.due_id to another tenant's due to fail")
+	}
+}

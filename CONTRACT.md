@@ -91,6 +91,7 @@ The full canonical registry of domain-qualified error codes is documented below:
 | `payment.bankAccountInvalid`     | 422         | Payment     | Bank account is invalid, inactive, blocked, or unsupported at destination bank   |
 | `payment.bankNameMismatch`       | 422         | Payment     | Bank account holder name does not match tenant registered legal name             |
 | `payment.bankVerifierUnavailable`| 503         | Payment     | Bank verification service temporarily unavailable                                |
+| `payment.refundCancellationUnsupported` | 501  | Payment     | Refund cancellation is not supported; refund reservation remains held            |
 | `finance.duplicateRequest`      | 409         | Finance     | Duplicate idempotency key                                                        |
 | `finance.idempotencyRequired`   | 400         | Finance     | Idempotency-Key header is required                                               |
 | `finance.invalidAmount`         | 400         | Finance     | Invalid expense or payment amount                                                |
@@ -1029,6 +1030,7 @@ Validation & error responses:
 | **Payment**     | `payment.bankAccountInvalid`     | 422         | Bank account is invalid, inactive, blocked, or unsupported at destination bank               |
 | **Payment**     | `payment.bankNameMismatch`       | 422         | Bank account holder name does not match tenant registered legal name                         |
 | **Payment**     | `payment.bankVerifierUnavailable`| 503         | Bank verification service temporarily unavailable                                            |
+| **Payment**     | `payment.refundCancellationUnsupported` | 501  | Refund cancellation is not supported; refund reservation remains held                        |
 | **Finance**     | `finance.duplicateRequest`      | 409         | Mutating financial request with duplicate Idempotency-Key                                     |
 | **Finance**     | `finance.idempotencyRequired`   | 400         | Idempotency-Key header is missing on mutating financial endpoint                              |
 | **Finance**     | `finance.invalidAmount`         | 400         | Financial amount in paise must be positive integer                                            |
