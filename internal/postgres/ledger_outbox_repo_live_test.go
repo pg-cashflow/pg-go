@@ -81,7 +81,7 @@ func TestLedgerOutbox_ClaimEventAndRescheduleLease_Live(t *testing.T) {
 	}
 
 	// 5. Once next_retry_at is in the past, ClaimEvent succeeds.
-	if _, err := pool.Exec(ctx, `UPDATE ledger_outbox_events SET next_retry_at = now() - interval '1 second' WHERE id = $1`, evt.ID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE ledger_outbox_events SET next_retry_at = $2 WHERE id = $1`, evt.ID, time.Now().UTC().Add(-10*time.Second)); err != nil {
 		t.Fatalf("update next_retry_at: %v", err)
 	}
 	readyEvt, readyTok, err := repo.ClaimEvent(ctx, evt.ID, 60*time.Second)
