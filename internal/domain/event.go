@@ -40,6 +40,7 @@ const (
 	EvtPaymentDisputed          EventType = "PaymentDisputed"
 	EvtPaymentRefundCancelled   EventType = "PaymentRefundCancelled"
 	EvtPaymentRefundPending     EventType = "PaymentRefundPending"
+	EvtPayoutBatchRejected      EventType = "payout_batch_rejected"
 	EvtUnappliedReceiptHeld     EventType = "UnappliedReceiptHeld"
 	EvtUnappliedReceiptResolved EventType = "UnappliedReceiptResolved"
 

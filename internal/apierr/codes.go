@@ -87,16 +87,17 @@ const (
 	CodeFinanceInvalidSettings     Code = "finance.invalidSettings"
 
 	// Refund
-	CodeRefundReasonLength         Code = "payment.refundReasonLength"
-	CodeRefundReasonCharacters     Code = "payment.refundReasonCharacters"
-	CodeRefundManagerLimitExceeded Code = "payment.refundManagerLimitExceeded"
-	CodeRefundMakerCannotApprove   Code = "payment.refundMakerCannotApprove"
-	CodeRefundDuplicateApprover    Code = "payment.refundDuplicateApprover"
-	CodeRefundStaleApproval        Code = "payment.refundStaleApproval"
-	CodeRefundDualControlRequired  Code = "payment.refundDualControlRequired"
-	CodeBankAccountInvalid         Code = "payment.bankAccountInvalid"
-	CodeBankNameMismatch           Code = "payment.bankNameMismatch"
-	CodeBankVerifierUnavailable    Code = "payment.bankVerifierUnavailable"
+	CodeRefundReasonLength                   Code = "payment.refundReasonLength"
+	CodeRefundReasonCharacters               Code = "payment.refundReasonCharacters"
+	CodeRefundManagerLimitExceeded           Code = "payment.refundManagerLimitExceeded"
+	CodeRefundMakerCannotApprove             Code = "payment.refundMakerCannotApprove"
+	CodeRefundDuplicateApprover              Code = "payment.refundDuplicateApprover"
+	CodeRefundStaleApproval                  Code = "payment.refundStaleApproval"
+	CodeRefundDualControlRequired            Code = "payment.refundDualControlRequired"
+	CodePaymentRefundCancellationUnsupported Code = "payment.refundCancellationUnsupported"
+	CodeBankAccountInvalid                   Code = "payment.bankAccountInvalid"
+	CodeBankNameMismatch                     Code = "payment.bankNameMismatch"
+	CodeBankVerifierUnavailable              Code = "payment.bankVerifierUnavailable"
 
 	// Request & Bind
 	CodeRequestInvalidBody     Code = "request.invalidBody"
@@ -217,6 +218,7 @@ var AllCodes = []Code{
 	CodeRefundDuplicateApprover,
 	CodeRefundStaleApproval,
 	CodeRefundDualControlRequired,
+	CodePaymentRefundCancellationUnsupported,
 	CodeBankAccountInvalid,
 	CodeBankNameMismatch,
 	CodeBankVerifierUnavailable,

@@ -806,6 +806,11 @@ func (h *Handlers) executeCancelRefund(c *gin.Context, pid, uid, paymentID, refu
 
 	cfResp, cancelErr := h.CashfreeClient.CancelRefund(ctx, orderPayload.OrderID, targetRef, req.Reason)
 	if cancelErr != nil {
+		if errors.Is(cancelErr, cashfree.ErrRefundCancellationUnsupported) {
+			slog.Warn("refund cancellation disabled; provider endpoint unverified; reservation remains held", "refund_id", rf.ID)
+			apierr.RespondClientErr(c, http.StatusNotImplemented, "refund cancellation is not supported; refund reservation remains held", apierr.CodePaymentRefundCancellationUnsupported)
+			return
+		}
 		var apiErr *cashfree.APIError
 		var statusCoder interface{ HTTPStatusCode() int }
 		isNotFound := (errors.As(cancelErr, &apiErr) && apiErr.StatusCode == http.StatusNotFound) ||

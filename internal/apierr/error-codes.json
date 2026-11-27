@@ -91,5 +91,6 @@
   "payment.refundDualControlRequired",
   "payment.bankAccountInvalid",
   "payment.bankNameMismatch",
-  "payment.bankVerifierUnavailable"
+  "payment.bankVerifierUnavailable",
+  "payment.refundCancellationUnsupported"
 ]

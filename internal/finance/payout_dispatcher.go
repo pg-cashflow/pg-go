@@ -827,6 +827,18 @@ func (d *PayoutDispatcher) reconcileSingleTransferFenced(
 		)
 		return nil
 	case "REVERSED":
+		if strings.TrimSpace(st.TransferAmount.String()) == "" {
+			slog.Error("payout batch reconcile: reversal missing transfer amount; refusing ledger/status mutation",
+				"item_id", it.ID, "expected_paise", it.AmountPaise)
+			return nil
+		}
+		providerAmountPaise, err := cashfree.ParseRupeesToPaise(st.TransferAmount.String())
+		if err != nil || providerAmountPaise != it.AmountPaise {
+			slog.Error("payout batch reconcile: reversal amount mismatch; refusing ledger/status mutation",
+				"item_id", it.ID, "expected_paise", it.AmountPaise,
+				"provider_amount", st.TransferAmount.String(), "err", err)
+			return nil
+		}
 		reason := "transfer reversed by bank"
 		if err := d.reconcileItemWithOutbox(ctx, lease, batch.PropertyID, it.ID, it.AmountPaise, domain.PayoutReversed, &cfID, nil, nil, &reason); err != nil {
 			return fmt.Errorf("reconcile payout item reversed status: %w", err)

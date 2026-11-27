@@ -1469,11 +1469,17 @@ func (r *PayoutRepo) RecordBatchIncidentFenced(ctx context.Context, lease *Payou
 }
 
 func (r *PayoutRepo) recordBatchIncidentTx(ctx context.Context, tx pgx.Tx, batchID uuid.UUID, incidentType, details string) error {
+	_, err := r.recordBatchIncidentTxWithStatus(ctx, tx, batchID, incidentType, details)
+	return err
+}
+
+func (r *PayoutRepo) recordBatchIncidentTxWithStatus(ctx context.Context, tx pgx.Tx, batchID uuid.UUID, incidentType, details string) (bool, error) {
 	fpRaw := fmt.Sprintf("%s:%s:%s", batchID, incidentType, details)
 	fp := fmt.Sprintf("%x", sha256.Sum256([]byte(fpRaw)))
 	incidentMsg := fmt.Sprintf("RECONCILIATION_INCIDENT [%s]: %s", incidentType, details)
 
-	tagInc, err := tx.Exec(ctx, `
+	var inserted bool
+	err := tx.QueryRow(ctx, `
 		INSERT INTO payout_reconciliation_incidents (
 			fingerprint, incident_type, batch_id, details,
 			occurrence_count, status, first_seen_at, last_seen_at
@@ -1482,12 +1488,10 @@ func (r *PayoutRepo) recordBatchIncidentTx(ctx context.Context, tx pgx.Tx, batch
 			occurrence_count = payout_reconciliation_incidents.occurrence_count + 1,
 			details = EXCLUDED.details,
 			last_seen_at = EXCLUDED.last_seen_at
-	`, fp, incidentType, batchID, details)
+		RETURNING (xmax = 0)
+	`, fp, incidentType, batchID, details).Scan(&inserted)
 	if err != nil {
-		return fmt.Errorf("payout repo: insert batch incident: %w", err)
-	}
-	if tagInc.RowsAffected() == 0 {
-		return fmt.Errorf("payout repo: insert batch incident: zero rows affected")
+		return false, fmt.Errorf("payout repo: insert batch incident: %w", err)
 	}
 
 	tagBatch, err := tx.Exec(ctx, `
@@ -1501,12 +1505,45 @@ func (r *PayoutRepo) recordBatchIncidentTx(ctx context.Context, tx pgx.Tx, batch
 		WHERE id = $1`, batchID, incidentMsg,
 	)
 	if err != nil {
-		return fmt.Errorf("payout repo: record batch incident: %w", err)
+		return false, fmt.Errorf("payout repo: record batch incident: %w", err)
 	}
 	if tagBatch.RowsAffected() == 0 {
-		return fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
+		return false, fmt.Errorf("payout repo: record batch incident: batch %s not found or update blocked by rls", batchID)
 	}
-	return nil
+	return inserted, nil
+}
+
+// RecordBulkBatchRejectionAtomic resolves the batch's property under transaction-local
+// platform_ops scope, switches to that property's RLS scope, and atomically records
+// the reconciliation incident, batch note, and (on first occurrence) owner notification outbox event.
+func (r *PayoutRepo) RecordBulkBatchRejectionAtomic(ctx context.Context, batchID uuid.UUID, incidentType, details string, outboxPayload []byte) error {
+	return WithinTx(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, "SELECT set_config('role', 'pgapp_app', true), set_config('app.is_platform_ops', 'true', true)"); err != nil {
+			return fmt.Errorf("payout repo: set platform_ops scope: %w", err)
+		}
+		var propID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT property_id FROM payout_batches WHERE id = $1 FOR UPDATE`, batchID).Scan(&propID); err != nil {
+			return fmt.Errorf("payout repo: load bulk rejected batch %s: %w", batchID, err)
+		}
+		if _, err := tx.Exec(ctx, "SELECT set_config('app.is_platform_ops', '', true), set_config('app.current_property_id', $1, true)", propID.String()); err != nil {
+			return fmt.Errorf("payout repo: set property scope: %w", err)
+		}
+
+		inserted, err := r.recordBatchIncidentTxWithStatus(ctx, tx, batchID, incidentType, details)
+		if err != nil {
+			return err
+		}
+		if inserted && len(outboxPayload) > 0 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO outbox_events (event_type, property_id, payload)
+				VALUES ($1, $2, $3)`,
+				string(domain.EvtPayoutBatchRejected), propID, json.RawMessage(outboxPayload),
+			); err != nil {
+				return fmt.Errorf("payout repo: insert bulk rejection outbox: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // RecordItemIncident records a granular item-level reconciliation incident (e.g. mismatched or empty transfer ID)

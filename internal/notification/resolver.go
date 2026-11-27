@@ -116,6 +116,10 @@ func (r *Resolver) Resolve(ctx context.Context, evt *domain.OutboxEvent) ([]doma
 	case string(domain.EvtPaymentRefundCancelled):
 		return r.toOwner(ctx, evt, "refund_cancelled", "Payment refund cancelled", "/owner/payments")
 
+	// Owner-directed: bulk payout batch rejected by gateway
+	case string(domain.EvtPayoutBatchRejected):
+		return r.toOwner(ctx, evt, "payout_batch_rejected", "⚠️ Payout batch rejected by gateway", "/owner/payouts")
+
 	// Tenant-directed: refund initiated and in progress
 	case string(domain.EvtPaymentRefundPending):
 		return r.toTenant(ctx, evt, "refund_pending", "A refund has been initiated for your payment.", "/tenant/payments")

@@ -527,70 +527,12 @@ func (c *Client) FetchRefundStatus(ctx context.Context, orderID, refundID string
 	}, nil
 }
 
-type CancelRefundRequest struct {
-	RefundStatus string `json:"refund_status"`
-	Remarks      string `json:"remarks,omitempty"`
-}
+var ErrRefundCancellationUnsupported = errors.New("cashfree: refund cancellation endpoint is unverified and disabled")
 
-// CancelRefund cancels an eligible non-terminal (such as ONHOLD or PENDING) refund at Cashfree.
-func (c *Client) CancelRefund(ctx context.Context, orderID, refundID, remarks string) (*RefundDetails, error) {
-	if !c.cfg.Enabled() {
-		return nil, fmt.Errorf("cashfree: not configured")
-	}
-	body := CancelRefundRequest{
-		RefundStatus: "CANCELLED",
-		Remarks:      remarks,
-	}
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("cashfree marshal cancel refund: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint()+"/orders/"+url.PathEscape(orderID)+"/refunds/"+url.PathEscape(refundID), bytes.NewReader(buf))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	c.sign(req)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode >= 300 {
-		return nil, &APIError{
-			StatusCode: resp.StatusCode,
-			Status:     resp.Status,
-			Body:       string(b),
-		}
-	}
-	var raw struct {
-		CFRefundID   ProviderID  `json:"cf_refund_id"`
-		RefundID     string      `json:"refund_id"`
-		OrderID      string      `json:"order_id"`
-		CFPaymentID  ProviderID  `json:"cf_payment_id"`
-		RefundStatus string      `json:"refund_status"`
-		RefundAmount json.Number `json:"refund_amount"`
-		RefundType   string      `json:"refund_type"`
-		RefundReason string      `json:"refund_reason"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, fmt.Errorf("cashfree cancel refund json: %w", err)
-	}
-	parsedAmount, err := ParseRupeesToPaise(raw.RefundAmount.String())
-	if err != nil {
-		return nil, fmt.Errorf("cashfree parse refund amount: %w", err)
-	}
-	return &RefundDetails{
-		CFRefundID:   raw.CFRefundID.String(),
-		RefundID:     raw.RefundID,
-		OrderID:      raw.OrderID,
-		CFPaymentID:  raw.CFPaymentID.String(),
-		RefundStatus: strings.ToUpper(strings.TrimSpace(raw.RefundStatus)),
-		AmountPaise:  parsedAmount,
-		RefundType:   raw.RefundType,
-		RefundReason: raw.RefundReason,
-	}, nil
+// CancelRefund is disabled until Cashfree confirms an official refund cancellation endpoint
+// and eligible states for the merchant account. It never issues an outbound HTTP request.
+func (c *Client) CancelRefund(_ context.Context, _, _, _ string) (*RefundDetails, error) {
+	return nil, ErrRefundCancellationUnsupported
 }
 
 type CreateRefundRequest struct {

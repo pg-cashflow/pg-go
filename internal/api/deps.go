@@ -394,6 +394,13 @@ type PayoutOutboxReconciler interface {
 	ReconcilePayoutItemTx(ctx context.Context, tx pgx.Tx, params domain.PayoutReconcileParams) (*domain.PayoutReconcileResult, error)
 }
 
+// PayoutBulkRejectionRecorder is an optional extension of PayoutWebhookStore that
+// atomically resolves batch property scope, records the reconciliation incident
+// and batch note, and enqueues the owner notification outbox event in one transaction.
+type PayoutBulkRejectionRecorder interface {
+	RecordBulkBatchRejectionAtomic(ctx context.Context, batchID uuid.UUID, incidentType, details string, outboxPayload []byte) error
+}
+
 // PayoutPlatformStore defines cross-property payout operations for platform operations.
 type PayoutPlatformStore interface {
 	ListPayoutExceptions(ctx context.Context, limit, offset int) ([]domain.PayoutExceptionItem, error)

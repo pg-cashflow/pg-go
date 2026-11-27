@@ -256,13 +256,14 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	// (e.g. at Attempt 3: +10m, Attempt 4: +30m), return 200 OK before the timestamp check
 	// to prevent Cashfree from disabling the webhook endpoint after 5 consecutive 401s.
 	auditStore := h.gatewayAuditStore()
-	if auditStore != nil && unmarshalErr == nil && strings.TrimSpace(data.TransferID) != "" {
-		refID := strings.TrimSpace(data.TransferID)
-		alreadyProcessed, err := auditStore.HasProcessedEvent(c.Request.Context(), "cashfree", evtType, refID, "")
-		if err == nil && alreadyProcessed {
-			slog.Info("cashfree payout webhook duplicate delivery suppressed by transfer_id", "transfer_id", refID, "event", evtType)
-			c.Status(http.StatusOK)
-			return
+	if auditStore != nil && unmarshalErr == nil {
+		if refID := payoutEventRef(data, uuid.Nil); refID != uuid.Nil.String() {
+			alreadyProcessed, err := auditStore.HasProcessedEvent(c.Request.Context(), "cashfree", evtType, refID, "")
+			if err == nil && alreadyProcessed {
+				slog.Info("cashfree payout webhook duplicate delivery suppressed by transfer_id", "transfer_id", refID, "event", evtType)
+				c.Status(http.StatusOK)
+				return
+			}
 		}
 	}
 
@@ -330,30 +331,39 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 				"reason", data.StatusDescription,
 				"code", data.StatusCode,
 			)
-			if err := repo.RecordBatchRejectionObservation(ctx, bID, fmt.Sprintf("bulk transfer rejection observed: %s (code: %s)", data.StatusDescription, data.StatusCode)); err != nil {
-				slog.Error("failed to persist rejected payout batch observation", "batch_id", bID, "err", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch observation"})
+			reason := fmt.Sprintf("bulk transfer rejection observed: %s (code: %s)", data.StatusDescription, data.StatusCode)
+			payload, marshalErr := json.Marshal(map[string]any{
+				"batch_id": bID.String(),
+				"reason":   data.StatusDescription,
+				"code":     data.StatusCode,
+			})
+			if marshalErr != nil {
+				slog.Error("failed to marshal rejected payout batch outbox", "batch_id", bID, "err", marshalErr)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
 				return
 			}
-			if h.OutboxEvents != nil {
-				payload, marshalErr := json.Marshal(map[string]any{
-					"batch_id": bID.String(),
-					"reason":   data.StatusDescription,
-					"code":     data.StatusCode,
-				})
-				if marshalErr != nil {
-					slog.Error("failed to marshal rejected payout batch outbox", "batch_id", bID, "err", marshalErr)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
+			if atomicRecorder, ok := repo.(PayoutBulkRejectionRecorder); ok {
+				if err := atomicRecorder.RecordBulkBatchRejectionAtomic(ctx, bID, "BULK_TRANSFER_REJECTED", reason, payload); err != nil {
+					slog.Error("failed to atomically persist rejected payout batch incident and outbox", "batch_id", bID, "err", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch observation"})
 					return
 				}
-				if err := h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
-					EventType: "payout_batch_rejected",
-					Payload:   payload,
-					CreatedAt: time.Now().UTC(),
-				}); err != nil {
-					slog.Error("failed to persist payout batch rejection outbox", "batch_id", bID, "err", err)
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
+			} else {
+				if err := repo.RecordBatchRejectionObservation(ctx, bID, reason); err != nil {
+					slog.Error("failed to persist rejected payout batch observation", "batch_id", bID, "err", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording rejected payout batch observation"})
 					return
+				}
+				if h.OutboxEvents != nil {
+					if err := h.OutboxEvents.InsertEvent(ctx, &domain.OutboxEvent{
+						EventType: string(domain.EvtPayoutBatchRejected),
+						Payload:   payload,
+						CreatedAt: time.Now().UTC(),
+					}); err != nil {
+						slog.Error("failed to persist payout batch rejection outbox", "batch_id", bID, "err", err)
+						c.JSON(http.StatusInternalServerError, gin.H{"error": "failed recording payout rejection event"})
+						return
+					}
 				}
 			}
 			// Trigger immediate item-level reconciliation if dispatcher is configured
@@ -495,16 +505,15 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 	switch evtType {
 	case "TRANSFER_SUCCESS", "TRANSFER_ACKNOWLEDGED":
 		// Transfers V2 may first report TRANSFER_SUCCESS with SENT_TO_BENEFICIARY.
-		// That is not beneficiary receipt. TRANSFER_ACKNOWLEDGED is the terminal
-		// bank-credit confirmation; settlement requires V2 TRANSFER_ACKNOWLEDGED
-		// with a terminal status code, or explicit legacy acknowledged=1.
-		hasExplicitLegacyAck := data.Acknowledged != nil && *data.Acknowledged == 1
-		isV2AckEvent := evtType == "TRANSFER_ACKNOWLEDGED"
+		// That is not beneficiary receipt. V2 settlement requires TRANSFER_ACKNOWLEDGED
+		// with status=SUCCESS and status_code=COMPLETED. Legacy V1 acknowledged=1 is
+		// accepted only when V2 status_code is absent on TRANSFER_SUCCESS.
+		hasExplicitLegacyAck := evtType == "TRANSFER_SUCCESS" &&
+			strings.TrimSpace(data.StatusCode) == "" &&
+			data.Acknowledged != nil && *data.Acknowledged == 1
+		isV2Completed := evtType == "TRANSFER_ACKNOWLEDGED" && strings.EqualFold(data.StatusCode, "COMPLETED")
 
-		isCompletedCode := strings.EqualFold(data.StatusCode, "COMPLETED") ||
-			(isV2AckEvent && (strings.EqualFold(data.StatusCode, "ACKNOWLEDGED") || strings.EqualFold(data.StatusCode, "TRANSFER_ACKNOWLEDGED")))
-
-		if (!isV2AckEvent && !hasExplicitLegacyAck) || !strings.EqualFold(data.Status, "SUCCESS") || !isCompletedCode {
+		if !strings.EqualFold(data.Status, "SUCCESS") || (!isV2Completed && !hasExplicitLegacyAck) {
 			slog.Warn("payout webhook success not confirmed: requires TRANSFER_ACKNOWLEDGED or acknowledged=1",
 				"item_id", item.ID,
 				"event", evtType,
@@ -593,6 +602,22 @@ func (h *Handlers) CashfreePayoutWebhook(c *gin.Context) {
 			slog.Error("payout webhook reversal conflicts with terminal local status; reconciliation required",
 				"item_id", item.ID, "event", evtType, "local_status", item.Status)
 			updateWebhookAuditStatus(ctx, audit, evtRecord, "terminal_status_conflict", nil)
+			c.Status(http.StatusOK)
+			return
+		}
+
+		if strings.TrimSpace(data.TransferAmount.String()) == "" {
+			slog.Error("payout webhook reversal missing transfer_amount", "item_id", item.ID, "event", evtType)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "missing_transfer_amount", nil)
+			c.Status(http.StatusOK)
+			return
+		}
+		providerAmountPaise, amountErr := cashfree.ParseRupeesToPaise(data.TransferAmount.String())
+		if amountErr != nil || providerAmountPaise != item.AmountPaise {
+			slog.Error("payout webhook reversal amount mismatch; refusing ledger/status mutation",
+				"item_id", item.ID, "expected_paise", item.AmountPaise,
+				"provider_amount", data.TransferAmount.String(), "parse_error", amountErr)
+			updateWebhookAuditStatus(ctx, audit, evtRecord, "amount_mismatch", nil)
 			c.Status(http.StatusOK)
 			return
 		}

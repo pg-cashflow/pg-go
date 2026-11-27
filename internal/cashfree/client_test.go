@@ -270,33 +270,10 @@ func TestClient_WithBaseURL(t *testing.T) {
 }
 
 func TestCancelRefund(t *testing.T) {
-	var gotMethod string
-	var gotPath string
-	var gotContentType string
-	var gotAppID string
-	var gotSecret string
-	var gotBody []byte
-
+	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotPath = r.URL.Path
-		gotContentType = r.Header.Get("Content-Type")
-		gotAppID = r.Header.Get("x-client-id")
-		gotSecret = r.Header.Get("x-client-secret")
-		gotBody, _ = io.ReadAll(r.Body)
-
-		w.Header().Set("Content-Type", "application/json")
+		called = true
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
-			"cf_refund_id": "888777",
-			"refund_id": "rf_cancel_123",
-			"order_id": "order_cancel_123",
-			"cf_payment_id": "999000",
-			"refund_status": "CANCELLED",
-			"refund_amount": 2500.00,
-			"refund_type": "PAYMENT_REVERSAL",
-			"refund_reason": "Requested by owner"
-		}`))
 	}))
 	defer srv.Close()
 
@@ -304,33 +281,14 @@ func TestCancelRefund(t *testing.T) {
 	c.baseOverride = srv.URL
 
 	ref, err := c.CancelRefund(context.Background(), "order_cancel_123", "rf_cancel_123", "Requested by owner")
-	if err != nil {
-		t.Fatalf("CancelRefund failed: %v", err)
+	if !errors.Is(err, ErrRefundCancellationUnsupported) {
+		t.Fatalf("expected ErrRefundCancellationUnsupported, got: %v", err)
 	}
-
-	if gotMethod != http.MethodPut {
-		t.Fatalf("expected HTTP PUT, got: %s", gotMethod)
+	if ref != nil {
+		t.Fatalf("expected nil refund details, got: %+v", ref)
 	}
-	if gotPath != "/orders/order_cancel_123/refunds/rf_cancel_123" {
-		t.Fatalf("unexpected path: %s", gotPath)
-	}
-	if gotContentType != "application/json" {
-		t.Fatalf("expected Content-Type application/json, got: %s", gotContentType)
-	}
-	if gotAppID != "test_app_id" || gotSecret != "test_secret_key" {
-		t.Fatalf("unexpected credentials: app_id=%s secret=%s", gotAppID, gotSecret)
-	}
-
-	var reqBody CancelRefundRequest
-	if err := json.Unmarshal(gotBody, &reqBody); err != nil {
-		t.Fatalf("unmarshal cancel request body: %v", err)
-	}
-	if reqBody.RefundStatus != "CANCELLED" || reqBody.Remarks != "Requested by owner" {
-		t.Fatalf("unexpected cancel request body: %+v", reqBody)
-	}
-
-	if ref.CFRefundID != "888777" || ref.RefundStatus != "CANCELLED" || ref.AmountPaise != 250000 {
-		t.Fatalf("unexpected refund response details: %+v", ref)
+	if called {
+		t.Fatal("expected CancelRefund not to issue an outbound HTTP request")
 	}
 }
 
@@ -580,10 +538,9 @@ func TestCashfree_URLPathEscaping(t *testing.T) {
 		t.Fatalf("FetchRefundStatus failed: refund=%+v, err=%v", refund, err)
 	}
 
-	// 4. CancelRefund
-	cancelled, err := client.CancelRefund(ctx, specialOrderID, specialRefundID, "test remarks")
-	if err != nil || cancelled.RefundStatus != "CANCELLED" {
-		t.Fatalf("CancelRefund failed: cancelled=%+v, err=%v", cancelled, err)
+	// 4. CancelRefund (disabled until Cashfree confirms endpoint)
+	if _, err := client.CancelRefund(ctx, specialOrderID, specialRefundID, "test remarks"); !errors.Is(err, ErrRefundCancellationUnsupported) {
+		t.Fatalf("expected ErrRefundCancellationUnsupported, got: %v", err)
 	}
 
 	// 5. CreateRefund
