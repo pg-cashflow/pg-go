@@ -72,8 +72,12 @@ func TestPaymentRepoCreate_PreservesPgErrorConstraintName(t *testing.T) {
 type okIDRow struct{ id uuid.UUID }
 
 func (r okIDRow) Scan(dest ...any) error {
-	ptr := dest[0].(*uuid.UUID)
-	*ptr = r.id
+	switch ptr := dest[0].(type) {
+	case *uuid.UUID:
+		*ptr = r.id
+	case *string:
+		*ptr = "rent"
+	}
 	return nil
 }
 
