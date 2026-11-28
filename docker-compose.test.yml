@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pg_test
+    ports:
+      - "${PG_TEST_PORT:-54329}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pg_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data
