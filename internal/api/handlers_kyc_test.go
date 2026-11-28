@@ -1303,16 +1303,16 @@ func TestTenantPayable_MinorGate(t *testing.T) {
 		t.Fatalf("expected minor with unapproved guardian OTP to be blocked")
 	}
 
-	// Minor with manual attested consent: NOT sufficient for payment by default
+	// Minor with unapproved manual attested consent: BLOCKED until reviewer approval timestamp is set
 	manualMethod := "manual_attested"
 	minorWithManualConsent := &domain.Tenant{
 		Status:                    domain.TenantStatusActive,
 		MajorityDate:              &futureMajority,
-		GuardianConsentVerifiedAt: &now,
+		GuardianConsentVerifiedAt: nil,
 		GuardianConsentMethod:     &manualMethod,
 	}
 	if h.tenantPayable(context.Background(), minorWithManualConsent) {
-		t.Fatalf("expected minor with manual attested consent to not be payable without OTP/DigiLocker")
+		t.Fatalf("expected minor with unapproved manual attested consent to be blocked")
 	}
 
 	// Adult: ALLOWED without guardian consent

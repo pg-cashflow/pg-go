@@ -116,6 +116,14 @@ jobs:
           DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/rls_coverage_test.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/rls_property_scope_ratchet.sql
+
+      - name: Verify Gate 1.1 Payout Cursor Index & EXPLAIN Plan
+        working-directory: pg-go
+        env:
+          DATABASE_URL: postgres://postgres:password@localhost:5432/pg_test?sslmode=disable
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/sql/verify_gate1_1_explain.sql
 
       - name: Vet pg-go
         working-directory: pg-go
