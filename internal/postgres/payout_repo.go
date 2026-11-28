@@ -522,46 +522,83 @@ func (r *PayoutRepo) GetPayoutItemByID(ctx context.Context, id uuid.UUID) (*doma
 }
 
 func (r *PayoutRepo) ListUnbatchedPendingPayoutItems(ctx context.Context, propertyID uuid.UUID) ([]domain.PayoutItem, error) {
+	items, _, err := r.ListUnbatchedPendingPayoutItemsPaginated(ctx, propertyID, 0, nil, nil)
+	return items, err
+}
+
+// ListUnbatchedPendingPayoutItemsPaginated returns a bounded keyset-paginated slice of unbatched
+// pending payout items ordered by (created_at ASC, id ASC) along with the total pending count.
+// When limit > 0, up to limit+1 rows are fetched so callers can detect has_more without an extra query.
+func (r *PayoutRepo) ListUnbatchedPendingPayoutItemsPaginated(
+	ctx context.Context,
+	propertyID uuid.UUID,
+	limit int,
+	after *time.Time,
+	afterID *uuid.UUID,
+) ([]domain.PayoutItem, int, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer tx.Rollback(ctx)
 
 	if propertyID != uuid.Nil {
 		if _, err := tx.Exec(ctx, "SELECT set_config('app.current_property_id', $1, true)", propertyID.String()); err != nil {
-			return nil, fmt.Errorf("set local app.current_property_id: %w", err)
+			return nil, 0, fmt.Errorf("set local app.current_property_id: %w", err)
 		}
 	}
 
-	rows, err := tx.Query(ctx, `
+	var totalCount int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM payout_items pi
+		JOIN payout_payees pp ON pp.id = pi.payee_id
+		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'`,
+		propertyID,
+	).Scan(&totalCount); err != nil {
+		return nil, 0, err
+	}
+
+	query := `
 		SELECT pi.id, pi.batch_id, pi.payee_id, pi.departure_id, pi.reference_number,
 		       pi.amount_paise, pi.purpose, pi.period_label, pi.status, pi.utr, pi.settled_at,
 		       pi.failure_reason, pi.cf_transfer_id, pi.retry_of, pi.created_at, pi.updated_at
 		FROM payout_items pi
 		JOIN payout_payees pp ON pp.id = pi.payee_id
-		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'
-		ORDER BY pi.created_at ASC, pi.id ASC`, propertyID,
-	)
+		WHERE pp.property_id=$1 AND pi.batch_id IS NULL AND pi.status='pending'`
+	args := []any{propertyID}
+	argIdx := 2
+	if after != nil && afterID != nil {
+		query += fmt.Sprintf(" AND (pi.created_at, pi.id) > ($%d, $%d)", argIdx, argIdx+1)
+		args = append(args, *after, *afterID)
+		argIdx += 2
+	}
+	query += " ORDER BY pi.created_at ASC, pi.id ASC"
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", argIdx)
+		args = append(args, limit+1)
+	}
+
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
-	var out []domain.PayoutItem
+	out := make([]domain.PayoutItem, 0)
 	for rows.Next() {
 		it, err := scanPayoutItem(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, *it)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return out, nil
+	return out, totalCount, nil
 }
 
 func (r *PayoutRepo) ListPayoutItemsByBatch(ctx context.Context, batchID uuid.UUID) ([]domain.PayoutItem, error) {

@@ -32,7 +32,7 @@ type outboxRow struct {
 }
 
 type fakeOutboxDB struct {
-	rows        map[int64]*outboxRow
+	rows         map[int64]*outboxRow
 	lastClaimSQL string
 }
 

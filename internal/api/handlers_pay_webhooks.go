@@ -396,7 +396,11 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 	}
 
 	txnID := succ.TxnID()
-	if err := h.SettleGatewayOrder(ctx, succ.OrderID, succ.CFPaymentID, txnID, succ.AmountPaise, intent, evtRecord.RawPayload); err != nil {
+	settleCtx := ctx
+	if evtRecord.ID != uuid.Nil {
+		settleCtx = payment.WithWebhookEventID(ctx, evtRecord.ID)
+	}
+	if err := h.SettleGatewayOrder(settleCtx, succ.OrderID, succ.CFPaymentID, txnID, succ.AmountPaise, intent, evtRecord.RawPayload); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
 		return
 	}
@@ -405,8 +409,14 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
 	}
 
-	if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
-		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
+	// When Pool is nil (e.g. unit-test mocks without a DB transaction), mark the webhook event
+	// processed explicitly and fail loudly if the audit update errors.
+	if h.Pool == nil && h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+		if err := h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil); err != nil {
+			slog.Error("PAYMENT_SUCCESS_WEBHOOK: failed to update audit event status", "order_id", succ.OrderID, "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update audit event status"})
+			return
+		}
 	}
 	c.Status(http.StatusOK)
 }
@@ -636,6 +646,11 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 				return err
 			}
 			if !firstSeen {
+				if evtRecord.ID != uuid.Nil {
+					if err := txPayRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 
@@ -669,6 +684,14 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 
 			if err := txPayRepo.ReconcileRefundTransition(ctx, rfRow, dbRefundStatus); err != nil {
 				return err
+			}
+			if idempotencyHeader != "" {
+				_, _ = txPayRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+			}
+			if evtRecord.ID != uuid.Nil {
+				if err := txPayRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
@@ -720,12 +743,18 @@ func (h *Handlers) handleRefundWebhook(c *gin.Context, ref cashfree.RefundWebhoo
 		}
 	}
 
-	if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
-		_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
-	}
+	if h.Pool == nil {
+		if idempotencyHeader != "" && h.GatewayPaymentRepo != nil {
+			_, _ = h.GatewayPaymentRepo.RecordProcessedEvent(ctx, "cashfree", "WEBHOOK_IDEMPOTENCY", idempotencyHeader, "")
+		}
 
-	if evtRecord.ID != uuid.Nil {
-		_ = h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil)
+		if h.GatewayPaymentRepo != nil && evtRecord.ID != uuid.Nil {
+			if err := h.GatewayPaymentRepo.UpdateWebhookEventStatus(ctx, evtRecord.ID, "processed", nil); err != nil {
+				slog.Error("REFUND_STATUS_WEBHOOK: failed to update audit event status", "cf_refund_id", ref.CFRefundID, "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update audit event status"})
+				return
+			}
+		}
 	}
 	c.Status(http.StatusOK)
 }

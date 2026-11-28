@@ -1033,7 +1033,8 @@ func (r *KYCRepo) ListPendingDigiLockerForReconciliation(ctx context.Context, mi
 }
 
 // ExpireConsentWindowPendingDigiLocker transitions pending DigiLocker sessions older than the
-// 60-minute consent window to failed with reason 'consent_window_expired'.
+// configured consent window (15 minutes by default; see jobs.DigiLockerConsentWindow) to failed
+// with reason 'consent_window_expired'.
 func (r *KYCRepo) ExpireConsentWindowPendingDigiLocker(ctx context.Context, cutoff time.Time) (int64, error) {
 	tag, err := r.pool.Exec(ctx, `
 		UPDATE kyc_verification

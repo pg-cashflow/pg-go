@@ -32,6 +32,12 @@ type KYCInboxPurger interface {
 // KYCInboxRetention is the retention window for processed kyc_webhook_inbox rows (30 days).
 const KYCInboxRetention = 30 * 24 * time.Hour
 
+// DigiLockerConsentWindow is the Cashfree DigiLocker consent expiry boundary (15 minutes).
+const DigiLockerConsentWindow = 15 * time.Minute
+
+// DigiLockerReconcileMinAge is the minimum age before polling in-flight DigiLocker sessions.
+const DigiLockerReconcileMinAge = 5 * time.Minute
+
 // KYCExpiryJob sweeps and expires stale pending verifications and lapsed verified records,
 // clearing active profile PII (tenants.aadhaar_last4) to enforce the zero-stale-PII policy,
 // and reconciles in-flight DigiLocker sessions to prevent dropped webhooks from stalling tenants.
@@ -80,8 +86,8 @@ func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time
 		return fmt.Errorf("kyc job: expire stale manual reviews: %w", err)
 	}
 
-	// 4. Force-fail pending DigiLocker sessions older than 15-minute Cashfree consent window
-	consentCutoff := now.Add(-15 * time.Minute)
+	// 4. Force-fail pending DigiLocker sessions older than the Cashfree consent window
+	consentCutoff := now.Add(-DigiLockerConsentWindow)
 	consentExpired, err := j.Repo.ExpireConsentWindowPendingDigiLocker(ctx, consentCutoff)
 	if err != nil {
 		return fmt.Errorf("kyc job: expire consent window pending digilocker: %w", err)
@@ -90,8 +96,8 @@ func (j *KYCExpiryJob) RunWithManualReviewTTL(ctx context.Context, now time.Time
 	// 5. Active reconciliation sweep: poll in-flight DigiLocker sessions aged 5 to 15 minutes
 	var reconciledCount int
 	if j.Poller != nil {
-		minAgeCutoff := now.Add(-5 * time.Minute)
-		maxAgeCutoff := now.Add(-15 * time.Minute)
+		minAgeCutoff := now.Add(-DigiLockerReconcileMinAge)
+		maxAgeCutoff := now.Add(-DigiLockerConsentWindow)
 		pendingDGL, err := j.Repo.ListPendingDigiLockerForReconciliation(ctx, minAgeCutoff, maxAgeCutoff)
 		if err != nil {
 			slog.Warn("kyc job: list pending digilocker for reconciliation failed", "err", err)

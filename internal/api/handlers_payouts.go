@@ -735,12 +735,95 @@ func (h *Handlers) OwnerListUnbatchedPayoutItems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "payout repo not configured"})
 		return
 	}
+
+	const defaultLimit = 50
+	const maxLimit = 100
+	limit := defaultLimit
+	if l := strings.TrimSpace(c.Query("limit")); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			if n > maxLimit {
+				n = maxLimit
+			}
+			limit = n
+		}
+	}
+
+	var after *time.Time
+	var afterID *uuid.UUID
+	if cur := strings.TrimSpace(c.Query("cursor")); cur != "" {
+		t, err := time.Parse(time.RFC3339Nano, cur)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cursor"})
+			return
+		}
+		after = &t
+	}
+	if cid := strings.TrimSpace(c.Query("cursor_id")); cid != "" {
+		id, err := uuid.Parse(cid)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cursor_id"})
+			return
+		}
+		afterID = &id
+	}
+	if (after == nil) != (afterID == nil) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cursor and cursor_id must both be provided"})
+		return
+	}
+
+	if paginated, ok := any(repo).(interface {
+		ListUnbatchedPendingPayoutItemsPaginated(ctx context.Context, propertyID uuid.UUID, limit int, after *time.Time, afterID *uuid.UUID) ([]domain.PayoutItem, int, error)
+	}); ok {
+		items, totalCount, err := paginated.ListUnbatchedPendingPayoutItemsPaginated(c.Request.Context(), pid, limit, after, afterID)
+		if err != nil {
+			respondErr(c, err)
+			return
+		}
+		hasMore := len(items) > limit
+		if hasMore {
+			items = items[:limit]
+		}
+		var nextCursor *string
+		var nextCursorID *string
+		if hasMore && len(items) > 0 {
+			last := items[len(items)-1]
+			ts := last.CreatedAt.UTC().Format(time.RFC3339Nano)
+			id := last.ID.String()
+			nextCursor = &ts
+			nextCursorID = &id
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"items":          items,
+			"limit":          limit,
+			"total_count":    totalCount,
+			"has_more":       hasMore,
+			"next_cursor":    nextCursor,
+			"next_cursor_id": nextCursorID,
+		})
+		return
+	}
+
 	items, err := repo.ListUnbatchedPendingPayoutItems(c.Request.Context(), pid)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	totalCount := len(items)
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	if items == nil {
+		items = []domain.PayoutItem{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"items":          items,
+		"limit":          limit,
+		"total_count":    totalCount,
+		"has_more":       hasMore,
+		"next_cursor":    nil,
+		"next_cursor_id": nil,
+	})
 }
 
 // OwnerListPayoutBatches handles GET /owner/payouts/batches.
