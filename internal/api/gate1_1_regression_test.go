@@ -11,19 +11,30 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pg-cashflow/pg-go/internal/auth"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/payment"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
+	"github.com/pg-cashflow/pg-go/internal/requestscope"
 )
 
 type subsecondPaymentStore struct {
-	stubPaymentStore
 	payments  []domain.Payment
 	gotLimit  int
 	gotBefore *time.Time
 	gotID     *uuid.UUID
+}
+
+func (s *subsecondPaymentStore) ListByProperty(_ context.Context, _ uuid.UUID, _ *domain.MatchedBy) ([]domain.Payment, error) {
+	return s.payments, nil
+}
+
+func (s *subsecondPaymentStore) ListByTenant(_ context.Context, _ uuid.UUID) ([]domain.Payment, error) {
+	return nil, nil
+}
+
+func (s *subsecondPaymentStore) GetByID(_ context.Context, _ uuid.UUID) (*domain.Payment, error) {
+	return nil, nil
 }
 
 func (s *subsecondPaymentStore) ListByPropertyPaginated(
@@ -69,10 +80,10 @@ func TestListPayments_SubsecondCursorPrecision(t *testing.T) {
 			{ID: id2, MatchedAt: t2},
 		},
 	}
-	h := &Handlers{PaymentStore: store}
+	h := &Handlers{Deps: Deps{PaymentStore: store}}
 	r := gin.New()
 	r.GET("/owner/payments", func(c *gin.Context) {
-		c.Set(auth.ClaimsKey, &auth.Claims{Role: domain.RoleOwner, PropertyID: propID.String()})
+		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), propID))
 		h.ListPayments(c)
 	})
 
@@ -115,10 +126,10 @@ func TestListPayments_SubsecondCursorPrecision(t *testing.T) {
 func TestOwnerListUnbatchedPayoutItems_CursorValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	propID := uuid.New()
-	h := &Handlers{PayoutRepo: &postgres.PayoutRepo{}}
+	h := &Handlers{Deps: Deps{PayoutRepo: &postgres.PayoutRepo{}}}
 	r := gin.New()
 	r.GET("/owner/payouts/items/unbatched", func(c *gin.Context) {
-		c.Set(auth.ClaimsKey, &auth.Claims{Role: domain.RoleOwner, PropertyID: propID.String()})
+		c.Request = c.Request.WithContext(requestscope.WithPropertyID(c.Request.Context(), propID))
 		h.OwnerListUnbatchedPayoutItems(c)
 	})
 
@@ -166,11 +177,11 @@ func TestHandlePaymentSuccessWebhook_PropagatesEventIDAndChecksAuditUpdate(t *te
 	intent := &domain.PaymentIntent{ID: uuid.New(), AmountPaise: 50000}
 	settler := &webhookCtxSettler{}
 	gwRepo := &failingAuditGatewayRepo{failUpdate: true}
-	h := &Handlers{
+	h := &Handlers{Deps: Deps{
 		OrderSettler:       settler,
 		GatewayPaymentRepo: gwRepo,
 		IntentStore:        &stubIntentStore{byOrder: map[string]*domain.PaymentIntent{"ord_1": intent}},
-	}
+	}}
 
 	r := gin.New()
 	r.POST("/wh", func(c *gin.Context) {
