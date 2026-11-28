@@ -186,9 +186,11 @@ func TestHandlePaymentSuccessWebhook_PropagatesEventIDAndChecksAuditUpdate(t *te
 	r := gin.New()
 	r.POST("/wh", func(c *gin.Context) {
 		h.handlePaymentSuccessWebhook(c, cashfree.SuccessWebhook{
-			OrderID:     "ord_1",
-			CFPaymentID: "cf_1",
-			AmountPaise: 50000,
+			OrderID:         "ord_1",
+			CFPaymentID:     "cf_1",
+			AmountPaise:     50000,
+			PaymentStatus:   "SUCCESS",
+			PaymentCurrency: "INR",
 		}, &domain.WebhookEvent{ID: evtID}, "")
 	})
 
