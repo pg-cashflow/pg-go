@@ -183,4 +183,45 @@ func TestGetPaymentRefundHistory(t *testing.T) {
 		router.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
+
+	t.Run("needs_review refund is counted as reserved and pending_operation", func(t *testing.T) {
+		reviewPaymentID := uuid.New()
+		reviewPayment := *basePayment
+		reviewPayment.ID = reviewPaymentID
+		repo.payments[reviewPaymentID] = &reviewPayment
+
+		reviewRef := "rf_test_needs_review"
+		reviewRefund := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       reviewPaymentID,
+			PropertyID:      propID,
+			RefundReference: &reviewRef,
+			AmountPaise:     1200,
+			Status:          "NEEDS_REVIEW",
+			Reason:          "Ambiguous timeout",
+			CreatedAt:       now.Add(-15 * time.Minute),
+			UpdatedAt:       now.Add(-15 * time.Minute),
+		}
+		require.NoError(t, repo.CreateOrUpdateRefund(context.Background(), reviewRefund))
+
+		req := httptest.NewRequest(http.MethodGet, "/api/owner/payments/"+reviewPaymentID.String()+"/refunds", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+
+		var resp struct {
+			ReservedAmountPaise      int64 `json:"reserved_amount_paise"`
+			RemainingRefundablePaise int64 `json:"remaining_refundable_paise"`
+			PendingOperation         *struct {
+				ID          uuid.UUID `json:"id"`
+				AmountPaise int64     `json:"amount_paise"`
+				Status      string    `json:"status"`
+			} `json:"pending_operation"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, int64(1200), resp.ReservedAmountPaise)
+		assert.Equal(t, int64(3800), resp.RemainingRefundablePaise)
+		require.NotNil(t, resp.PendingOperation)
+		assert.Equal(t, reviewRefund.ID, resp.PendingOperation.ID)
+	})
 }

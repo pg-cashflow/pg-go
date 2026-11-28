@@ -2998,16 +2998,79 @@ func TestOwnerResolveReviewRefund_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("Action cancel transitions status to cancelled", func(t *testing.T) {
+	t.Run("Fails closed with 503 when CashfreeClient is nil", func(t *testing.T) {
 		h, gwRepo := setupH(true)
+		rfRef := "rf_needs_rev_nil_client"
 		rf := &domain.GatewayRefund{
-			ID:          uuid.New(),
-			PaymentID:   paymentID,
-			PropertyID:  propID,
-			AmountPaise: 200000,
-			Status:      domain.RefundStatusNeedsReview,
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			AmountPaise:     200000,
+			Status:          domain.RefundStatusNeedsReview,
+			IdempotencyKey:  &rfRef,
+			RefundReference: &rfRef,
+			RawPayload:      []byte(`{"order_id":"order_test_nil"}`),
 		}
 		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+
+		for _, action := range []string{"cancel", "confirm_succeeded"} {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Params = gin.Params{
+				{Key: "id", Value: paymentID.String()},
+				{Key: "refund_id", Value: rf.ID.String()},
+			}
+			c.Set(auth.ContextClaimsKey, &auth.Claims{
+				UserID:     ownerID,
+				PropertyID: &propID,
+				Role:       domain.RoleOwner,
+			})
+			body := map[string]any{
+				"action": action,
+				"reason": "Operator attempted resolution without gateway client",
+				"otp":    "123456",
+			}
+			buf, _ := json.Marshal(body)
+			c.Request = httptest.NewRequest(http.MethodPost, "/owner/payments/"+paymentID.String()+"/refunds/"+rf.ID.String()+"/resolve-review", bytes.NewReader(buf))
+			c.Request.Header.Set("Content-Type", "application/json")
+
+			h.OwnerResolveReviewRefund(c)
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("action %s: expected 503 Service Unavailable, got %d (body: %s)", action, w.Code, w.Body.String())
+			}
+			updated, _ := gwRepo.GetRefundByID(context.Background(), rf.ID)
+			if updated.Status != domain.RefundStatusNeedsReview {
+				t.Fatalf("action %s: expected status to remain needs_review, got %s", action, updated.Status)
+			}
+		}
+	})
+
+	t.Run("Action cancel transitions status to cancelled when Cashfree confirms cancelled", func(t *testing.T) {
+		h, gwRepo := setupH(true)
+		rfRef := "rf_needs_rev_cancel"
+		rf := &domain.GatewayRefund{
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			AmountPaise:     200000,
+			Status:          domain.RefundStatusNeedsReview,
+			IdempotencyKey:  &rfRef,
+			RefundReference: &rfRef,
+			RawPayload:      []byte(`{"order_id":"order_test_cancel"}`),
+		}
+		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+		h.CashfreeClient = &mockCFClient{
+			fetchRefundStatusFn: func(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
+				return &cashfree.RefundDetails{
+					CFRefundID:   "cf_rf_cancel_123",
+					RefundID:     refundID,
+					OrderID:      orderID,
+					RefundStatus: "CANCELLED",
+					AmountPaise:  200000,
+				}, nil
+			},
+		}
 
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
@@ -3040,16 +3103,31 @@ func TestOwnerResolveReviewRefund_UnitScenarios(t *testing.T) {
 		}
 	})
 
-	t.Run("Action confirm_succeeded transitions status to succeeded", func(t *testing.T) {
+	t.Run("Action confirm_succeeded transitions status to succeeded when Cashfree confirms success", func(t *testing.T) {
 		h, gwRepo := setupH(true)
+		rfRef := "rf_needs_rev_success"
 		rf := &domain.GatewayRefund{
-			ID:          uuid.New(),
-			PaymentID:   paymentID,
-			PropertyID:  propID,
-			AmountPaise: 200000,
-			Status:      domain.RefundStatusNeedsReview,
+			ID:              uuid.New(),
+			PaymentID:       paymentID,
+			PropertyID:      propID,
+			AmountPaise:     200000,
+			Status:          domain.RefundStatusNeedsReview,
+			IdempotencyKey:  &rfRef,
+			RefundReference: &rfRef,
+			RawPayload:      []byte(`{"order_id":"order_test_success"}`),
 		}
 		_ = gwRepo.CreateOrUpdateRefund(context.Background(), rf)
+		h.CashfreeClient = &mockCFClient{
+			fetchRefundStatusFn: func(ctx context.Context, orderID, refundID string) (*cashfree.RefundDetails, error) {
+				return &cashfree.RefundDetails{
+					CFRefundID:   "cf_rf_succ_123",
+					RefundID:     refundID,
+					OrderID:      orderID,
+					RefundStatus: "SUCCESS",
+					AmountPaise:  200000,
+				}, nil
+			},
+		}
 
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

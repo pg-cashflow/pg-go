@@ -186,11 +186,19 @@ func (r *KYCInboxRepo) GetVerificationForUpdate(ctx context.Context, tx pgx.Tx, 
 	query := `
 		SELECT ` + kycVerificationCols + `
 		FROM kyc_verification
-		WHERE id::text = $1
-		   OR vendor_reference_id = $1
-		   OR cf_reference_id = $1
-		   OR ($2 <> '' AND (vendor_reference_id = $2 OR cf_reference_id = $2))
-		   OR ($3 <> '' AND vendor_reference_id = $3)
+		WHERE ($1 <> '' OR $2 <> '')
+		  AND (
+			$1 = ''
+			OR id::text = $1
+			OR vendor_reference_id = $1
+			OR cf_reference_id = $1
+		  )
+		  AND (
+			$2 = ''
+			OR vendor_reference_id = $2
+			OR cf_reference_id = $2
+			OR ($3 <> '' AND vendor_reference_id = $3)
+		  )
 		ORDER BY created_at DESC
 		LIMIT 1
 		FOR UPDATE

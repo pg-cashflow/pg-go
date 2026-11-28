@@ -75,6 +75,10 @@ type fakeRepo struct {
 	otpAttemptCount         int
 	countAndRecordOTPFn     func(maxAllowed int) (int, error)
 	initialVendorRefID      string
+	getByVendorRefErr       error
+	getByCFRefErr           error
+	altVerificationByCF     *domain.KYCVerification
+	submitManualReviewCalls int
 }
 
 func (f *fakeRepo) RecordConsent(_ context.Context, c *domain.KYCConsent, _ string) error {
@@ -187,6 +191,9 @@ func (f *fakeRepo) GetActiveVerificationByTenant(_ context.Context, _ uuid.UUID)
 	return f.verification, nil
 }
 func (f *fakeRepo) GetVerificationByVendorRefID(_ context.Context, vendorRefID string) (*domain.KYCVerification, error) {
+	if f.getByVendorRefErr != nil {
+		return nil, f.getByVendorRefErr
+	}
 	if f.verification == nil || f.verification.VendorReferenceID != vendorRefID {
 		return nil, domain.ErrVerificationNotFound
 	}
@@ -233,6 +240,7 @@ func (f *fakeRepo) GetAttestedPhoto(_ context.Context, _ uuid.UUID) ([]byte, err
 	return f.attestedPhoto, nil
 }
 func (f *fakeRepo) SubmitManualReviewTx(_ context.Context, id uuid.UUID, maskedUID, _ string, ocrData, docURL string, docBytes []byte, docContentType string, _ string, _ string, _ ...uuid.UUID) (*domain.KYCVerification, error) {
+	f.submitManualReviewCalls++
 	var raw struct {
 		NameMismatch bool `json:"name_mismatch"`
 	}
@@ -349,6 +357,12 @@ func (f *fakeRepo) RecordGuardianConsentTx(_ context.Context, tenantID uuid.UUID
 	}, nil
 }
 func (f *fakeRepo) GetVerificationByCFReferenceID(_ context.Context, cfRefID string) (*domain.KYCVerification, error) {
+	if f.getByCFRefErr != nil {
+		return nil, f.getByCFRefErr
+	}
+	if f.altVerificationByCF != nil && f.altVerificationByCF.CFReferenceID != nil && *f.altVerificationByCF.CFReferenceID == cfRefID {
+		return f.altVerificationByCF, nil
+	}
 	if f.verification != nil && f.verification.CFReferenceID != nil && *f.verification.CFReferenceID == cfRefID {
 		return f.verification, nil
 	}
@@ -1790,6 +1804,101 @@ func TestCanTenantPay_GatingMatrix(t *testing.T) {
 		canPay, err := svc.CanTenantPay(context.Background(), tenantID)
 		if err != nil || canPay {
 			t.Fatalf("expected manual-review tenant blocked from paying, got canPay=%v, err=%v", canPay, err)
+		}
+	})
+}
+
+func TestProcessDigiLockerCallback_CorrelationAndErrorSafety(t *testing.T) {
+	t.Run("preserves infrastructure error from vendor ref lookup instead of returning ErrVerificationNotFound", func(t *testing.T) {
+		dbErr := errors.New("connection reset by peer")
+		repo := &fakeRepo{getByVendorRefErr: dbErr}
+		svc := newTestService(repo, &fakeCashfree{})
+
+		_, err := svc.ProcessDigiLockerCallback(context.Background(), "cf_dgl_1", "cf_ref_1", domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if errors.Is(err, domain.ErrVerificationNotFound) {
+			t.Fatalf("expected infrastructure error, got ErrVerificationNotFound: %v", err)
+		}
+		if !errors.Is(err, dbErr) {
+			t.Fatalf("expected wrapped dbErr, got %v", err)
+		}
+	})
+
+	t.Run("preserves infrastructure error from cf ref lookup instead of returning ErrVerificationNotFound", func(t *testing.T) {
+		dbErr := errors.New("db timeout")
+		repo := &fakeRepo{getByCFRefErr: dbErr}
+		svc := newTestService(repo, &fakeCashfree{})
+
+		_, err := svc.ProcessDigiLockerCallback(context.Background(), "", "cf_ref_1", domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if errors.Is(err, domain.ErrVerificationNotFound) {
+			t.Fatalf("expected infrastructure error, got ErrVerificationNotFound: %v", err)
+		}
+		if !errors.Is(err, dbErr) {
+			t.Fatalf("expected wrapped dbErr, got %v", err)
+		}
+	})
+
+	t.Run("rejects conflicting vendor_reference_id and cf_reference_id", func(t *testing.T) {
+		cfRefOther := "cf_ref_other"
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				ID:                uuid.New(),
+				TenantID:          uuid.New(),
+				VendorReferenceID: "cf_dgl_a",
+				Status:            domain.KYCStatusPending,
+				Method:            domain.KYCMethodDigiLocker,
+			},
+			altVerificationByCF: &domain.KYCVerification{
+				ID:                uuid.New(),
+				TenantID:          uuid.New(),
+				VendorReferenceID: "cf_dgl_b",
+				CFReferenceID:     &cfRefOther,
+				Status:            domain.KYCStatusPending,
+				Method:            domain.KYCMethodDigiLocker,
+			},
+		}
+		svc := newTestService(repo, &fakeCashfree{})
+
+		_, err := svc.ProcessDigiLockerCallback(context.Background(), "cf_dgl_a", cfRefOther, domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+		if err == nil {
+			t.Fatal("expected conflict error when vendor_reference_id and cf_reference_id resolve to different records")
+		}
+		if repo.submitManualReviewCalls != 0 {
+			t.Fatalf("expected 0 manual review submissions, got %d", repo.submitManualReviewCalls)
+		}
+	})
+
+	t.Run("duplicate success callback on pending_manual_review is a no-op", func(t *testing.T) {
+		cfRef := "cf_ref_dup"
+		repo := &fakeRepo{
+			verification: &domain.KYCVerification{
+				ID:                uuid.New(),
+				TenantID:          uuid.New(),
+				VendorReferenceID: "cf_dgl_dup",
+				CFReferenceID:     &cfRef,
+				Status:            domain.KYCStatusPendingManualReview,
+				Method:            domain.KYCMethodDigiLocker,
+			},
+		}
+		cf := &fakeCashfree{
+			digiLockerErr: errors.New("should not call GetDigiLockerAadhaar on duplicate callback"),
+		}
+		svc := newTestService(repo, cf)
+
+		v, err := svc.ProcessDigiLockerCallback(context.Background(), "cf_dgl_dup", cfRef, domain.WebhookEventDigiLockerSuccess, "", "system:webhook")
+		if err != nil {
+			t.Fatalf("expected no-op success, got error: %v", err)
+		}
+		if v.Status != domain.KYCStatusPendingManualReview {
+			t.Fatalf("expected pending_manual_review, got %s", v.Status)
+		}
+		if repo.submitManualReviewCalls != 0 {
+			t.Fatalf("expected 0 manual review submissions, got %d", repo.submitManualReviewCalls)
 		}
 	})
 }

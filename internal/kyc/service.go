@@ -1080,25 +1080,46 @@ func isAmbiguousKYCError(err error) bool {
 
 // ProcessDigiLockerCallback processes a status change delivered by webhook or polling.
 // It handles all 5 Cashfree DigiLocker event types.
+func isVerificationNotFound(err error) bool {
+	return errors.Is(err, domain.ErrVerificationNotFound) || errors.Is(err, pgx.ErrNoRows)
+}
+
 func (s *Service) ProcessDigiLockerCallback(ctx context.Context, verificationIDStr, cfRefID, eventType, status, actor string) (*domain.KYCVerification, error) {
-	var v *domain.KYCVerification
+	var vByVendor, vByCF *domain.KYCVerification
 	var err error
 
 	verificationIDStr = strings.TrimSpace(verificationIDStr)
 	cfRefID = strings.TrimSpace(cfRefID)
 
 	if verificationIDStr != "" {
-		v, err = s.repo.GetVerificationByVendorRefID(ctx, verificationIDStr)
+		vByVendor, err = s.repo.GetVerificationByVendorRefID(ctx, verificationIDStr)
+		if err != nil && !isVerificationNotFound(err) {
+			return nil, fmt.Errorf("kyc service: lookup verification by vendor ref %q: %w", verificationIDStr, err)
+		}
 	}
-	if (v == nil || err != nil) && cfRefID != "" {
-		v, err = s.repo.GetVerificationByCFReferenceID(ctx, cfRefID)
+	if cfRefID != "" {
+		vByCF, err = s.repo.GetVerificationByCFReferenceID(ctx, cfRefID)
+		if err != nil && !isVerificationNotFound(err) {
+			return nil, fmt.Errorf("kyc service: lookup verification by cf ref %q: %w", cfRefID, err)
+		}
 	}
-	if err != nil || v == nil {
+	if vByVendor != nil && vByCF != nil && vByVendor.ID != vByCF.ID {
+		return nil, fmt.Errorf("kyc service: conflicting digilocker callback identifiers (%s vs %s)", verificationIDStr, cfRefID)
+	}
+	v := vByVendor
+	if v == nil {
+		v = vByCF
+	}
+	if v == nil {
 		return nil, domain.ErrVerificationNotFound
 	}
+	if v.CFReferenceID != nil && *v.CFReferenceID != "" && cfRefID != "" && *v.CFReferenceID != cfRefID {
+		return nil, fmt.Errorf("kyc service: digilocker callback cf_reference_id mismatch (%s vs %s)", *v.CFReferenceID, cfRefID)
+	}
 
-	// Terminal states are strictly immutable.
-	if v.Status == domain.KYCStatusVerified ||
+	// Terminal states and completed retrieval (pending_manual_review) are immutable to callbacks.
+	if v.Status == domain.KYCStatusPendingManualReview ||
+		v.Status == domain.KYCStatusVerified ||
 		v.Status == domain.KYCStatusRejected ||
 		v.Status == domain.KYCStatusRevoked ||
 		v.Status == domain.KYCStatusExpired {
