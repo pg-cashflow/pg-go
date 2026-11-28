@@ -1,6 +1,8 @@
 -- Migration 141: Separate Cashfree payment identity (cf_payment_id) from bank_reference and legacy manual UTRs (upi_txn_id).
 -- Fixes F1: A shared bank_reference across distinct Cashfree payments must never collide on upi_txn_id.
 
+SET lock_timeout = '5s';
+
 -- 1. Preflight safety checks: abort loudly if existing data violates the target invariants.
 DO $$
 BEGIN

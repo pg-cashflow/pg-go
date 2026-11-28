@@ -783,7 +783,7 @@ func (s *Service) settleMatched(
 	})
 	if err == nil {
 		if isReplay {
-			if txnID != nil && *txnID != "" {
+			if out == nil && txnID != nil && *txnID != "" && !(matchedBy == domain.MatchedByCashfree && dedup != "") {
 				out, _ = s.payments.GetByUPITxnID(ctx, *txnID)
 			}
 			return out, nil
