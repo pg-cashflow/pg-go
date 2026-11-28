@@ -32,7 +32,7 @@ func (h *Handlers) ListPayments(c *gin.Context) {
 	var before *time.Time
 	var beforeID *uuid.UUID
 	if cur := c.Query("cursor"); cur != "" {
-		if t, err := time.Parse(time.RFC3339, cur); err == nil {
+		if t, err := time.Parse(time.RFC3339Nano, cur); err == nil {
 			before = &t
 		}
 	}
@@ -53,7 +53,7 @@ func (h *Handlers) ListPayments(c *gin.Context) {
 		var nextCursorID *string
 		if len(list) == limit {
 			last := list[len(list)-1]
-			ts := last.MatchedAt.Format(time.RFC3339)
+			ts := last.MatchedAt.UTC().Format(time.RFC3339Nano)
 			id := last.ID.String()
 			nextCursor = &ts
 			nextCursorID = &id

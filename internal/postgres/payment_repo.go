@@ -385,11 +385,17 @@ func (r *PaymentRepo) CreateWebhookEvent(ctx context.Context, evt *domain.Webhoo
 }
 
 func (r *PaymentRepo) UpdateWebhookEventStatus(ctx context.Context, id uuid.UUID, status string, errMsg *string) error {
-	_, err := r.db.Exec(ctx, `
+	tag, err := r.db.Exec(ctx, `
 		UPDATE webhook_events
 		SET processing_status=$2, error_message=$3, processed_at=NOW()
 		WHERE id=$1`, id, status, errMsg)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("webhook event %s: expected 1 row updated, got %d", id, tag.RowsAffected())
+	}
+	return nil
 }
 
 func (r *PaymentRepo) RecordUnmatchedReceipt(ctx context.Context, orderID, paymentID string, intentID *uuid.UUID, amountPaise int64, failureReason string, payload []byte) error {
