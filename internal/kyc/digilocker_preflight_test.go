@@ -1,4 +1,4 @@
-package kyc
+package kyc_test
 
 import (
 	"context"
@@ -9,10 +9,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/pg-cashflow/pg-go/internal/cashfree"
 	"github.com/pg-cashflow/pg-go/internal/domain"
+	kycsvc "github.com/pg-cashflow/pg-go/internal/kyc"
 )
 
 type preflightSpyCashfree struct {
-	*fakeCashfree
+	fakeCashfree
 	verifyCalls int
 	createCalls int
 	verifyErr   error
@@ -40,17 +41,17 @@ func (p *preflightSpyCashfree) CreateDigiLockerURL(ctx context.Context, in cashf
 	}, nil
 }
 
-func setupPreflightTestService(t *testing.T, enabled bool, cf *preflightSpyCashfree) (*Service, uuid.UUID) {
-	t.Helper()
-	repo := newFakeRepo()
+func setupPreflightTestService(enabled bool, cf *preflightSpyCashfree) (*kycsvc.Service, uuid.UUID) {
 	tenantID := uuid.New()
-	repo.consents[tenantID] = &domain.KYCConsent{
-		ID:         uuid.New(),
-		TenantID:   tenantID,
-		ConsentVer: "v1",
-		GrantedAt:  time.Now().UTC(),
+	repo := &fakeRepo{
+		consent: &domain.KYCConsent{
+			ID:             uuid.New(),
+			TenantID:       tenantID,
+			ConsentVersion: "v1",
+			ConsentGivenAt: time.Now().UTC(),
+		},
 	}
-	svc := NewService(repo, cf, Config{
+	svc := kycsvc.NewService(repo, cf, kycsvc.Config{
 		IdentitySecret:                   "test-secret-key-32-chars-minimum!!",
 		HashKeyVersion:                   1,
 		VerificationValidityDays:         365,
@@ -60,8 +61,8 @@ func setupPreflightTestService(t *testing.T, enabled bool, cf *preflightSpyCashf
 }
 
 func TestDigiLockerVerifyAccountPreflight_DefaultDisabledSkipsPreflight(t *testing.T) {
-	cf := &preflightSpyCashfree{fakeCashfree: &fakeCashfree{}}
-	svc, tenantID := setupPreflightTestService(t, false, cf)
+	cf := &preflightSpyCashfree{}
+	svc, tenantID := setupPreflightTestService(false, cf)
 
 	_, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.example.com/kyc/cb", cashfree.DigiLockerFlowSignUp, "tenant")
 	if err != nil {
@@ -80,8 +81,8 @@ func TestDigiLockerVerifyAccountPreflight_DefaultDisabledSkipsPreflight(t *testi
 
 func TestDigiLockerVerifyAccountPreflight_EnabledRunsForSignupOnly(t *testing.T) {
 	t.Run("signup invokes preflight then creates URL", func(t *testing.T) {
-		cf := &preflightSpyCashfree{fakeCashfree: &fakeCashfree{}}
-		svc, tenantID := setupPreflightTestService(t, true, cf)
+		cf := &preflightSpyCashfree{}
+		svc, tenantID := setupPreflightTestService(true, cf)
 
 		_, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.example.com/kyc/cb", cashfree.DigiLockerFlowSignUp, "tenant")
 		if err != nil {
@@ -96,8 +97,8 @@ func TestDigiLockerVerifyAccountPreflight_EnabledRunsForSignupOnly(t *testing.T)
 	})
 
 	t.Run("signin skips preflight even when enabled", func(t *testing.T) {
-		cf := &preflightSpyCashfree{fakeCashfree: &fakeCashfree{}}
-		svc, tenantID := setupPreflightTestService(t, true, cf)
+		cf := &preflightSpyCashfree{}
+		svc, tenantID := setupPreflightTestService(true, cf)
 
 		_, _, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.example.com/kyc/cb", cashfree.DigiLockerFlowSignIn, "tenant")
 		if err != nil {
@@ -109,8 +110,8 @@ func TestDigiLockerVerifyAccountPreflight_EnabledRunsForSignupOnly(t *testing.T)
 	})
 
 	t.Run("failed preflight blocks consent URL creation", func(t *testing.T) {
-		cf := &preflightSpyCashfree{fakeCashfree: &fakeCashfree{}, verifyErr: errors.New("provider 500")}
-		svc, tenantID := setupPreflightTestService(t, true, cf)
+		cf := &preflightSpyCashfree{verifyErr: errors.New("provider 500")}
+		svc, tenantID := setupPreflightTestService(true, cf)
 
 		_, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.example.com/kyc/cb", cashfree.DigiLockerFlowSignUp, "tenant")
 		if err == nil {
@@ -125,8 +126,8 @@ func TestDigiLockerVerifyAccountPreflight_EnabledRunsForSignupOnly(t *testing.T)
 	})
 
 	t.Run("timeout preflight blocks consent URL creation", func(t *testing.T) {
-		cf := &preflightSpyCashfree{fakeCashfree: &fakeCashfree{}, verifyErr: context.DeadlineExceeded}
-		svc, tenantID := setupPreflightTestService(t, true, cf)
+		cf := &preflightSpyCashfree{verifyErr: context.DeadlineExceeded}
+		svc, tenantID := setupPreflightTestService(true, cf)
 
 		_, url, err := svc.InitiateDigiLockerVerification(context.Background(), tenantID, "https://app.example.com/kyc/cb", cashfree.DigiLockerFlowSignUp, "tenant")
 		if !errors.Is(err, context.DeadlineExceeded) {

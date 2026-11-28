@@ -68,7 +68,7 @@ func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPai
 	return &domain.Payment{DueID: dueID, Amount: amountPaise, MatchedBy: domain.MatchedByCashfree}, nil
 }
 
-type stubOrderSettler struct {
+type pollStubOrderSettler struct {
 	n       int
 	orderID string
 	cfID    string
@@ -78,7 +78,7 @@ type stubOrderSettler struct {
 	intents *stubIntentStale
 }
 
-func (s *stubOrderSettler) SettleGatewayOrder(
+func (s *pollStubOrderSettler) SettleGatewayOrder(
 	ctx context.Context,
 	orderID string,
 	cfPaymentID string,
@@ -107,7 +107,7 @@ func TestCashfreePollSettlesOpenDue(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: intentID, DueID: dueID, ProviderOrderID: "pg-X-1", Status: domain.IntentCreated, AmountPaise: 5000,
 	}}}
-	settler := &stubOrderSettler{intents: intents}
+	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
@@ -143,7 +143,7 @@ func TestCashfreePollJob_SettlesAfterWebhookRejected(t *testing.T) {
 		Status:          domain.IntentCreated,
 		AmountPaise:     750000,
 	}}}
-	settler := &stubOrderSettler{intents: intents}
+	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
@@ -181,7 +181,7 @@ func TestCashfreePollSkipsPaidDue(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1",
 	}}}
-	settler := &stubOrderSettler{intents: intents}
+	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPaid}},
@@ -208,7 +208,7 @@ func TestCashfreePollSkipsMarkPaidOnDueNotOpen(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
 	}}}
-	settler := &stubOrderSettler{err: payment.ErrDueNotOpen, intents: intents}
+	settler := &pollStubOrderSettler{err: payment.ErrDueNotOpen, intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
@@ -251,7 +251,7 @@ func TestCashfreePoll_DoesNotFallbackBankRefToCFPaymentID(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-2", AmountPaise: 5000,
 	}}}
-	settler := &stubOrderSettler{intents: intents}
+	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
@@ -375,7 +375,7 @@ func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
 	}}}
-	settler := &stubOrderSettler{intents: intents}
+	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
