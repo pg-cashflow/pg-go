@@ -176,23 +176,26 @@ func TestCashfreePollJob_SettlesAfterWebhookRejected(t *testing.T) {
 	}
 }
 
-func TestCashfreePollSkipsPaidDue(t *testing.T) {
+func TestCashfreePollRoutesMatchingCaptureForPaidDue(t *testing.T) {
 	dueID := uuid.New()
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
-		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1",
+		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
 	}}}
 	settler := &pollStubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
 		Intents:      intents,
 		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPaid}},
-		Client:       stubCFFetch{ok: true, cfID: "cf1", amount: 1},
+		Client:       stubCFFetch{ok: true, cfID: "cf1", amount: 5000},
 		OrderSettler: settler,
 	}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if settler.n != 0 {
-		t.Fatalf("paid due must not settle, n=%d", settler.n)
+	if settler.n != 1 {
+		t.Fatalf("expected OrderSettler to handle paid due capture, n=%d", settler.n)
+	}
+	if settler.orderID != "pg-X-1" || settler.cfID != "cf1" || settler.amount != 5000 {
+		t.Fatalf("unexpected settler args: %+v", settler)
 	}
 }
 

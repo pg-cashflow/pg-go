@@ -156,15 +156,6 @@ func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 		return err
 	}
 	for _, intent := range stale {
-		if j.OrderSettler == nil && j.Dues != nil {
-			due, err := j.Dues.GetByID(ctx, intent.DueID)
-			if err != nil || due == nil {
-				continue
-			}
-			if due.Status != domain.DueStatusPending && due.Status != domain.DueStatusPartial {
-				continue
-			}
-		}
 		cfID, bankRef, amount, ok, err := j.Client.FetchSuccessfulPayment(ctx, intent.ProviderOrderID)
 		_ = j.Intents.Touch(ctx, intent.ID)
 		if err != nil {

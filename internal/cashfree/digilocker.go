@@ -22,12 +22,11 @@ import (
 //  4. GetDigiLockerAadhaar - GET /digilocker/document/AADHAAR after AUTHENTICATED.
 //
 // Provider Architecture Note (KYC-CF-01):
-// Cashfree documentation references an optional "Verify Account" pre-flight status
-// check prior to URL generation. In this integration, merchant credentials are
-// authenticated and authorized directly on the Verification Suite gateway during
-// POST /digilocker via client credentials (x-client-id / x-client-secret). Omitting
-// the extraneous synchronous account verification round-trip eliminates a redundant
-// failure point without reducing security or authorization guarantees.
+// Cashfree documentation references a "Verify Account" preflight check
+// (POST /digilocker/verify-account) prior to URL generation. This integration
+// supports that preflight behind CASHFREE_KYC_DIGILOCKER_VERIFY_ACCOUNT_PREFLIGHT
+// (default false pending Cashfree sandbox verification of response statuses and
+// merchant entitlement requirements for user_flow=signup).
 //
 // Data minimisation: only the fields KYC needs are decoded. Address, care-of and the
 // XML file link are never read, so they cannot be stored or logged by mistake.
