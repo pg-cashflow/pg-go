@@ -68,26 +68,27 @@ type Config struct {
 	KYCDocCryptoKey string
 	// KYCDocCryptoKeys holds versioned keys for document decryption during rotation (version -> 32-byte key).
 	// Format: "1:hexkey1,2:hexkey2".
-	KYCDocCryptoKeys                  map[byte][]byte
-	KYCVerificationValidityDays       int
-	FeatureKYCDigiLocker              bool
-	RefundWindowDays                  int
-	CashfreePayoutClientID            string
-	CashfreePayoutClientSecret        string
-	CashfreePayoutAPIVersion          string
-	CashfreePayoutFundsourceID        string
-	CashfreePayoutWebhookSecret       string
-	CashfreePayoutWebhookSecrets      map[string]string
-	CashfreePayoutEnv                 string
-	CashfreePayoutDispatchEnabled     bool
-	CashfreePayoutAutoDispatchEnabled bool
-	CashfreePayoutAuthMode            string // "signature" | "ip"
-	CashfreePayoutPublicKeyPEM        string // PEM-encoded RSA public key or X.509 certificate for 2FA signature
-	FinanceEnabled                    bool
-	IntelligenceEnabled               bool
-	AdminEmail                        string
-	AdminPhone                        string
-	TrustedProxies                    []string
+	KYCDocCryptoKeys                            map[byte][]byte
+	KYCVerificationValidityDays                 int
+	FeatureKYCDigiLocker                        bool
+	CashfreeKYCDigiLockerVerifyAccountPreflight bool
+	RefundWindowDays                            int
+	CashfreePayoutClientID                      string
+	CashfreePayoutClientSecret                  string
+	CashfreePayoutAPIVersion                    string
+	CashfreePayoutFundsourceID                  string
+	CashfreePayoutWebhookSecret                 string
+	CashfreePayoutWebhookSecrets                map[string]string
+	CashfreePayoutEnv                           string
+	CashfreePayoutDispatchEnabled               bool
+	CashfreePayoutAutoDispatchEnabled           bool
+	CashfreePayoutAuthMode                      string // "signature" | "ip"
+	CashfreePayoutPublicKeyPEM                  string // PEM-encoded RSA public key or X.509 certificate for 2FA signature
+	FinanceEnabled                              bool
+	IntelligenceEnabled                         bool
+	AdminEmail                                  string
+	AdminPhone                                  string
+	TrustedProxies                              []string
 	// PayoutExportChecksumSecret signs the HMAC on CSV payout batch exports.
 	// Must be set independently via PAYOUT_CHECKSUM_SECRET or CF_PAYOUT_EXPORT_SECRET.
 	// In production this field is required; the server refuses to start without it (REQ-SEC-008).
@@ -174,19 +175,20 @@ func Load() (*Config, error) {
 		KYCDocCryptoKey:                   strings.TrimSpace(os.Getenv("KYC_DOC_CRYPTO_KEY")),
 		KYCVerificationValidityDays:       envIntOr("KYC_VERIFICATION_VALIDITY_DAYS", 0),
 		FeatureKYCDigiLocker:              envBoolDefaultTrue("FEATURE_KYC_DIGILOCKER"),
-		RefundWindowDays:                  envIntOr("REFUND_WINDOW_DAYS", 120),
-		FinanceEnabled:                    envBoolDefaultTrue("FINANCE_ENABLED"),
-		IntelligenceEnabled:               envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
-		PayoutExportChecksumSecret:        envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
-		PayoutApprovalActiveKID:           envFirst("PAYOUT_APPROVAL_ACTIVE_KID", "CF_PAYOUT_APPROVAL_ACTIVE_KID"),
-		PayoutApprovalSecret:              envFirst("PAYOUT_APPROVAL_SECRET", "CF_PAYOUT_APPROVAL_SECRET"),
-		PayoutEncryptionSecret:            envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
-		CashfreePGBaseURL:                 strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
-		CashfreePGNotifyURL:               strings.TrimSpace(os.Getenv("CASHFREE_PG_NOTIFY_URL")),
-		MetricsSecret:                     strings.TrimSpace(os.Getenv("METRICS_SECRET")),
-		WhatsAppBaseURL:                   strings.TrimSpace(os.Getenv("WHATSAPP_BASE_URL")),
-		WhatsAppPhoneNumberID:             strings.TrimSpace(os.Getenv("WHATSAPP_PHONE_NUMBER_ID")),
-		WhatsAppAccessToken:               strings.TrimSpace(os.Getenv("WHATSAPP_ACCESS_TOKEN")),
+		CashfreeKYCDigiLockerVerifyAccountPreflight: envBoolDefaultFalse("CASHFREE_KYC_DIGILOCKER_VERIFY_ACCOUNT_PREFLIGHT"),
+		RefundWindowDays:           envIntOr("REFUND_WINDOW_DAYS", 120),
+		FinanceEnabled:             envBoolDefaultTrue("FINANCE_ENABLED"),
+		IntelligenceEnabled:        envBoolDefaultTrue("INTELLIGENCE_ENABLED"),
+		PayoutExportChecksumSecret: envFirst("PAYOUT_CHECKSUM_SECRET", "CF_PAYOUT_EXPORT_SECRET"),
+		PayoutApprovalActiveKID:    envFirst("PAYOUT_APPROVAL_ACTIVE_KID", "CF_PAYOUT_APPROVAL_ACTIVE_KID"),
+		PayoutApprovalSecret:       envFirst("PAYOUT_APPROVAL_SECRET", "CF_PAYOUT_APPROVAL_SECRET"),
+		PayoutEncryptionSecret:     envFirst("PAYOUT_ENCRYPTION_SECRET", "PAYOUT_ENCRYPTION_KEY"),
+		CashfreePGBaseURL:          strings.TrimSpace(os.Getenv("CASHFREE_PG_BASE_URL")),
+		CashfreePGNotifyURL:        strings.TrimSpace(os.Getenv("CASHFREE_PG_NOTIFY_URL")),
+		MetricsSecret:              strings.TrimSpace(os.Getenv("METRICS_SECRET")),
+		WhatsAppBaseURL:            strings.TrimSpace(os.Getenv("WHATSAPP_BASE_URL")),
+		WhatsAppPhoneNumberID:      strings.TrimSpace(os.Getenv("WHATSAPP_PHONE_NUMBER_ID")),
+		WhatsAppAccessToken:        strings.TrimSpace(os.Getenv("WHATSAPP_ACCESS_TOKEN")),
 	}
 	if keysStr := os.Getenv("PAYOUT_ENCRYPTION_KEYS"); keysStr != "" {
 		cfg.PayoutEncryptionKeys = parseVersionedKeys(keysStr)

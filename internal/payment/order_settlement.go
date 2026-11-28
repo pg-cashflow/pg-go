@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pg-cashflow/pg-go/internal/domain"
 	"github.com/pg-cashflow/pg-go/internal/postgres"
@@ -105,15 +106,47 @@ func NewOrderSettlementService(cfg OrderSettlementConfig) *OrderSettlementServic
 	}
 }
 
+const canonicalCashfreePaymentConstraint = "uq_payments_cf_payment_id"
+
+type settlementCollisionError struct {
+	constraintName string
+	err            error
+}
+
+func (e *settlementCollisionError) Error() string {
+	return fmt.Sprintf("settlement unique collision (%s): %v", e.constraintName, e.err)
+}
+
+func (e *settlementCollisionError) Unwrap() error { return e.err }
+
+func classifyCreateCollision(err error) (bool, string) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true, pgErr.ConstraintName
+	}
+	if errors.Is(err, domain.ErrDuplicateTxn) {
+		return true, ""
+	}
+	return false, ""
+}
+
+func nonEmptyStrPtr(s string) *string {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return nil
+	}
+	return &t
+}
+
 // SettleGatewayOrder executes canonical, idempotent settlement for a gateway payment.
 // It enforces top-down hierarchical locking (tenants -> dues -> payment_intents),
-// natural key deduplication, snapshot-based multi-due allocation, unapplied payment handling,
-// and ledger outbox mirroring.
+// natural key deduplication on cf_payment_id, snapshot-based multi-due allocation,
+// unapplied payment handling, and ledger outbox mirroring.
 func (s *OrderSettlementService) SettleGatewayOrder(
 	ctx context.Context,
 	orderID string,
 	cfPaymentID string,
-	txnID string,
+	bankRef string,
 	amountPaise int64,
 	intent *domain.PaymentIntent,
 	rawPayload []byte,
@@ -141,7 +174,7 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 
 	if s.pool != nil && s.gatewayPaymentRepo != nil {
 		evtID, hasEvtID := WebhookEventIDFromContext(ctx)
-		return postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
+		txErr := postgres.WithinTx(ctx, s.pool, func(tx pgx.Tx) error {
 			txPayRepo := postgres.NewPaymentRepo(tx)
 			if err := func() error {
 				txDueRepo := postgres.NewDueRepo(tx)
@@ -203,7 +236,7 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				if lockedIntent.Status == domain.IntentPaid {
 					// If this exact payment was already recorded, return idempotently.
 					var existingCount int
-					if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
+					if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingCount); err == nil && existingCount > 0 {
 						return nil
 					}
 					// Otherwise, this is a distinct additional successful capture for an already-paid order/intent.
@@ -217,7 +250,7 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 					// UNAPPLIED / RACE LOSER BRANCH. A capture from a superseded order
 					// must never be allocated to live dues, even when those dues remain open.
 					var existingCount int
-					if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1 OR (upi_txn_id IS NOT NULL AND upi_txn_id = $2)`, cfPaymentID, txnID).Scan(&existingCount); err == nil && existingCount > 0 {
+					if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingCount); err == nil && existingCount > 0 {
 						return nil
 					}
 
@@ -240,7 +273,8 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 					p := &domain.Payment{
 						DueID:             snapshot[0].DueID,
 						TenantID:          tenantID,
-						UPITxnID:          &txnID,
+						UPITxnID:          nil,
+						BankReference:     nonEmptyStrPtr(bankRef),
 						CFPaymentID:       &cfPaymentID,
 						Amount:            amountPaise,
 						MatchedBy:         domain.MatchedByCashfree,
@@ -250,8 +284,8 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 						SkipOutboxEnqueue: true,
 					}
 					if err := txPayRepo.Create(ctx, p); err != nil {
-						if errors.Is(err, domain.ErrDuplicateTxn) {
-							return nil
+						if isDup, constraint := classifyCreateCollision(err); isDup {
+							return &settlementCollisionError{constraintName: constraint, err: err}
 						}
 						return err
 					}
@@ -298,7 +332,8 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 				p := &domain.Payment{
 					DueID:             snapshot[0].DueID,
 					TenantID:          tenantID,
-					UPITxnID:          &txnID,
+					UPITxnID:          nil,
+					BankReference:     nonEmptyStrPtr(bankRef),
 					CFPaymentID:       &cfPaymentID,
 					Amount:            amountPaise,
 					MatchedBy:         domain.MatchedByCashfree,
@@ -307,8 +342,8 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 					SkipOutboxEnqueue: true,
 				}
 				if err := txPayRepo.Create(ctx, p); err != nil {
-					if errors.Is(err, domain.ErrDuplicateTxn) {
-						return nil
+					if isDup, constraint := classifyCreateCollision(err); isDup {
+						return &settlementCollisionError{constraintName: constraint, err: err}
 					}
 					return err
 				}
@@ -414,6 +449,14 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 			}
 			return nil
 		})
+		if txErr == nil {
+			return nil
+		}
+		var coll *settlementCollisionError
+		if errors.As(txErr, &coll) {
+			return s.handlePostRollbackCollision(ctx, coll, orderID, cfPaymentID, intent, amountPaise, rawPayload, evtID, hasEvtID)
+		}
+		return txErr
 	}
 
 	// Fallback path for unit tests without a database pool
@@ -447,9 +490,9 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 		}
 		var settledCount int
 		for _, item := range duesToSettle {
-			itemTxn := txnID
-			if len(duesToSettle) > 1 {
-				itemTxn = fmt.Sprintf("%s:due:%s", txnID, item.DueID)
+			itemTxn := strings.TrimSpace(bankRef)
+			if itemTxn != "" && len(duesToSettle) > 1 {
+				itemTxn = fmt.Sprintf("%s:due:%s", itemTxn, item.DueID)
 			}
 			dedupKey := ""
 			if cfPaymentID != "" {
@@ -485,4 +528,47 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 		_ = s.intentStore.MarkPaid(ctx, intent.ID, cfPaymentID)
 	}
 	return nil
+}
+
+// handlePostRollbackCollision runs after a 23505 aborted the settlement transaction and WithinTx
+// rolled it back. It never issues SQL on the aborted transaction.
+func (s *OrderSettlementService) handlePostRollbackCollision(
+	ctx context.Context,
+	coll *settlementCollisionError,
+	orderID string,
+	cfPaymentID string,
+	intent *domain.PaymentIntent,
+	amountPaise int64,
+	rawPayload []byte,
+	evtID uuid.UUID,
+	hasEvtID bool,
+) error {
+	var intentIDPtr *uuid.UUID
+	if intent != nil && intent.ID != uuid.Nil {
+		intentIDPtr = &intent.ID
+	}
+
+	if coll.constraintName == canonicalCashfreePaymentConstraint && s.pool != nil {
+		var existingAmount int64
+		err := s.pool.QueryRow(ctx, `SELECT amount FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingAmount)
+		if err == nil && existingAmount == amountPaise {
+			if hasEvtID {
+				if uErr := postgres.NewPaymentRepo(s.pool).UpdateWebhookEventStatus(ctx, evtID, "processed", nil); uErr != nil {
+					return fmt.Errorf("update webhook event status after idempotent duplicate: %w", uErr)
+				}
+			}
+			return nil
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("verify existing cf_payment_id %s after collision: %w", cfPaymentID, err)
+		}
+	}
+
+	if s.gatewayPaymentRepo == nil {
+		return fmt.Errorf("unmatched receipt persistence unavailable after collision (%s): %w", coll.constraintName, coll)
+	}
+	if recErr := s.gatewayPaymentRepo.RecordUnmatchedReceipt(ctx, orderID, cfPaymentID, intentIDPtr, amountPaise, "duplicate_payment", rawPayload); recErr != nil {
+		return fmt.Errorf("record unmatched receipt after collision (%s): %w", coll.constraintName, recErr)
+	}
+	return coll
 }

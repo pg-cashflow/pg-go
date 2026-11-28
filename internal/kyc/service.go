@@ -122,6 +122,14 @@ type Config struct {
 	// VerificationValidityDays is how long a verified record remains valid before
 	// the reaper transitions it to 'expired'. Typically 365.
 	VerificationValidityDays int
+
+	// DigiLockerVerifyAccountPreflight enables the optional Cashfree POST /digilocker/verify-account
+	// preflight check when user_flow == "signup" (default false until sandbox confirmed).
+	DigiLockerVerifyAccountPreflight bool
+}
+
+type digiLockerAccountVerifier interface {
+	VerifyDigiLockerAccount(ctx context.Context, in cashfree.VerifyDigiLockerAccountInput) (*cashfree.DigiLockerAccountResult, error)
 }
 
 // Service is the top-level KYC orchestrator.
@@ -1016,6 +1024,18 @@ func (s *Service) InitiateDigiLockerVerification(ctx context.Context, tenantID u
 	}
 
 	vendorRefID := fmt.Sprintf("cf_dgl_%s", uuid.New().String())
+	if s.cfg.DigiLockerVerifyAccountPreflight && strings.EqualFold(strings.TrimSpace(userFlow), cashfree.DigiLockerFlowSignUp) {
+		verifier, ok := s.cashfree.(digiLockerAccountVerifier)
+		if !ok {
+			return nil, "", errors.New("kyc service: digilocker verify-account preflight unsupported by cashfree client")
+		}
+		if _, err := verifier.VerifyDigiLockerAccount(ctx, cashfree.VerifyDigiLockerAccountInput{
+			VerificationID: vendorRefID,
+		}); err != nil {
+			return nil, "", fmt.Errorf("kyc service: digilocker verify-account preflight: %w", err)
+		}
+	}
+
 	pending, err := s.repo.InitiateVerificationTx(ctx, tenantID, consent.ID, domain.KYCMethodDigiLocker, "cashfree_secure_id", vendorRefID, actor)
 	if err != nil {
 		return nil, "", fmt.Errorf("kyc service: initiate digilocker verification: %w", err)

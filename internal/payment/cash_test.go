@@ -23,13 +23,28 @@ func (s *stubPayments) Create(_ context.Context, p *domain.Payment) error {
 	}
 	cp := *p
 	s.created = append(s.created, &cp)
+	if s.byTxn == nil {
+		s.byTxn = map[string]*domain.Payment{}
+	}
 	if p.UPITxnID != nil {
-		if s.byTxn == nil {
-			s.byTxn = map[string]*domain.Payment{}
-		}
 		s.byTxn[*p.UPITxnID] = &cp
 	}
+	if p.CFPaymentID != nil {
+		s.byTxn["__cf__:"+*p.CFPaymentID] = &cp
+	}
 	return nil
+}
+
+func (s *stubPayments) GetByCFPaymentID(_ context.Context, cfID string) (*domain.Payment, error) {
+	if s.byTxn == nil {
+		return nil, pgx.ErrNoRows
+	}
+	p, ok := s.byTxn["__cf__:"+cfID]
+	if !ok {
+		return nil, pgx.ErrNoRows
+	}
+	cp := *p
+	return &cp, nil
 }
 
 func (s *stubPayments) GetByUPITxnID(_ context.Context, txnID string) (*domain.Payment, error) {

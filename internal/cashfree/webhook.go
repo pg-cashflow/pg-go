@@ -103,6 +103,11 @@ func (w SuccessWebhook) TxnID() string {
 	return strings.TrimSpace(w.CFPaymentID)
 }
 
+// BankRef returns only the provider-supplied bank_reference (UTR) without falling back to CFPaymentID.
+func (w SuccessWebhook) BankRef() string {
+	return strings.TrimSpace(w.BankReference)
+}
+
 // FailedWebhook is extracted from PAYMENT_FAILED_WEBHOOK.
 type FailedWebhook struct {
 	Type          string

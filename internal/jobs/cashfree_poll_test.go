@@ -68,25 +68,58 @@ func (s *stubSettle) GatewaySettle(_ context.Context, dueID uuid.UUID, amountPai
 	return &domain.Payment{DueID: dueID, Amount: amountPaise, MatchedBy: domain.MatchedByCashfree}, nil
 }
 
+type stubOrderSettler struct {
+	n       int
+	orderID string
+	cfID    string
+	bankRef string
+	amount  int64
+	err     error
+	intents *stubIntentStale
+}
+
+func (s *stubOrderSettler) SettleGatewayOrder(
+	ctx context.Context,
+	orderID string,
+	cfPaymentID string,
+	bankRef string,
+	amountPaise int64,
+	intent *domain.PaymentIntent,
+	_ []byte,
+) error {
+	s.n++
+	s.orderID = orderID
+	s.cfID = cfPaymentID
+	s.bankRef = bankRef
+	s.amount = amountPaise
+	if s.err != nil {
+		return s.err
+	}
+	if s.intents != nil && intent != nil && cfPaymentID != "" {
+		_ = s.intents.MarkPaid(ctx, intent.ID, cfPaymentID)
+	}
+	return nil
+}
+
 func TestCashfreePollSettlesOpenDue(t *testing.T) {
 	dueID := uuid.New()
 	intentID := uuid.New()
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: intentID, DueID: dueID, ProviderOrderID: "pg-X-1", Status: domain.IntentCreated, AmountPaise: 5000,
 	}}}
-	settle := &stubSettle{}
+	settler := &stubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
-		Intents: intents,
-		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
-		Client:  stubCFFetch{ok: true, cfID: "cf1", ref: "UTR1", amount: 5000},
-		Settle:  settle,
-		Now:     func() time.Time { return time.Now().UTC() },
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:       stubCFFetch{ok: true, cfID: "cf1", ref: "UTR1", amount: 5000},
+		OrderSettler: settler,
+		Now:          func() time.Time { return time.Now().UTC() },
 	}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if settle.n != 1 || settle.txn != "UTR1" || intents.cfPaid != "cf1" {
-		t.Fatalf("settle=%+v paid=%s", settle, intents.cfPaid)
+	if settler.n != 1 || settler.bankRef != "UTR1" || settler.cfID != "cf1" || intents.cfPaid != "cf1" {
+		t.Fatalf("settler=%+v paid=%s", settler, intents.cfPaid)
 	}
 	if intents.touched != 1 {
 		t.Fatalf("touch=%d", intents.touched)
@@ -110,30 +143,30 @@ func TestCashfreePollJob_SettlesAfterWebhookRejected(t *testing.T) {
 		Status:          domain.IntentCreated,
 		AmountPaise:     750000,
 	}}}
-	settle := &stubSettle{}
+	settler := &stubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
-		Intents: intents,
-		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
-		Client:  stubCFFetch{ok: true, cfID: "cf_pay_998877", ref: "UTR_BANK_RECON_88", amount: 750000},
-		Settle:  settle,
-		Now:     func() time.Time { return time.Now().UTC() },
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:       stubCFFetch{ok: true, cfID: "cf_pay_998877", ref: "UTR_BANK_RECON_88", amount: 750000},
+		OrderSettler: settler,
+		Now:          func() time.Time { return time.Now().UTC() },
 	}
 
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatalf("job.Run failed: %v", err)
 	}
 
-	if settle.n != 1 {
-		t.Fatalf("expected exactly 1 settlement invocation, got %d", settle.n)
+	if settler.n != 1 {
+		t.Fatalf("expected exactly 1 settlement invocation, got %d", settler.n)
 	}
-	if settle.dueID != dueID {
-		t.Fatalf("expected settled dueID=%s, got %s", dueID, settle.dueID)
+	if settler.orderID != orderID {
+		t.Fatalf("expected settled orderID=%s, got %s", orderID, settler.orderID)
 	}
-	if settle.amount != 750000 {
-		t.Fatalf("expected settled amount=750000, got %d", settle.amount)
+	if settler.amount != 750000 {
+		t.Fatalf("expected settled amount=750000, got %d", settler.amount)
 	}
-	if settle.txn != "UTR_BANK_RECON_88" {
-		t.Fatalf("expected txn='UTR_BANK_RECON_88', got '%s'", settle.txn)
+	if settler.bankRef != "UTR_BANK_RECON_88" {
+		t.Fatalf("expected bankRef='UTR_BANK_RECON_88', got '%s'", settler.bankRef)
 	}
 	if intents.cfPaid != "cf_pay_998877" {
 		t.Fatalf("expected intent marked paid with cf_pay_998877, got '%s'", intents.cfPaid)
@@ -148,18 +181,18 @@ func TestCashfreePollSkipsPaidDue(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1",
 	}}}
-	settle := &stubSettle{}
+	settler := &stubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
-		Intents: intents,
-		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPaid}},
-		Client:  stubCFFetch{ok: true, cfID: "cf1", amount: 1},
-		Settle:  settle,
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPaid}},
+		Client:       stubCFFetch{ok: true, cfID: "cf1", amount: 1},
+		OrderSettler: settler,
 	}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if settle.n != 0 {
-		t.Fatalf("paid due must not settle, n=%d", settle.n)
+	if settler.n != 0 {
+		t.Fatalf("paid due must not settle, n=%d", settler.n)
 	}
 }
 
@@ -175,21 +208,64 @@ func TestCashfreePollSkipsMarkPaidOnDueNotOpen(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
 	}}}
-	settle := &stubSettle{err: payment.ErrDueNotOpen}
+	settler := &stubOrderSettler{err: payment.ErrDueNotOpen, intents: intents}
+	job := &CashfreePollJob{
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:       stubCFFetch{ok: true, cfID: "cf1", ref: "UTR1", amount: 5000},
+		OrderSettler: settler,
+	}
+	if err := job.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if intents.cfPaid != "" {
+		t.Fatalf("must not MarkPaid when settlement errors, paid=%s", intents.cfPaid)
+	}
+	if intents.touched != 1 {
+		t.Fatalf("touch=%d", intents.touched)
+	}
+}
+
+func TestCashfreePollFailsClosedWithoutOrderSettler(t *testing.T) {
+	dueID := uuid.New()
+	intents := &stubIntentStale{list: []domain.PaymentIntent{{
+		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
+	}}}
+	settle := &stubSettle{}
 	job := &CashfreePollJob{
 		Intents: intents,
 		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
 		Client:  stubCFFetch{ok: true, cfID: "cf1", ref: "UTR1", amount: 5000},
 		Settle:  settle,
 	}
+	if err := job.Run(context.Background()); err == nil {
+		t.Fatal("expected error when OrderSettler is nil")
+	}
+	if settle.n != 0 || intents.cfPaid != "" {
+		t.Fatalf("legacy Settle/MarkPaid must not run when OrderSettler is nil, settle=%d paid=%s", settle.n, intents.cfPaid)
+	}
+}
+
+func TestCashfreePoll_DoesNotFallbackBankRefToCFPaymentID(t *testing.T) {
+	dueID := uuid.New()
+	intents := &stubIntentStale{list: []domain.PaymentIntent{{
+		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-2", AmountPaise: 5000,
+	}}}
+	settler := &stubOrderSettler{intents: intents}
+	job := &CashfreePollJob{
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:       stubCFFetch{ok: true, cfID: "cf_only_99", ref: "", amount: 5000},
+		OrderSettler: settler,
+	}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if intents.cfPaid != "" {
-		t.Fatalf("must not MarkPaid when due is not open, paid=%s", intents.cfPaid)
+	if settler.bankRef != "" {
+		t.Fatalf("expected empty bankRef when bank_reference absent, got %q", settler.bankRef)
 	}
-	if intents.touched != 1 {
-		t.Fatalf("touch=%d", intents.touched)
+	if settler.cfID != "cf_only_99" {
+		t.Fatalf("expected cfID cf_only_99, got %q", settler.cfID)
 	}
 }
 
@@ -299,18 +375,18 @@ func TestCashfreePollSkipsAmountMismatch(t *testing.T) {
 	intents := &stubIntentStale{list: []domain.PaymentIntent{{
 		ID: uuid.New(), DueID: dueID, ProviderOrderID: "pg-X-1", AmountPaise: 5000,
 	}}}
-	settle := &stubSettle{}
+	settler := &stubOrderSettler{intents: intents}
 	job := &CashfreePollJob{
-		Intents: intents,
-		Dues:    stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
-		Client:  stubCFFetch{ok: true, cfID: "cf1", amount: 9999},
-		Settle:  settle,
+		Intents:      intents,
+		Dues:         stubDueByID{dueID: &domain.Due{ID: dueID, Status: domain.DueStatusPending}},
+		Client:       stubCFFetch{ok: true, cfID: "cf1", amount: 9999},
+		OrderSettler: settler,
 	}
 	if err := job.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if settle.n != 0 || intents.cfPaid != "" {
-		t.Fatalf("mismatch must not settle n=%d paid=%s", settle.n, intents.cfPaid)
+	if settler.n != 0 || intents.cfPaid != "" {
+		t.Fatalf("mismatch must not settle n=%d paid=%s", settler.n, intents.cfPaid)
 	}
 }
 

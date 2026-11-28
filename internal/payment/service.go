@@ -436,19 +436,24 @@ func (s *Service) CorrectPayment(ctx context.Context, in CorrectPaymentInput) (*
 	return correction, err
 }
 
-// GatewaySettle records a payment-gateway capture (Cashfree webhook/poll). Idempotent on upi_txn_id and optional dedupKey.
+// GatewaySettle records a payment-gateway capture (Cashfree webhook/poll).
+// When dedupKey is provided (e.g. "cashfree:pg:<cf_payment_id>"), deduplication is keyed on
+// dedupKey/cf_payment_id and bankRef is stored in BankReference (never UPITxnID).
+// Legacy callers without dedupKey retain UPITxnID-based idempotency.
 func (s *Service) GatewaySettle(ctx context.Context, dueID uuid.UUID, amountPaise int64, txnID string, dedupKey ...string) (*domain.Payment, error) {
-	if strings.TrimSpace(txnID) == "" {
-		return nil, ErrEmptyTxnID
-	}
-	if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
-		return existing, nil
-	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
-	}
 	var dedup string
 	if len(dedupKey) > 0 {
 		dedup = dedupKey[0]
+	}
+	if dedup == "" {
+		if strings.TrimSpace(txnID) == "" {
+			return nil, ErrEmptyTxnID
+		}
+		if existing, err := s.payments.GetByUPITxnID(ctx, txnID); err == nil && existing != nil {
+			return existing, nil
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
 	}
 	return s.settleMatched(ctx, dueID, amountPaise, domain.MatchedByCashfree, &txnID, nil, nil, dedup)
 }
@@ -614,6 +619,19 @@ func (s *Service) settleMatched(
 				}
 				if !firstSeen {
 					isReplay = true
+					if matchedBy == domain.MatchedByCashfree && strings.HasPrefix(dedup, "cashfree:pg:") {
+						cfID := strings.TrimPrefix(dedup, "cashfree:pg:")
+						if idx := strings.Index(cfID, ":due:"); idx >= 0 {
+							cfID = cfID[:idx]
+						}
+						if cfGetter, ok := payments.(interface {
+							GetByCFPaymentID(ctx context.Context, cfID string) (*domain.Payment, error)
+						}); ok && cfID != "" {
+							if existing, gErr := cfGetter.GetByCFPaymentID(ctx, cfID); gErr == nil && existing != nil {
+								out = existing
+							}
+						}
+					}
 					return nil
 				}
 			}
@@ -631,16 +649,36 @@ func (s *Service) settleMatched(
 				if rawNote != nil && *rawNote != "" {
 					overpaymentNote = *rawNote + " (" + overpaymentNote + ")"
 				}
+				var upiTxnPtr, bankRefPtr, cfPayPtr *string
+				if matchedBy == domain.MatchedByCashfree && dedup != "" {
+					if txnID != nil && strings.TrimSpace(*txnID) != "" {
+						v := strings.TrimSpace(*txnID)
+						bankRefPtr = &v
+					}
+					if strings.HasPrefix(dedup, "cashfree:pg:") {
+						cfID := strings.TrimPrefix(dedup, "cashfree:pg:")
+						if idx := strings.Index(cfID, ":due:"); idx >= 0 {
+							cfID = cfID[:idx]
+						}
+						if cfID != "" {
+							cfPayPtr = &cfID
+						}
+					}
+				} else {
+					upiTxnPtr = txnID
+				}
 				p := &domain.Payment{
-					PropertyID: &due.PropertyID,
-					DueID:      due.ID,
-					TenantID:   due.TenantID,
-					UPITxnID:   txnID,
-					Amount:     amountPaise,
-					MatchedBy:  matchedBy,
-					RecordedBy: recordedBy,
-					MatchedAt:  at,
-					RawNote:    &overpaymentNote,
+					PropertyID:    &due.PropertyID,
+					DueID:         due.ID,
+					TenantID:      due.TenantID,
+					UPITxnID:      upiTxnPtr,
+					BankReference: bankRefPtr,
+					CFPaymentID:   cfPayPtr,
+					Amount:        amountPaise,
+					MatchedBy:     matchedBy,
+					RecordedBy:    recordedBy,
+					MatchedAt:     at,
+					RawNote:       &overpaymentNote,
 				}
 				if err := payments.Create(ctx, p); err != nil {
 					return err
@@ -678,16 +716,36 @@ func (s *Service) settleMatched(
 			return err
 		}
 
+		var upiTxnPtr, bankRefPtr, cfPayPtr *string
+		if matchedBy == domain.MatchedByCashfree && dedup != "" {
+			if txnID != nil && strings.TrimSpace(*txnID) != "" {
+				v := strings.TrimSpace(*txnID)
+				bankRefPtr = &v
+			}
+			if strings.HasPrefix(dedup, "cashfree:pg:") {
+				cfID := strings.TrimPrefix(dedup, "cashfree:pg:")
+				if idx := strings.Index(cfID, ":due:"); idx >= 0 {
+					cfID = cfID[:idx]
+				}
+				if cfID != "" {
+					cfPayPtr = &cfID
+				}
+			}
+		} else {
+			upiTxnPtr = txnID
+		}
 		p := &domain.Payment{
-			PropertyID: &due.PropertyID,
-			DueID:      due.ID,
-			TenantID:   due.TenantID,
-			UPITxnID:   txnID,
-			Amount:     amountPaise,
-			MatchedBy:  matchedBy,
-			RecordedBy: recordedBy,
-			MatchedAt:  at,
-			RawNote:    rawNote,
+			PropertyID:    &due.PropertyID,
+			DueID:         due.ID,
+			TenantID:      due.TenantID,
+			UPITxnID:      upiTxnPtr,
+			BankReference: bankRefPtr,
+			CFPaymentID:   cfPayPtr,
+			Amount:        amountPaise,
+			MatchedBy:     matchedBy,
+			RecordedBy:    recordedBy,
+			MatchedAt:     at,
+			RawNote:       rawNote,
 		}
 		if err := payments.Create(ctx, p); err != nil {
 			return err

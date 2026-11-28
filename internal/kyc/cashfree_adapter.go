@@ -40,6 +40,10 @@ func (a *CashfreeAdapter) CreateDigiLockerURL(ctx context.Context, in cashfree.C
 	return a.client.CreateDigiLockerURL(ctx, in)
 }
 
+func (a *CashfreeAdapter) VerifyDigiLockerAccount(ctx context.Context, in cashfree.VerifyDigiLockerAccountInput) (*cashfree.DigiLockerAccountResult, error) {
+	return a.client.VerifyDigiLockerAccount(ctx, in)
+}
+
 func (a *CashfreeAdapter) GetDigiLockerStatus(ctx context.Context, verificationID string) (*cashfree.DigiLockerStatusResult, error) {
 	return a.client.GetDigiLockerStatus(ctx, verificationID)
 }

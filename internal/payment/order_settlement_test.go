@@ -100,6 +100,9 @@ func (s *stubPaymentRepo) Create(_ context.Context, p *domain.Payment) error {
 	if p.UPITxnID != nil {
 		s.payments[*p.UPITxnID] = p
 	}
+	if p.CFPaymentID != nil {
+		s.payments[*p.CFPaymentID] = p
+	}
 	return nil
 }
 func (s *stubPaymentRepo) GetByID(_ context.Context, _ uuid.UUID) (*domain.Payment, error) {
@@ -279,5 +282,69 @@ func TestOrderSettlementService_MultiDueSnapshot(t *testing.T) {
 	}
 	if intentRepo.paidCFID != "cf_multi_pay_1" {
 		t.Errorf("expected intent marked paid with cf_multi_pay_1, got %s", intentRepo.paidCFID)
+	}
+}
+
+// F1 regression: Cashfree payments settled via SettleGatewayOrder must NEVER populate upi_txn_id
+// with bank_reference, and two distinct cf_payment_id captures sharing the same bank_reference
+// must both settle cleanly.
+func TestOrderSettlementService_SharedBankReferenceDifferentCFPaymentID(t *testing.T) {
+	dueID1 := uuid.New()
+	dueID2 := uuid.New()
+	tenantID := uuid.New()
+	propID := uuid.New()
+
+	due1 := &domain.Due{ID: dueID1, TenantID: tenantID, PropertyID: propID, Amount: 5000, Status: domain.DueStatusPending}
+	due2 := &domain.Due{ID: dueID2, TenantID: tenantID, PropertyID: propID, Amount: 5000, Status: domain.DueStatusPending}
+
+	dueRepo := &stubDueRepo{dues: map[uuid.UUID]*domain.Due{dueID1: due1, dueID2: due2}}
+	payRepo := &stubPaymentRepo{payments: make(map[string]*domain.Payment)}
+	tenantRepo := &stubTenantRepo{tenants: map[uuid.UUID]*domain.Tenant{tenantID: {ID: tenantID}}}
+	paySvc := NewService(dueRepo, payRepo, tenantRepo, nil, stubPublisher{})
+	gwRepo := newMockGatewayPaymentRepo()
+
+	svc := NewOrderSettlementService(OrderSettlementConfig{
+		GatewayPaymentRepo: gwRepo,
+		IntentStore:        &mockPaymentIntentRepo{},
+		Payments:           paySvc,
+	})
+
+	intent1 := &domain.PaymentIntent{ID: uuid.New(), DueID: dueID1, ProviderOrderID: "order-f1-1", AmountPaise: 5000, Status: domain.IntentCreated}
+	intent2 := &domain.PaymentIntent{ID: uuid.New(), DueID: dueID2, ProviderOrderID: "order-f1-2", AmountPaise: 5000, Status: domain.IntentCreated}
+
+	if err := svc.SettleGatewayOrder(context.Background(), "order-f1-1", "cf_pay_f1_1", "SHARED_UTR_999", 5000, intent1, nil); err != nil {
+		t.Fatalf("first payment failed: %v", err)
+	}
+	if err := svc.SettleGatewayOrder(context.Background(), "order-f1-2", "cf_pay_f1_2", "SHARED_UTR_999", 5000, intent2, nil); err != nil {
+		t.Fatalf("second payment with shared bank_reference failed: %v", err)
+	}
+
+	if len(payRepo.payments) != 2 {
+		t.Fatalf("expected 2 distinct payment records, got %d", len(payRepo.payments))
+	}
+	for _, p := range payRepo.payments {
+		if p.UPITxnID != nil && *p.UPITxnID == "SHARED_UTR_999" {
+			t.Fatalf("F1 regression: Cashfree payment populated upi_txn_id=%q with bank_reference", *p.UPITxnID)
+		}
+	}
+}
+
+func TestHandlePostRollbackCollision_NonCanonicalConstraintQuarantinesAndFails(t *testing.T) {
+	gwRepo := newMockGatewayPaymentRepo()
+	svc := NewOrderSettlementService(OrderSettlementConfig{
+		GatewayPaymentRepo: gwRepo,
+	})
+	intent := &domain.PaymentIntent{ID: uuid.New(), ProviderOrderID: "order-coll-1", AmountPaise: 10000}
+	coll := &settlementCollisionError{
+		constraintName: "uq_payments_legacy_utr",
+		err:            domain.ErrDuplicateTxn,
+	}
+
+	err := svc.handlePostRollbackCollision(context.Background(), coll, "order-coll-1", "cf_pay_coll_1", intent, 10000, []byte(`{}`), uuid.Nil, false)
+	if err == nil {
+		t.Fatal("expected non-canonical 23505 collision to return retryable error, got nil")
+	}
+	if gwRepo.unmatchedCount != 1 {
+		t.Fatalf("expected 1 unmatched receipt recorded after rollback, got %d", gwRepo.unmatchedCount)
 	}
 }

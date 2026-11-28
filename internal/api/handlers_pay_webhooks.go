@@ -395,12 +395,12 @@ func (h *Handlers) handlePaymentSuccessWebhook(c *gin.Context, succ cashfree.Suc
 		return
 	}
 
-	txnID := succ.TxnID()
+	bankRef := succ.BankRef()
 	settleCtx := ctx
 	if evtRecord.ID != uuid.Nil {
 		settleCtx = payment.WithWebhookEventID(ctx, evtRecord.ID)
 	}
-	if err := h.SettleGatewayOrder(settleCtx, succ.OrderID, succ.CFPaymentID, txnID, succ.AmountPaise, intent, evtRecord.RawPayload); err != nil {
+	if err := h.SettleGatewayOrder(settleCtx, succ.OrderID, succ.CFPaymentID, bankRef, succ.AmountPaise, intent, evtRecord.RawPayload); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "settle failed"})
 		return
 	}

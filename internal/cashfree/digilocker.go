@@ -80,6 +80,57 @@ type CreateDigiLockerURLInput struct {
 	UserFlow string
 }
 
+// VerifyDigiLockerAccountInput is the request for VerifyDigiLockerAccount.
+type VerifyDigiLockerAccountInput struct {
+	VerificationID string
+	MobileNumber   string // optional; never inferred from tenant phone
+}
+
+// DigiLockerAccountResult is the response from POST /digilocker/verify-account.
+type DigiLockerAccountResult struct {
+	VerificationID string
+	ReferenceID    string
+	Status         string
+}
+
+// VerifyDigiLockerAccount checks DigiLocker account status before creating a consent URL.
+func (c *Client) VerifyDigiLockerAccount(ctx context.Context, in VerifyDigiLockerAccountInput) (*DigiLockerAccountResult, error) {
+	if !c.cfg.Enabled() {
+		return nil, fmt.Errorf("cashfree: not configured")
+	}
+	in.VerificationID = strings.TrimSpace(in.VerificationID)
+	if in.VerificationID == "" {
+		return nil, errors.New("cashfree digilocker: verification id is required")
+	}
+	body, err := json.Marshal(struct {
+		VerificationID string `json:"verification_id"`
+		MobileNumber   string `json:"mobile_number,omitempty"`
+	}{
+		VerificationID: in.VerificationID,
+		MobileNumber:   strings.TrimSpace(in.MobileNumber),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cashfree digilocker: encode verify account: %w", err)
+	}
+	raw, _, err := c.digiLockerDo(ctx, http.MethodPost, "/digilocker/verify-account", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		VerificationID string     `json:"verification_id"`
+		ReferenceID    ProviderID `json:"reference_id"`
+		Status         string     `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, &CorruptDocumentError{Reason: "digilocker verify account: invalid json"}
+	}
+	return &DigiLockerAccountResult{
+		VerificationID: out.VerificationID,
+		ReferenceID:    string(out.ReferenceID),
+		Status:         strings.TrimSpace(out.Status),
+	}, nil
+}
+
 // DigiLockerSession is the result of CreateDigiLockerURL.
 type DigiLockerSession struct {
 	VerificationID string

@@ -1,11 +1,13 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,12 +23,12 @@ func NewPaymentRepo(db DBTX) *PaymentRepo { return &PaymentRepo{db: db} }
 
 func (r *PaymentRepo) WithTx(tx pgx.Tx) *PaymentRepo { return &PaymentRepo{db: tx} }
 
-const paymentCols = `id, due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id`
+const paymentCols = `id, due_id, tenant_id, upi_txn_id, bank_reference, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id`
 
 func scanPayment(row pgx.Row) (*domain.Payment, error) {
 	var p domain.Payment
 	var dueID *uuid.UUID
-	err := row.Scan(&p.ID, &dueID, &p.TenantID, &p.UPITxnID, &p.CFPaymentID, &p.ProviderPaymentID, &p.Provider, &p.Amount, &p.MatchedBy, &p.RecordedBy, &p.MatchedAt, &p.RawNote, &p.IsUnapplied, &p.CreatedAt, &p.PropertyID)
+	err := row.Scan(&p.ID, &dueID, &p.TenantID, &p.UPITxnID, &p.BankReference, &p.CFPaymentID, &p.ProviderPaymentID, &p.Provider, &p.Amount, &p.MatchedBy, &p.RecordedBy, &p.MatchedAt, &p.RawNote, &p.IsUnapplied, &p.CreatedAt, &p.PropertyID)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +61,16 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 				p.Provider = "cashfree"
 			}
 		}
-		if p.Provider == "cashfree" {
+		if p.Provider == "cashfree" || p.MatchedBy == domain.MatchedByCashfree {
+			// F1: Cashfree payments must never store bank_reference or cf_payment_id in upi_txn_id.
+			// If a caller still passed a bank_reference in UPITxnID without BankReference, preserve it in BankReference.
+			if p.BankReference == nil && p.UPITxnID != nil && strings.TrimSpace(*p.UPITxnID) != "" {
+				v := strings.TrimSpace(*p.UPITxnID)
+				if p.CFPaymentID == nil || v != *p.CFPaymentID {
+					p.BankReference = &v
+				}
+			}
+			p.UPITxnID = nil
 			if p.CFPaymentID == nil && p.ProviderPaymentID != nil {
 				p.CFPaymentID = p.ProviderPaymentID
 			}
@@ -94,14 +105,14 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 			return fmt.Errorf("payment %s has no due_id and is not unapplied: set SkipOutboxEnqueue and enqueue the mirror after allocating", p.ID)
 		}
 		err := repo.db.QueryRow(ctx, `
-			INSERT INTO payments (due_id, tenant_id, upi_txn_id, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			INSERT INTO payments (due_id, tenant_id, upi_txn_id, bank_reference, cf_payment_id, provider_payment_id, provider, amount, matched_by, recorded_by, matched_at, raw_note, is_unapplied, created_at, property_id)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 			RETURNING id`,
-			dueIDArg, p.TenantID, p.UPITxnID, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt, p.PropertyID,
+			dueIDArg, p.TenantID, p.UPITxnID, p.BankReference, p.CFPaymentID, p.ProviderPaymentID, p.Provider, p.Amount, p.MatchedBy, p.RecordedBy, p.MatchedAt, p.RawNote, p.IsUnapplied, p.CreatedAt, p.PropertyID,
 		).Scan(&p.ID)
 		if err != nil {
 			if isUnique(err) {
-				return domain.ErrDuplicateTxn
+				return fmt.Errorf("%w: %w", domain.ErrDuplicateTxn, err)
 			}
 			return err
 		}
@@ -196,7 +207,12 @@ func (r *PaymentRepo) GetByDueID(ctx context.Context, dueID uuid.UUID) (*domain.
 }
 
 func (r *PaymentRepo) GetByUPITxnID(ctx context.Context, txnID string) (*domain.Payment, error) {
-	return scanPayment(r.db.QueryRow(ctx, `SELECT `+paymentCols+` FROM payments WHERE upi_txn_id=$1`, txnID))
+	return scanPayment(r.db.QueryRow(ctx, `
+		SELECT `+paymentCols+`
+		FROM payments
+		WHERE UPPER(upi_txn_id) = UPPER($1)
+		  AND matched_by <> 'cashfree'
+		  AND provider <> 'cashfree'`, txnID))
 }
 
 func (r *PaymentRepo) GetByCFPaymentID(ctx context.Context, cfID string) (*domain.Payment, error) {
@@ -992,7 +1008,69 @@ func (r *PaymentRepo) ListStaleNonTerminalRefunds(ctx context.Context, olderThan
 	return out, rows.Err()
 }
 
+func collectRefundReconcileDueIDs(
+	ctx context.Context,
+	db DBTX,
+	refundID, paymentPrimaryDueID, paymentID uuid.UUID,
+) ([]uuid.UUID, error) {
+	if refundID == uuid.Nil || paymentID == uuid.Nil {
+		return nil, errors.New("collect refund reconcile due IDs: nil refund_id or payment_id")
+	}
+	dueMap := make(map[uuid.UUID]struct{})
+	if paymentPrimaryDueID != uuid.Nil {
+		dueMap[paymentPrimaryDueID] = struct{}{}
+	}
+
+	queries := []struct {
+		name string
+		sql  string
+		arg  uuid.UUID
+	}{
+		{name: "refund_allocations", sql: `SELECT due_id FROM refund_allocations WHERE refund_id = $1`, arg: refundID},
+		{name: "payment_allocations", sql: `SELECT due_id FROM payment_allocations WHERE payment_id = $1`, arg: paymentID},
+	}
+
+	for _, q := range queries {
+		rows, err := db.Query(ctx, q.sql, q.arg)
+		if err != nil {
+			return nil, fmt.Errorf("query %s for refund reconcile: %w", q.name, err)
+		}
+		if rows == nil {
+			return nil, fmt.Errorf("query %s for refund reconcile: nil rows", q.name)
+		}
+		for rows.Next() {
+			var dID *uuid.UUID
+			if err := rows.Scan(&dID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan %s due_id for refund reconcile: %w", q.name, err)
+			}
+			if dID != nil && *dID != uuid.Nil {
+				dueMap[*dID] = struct{}{}
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate %s for refund reconcile: %w", q.name, err)
+		}
+	}
+
+	allDueIDs := make([]uuid.UUID, 0, len(dueMap))
+	for dID := range dueMap {
+		allDueIDs = append(allDueIDs, dID)
+	}
+	slices.SortFunc(allDueIDs, func(a, b uuid.UUID) int {
+		return bytes.Compare(a[:], b[:])
+	})
+	return allDueIDs, nil
+}
+
 func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain.GatewayRefund, newStatus string) error {
+	if ref == nil || ref.ID == uuid.Nil || ref.PaymentID == uuid.Nil {
+		return errors.New("reconcile refund transition: invalid refund or payment identity")
+	}
+	origStatus := ref.Status
+	origUpdatedAt := ref.UpdatedAt
+
 	reconcile := func(txRepo *PaymentRepo, tx pgx.Tx) error {
 		p, err := txRepo.GetByID(ctx, ref.PaymentID)
 		if err != nil || p == nil {
@@ -1001,41 +1079,21 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 
 		var dummy uuid.UUID
 		// AUTH-05 Monotonic lock hierarchy: lock receipt before tenant if linked
-		_ = tx.QueryRow(ctx, `SELECT id FROM unmatched_gateway_receipts WHERE resolution_refund_id = $1 FOR UPDATE`, ref.ID).Scan(&dummy)
+		if err := tx.QueryRow(ctx, `SELECT id FROM unmatched_gateway_receipts WHERE resolution_refund_id = $1 FOR UPDATE`, ref.ID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("lock unmatched receipt for refund reconcile: %w", err)
+		}
 
 		if err := tx.QueryRow(ctx, `SELECT id FROM tenants WHERE id = $1 FOR UPDATE`, p.TenantID).Scan(&dummy); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("lock tenant for refund reconcile: %w", err)
 		}
 
 		txDueRepo := NewDueRepo(tx)
-		// Collect all relevant due IDs and lock them deterministically before locking payment and gateway refund
-		dueMap := make(map[uuid.UUID]struct{})
-		if p.DueID != uuid.Nil {
-			dueMap[p.DueID] = struct{}{}
+		// Collect all relevant due IDs (fail-closed) and lock them deterministically before locking payment and gateway refund.
+		allDueIDs, err := collectRefundReconcileDueIDs(ctx, tx, ref.ID, p.DueID, p.ID)
+		if err != nil {
+			return err
 		}
-		if rRows, qErr := tx.Query(ctx, `SELECT due_id FROM refund_allocations WHERE refund_id = $1`, ref.ID); qErr == nil {
-			for rRows.Next() {
-				var dID *uuid.UUID
-				if sErr := rRows.Scan(&dID); sErr == nil && dID != nil && *dID != uuid.Nil {
-					dueMap[*dID] = struct{}{}
-				}
-			}
-			rRows.Close()
-		}
-		if pRows, qErr := tx.Query(ctx, `SELECT due_id FROM payment_allocations WHERE payment_id = $1`, p.ID); qErr == nil {
-			for pRows.Next() {
-				var dID *uuid.UUID
-				if sErr := pRows.Scan(&dID); sErr == nil && dID != nil && *dID != uuid.Nil {
-					dueMap[*dID] = struct{}{}
-				}
-			}
-			pRows.Close()
-		}
-		if len(dueMap) > 0 {
-			allDueIDs := make([]uuid.UUID, 0, len(dueMap))
-			for dID := range dueMap {
-				allDueIDs = append(allDueIDs, dID)
-			}
+		if len(allDueIDs) > 0 {
 			_, err = tx.Exec(ctx, `
 				SELECT id FROM dues
 				WHERE id = ANY($1)
@@ -1341,15 +1399,21 @@ func (r *PaymentRepo) ReconcileRefundTransition(ctx context.Context, ref *domain
 		return nil
 	}
 
+	var runErr error
 	if pool, ok := r.db.(*pgxpool.Pool); ok {
-		return WithinTx(ctx, pool, func(tx pgx.Tx) error {
+		runErr = WithinTx(ctx, pool, func(tx pgx.Tx) error {
 			return reconcile(r.WithTx(tx), tx)
 		})
+	} else if tx, ok := r.db.(pgx.Tx); ok {
+		runErr = reconcile(r, tx)
+	} else {
+		runErr = errors.New("database connection does not support transactions")
 	}
-	if tx, ok := r.db.(pgx.Tx); ok {
-		return reconcile(r, tx)
+	if runErr != nil {
+		ref.Status = origStatus
+		ref.UpdatedAt = origUpdatedAt
 	}
-	return errors.New("database connection does not support transactions")
+	return runErr
 }
 
 func (r *PaymentRepo) recomputeDueStatusUnderLock(ctx context.Context, txDueRepo *DueRepo, d *domain.Due) error {

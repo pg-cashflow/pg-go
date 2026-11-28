@@ -333,14 +333,16 @@ func Build(ctx context.Context, cfg *config.Config) (*Server, error) {
 		}
 		kycRepo = maintKYCRepo
 		kycSvc = kycsvc.NewService(appKYCRepo, cfKYCAdapter, kycsvc.Config{
-			IdentitySecret:           activeIdentitySecret,
-			HashKeyVersion:           activeHashVersion,
-			VerificationValidityDays: validityDays,
+			IdentitySecret:                   activeIdentitySecret,
+			HashKeyVersion:                   activeHashVersion,
+			VerificationValidityDays:         validityDays,
+			DigiLockerVerifyAccountPreflight: cfg.CashfreeKYCDigiLockerVerifyAccountPreflight,
 		})
 		maintKYCSvc = kycsvc.NewService(maintKYCRepo, cfKYCAdapter, kycsvc.Config{
-			IdentitySecret:           activeIdentitySecret,
-			HashKeyVersion:           activeHashVersion,
-			VerificationValidityDays: validityDays,
+			IdentitySecret:                   activeIdentitySecret,
+			HashKeyVersion:                   activeHashVersion,
+			VerificationValidityDays:         validityDays,
+			DigiLockerVerifyAccountPreflight: cfg.CashfreeKYCDigiLockerVerifyAccountPreflight,
 		})
 	} else {
 		logger.Info("kyc service dormant (KYC_IDENTITY_SECRET not set)")

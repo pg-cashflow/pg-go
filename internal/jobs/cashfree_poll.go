@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +137,9 @@ func (j *CashfreePollJob) RunRefundsOnly(ctx context.Context) error {
 }
 
 func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
+	if j.OrderSettler == nil {
+		return errors.New("cashfree poll: OrderSettler is required")
+	}
 	log := j.Log
 	if log == nil {
 		log = slog.Default()
@@ -194,34 +198,11 @@ func (j *CashfreePollJob) runPaymentIntents(ctx context.Context) error {
 			log.Error("cashfree poll amount mismatch", "order", intent.ProviderOrderID, "got", amount, "want", intent.AmountPaise)
 			continue
 		}
-		txn := bankRef
-		if txn == "" {
-			txn = cfID
-		}
-
-		if j.OrderSettler != nil {
-			intentCopy := intent
-			if err := j.OrderSettler.SettleGatewayOrder(ctx, intent.ProviderOrderID, cfID, txn, amount, &intentCopy, nil); err != nil {
-				log.Error("cashfree poll settle order", "order", intent.ProviderOrderID, "err", err)
-				continue
-			}
-		} else if j.Settle != nil {
-			dedupKey := ""
-			if cfID != "" {
-				dedupKey = fmt.Sprintf("cashfree:pg:%s", cfID)
-			}
-			if dedupKey != "" {
-				_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn, dedupKey)
-			} else {
-				_, err = j.Settle.GatewaySettle(ctx, intent.DueID, amount, txn)
-			}
-			if err != nil && !errors.Is(err, payment.ErrDuplicateTxn) {
-				log.Error("cashfree poll settle", "order", intent.ProviderOrderID, "err", err)
-				continue
-			}
-			if cfID != "" {
-				_ = j.Intents.MarkPaid(ctx, intent.ID, cfID)
-			}
+		bankRefTrimmed := strings.TrimSpace(bankRef)
+		intentCopy := intent
+		if err := j.OrderSettler.SettleGatewayOrder(ctx, intent.ProviderOrderID, cfID, bankRefTrimmed, amount, &intentCopy, nil); err != nil {
+			log.Error("cashfree poll settle order", "order", intent.ProviderOrderID, "err", err)
+			continue
 		}
 	}
 	return nil

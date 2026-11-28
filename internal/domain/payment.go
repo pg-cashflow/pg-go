@@ -25,6 +25,7 @@ type Payment struct {
 	DueID             uuid.UUID  `json:"due_id"`
 	TenantID          uuid.UUID  `json:"tenant_id"`
 	UPITxnID          *string    `json:"upi_txn_id,omitempty"`
+	BankReference     *string    `json:"bank_reference,omitempty"`
 	CFPaymentID       *string    `json:"cf_payment_id,omitempty"`
 	ProviderPaymentID *string    `json:"provider_payment_id,omitempty"`
 	Provider          string     `json:"provider,omitempty"`
