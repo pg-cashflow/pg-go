@@ -348,3 +348,78 @@ func TestHandlePostRollbackCollision_NonCanonicalConstraintQuarantinesAndFails(t
 		t.Fatalf("expected 1 unmatched receipt recorded after rollback, got %d", gwRepo.unmatchedCount)
 	}
 }
+
+func TestVerifyExistingPaymentIdentity_RejectsOrderIntentPropertyTenantMismatch(t *testing.T) {
+	propID := uuid.New()
+	tenantID := uuid.New()
+	intentID := uuid.New()
+	intent := &domain.PaymentIntent{
+		ID:              intentID,
+		PropertyID:      propID,
+		ProviderOrderID: "order-match-1",
+		AmountPaise:     10000,
+	}
+	base := existingPaymentIdentity{
+		amount:          10000,
+		tenantID:        tenantID,
+		propertyID:      propID,
+		intentID:        intentID,
+		providerOrderID: "order-match-1",
+	}
+
+	if !verifyExistingPaymentIdentity(base, "order-match-1", intent, tenantID, 10000) {
+		t.Fatal("expected exact identity match to return true")
+	}
+
+	cases := []struct {
+		name     string
+		existing existingPaymentIdentity
+		orderID  string
+		tenantID uuid.UUID
+		amount   int64
+	}{
+		{
+			name:     "different provider_order_id",
+			existing: func() existingPaymentIdentity { c := base; c.providerOrderID = "order-other"; return c }(),
+			orderID:  "order-match-1",
+			tenantID: tenantID,
+			amount:   10000,
+		},
+		{
+			name:     "different intent_id",
+			existing: func() existingPaymentIdentity { c := base; c.intentID = uuid.New(); return c }(),
+			orderID:  "order-match-1",
+			tenantID: tenantID,
+			amount:   10000,
+		},
+		{
+			name:     "different property_id",
+			existing: func() existingPaymentIdentity { c := base; c.propertyID = uuid.New(); return c }(),
+			orderID:  "order-match-1",
+			tenantID: tenantID,
+			amount:   10000,
+		},
+		{
+			name:     "different tenant_id",
+			existing: func() existingPaymentIdentity { c := base; c.tenantID = uuid.New(); return c }(),
+			orderID:  "order-match-1",
+			tenantID: tenantID,
+			amount:   10000,
+		},
+		{
+			name:     "different amount",
+			existing: base,
+			orderID:  "order-match-1",
+			tenantID: tenantID,
+			amount:   20000,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if verifyExistingPaymentIdentity(tc.existing, tc.orderID, intent, tc.tenantID, tc.amount) {
+				t.Fatalf("expected identity mismatch (%s) to return false", tc.name)
+			}
+		})
+	}
+}

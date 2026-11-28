@@ -57,8 +57,12 @@ func (r *PaymentRepo) Create(ctx context.Context, p *domain.Payment) error {
 				p.Provider = "cash"
 			case domain.MatchedByManual:
 				p.Provider = "manual"
-			default:
+			case domain.MatchedByDueCode, domain.MatchedByAmountDateWindow:
+				p.Provider = "bank"
+			case domain.MatchedByCashfree:
 				p.Provider = "cashfree"
+			default:
+				return fmt.Errorf("cannot create payment: unsupported matched_by %q without explicit provider", p.MatchedBy)
 			}
 		}
 		if p.Provider == "cashfree" || p.MatchedBy == domain.MatchedByCashfree {

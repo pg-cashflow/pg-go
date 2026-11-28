@@ -592,6 +592,21 @@ func (s *Service) SettleDeposit(ctx context.Context, tenantID uuid.UUID, refunde
 	})
 }
 
+func providerForMatchedBy(m domain.MatchedBy) string {
+	switch m {
+	case domain.MatchedByCash:
+		return "cash"
+	case domain.MatchedByManual:
+		return "manual"
+	case domain.MatchedByDueCode, domain.MatchedByAmountDateWindow:
+		return "bank"
+	case domain.MatchedByCashfree:
+		return "cashfree"
+	default:
+		return ""
+	}
+}
+
 func (s *Service) settleMatched(
 	ctx context.Context,
 	dueID uuid.UUID,
@@ -676,6 +691,7 @@ func (s *Service) settleMatched(
 					CFPaymentID:   cfPayPtr,
 					Amount:        amountPaise,
 					MatchedBy:     matchedBy,
+					Provider:      providerForMatchedBy(matchedBy),
 					RecordedBy:    recordedBy,
 					MatchedAt:     at,
 					RawNote:       &overpaymentNote,
@@ -743,6 +759,7 @@ func (s *Service) settleMatched(
 			CFPaymentID:   cfPayPtr,
 			Amount:        amountPaise,
 			MatchedBy:     matchedBy,
+			Provider:      providerForMatchedBy(matchedBy),
 			RecordedBy:    recordedBy,
 			MatchedAt:     at,
 			RawNote:       rawNote,

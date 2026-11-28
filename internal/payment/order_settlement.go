@@ -530,6 +530,41 @@ func (s *OrderSettlementService) SettleGatewayOrder(
 	return nil
 }
 
+type existingPaymentIdentity struct {
+	amount          int64
+	tenantID        uuid.UUID
+	propertyID      uuid.UUID
+	intentID        uuid.UUID
+	providerOrderID string
+}
+
+func verifyExistingPaymentIdentity(
+	existing existingPaymentIdentity,
+	orderID string,
+	intent *domain.PaymentIntent,
+	expectedTenantID uuid.UUID,
+	amountPaise int64,
+) bool {
+	if existing.amount != amountPaise {
+		return false
+	}
+	if strings.TrimSpace(orderID) == "" || existing.providerOrderID != orderID {
+		return false
+	}
+	if intent != nil {
+		if intent.ID != uuid.Nil && existing.intentID != intent.ID {
+			return false
+		}
+		if intent.PropertyID != uuid.Nil && existing.propertyID != intent.PropertyID {
+			return false
+		}
+	}
+	if expectedTenantID != uuid.Nil && existing.tenantID != expectedTenantID {
+		return false
+	}
+	return true
+}
+
 // handlePostRollbackCollision runs after a 23505 aborted the settlement transaction and WithinTx
 // rolled it back. It never issues SQL on the aborted transaction.
 func (s *OrderSettlementService) handlePostRollbackCollision(
@@ -549,17 +584,40 @@ func (s *OrderSettlementService) handlePostRollbackCollision(
 	}
 
 	if coll.constraintName == canonicalCashfreePaymentConstraint && s.pool != nil {
-		var existingAmount int64
-		err := s.pool.QueryRow(ctx, `SELECT amount FROM payments WHERE cf_payment_id = $1`, cfPaymentID).Scan(&existingAmount)
-		if err == nil && existingAmount == amountPaise {
-			if hasEvtID {
-				if uErr := postgres.NewPaymentRepo(s.pool).UpdateWebhookEventStatus(ctx, evtID, "processed", nil); uErr != nil {
-					return fmt.Errorf("update webhook event status after idempotent duplicate: %w", uErr)
-				}
+		var existing existingPaymentIdentity
+		err := s.pool.QueryRow(ctx, `
+			SELECT p.amount,
+			       p.tenant_id,
+			       COALESCE(p.property_id, d.property_id, '00000000-0000-0000-0000-000000000000'::uuid),
+			       COALESCE(pi.id, '00000000-0000-0000-0000-000000000000'::uuid),
+			       COALESCE(pi.provider_order_id, '')
+			FROM payments p
+			LEFT JOIN dues d ON d.id = p.due_id
+			LEFT JOIN payment_intents pi ON pi.cf_payment_id = p.cf_payment_id
+			WHERE p.cf_payment_id = $1
+			ORDER BY pi.created_at DESC NULLS LAST
+			LIMIT 1`, cfPaymentID).Scan(
+			&existing.amount,
+			&existing.tenantID,
+			&existing.propertyID,
+			&existing.intentID,
+			&existing.providerOrderID,
+		)
+		if err == nil {
+			var expectedTenantID uuid.UUID
+			if intent != nil && intent.DueID != uuid.Nil {
+				_ = s.pool.QueryRow(ctx, `SELECT tenant_id FROM dues WHERE id = $1`, intent.DueID).Scan(&expectedTenantID)
 			}
-			return nil
-		}
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			if verifyExistingPaymentIdentity(existing, orderID, intent, expectedTenantID, amountPaise) {
+				if hasEvtID {
+					if uErr := postgres.NewPaymentRepo(s.pool).UpdateWebhookEventStatus(ctx, evtID, "processed", nil); uErr != nil {
+						return fmt.Errorf("update webhook event status after idempotent duplicate: %w", uErr)
+					}
+				}
+				return nil
+			}
+			// Identity mismatch on same cf_payment_id: fall through to quarantine as unmatched receipt.
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("verify existing cf_payment_id %s after collision: %w", cfPaymentID, err)
 		}
 	}
